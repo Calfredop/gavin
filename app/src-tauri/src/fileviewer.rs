@@ -369,6 +369,20 @@ pub fn temp_dir() -> String {
     protocol::wire_path(&std::env::temp_dir())
 }
 
+/// The home folder of whoever runs the desktop app: where a Companion's
+/// folder browser starts when it adds a workspace (ADR 0006). A phone has
+/// no way to know it -- the desk's own picker is the OS dialog, which opens
+/// there by itself. `$HOME`, as the rest of the host reads it, and
+/// `%USERPROFILE%` where there is no `$HOME`.
+#[tauri::command]
+pub fn home_dir() -> Result<String, String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())
+        .map(|home| protocol::wire_path(std::path::Path::new(&home)))
+        .ok_or_else(|| "this Workstation has no home folder set".to_string())
+}
+
 /// Active file watchers, keyed by the watched file's path, REFCOUNTED so
 /// several surfaces can watch one file independently: an open editor tab,
 /// the Plans tab's editor pane and a card detail modal can all be looking

@@ -185,6 +185,13 @@ export function tempDir(): Promise<string> {
   return invoke("temp_dir");
 }
 
+/// The home folder of whoever runs the desktop app. Where a Companion's
+/// folder browser starts when it adds a workspace; the desk's own picker
+/// is the OS dialog, which starts there by itself.
+export function homeDir(): Promise<string> {
+  return invoke("home_dir");
+}
+
 /// The Files tab's directory explorer. Every one of these takes the
 /// workspace ROOT alongside its target and the host refuses anything
 /// that resolves outside it -- see fileviewer.rs. One `list_directory`
@@ -301,6 +308,16 @@ export function getWorkspaceSettings(): Promise<WorkspaceSettingsRecord[]> {
 /// leaves this window.
 export function setWorkspaceSettings(workspaceId: string, patch: WorkspaceSettingsPatch): Promise<void> {
   return invoke("set_workspace_settings", { workspaceId, patch });
+}
+
+/// Adds a workspace made of settings alone -- a name, usually a folder --
+/// with no pages, which is what the desk's own + makes before anything is
+/// opened in it. The host mints the id and answers with the new record;
+/// every window hears it as `workspaces-synced`. The Companion's way to add
+/// one: the desk's own goes through its layout save, which a Device is
+/// refused (docs/adr/0006).
+export function addWorkspace(settings: WorkspaceSettingsPatch): Promise<WorkspaceSettingsRecord> {
+  return invoke("add_workspace", { settings });
 }
 
 /// Where every workspace currently is: workspace id -> window label, with

@@ -597,6 +597,66 @@ fn trust_and_layout_commands_are_refused_before_any_forwarding() {
     assert_eq!(stand_in.received(), vec![], "a refused command reached the stand-in");
 }
 
+/// ADR 0006: a Device changes a workspace's settings, and adds a
+/// workspace, through commands of their own -- never through the desk's
+/// layout saves. On one connection the settings commands reach the desk
+/// and come back answered, the layout-saving ones are refused, and the
+/// desk sees the first kind only.
+#[test]
+fn the_workspace_settings_commands_reach_the_desk_and_the_layout_saves_do_not() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    let stand_in = StandIn::answering(workstation.open_forwarding(), serde_json::json!({"id": "ws-new"}));
+
+    let settings: Vec<(&str, serde_json::Value)> = vec![
+        ("get_workspace_settings", serde_json::json!({})),
+        (
+            "set_workspace_settings",
+            serde_json::json!({"workspaceId": "w1", "patch": {"color": "#a78bfa", "autoCommit": null}}),
+        ),
+        (
+            "add_workspace",
+            serde_json::json!({"settings": {"name": "weather-station", "rootPath": "/Users/me/code/weather-station"}}),
+        ),
+    ];
+    for (command, args) in &settings {
+        match connection
+            .request(&Request::InvokeDesktop { command: (*command).into(), args: args.clone() }, SOON)
+            .unwrap()
+        {
+            Response::DesktopResult { value, error } => {
+                assert_eq!(error, None, "{command}");
+                assert_eq!(value, Some(serde_json::json!({"id": "ws-new"})), "{command}");
+            }
+            other => panic!("{command} was answered {other:?}"),
+        }
+    }
+
+    for command in ["set_workspaces_state", "set_file_tabs", "set_board_tabs", "set_card_tabs"] {
+        match connection
+            .request(&Request::InvokeDesktop { command: command.into(), args: serde_json::json!({}) }, SOON)
+            .unwrap()
+        {
+            Response::Error { message } => {
+                assert!(message.contains("may not invoke") && message.contains(command), "{command}: {message}");
+            }
+            other => panic!("{command} was answered {other:?}"),
+        }
+    }
+
+    let expected: Vec<(String, serde_json::Value)> =
+        settings.iter().map(|(command, args)| ((*command).to_string(), args.clone())).collect();
+    eventually("the desk saw the settings commands, whole and in order", || stand_in.received() == expected);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(stand_in.received(), expected, "a layout-saving command reached the desk");
+}
+
 /// An unknown command name is refused.
 #[test]
 fn an_unknown_command_name_is_refused() {
