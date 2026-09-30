@@ -1327,6 +1327,10 @@ export function agentProfiles(): Promise<
     headlessArgs: string;
     modelFlag: string;
     models: string[];
+    /// Optional because a host built before effort (v56) does not send
+    /// them -- the same reason `AgentProfileInfo` has them optional.
+    effortFlag?: string;
+    efforts?: string[];
     failurePatterns: string[];
     failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;

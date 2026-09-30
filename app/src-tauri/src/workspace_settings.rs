@@ -31,7 +31,7 @@
 use crate::config::Workspace;
 use crate::session::{WorkspacesData, WorkspacesState};
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Where things are on the desk's screen: what a Companion never writes.
 /// The keys are config.json's (camelCase), which are also the wire's.
@@ -209,13 +209,15 @@ pub fn set_workspace_settings(
     patch: Map<String, Value>,
     app_handle: AppHandle,
     window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
-    write_workspace_settings(&app_handle, window.label(), &workspace_id, &patch)
+    let origin = crate::forwarding::origin(&window, &request);
+    write_workspace_settings(&app_handle, &origin, &workspace_id, &patch)
 }
 
 /// The body of `set_workspace_settings`, apart from the window that asked:
-/// a caller with no window of its own -- a forwarded Companion call --
-/// names its origin instead.
+/// a Device's forwarded call is announced under
+/// `forwarding::FORWARDED_ORIGIN`, so every desk window adopts it.
 ///
 /// A workspace the host does not hold is a no-op, not an error. The one
 /// way the desk gets here is a window that has not yet adopted another
@@ -239,7 +241,10 @@ pub(crate) fn write_workspace_settings(
         (guard.clone(), record)
     };
     crate::session::persist_current(app, &data).map_err(|e| e.to_string())?;
-    let _ = app.emit(
+    // Offered to Devices as well: a phone showing this workspace's
+    // settings has to see a change made at the desk.
+    let _ = crate::forwarding::emit(
+        app,
         "workspace-settings-synced",
         WorkspaceSettingsSync { origin: origin.to_string(), record },
     );

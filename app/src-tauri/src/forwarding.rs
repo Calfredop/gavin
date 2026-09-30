@@ -43,6 +43,28 @@ const DISPATCH_BUDGET: Duration = Duration::from_secs(60);
 /// previous daemon cannot register itself over the live one.
 static FORWARDING_EPOCH: AtomicU64 = AtomicU64::new(0);
 
+/// The header `dispatch` puts on every forwarded call, so a command can
+/// tell a Device's call from its own window's.
+const FORWARDED_HEADER: &str = "gavin-forwarded";
+
+/// The origin a Device's write is announced under. A forwarded call runs
+/// through a desk window's webview (`dispatch`), so the window a command
+/// is handed is that desk window -- and announcing the write under its
+/// label would make it ignore the write as its own echo, and never show
+/// what the phone did. No desk window has this label; the bundle's
+/// window shim reports it (`app/companion/src/companion/remote/window.ts`).
+pub const FORWARDED_ORIGIN: &str = "companion";
+
+/// Who made a write, for the `*-synced` events every window adopts from:
+/// the window's label, or `FORWARDED_ORIGIN` for a Device's call.
+pub fn origin<R: Runtime>(window: &tauri::Window<R>, request: &tauri::ipc::Request<'_>) -> String {
+    if request.headers().contains_key(FORWARDED_HEADER) {
+        FORWARDED_ORIGIN.to_string()
+    } else {
+        window.label().to_string()
+    }
+}
+
 /// Managed state: the live forwarding writer, the channel that offers
 /// events to its owning thread, and the attention snapshot a Device's
 /// GetAttention reads (ADR 0005).
@@ -161,13 +183,15 @@ pub fn dispatch<R: Runtime>(
     .expect("static invoke URL");
 
     let (tx, rx) = mpsc::sync_channel(1);
+    let mut headers = tauri::http::HeaderMap::new();
+    headers.insert(FORWARDED_HEADER, tauri::http::HeaderValue::from_static("1"));
     let request = InvokeRequest {
         cmd: command.to_string(),
         callback: CallbackFn(0),
         error: CallbackFn(1),
         url,
         body: InvokeBody::Json(args),
-        headers: Default::default(),
+        headers,
         invoke_key: app.invoke_key().to_string(),
     };
     webview.as_ref().clone().on_message(
@@ -366,11 +390,16 @@ mod tests {
         hits.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    #[tauri::command]
+    fn ping_origin(window: tauri::Window<tauri::test::MockRuntime>, request: tauri::ipc::Request<'_>) -> String {
+        origin(&window, &request)
+    }
+
     fn mock_app_with(hits: Arc<AtomicUsize>) -> (tauri::App<tauri::test::MockRuntime>, tauri::WebviewWindow<tauri::test::MockRuntime>) {
         let app = mock_builder()
             .manage(hits)
             .manage(Forwarding::default())
-            .invoke_handler(tauri::generate_handler![ping_forward, ping_counter])
+            .invoke_handler(tauri::generate_handler![ping_forward, ping_counter, ping_origin])
             .build(mock_context(noop_assets()))
             .expect("mock app");
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -426,6 +455,37 @@ mod tests {
         let echoed = dispatch(&handle, "ping_forward", serde_json::json!({"value": "desk"}))
             .expect("ping_forward");
         assert_eq!(echoed, serde_json::json!("pong:desk"));
+    }
+
+    /// A Device's write is announced under an origin no desk window has.
+    /// Under the dispatching window's own label, that window would drop
+    /// the announcement as its own echo and never show what the phone did.
+    #[test]
+    fn a_forwarded_call_has_an_origin_no_desk_window_has() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (app, webview) = mock_app_with(hits);
+        let handle = app.handle().clone();
+
+        let from_the_desk = get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "ping_origin".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: invoke_url(),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("webview invoke")
+        .deserialize::<String>()
+        .unwrap();
+        assert_eq!(from_the_desk, "main");
+
+        let from_a_device = dispatch(&handle, "ping_origin", serde_json::json!({})).expect("forward dispatch");
+        assert_eq!(from_a_device, serde_json::json!(FORWARDED_ORIGIN));
+        assert_ne!(FORWARDED_ORIGIN, "main");
     }
 
     /// `emit` offers the event on the forwarding channel, which the

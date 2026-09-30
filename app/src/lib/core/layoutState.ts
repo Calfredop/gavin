@@ -1574,92 +1574,43 @@ export async function bootstrap(): Promise<void> {
     })
     .catch(() => {});
 
-  // The agent profile table: static Rust data, so one fetch is enough.
-  // Best-effort like the rest -- resolveAgentConfig falls back to
-  // claude-code's defaults if this never arrives.
-  //
-  // Published TWICE on purpose. The table lands first because every
-  // panel needs a command and a flag immediately, and the catalogue
-  // behind it can cost a subprocess; the second set folds the discovered
-  // names into the same rows. Waiting for both would put the whole agent
-  // config behind a CLI that may not answer for fifteen seconds, which
-  // is far worse than a picker that grows.
-  //
-  // What a panel mounted in between sees, and why it is the harmless
-  // order: a stored model the first table does not list reads as a
-  // Custom one and draws the text box, then becomes a selected row when
-  // the catalogue lands. Wrong-then-right, never right-then-wrong -- and
-  // a catalogue that never answers leaves the first set standing, which
-  // is exactly the picker gavin had before this existed.
-  void backend
-    .agentProfiles()
-    .then((profiles) => {
-      agentProfilesStore.set(profiles);
-      return backend
-        .agentModelCatalog()
-        .then((catalog) => agentProfilesStore.set(mergeDiscoveredModels(profiles, catalog)))
-        .catch(() => {});
+  // Another writer's change to an app-wide setting -- another window, or a
+  // Companion (`app-settings-synced`). Every store is read again rather
+  // than patched: the event names no setting, and the host's copy is the
+  // one to converge on. Own echo ignored: this window already shows what
+  // it wrote. Up before the first read, so a change made while that read
+  // is out is not lost.
+  unlisteners.push(
+    await listen<{ origin: string }>("app-settings-synced", (event) => {
+      if (event.payload.origin === currentWindowLabel()) return;
+      void reloadAppSettings();
     })
-    .catch(() => {});
+  );
+
+  void loadAgentProfiles();
 
   void backend
     .mcpFormats()
     .then((formats) => mcpFormatsStore.set(formats))
     .catch(() => {});
 
-  void backend
-    .getAgentModelDefaults()
-    .then((models) => agentModelDefaultsStore.set(models))
-    .catch(() => {});
-
-  // Normalized on the way in, not just on the way out: config.json is a
-  // file a user can edit, and a size xterm cannot render must read as "no
-  // setting" rather than reaching a Terminal.
-  void backend
-    .getTerminalFontSize()
-    .then((size) => terminalFontSizeDefault.set(normalizeTerminalFontSize(size)))
-    .catch(() => {});
-
-  void backend
-    .getCustomResumeArgs()
-    .then((args) => customResumeArgsDefault.set(args))
-    .catch(() => {});
-
-  // Normalized on the way in for the same reason: config.json is a file a
-  // user can edit, and anything that is not a boolean has to read as "no
-  // setting" so a workspace still falls through to gavin's default.
-  void backend
-    .getAutoCommit()
-    .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
-    .catch(() => {});
-
-  // Normalized on the way in for the same reason: config.json is a file a
-  // user can edit, and anything that is not a boolean has to read as "no
-  // setting" so a workspace still falls through to gavin's default
-  // (require review).
-  void backend
-    .getRequireReview()
-    .then((enabled) => requireReviewDefault.set(normalizeRequireReview(enabled)))
-    .catch(() => {});
-
-  // Normalized on the way in for the same reason, and it matters more
-  // here: this one decides what a fresh `.gitignore` says, and a garbled
-  // value must read as "nobody chose" rather than as "do not track".
-  void backend
-    .getGitTrackingDefault()
-    .then((tracked) => gitTrackingDefault.set(normalizeGitTracking(tracked)))
-    .catch(() => {});
-
-  // Best-effort like the rest: an empty table reads as "no level names
-  // an agent", which is exactly how every card behaved before the
-  // complexity field existed, so a failed fetch degrades to the old
-  // behaviour rather than to a wrong agent.
-  void backend
-    .getAgentDefaults()
-    .then((defaults) => agentDefaultsStore.set({ ...EMPTY_AGENT_DEFAULTS, ...defaults }))
-    .catch(() => {});
+  void loadAppSettings();
 
   void pollForStartupState();
+}
+
+/// Everything `loadAppSettings` reads, plus the three app-wide settings
+/// whose stores live in their own modules: the theme, the pause cycle and
+/// the launch wall. Those modules import this one, so they are reached
+/// lazily -- statically, the imports would close a cycle. What a window
+/// runs when another writer changed a setting, and what a Companion runs
+/// to draw its settings.
+export async function reloadAppSettings(): Promise<void> {
+  const [{ loadAgentPause }, { loadLaunchConfig }] = await Promise.all([
+    import("$lib/agents/agentPauseState"),
+    import("$lib/agents/launchQueue"),
+  ]);
+  await Promise.all([loadAppSettings(), loadAgentPause(), loadLaunchConfig(), themeState.reload()]);
 }
 
 export function teardown(): void {
@@ -2034,6 +1985,94 @@ export const headroomDefault = writable<boolean | null>(null);
 /// never loaded says every inheriting workspace is off, and the daemon
 /// would stop the Headroom every running agent is talking through.
 export const headroomDefaultKnown = writable(false);
+
+/// The agent profile table: static Rust data, so one fetch is enough.
+/// Best-effort like the rest -- resolveAgentConfig falls back to
+/// claude-code's defaults if this never arrives.
+///
+/// Published TWICE on purpose. The table lands first because every
+/// panel needs a command and a flag immediately, and the catalogue
+/// behind it can cost a subprocess; the second set folds the discovered
+/// names into the same rows. Waiting for both would put the whole agent
+/// config behind a CLI that may not answer for fifteen seconds, which
+/// is far worse than a picker that grows.
+///
+/// What a panel mounted in between sees, and why it is the harmless
+/// order: a stored model the first table does not list reads as a
+/// Custom one and draws the text box, then becomes a selected row when
+/// the catalogue lands. Wrong-then-right, never right-then-wrong -- and
+/// a catalogue that never answers leaves the first set standing, which
+/// is exactly the picker gavin had before this existed.
+export function loadAgentProfiles(): Promise<void> {
+  return backend
+    .agentProfiles()
+    .then((profiles) => {
+      agentProfilesStore.set(profiles);
+      return backend
+        .agentModelCatalog()
+        .then((catalog) => agentProfilesStore.set(mergeDiscoveredModels(profiles, catalog)))
+        .catch(() => {});
+    })
+    .catch(() => {});
+}
+
+/// Every app-wide setting this module keeps a store of, read from the
+/// host: at bootstrap, again whenever another writer announces a change
+/// (`app-settings-synced`), and by a Companion, whose settings surface
+/// draws these same stores. Each read is best-effort and stands alone, so
+/// one that fails leaves its store as it was and the rest still land.
+export async function loadAppSettings(): Promise<void> {
+  await Promise.all([
+    backend
+      .getAgentModelDefaults()
+      .then((models) => agentModelDefaultsStore.set(models))
+      .catch(() => {}),
+
+    // Normalized on the way in, not just on the way out: config.json is a
+    // file a user can edit, and a size xterm cannot render must read as
+    // "no setting" rather than reaching a Terminal.
+    backend
+      .getTerminalFontSize()
+      .then((size) => terminalFontSizeDefault.set(normalizeTerminalFontSize(size)))
+      .catch(() => {}),
+
+    backend
+      .getCustomResumeArgs()
+      .then((args) => customResumeArgsDefault.set(args))
+      .catch(() => {}),
+
+    // Normalized on the way in for the same reason: config.json is a file
+    // a user can edit, and anything that is not a boolean has to read as
+    // "no setting" so a workspace still falls through to gavin's default.
+    backend
+      .getAutoCommit()
+      .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
+      .catch(() => {}),
+
+    // The same, falling through to gavin's own default (require review).
+    backend
+      .getRequireReview()
+      .then((enabled) => requireReviewDefault.set(normalizeRequireReview(enabled)))
+      .catch(() => {}),
+
+    // The same, and it matters more here: this one decides what a fresh
+    // `.gitignore` says, and a garbled value must read as "nobody chose"
+    // rather than as "do not track".
+    backend
+      .getGitTrackingDefault()
+      .then((tracked) => gitTrackingDefault.set(normalizeGitTracking(tracked)))
+      .catch(() => {}),
+
+    // An empty table reads as "no level names an agent", which is exactly
+    // how every card behaved before the complexity field existed, so a
+    // failed fetch degrades to the old behaviour rather than to a wrong
+    // agent.
+    backend
+      .getAgentDefaults()
+      .then((defaults) => agentDefaultsStore.set({ ...EMPTY_AGENT_DEFAULTS, ...defaults }))
+      .catch(() => {}),
+  ]);
+}
 
 export const newCardAutoCommit = derived(
   [layoutState, autoCommitDefault],

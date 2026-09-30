@@ -211,6 +211,8 @@ pub fn get_agent_pause(state: State<AgentPause>) -> Option<crate::config::AgentP
 pub fn set_agent_pause(
     agent_pause: Option<crate::config::AgentPauseConfig>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -267,7 +269,9 @@ pub fn set_agent_pause(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 /// The app-wide launch wall, `None` until somebody edits it (the shipped
 /// `LaunchConfig::default()` then applies). Tauri-managed and persisted
@@ -294,6 +298,8 @@ pub fn get_launch_config(state: State<LaunchSettings>) -> Option<crate::config::
 pub fn set_launch_config(
     launch: Option<crate::config::LaunchConfig>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -350,7 +356,9 @@ pub fn set_launch_config(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 /// The app-wide resume flag for the `custom` agent profile (v38), `None`
@@ -377,6 +385,8 @@ pub fn get_custom_resume_args(state: State<CustomResumeArgs>) -> Option<String> 
 pub fn set_custom_resume_args(
     custom_resume_args: Option<String>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -434,7 +444,9 @@ pub fn set_custom_resume_args(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 /// The human's Superpowers word per workspace root. Same carry-through
@@ -493,6 +505,8 @@ pub fn get_agent_defaults(state: State<AgentDefaults>) -> crate::config::AgentDe
 pub fn set_agent_defaults(
     agent_defaults: crate::config::AgentDefaultsConfig,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -549,7 +563,9 @@ pub fn set_agent_defaults(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1611,12 +1627,43 @@ pub struct WorkspacesSync {
 }
 
 impl WorkspacesSync {
+    /// A write under `origin`: a window's label, or a Device's
+    /// (`forwarding::origin`).
+    pub(crate) fn new(origin: String, data: WorkspacesData) -> Self {
+        Self { origin, data }
+    }
+
     /// A write nobody's window made: a link resolving an ssh workspace's
     /// sessions on its host (`remote.rs`). The origin names the host, so
     /// no window mistakes it for its own echo and every window adopts it.
     pub(crate) fn from_remote(host: &str, data: WorkspacesData) -> Self {
         Self { origin: format!("remote:{host}"), data }
     }
+}
+
+/// One writer's change to an app-wide setting, addressed to every window
+/// and every Device. It names no setting and carries no value: each
+/// listener re-reads the app settings it holds (`loadAppSettings` in
+/// layoutState.ts), so there is one event for a dozen setters and no
+/// per-key payload for a window to apply wrongly.
+///
+/// Without it every window keeps the value it read at startup, which a
+/// Companion makes visible: a default model changed from the phone would be
+/// stored, and the desk would go on launching the old one -- and the next
+/// wholesale save from the desk (`set_agent_defaults`) would write its
+/// stale copy back over the phone's.
+#[derive(Clone, serde::Serialize)]
+pub struct AppSettingsSync {
+    origin: String,
+}
+
+/// Tells every window, and every Device, that an app-wide setting changed.
+/// `origin` is the writer, so it can ignore its own echo -- which for a
+/// Device's forwarded call is `forwarding::FORWARDED_ORIGIN`, never the
+/// label of the desk window that dispatched it.
+pub(crate) fn announce_app_settings(app_handle: &AppHandle, window: &tauri::Window, request: &tauri::ipc::Request<'_>) {
+    let origin = crate::forwarding::origin(window, request);
+    let _ = crate::forwarding::emit(app_handle, "app-settings-synced", AppSettingsSync { origin });
 }
 
 /// Persists `data` with every other managed setting as it currently is,
@@ -1658,6 +1705,8 @@ pub fn set_agent_model_default(
     profile_id: String,
     model: String,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -1726,7 +1775,9 @@ pub fn set_agent_model_default(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 /// What the human has told gavin about Superpowers, keyed by workspace
@@ -1828,6 +1879,8 @@ pub fn get_theme_pref(state: State<ThemePref>) -> Option<String> {
 pub fn set_theme_pref(
     theme: Option<String>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -1891,7 +1944,9 @@ pub fn set_theme_pref(
         launch,
         custom_resume_args,
     )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1911,6 +1966,8 @@ pub fn get_terminal_font_size(state: State<TerminalFontSize>) -> Option<u16> {
 pub fn set_terminal_font_size(
     size: Option<u16>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -1974,7 +2031,9 @@ pub fn set_terminal_font_size(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1991,6 +2050,8 @@ pub fn get_auto_commit(state: State<AutoCommit>) -> Option<bool> {
 pub fn set_auto_commit(
     enabled: Option<bool>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -2051,7 +2112,9 @@ pub fn set_auto_commit(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2068,6 +2131,8 @@ pub fn get_require_review(state: State<RequireReviewDefaults>) -> Option<bool> {
 pub fn set_require_review(
     enabled: Option<bool>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -2128,7 +2193,9 @@ pub fn set_require_review(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2150,6 +2217,8 @@ pub fn get_headroom_default(state: State<HeadroomDefaults>) -> Option<bool> {
 pub fn set_headroom_default(
     enabled: Option<bool>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -2215,6 +2284,7 @@ pub fn set_headroom_default(
     // them is showing Settings. The window holding the app's duties is
     // the one that tells the daemon, and it is often not that one.
     let _ = app_handle.emit("headroom-default-changed", enabled);
+    announce_app_settings(&app_handle, &window, &request);
     Ok(())
 }
 
@@ -2236,6 +2306,8 @@ pub fn get_git_tracking_default(state: State<GitTrackingDefaults>) -> Option<boo
 pub fn set_git_tracking_default(
     tracked: Option<bool>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -2296,7 +2368,9 @@ pub fn set_git_tracking_default(
         launch,
         custom_resume_args,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    announce_app_settings(&app_handle, &window, &request);
+    Ok(())
 }
 
 #[tauri::command]
