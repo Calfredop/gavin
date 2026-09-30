@@ -105,3 +105,8 @@ app/src/main/assets/bundles
 app/src/debug/assets/bundles
 # The dev bundle-signing key's public half, embedded by scripts/sync.mjs
 app/src/debug/assets/dev-bundle-key.json
+
+# The Play upload key and its passwords (app/build.gradle)
+keystore.properties
+*.jks
+*.keystore
