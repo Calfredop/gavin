@@ -382,7 +382,14 @@ select {
      rather than in +page.svelte because the peeking sidebar -- the
      overlay a click on the collapsed rail floats over the content --
      has to be exactly that wide from a different file. Two literals
-     would drift the moment one of them was tuned. */
+     would drift the moment one of them was tuned.
+
+     It is not a free choice: the corner over this column holds the
+     platform's window controls and the sidebar's own buttons, and
+     nothing in that row compresses. 200px is 76px of macOS traffic
+     lights plus the 124px of chrome beside them
+     (--window-corner-chrome, +page.svelte), which is where the sum
+     lives and where the wider controls off macOS override this. */
   --sidebar-width: 200px;
   /* And how wide it is collapsed: one row's chip and the padding around
      it, and nothing else. The floor used to be the window controls --

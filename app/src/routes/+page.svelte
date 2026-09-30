@@ -734,9 +734,27 @@
        collapsed. */
     --window-corner-width: 76px;
     --window-corner-min: var(--window-corner-width);
+    /* And what that corner carries BESIDE the platform's controls, which
+       the open column has to hold as well -- it IS that column's top
+       row. sidebar-actions' 4px lead, its four IconButtons (a 14px glyph
+       in 5px of padding inside a 1px border = 26px each) and the 2px
+       between them, the corner's own 6px trailing pad, and 4px left over
+       to grab the window by: 120px of chrome and a handle.
+
+       Nothing in that row compresses -- the group is `flex: 0 0 auto`
+       after a spacer with `min-width: 0` -- so a column narrower than
+       this does not squeeze the handle, it hangs the sidebar's buttons
+       out over the view beside the column. appHeader.test.ts adds the
+       parts up against this number. */
+    --window-corner-chrome: 124px;
   }
   .app.wide-window-controls {
     --window-corner-width: 96px;
+    /* theme.css's 200px is 76 + 124: the traffic lights plus that
+       chrome. These controls are 20px wider, so the column has to be
+       too, or the same chrome no longer fits in the same row. Stated as
+       the sum rather than 220px so the two can never drift. */
+    --sidebar-width: calc(var(--window-corner-width) + var(--window-corner-chrome));
   }
   /* The shell clips its own corners only where the native surface under
      it is rounded to the same value: macOS, whose content layer
@@ -752,11 +770,11 @@
   }
   .app.sidebar-collapsed {
     --rail-width: var(--rail-collapsed-width);
-    /* Controls + the expand toggle that stays in the corner (IconButton
-       at size 14 with 5px pad each side = 24px, plus sidebar-actions'
-       4px lead and the corner's own 6px trailing pad). Open / Search
-       stand down; this is the only chrome that survives the collapse. */
-    --window-corner-min: calc(var(--window-corner-width) + 34px);
+    /* Controls + the expand toggle that stays in the corner (one 26px
+       IconButton, plus sidebar-actions' 4px lead and the corner's own
+       6px trailing pad). Open / SSH / Search stand down; this is the
+       only chrome that survives the collapse. */
+    --window-corner-min: calc(var(--window-corner-width) + 36px);
   }
   .body {
     flex: 1 1 auto;

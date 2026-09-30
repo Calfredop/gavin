@@ -52,10 +52,24 @@ const METRICS = [
   "--tab-divider",
 ];
 
+/// theme.css's --sidebar-width, mirrored here for the reason METRICS is:
+/// the stylesheet is unreadable from this suite. It is how wide the open
+/// column is on macOS, and the corner over that column has to fit inside
+/// it -- which is the sum the last test in this file adds up.
+const SIDEBAR_WIDTH = 200;
+
 function source(name: string): string {
   const text = SOURCES[name] ?? route(name);
   if (!text) throw new Error(`no source for ${name}`);
   return text;
+}
+
+/// A px length, or a bare 0 -- which is what a shorthand writes for a
+/// side that has no padding.
+function px(value: string): number {
+  const n = /^(-?\d+(?:\.\d+)?)(px)?$/.exec(value.trim());
+  if (!n || (!n[2] && Number(n[1]) !== 0)) throw new Error(`not a px length: ${value}`);
+  return Number(n[1]);
 }
 
 /// The declarations of one rule, by exact selector, as a trimmed map.
@@ -286,8 +300,9 @@ describe("the window's corner and the rail under it", () => {
     expect(SIDEBAR).not.toContain("rail-chrome");
     expect(SIDEBAR).not.toContain('aria-label="Expand sidebar"');
     // Room for the surviving toggle: controls + one IconButton strip.
+    // The last test in this describe adds that 36px up from the parts.
     expect(rule(PAGE, ".app.sidebar-collapsed")["--window-corner-min"]).toBe(
-      "calc(var(--window-corner-width) + 34px)"
+      "calc(var(--window-corner-width) + 36px)"
     );
     expect(rule(TITLE_BAR, ".corner").width).toBe(
       "max(var(--window-corner-min), var(--rail-width))"
@@ -307,6 +322,64 @@ describe("the window's corner and the rail under it", () => {
       expect(text).not.toContain("<SidebarActions />");
       expect(text).not.toMatch(/<CornerOverhang \/>\s*<span class="divider">/);
     }
+  });
+
+  // The corner IS the open column's top row, so everything it carries
+  // has to fit inside that column's width -- and nothing in it will
+  // compress to make that true: the sidebar's group is `flex: 0 0 auto`
+  // after a spacer with `min-width: 0`, so a surplus does not squeeze
+  // the drag handle, it hangs those buttons out over the view beside the
+  // column. That is exactly what 200px did off macOS, where the
+  // platform's controls are 20px wider than the traffic lights the
+  // literal was measured against.
+  //
+  // So the widths are added up here rather than read off a screenshot:
+  // every part is a declaration in one of these four files, and the one
+  // that is not (theme.css's 200px) is mirrored above.
+  it("keeps everything the corner holds inside the column, on every platform", () => {
+    // What one of the sidebar's buttons measures. box-sizing is
+    // border-box, so the glyph, the padding around it and the
+    // transparent border that reserves the focus ring ARE its width --
+    // the border is the part that is easy to forget and is worth 2px a
+    // button.
+    const iconButton = rule(source("IconButton.svelte"), ".icon-button");
+    expect(iconButton["box-sizing"]).toBe("border-box");
+    const padX = px(iconButton.padding.split(/\s+/)[1]);
+    const border = px(iconButton.border.split(/\s+/)[0]);
+    const glyphs = [...ACTIONS.matchAll(/size=\{(\d+)\}/g)].map((m) => Number(m[1]));
+    expect(glyphs.length).toBeGreaterThan(0);
+    expect(new Set(glyphs).size).toBe(1);
+    const button = glyphs[0] + 2 * padX + 2 * border;
+
+    const actions = rule(ACTIONS, ".sidebar-actions");
+    const lead = px(actions["padding-left"]);
+    const gap = px(actions.gap);
+    const trailing = px(rule(TITLE_BAR, ".corner")["padding-right"]);
+    const buttons = ACTIONS.match(/<IconButton/g)?.length ?? 0;
+    expect(buttons).toBe(4);
+
+    // Open: all four of them, then the corner's own trailing pad.
+    const open = lead + buttons * button + (buttons - 1) * gap + trailing;
+    // Collapsed: Open / Search / SSH stand down and the toggle stays.
+    const collapsed = lead + button + trailing;
+
+    // What the column has to leave beside the platform's controls, at
+    // both widths. Strictly greater than the open row, because the
+    // leftover between the two groups is the only thing left to grab the
+    // window by.
+    const chrome = px(rule(PAGE, ".app")["--window-corner-chrome"]);
+    expect(chrome).toBeGreaterThan(open);
+    expect(rule(PAGE, ".app.sidebar-collapsed")["--window-corner-min"]).toBe(
+      `calc(var(--window-corner-width) + ${collapsed}px)`
+    );
+
+    // macOS keeps theme.css's literal, which is that sum exactly; off
+    // macOS the column follows the wider controls instead of staying at
+    // a width measured for narrower ones.
+    expect(px(rule(PAGE, ".app")["--window-corner-width"]) + chrome).toBe(SIDEBAR_WIDTH);
+    expect(rule(PAGE, ".app.wide-window-controls")["--sidebar-width"]).toBe(
+      "calc(var(--window-corner-width) + var(--window-corner-chrome))"
+    );
   });
 });
 
