@@ -4,8 +4,12 @@ import {
   initialView,
   loadView,
   openWorkspace,
+  placeFiles,
   reconcileView,
   saveView,
+  showSurface,
+  SURFACE_LABELS,
+  SURFACES,
   viewKey,
   type ViewStorage,
 } from "$companion/state/viewState";
@@ -47,7 +51,69 @@ describe("where the Companion is looking", () => {
   });
 });
 
+describe("a workspace's surfaces", () => {
+  it("are the board, Git and Files, each with its name on the strip", () => {
+    expect(SURFACES).toEqual(["board", "git", "files"]);
+    expect(SURFACES.map((s) => SURFACE_LABELS[s])).toEqual(["Board", "Git", "Files"]);
+  });
+
+  it("switch within the open workspace, keeping where Files was", () => {
+    const inFiles = placeFiles(showSurface(openWorkspace(initialView(), "w1"), "files"), {
+      dir: "/w1/src",
+      file: "/w1/src/a.ts",
+    });
+    expect(showSurface(inFiles, "git")).toEqual({
+      workspaceId: "w1",
+      surface: "git",
+      files: { dir: "/w1/src", file: "/w1/src/a.ts" },
+    });
+  });
+
+  it("are nothing to switch at the workspace list", () => {
+    expect(showSurface(initialView(), "git")).toEqual(initialView());
+    expect(placeFiles(initialView(), { dir: "/x", file: null })).toEqual(initialView());
+  });
+
+  it("start again on the board, and Files at nowhere, in another workspace", () => {
+    const inFiles = placeFiles(showSurface(openWorkspace(initialView(), "w1"), "files"), {
+      dir: "/w1/src",
+      file: null,
+    });
+    expect(openWorkspace(inFiles, "w2")).toEqual({ workspaceId: "w2", surface: "board" });
+    expect(backToWorkspaces(inFiles)).toEqual(initialView());
+    expect(reconcileView(inFiles, ["w2"])).toEqual(initialView());
+  });
+});
+
 describe("remembering it on the Device", () => {
+  it("keeps the surface and where Files was", () => {
+    const storage = memoryStorage();
+    const view = placeFiles(showSurface(openWorkspace(initialView(), "w1"), "files"), {
+      dir: "/w1/docs",
+      file: "/w1/docs/guide.md",
+    });
+    saveView(storage, "demo", view);
+    expect(loadView(storage, "demo")).toEqual(view);
+  });
+
+  it.each([
+    ["not an object", 7],
+    ["a folder that is not a string", { dir: 3, file: null }],
+    ["a file that is neither a path nor null", { dir: "/w1", file: 3 }],
+  ])("forgets a Files place that is %s, and keeps the rest", (_name, files) => {
+    const storage = memoryStorage({
+      [viewKey("demo")]: JSON.stringify({ workspaceId: "w1", surface: "files", files }),
+    });
+    expect(loadView(storage, "demo")).toEqual({ workspaceId: "w1", surface: "files" });
+  });
+
+  it("forgets a Files place stored with no workspace open", () => {
+    const storage = memoryStorage({
+      [viewKey("demo")]: JSON.stringify({ workspaceId: null, surface: "board", files: { dir: "/x", file: null } }),
+    });
+    expect(loadView(storage, "demo")).toEqual(initialView());
+  });
+
   it("is kept per Workstation", () => {
     expect(viewKey("demo")).toBe("gavin.companion.view.demo");
     expect(viewKey("mac-studio")).not.toBe(viewKey("demo"));

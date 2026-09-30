@@ -89,7 +89,89 @@ describe("the board surface", () => {
   });
 });
 
+describe("the Git surface", () => {
+  const PARTS = [
+    "companion/surfaces/PhoneGit.svelte",
+    "companion/surfaces/PhoneGitChanges.svelte",
+    "companion/surfaces/PhoneGitDiff.svelte",
+    "companion/surfaces/PhoneGitBranches.svelte",
+  ];
+  const git = () => PARTS.map((part) => codeOf(companionSource(part))).join("\n");
+
+  it.each(["GitCommitBox", "GitFileRow", "GitDiffUnified", "GitOpBar"])("draws the desktop's own %s", (component) => {
+    expect(git()).toContain(`import ${component} from "$lib/git/${component}.svelte"`);
+    expect(git()).toContain(`<${component}`);
+  });
+
+  it("acts through the desktop's own Git state, and nothing of its own", () => {
+    for (const part of PARTS) {
+      const text = codeOf(companionSource(part));
+      expect(text).not.toMatch(/\bbackend\.git\w+\(/);
+      expect(text).not.toContain("invoke(");
+    }
+    expect(git()).toContain('from "$lib/git/gitState"');
+  });
+
+  // The desk's tab and its columns save their widths, folds, diff layout
+  // and worktree choice with `setGitViewPrefs` -- the desk's layout, which
+  // the Companion never writes.
+  it.each(["GitHubView", "GitToolbar", "GitNav", "GitChanges", "GitDiff", "GitWorktreeSwitcher"])(
+    "leaves the desk's %s at the desk",
+    (component) => {
+      expect(git()).not.toMatch(new RegExp(`import ${component} from`));
+    }
+  );
+
+  it.each(["setGitViewPrefs", "switchWorktree", "setGraphAll", "commitViaAgent", "openMergeTool"])(
+    "never reaches for %s",
+    (action) => {
+      expect(git()).not.toMatch(new RegExp(`\\b${action}\\b`));
+    }
+  );
+
+  it("always reads the workspace's root, never a worktree the desk chose", () => {
+    const frame = codeOf(companionSource("companion/surfaces/PhoneGit.svelte"));
+    expect(frame).toContain("ensureGitView(id, target)");
+    expect(frame).toContain("workspace.rootPath");
+    expect(frame).not.toContain("gitView");
+  });
+});
+
+describe("the Files surface", () => {
+  const files = () => codeOf(companionSource("companion/surfaces/PhoneFiles.svelte"));
+
+  it("opens a file in the desktop's own editor, with no way to open it at the desk", () => {
+    expect(files()).toContain('import FileEditor from "$lib/files/FileEditor.svelte"');
+    expect(files()).toMatch(/<FileEditor[^>]*canOpenExternally=\{false\}/);
+  });
+
+  it("walks the desktop's own tree state", () => {
+    expect(files()).toContain('from "$lib/files/fileTree"');
+    expect(files()).toContain("withChildren(");
+  });
+
+  it.each(["openPathExternally", "revealPathExternally", "saveFilesMemory", "openFileInSplit", "confirmDestructive"])(
+    "never reaches for %s",
+    (action) => {
+      expect(files()).not.toMatch(new RegExp(`\\b${action}\\b`));
+    }
+  );
+});
+
 describe("the page", () => {
+  it("can name a Git op however the shell serves it", () => {
+    // gitState.ts calls crypto.randomUUID for every commit, push,
+    // checkout and merge, and a page outside a secure context has none.
+    expect(codeOf(companionSource("routes/+layout.svelte"))).toContain("ensureRandomUUID();");
+  });
+
+  it("switches surfaces through the Companion's own view", () => {
+    const page = codeOf(companionSource("routes/+page.svelte"));
+    expect(page).toContain("<SurfaceTabs");
+    expect(page).toContain("onPick={showSurface}");
+    expect(page).toContain("onPlace={placeFiles}");
+  });
+
   const page = () => codeOf(companionSource("routes/+page.svelte"));
 
   it("connects through the bundle's own way in", () => {

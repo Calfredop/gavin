@@ -30,8 +30,12 @@ import {
   initialView,
   loadView,
   openWorkspace as openWorkspaceIn,
+  placeFiles as placeFilesIn,
   reconcileView,
   saveView,
+  showSurface as showSurfaceIn,
+  type FilesPlace,
+  type Surface,
   type ViewState,
   type ViewStorage,
 } from "$companion/state/viewState";
@@ -86,6 +90,23 @@ export function openWorkspace(workspaceId: string): void {
 export function showWorkspaces(): void {
   landingStore.set(null);
   show(backToWorkspaces(get(viewStore)));
+}
+
+/// Another surface of the open workspace. A landing is the board's to
+/// reveal, and leaving the board is going somewhere else.
+export function showSurface(surface: Surface): void {
+  const current = get(viewStore);
+  if (current.workspaceId === null || current.surface === surface) return;
+  landingStore.set(null);
+  show(showSurfaceIn(current, surface));
+}
+
+/// Where the Files surface has got to, remembered with the rest of the
+/// view.
+export function placeFiles(place: FilesPlace): void {
+  const current = get(viewStore);
+  if (current.files?.dir === place.dir && current.files.file === place.file) return;
+  show(placeFilesIn(current, place));
 }
 
 /// Lands where the shell asked: the item's workspace, with its card (or

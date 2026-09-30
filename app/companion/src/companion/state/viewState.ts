@@ -9,14 +9,29 @@
 // Pure: the store that holds a view and the page that draws it are
 // elsewhere (workstation.ts).
 
-/// The surfaces a workspace opens on. One, until the others are built.
-export const SURFACES = ["board"] as const;
+/// The surfaces a workspace opens on, in the order the strip shows them.
+export const SURFACES = ["board", "git", "files"] as const;
 export type Surface = (typeof SURFACES)[number];
+
+export const SURFACE_LABELS: Record<Surface, string> = {
+  board: "Board",
+  git: "Git",
+  files: "Files",
+};
+
+/// Where the Files surface is: the folder on screen, and the file open
+/// over it, if one is.
+export interface FilesPlace {
+  dir: string;
+  file: string | null;
+}
 
 export interface ViewState {
   /// The workspace whose surface is open, or null at the workspace list.
   workspaceId: string | null;
   surface: Surface;
+  /// Absent until the Files surface has been somewhere in this workspace.
+  files?: FilesPlace;
 }
 
 /// The part of `Storage` this needs, so a suite can hand it a map and a
@@ -30,12 +45,26 @@ export function initialView(): ViewState {
   return { workspaceId: null, surface: "board" };
 }
 
-export function openWorkspace(view: ViewState, workspaceId: string): ViewState {
-  return { ...view, workspaceId, surface: "board" };
+/// Opens a workspace on its board. Where Files was is another
+/// workspace's place, so it is not carried in.
+export function openWorkspace(_view: ViewState, workspaceId: string): ViewState {
+  return { workspaceId, surface: "board" };
 }
 
-export function backToWorkspaces(view: ViewState): ViewState {
-  return { ...view, workspaceId: null };
+export function backToWorkspaces(_view: ViewState): ViewState {
+  return { workspaceId: null, surface: "board" };
+}
+
+/// Switches the open workspace to another of its surfaces, keeping the
+/// place each one was at.
+export function showSurface(view: ViewState, surface: Surface): ViewState {
+  if (view.workspaceId === null) return view;
+  return { ...view, surface };
+}
+
+export function placeFiles(view: ViewState, place: FilesPlace): ViewState {
+  if (view.workspaceId === null) return view;
+  return { ...view, files: { dir: place.dir, file: place.file } };
 }
 
 /// The view, given the workspaces the Workstation has NOW. One removed at
@@ -53,6 +82,14 @@ function isSurface(value: unknown): value is Surface {
   return (SURFACES as readonly unknown[]).includes(value);
 }
 
+/// A stored Files place, or null for anything that is not one.
+function readPlace(value: unknown): FilesPlace | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { dir, file } = value as Record<string, unknown>;
+  if (typeof dir !== "string" || (file !== null && typeof file !== "string")) return null;
+  return { dir, file };
+}
+
 /// What was remembered for a Workstation, or the workspace list when
 /// nothing usable was. Never throws: storage on a phone can be absent,
 /// full, or written by a bundle newer than this one.
@@ -66,14 +103,16 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     return initialView();
   }
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return initialView();
-  const { workspaceId, surface } = stored as Record<string, unknown>;
+  const { workspaceId, surface, files } = stored as Record<string, unknown>;
   if (workspaceId !== null && typeof workspaceId !== "string") return initialView();
-  return {
+  const view: ViewState = {
     workspaceId: workspaceId ?? null,
     // A surface this bundle does not have is one a newer bundle saved;
     // the workspace is still the right one to open.
     surface: isSurface(surface) ? surface : "board",
   };
+  const place = view.workspaceId === null ? null : readPlace(files);
+  return place ? { ...view, files: place } : view;
 }
 
 /// Best-effort: a view that could not be saved costs the human one tap

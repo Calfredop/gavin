@@ -173,13 +173,52 @@ demo lacks, that is where it shows.
 
 ## What is here, and what is not
 
-The first surface: the workspace list and one workspace's board, to read. The
-board draws the desktop's own `BoardCard` with no workspace id, which is the
-card the desk draws in previews — no Run, no session jump, no drag. An inbox
-item lands on its card (above). How this bundle reaches a phone — built and
-signed by the desktop build, served by the Workstation, verified and cached
-by the shell — is the shell's README's ("Served bundles").
+The workspace list, and three surfaces for an open workspace, switched by the
+strip under the header (`SurfaceTabs`); the view remembers which, and where
+Files was, on the Device.
 
-Opening a card, acting on one, sessions and terminals, rails, Git, files and
-settings are the cards that follow (companion-26 to -30), each extending the
-Demo Workstation to match.
+**Board**, to read. It draws the desktop's own `BoardCard` with no workspace
+id, which is the card the desk draws in previews — no Run, no session jump, no
+drag. An inbox item lands on its card (above).
+
+**Git** (`PhoneGit*.svelte` over `phoneGit.ts`): the branch and where it
+stands, Fetch, Pull and Push, the op bar with its progress, the error and
+merge-in-progress banners; Changes (stage, unstage, a file's diff as a page of
+its own, the commit box) and Branches (switch, merge after a question, a new
+branch, a branch only the remote has). The state and every action are the
+desktop's `gitState.ts`, and the op bar, file rows, commit box and diff lines
+are the desktop's components. The desk's `GitHubView` is not: its columns,
+section folds, diff layout and worktree choice are saved with
+`setGitViewPrefs`, which is the desk's layout — so the phone always reads the
+workspace's root checkout.
+
+**Files** (`PhoneFiles.svelte` over `phoneFiles.ts`): one folder at a time
+over the desktop's tree state (`fileTree.ts`), and a file opened in the
+desktop's own `FileEditor`, which reads, autosaves and watches as at the desk,
+with `canOpenExternally={false}`. What the desk hands to another application
+(a picture, a binary) the phone says it cannot show. No create, rename or
+trash yet.
+
+Where a desktop component was wrong for a thumb it became responsive where it
+lives, under media queries a window with a mouse never matches: `GitFileRow`
+shows its actions without hover and at a fingertip's size, `GitCommitBox` and
+`CodeMirrorView` keep text at 16px so iOS does not zoom into a field,
+`FileEditor`'s mode switch is thumb-sized, and at a phone's width
+`GitDiffUnified` wraps long lines and `MarkdownToolbar` scrolls in one row.
+
+The desktop's Git actions name every op with `crypto.randomUUID`, which a
+page has only in a secure context; `remote/randomUUID.ts` gives the page one
+where the shell's origin (iOS's `gavin-bundle://`) may not count as secure.
+
+`seam/gitActions.test.ts` and `seam/fileActions.test.ts` hold each action's
+channel traffic, and hold everything the two surfaces send against the
+daemon's own Remote role table (`testing/remoteTable.ts` reads
+`protocol::remote_command_table`).
+
+How this bundle reaches a phone — built and signed by the desktop build,
+served by the Workstation, verified and cached by the shell — is the shell's
+README's ("Served bundles").
+
+Acting on cards, sessions and terminals, rails, and settings are the cards
+that follow (companion-26 to -28 and -30), each extending the Demo
+Workstation to match.

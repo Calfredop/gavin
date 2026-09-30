@@ -10,12 +10,17 @@
     connectWorkstation,
     landing,
     openWorkspace,
+    placeFiles,
     returnToHub,
+    showSurface,
     showWorkspaces,
     view,
   } from "$companion/state/workstation";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
+  import PhoneFiles from "$companion/surfaces/PhoneFiles.svelte";
+  import PhoneGit from "$companion/surfaces/PhoneGit.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import SurfaceTabs from "$companion/surfaces/SurfaceTabs.svelte";
   import WorkspaceList from "$companion/surfaces/WorkspaceList.svelte";
 
   // Counted, never compared: a connection that finishes after the page
@@ -77,9 +82,17 @@
           onBack={showWorkspaces}
           tag={ready.workstation.demo ? "demo" : null}
         />
-        <p class="scope">Board · view only</p>
-        {#key open.id}
-          <PhoneBoard workspace={open} landing={$landing} />
+        <SurfaceTabs current={$view.surface} onPick={showSurface} />
+        <!-- Keyed on the root as well: a workspace pointed at another
+             folder at the desk is another repository and another tree. -->
+        {#key `${open.id}\u0000${open.rootPath ?? ""}`}
+          {#if $view.surface === "git"}
+            <PhoneGit workspace={open} />
+          {:else if $view.surface === "files"}
+            <PhoneFiles workspace={open} place={$view.files} onPlace={placeFiles} />
+          {:else}
+            <PhoneBoard workspace={open} landing={$landing} />
+          {/if}
         {/key}
       {:else}
         <PhoneHeader
@@ -119,16 +132,6 @@
     min-height: 0;
     padding-bottom: env(safe-area-inset-bottom);
     overflow-y: auto;
-  }
-  .scope {
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 6px max(14px, env(safe-area-inset-right)) 6px max(14px, env(safe-area-inset-left));
-    border-bottom: 1px solid var(--border);
-    color: var(--text-subtle);
-    font-size: 0.6875rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
   .note {
     margin: 0;
