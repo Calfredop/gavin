@@ -42,6 +42,7 @@ function fakeConnection() {
   const closed = new Promise<string>((resolve) => (settle = resolve));
   const connection: Connection = {
     request: vi.fn(),
+    onPush: () => () => {},
     close: vi.fn((why = "closed") => {
       if (isClosed) return;
       isClosed = true;
@@ -206,6 +207,42 @@ describe("the live hub", () => {
 
     expect(b.deps.onNotHeld).not.toHaveBeenCalled();
     expect(b.deps.onLapsed).not.toHaveBeenCalled();
+  });
+
+  it("lends a visit the connection to a Workstation, and says when it comes and goes", async () => {
+    const b = bench();
+    b.willConnect(STUDIO);
+    b.willConnect(STUDIO, async () => ({ state: "ready", items: [] }));
+    const lent: Array<[string, Connection | null]> = [];
+    const hub = createLiveHub({
+      ...b.deps,
+      reconnect: { floorMs: 100, ceilingMs: 1000, settledMs: 10_000 },
+      onConnection: (id, connection) => lent.push([id, connection]),
+    });
+    hub.setPaired([STUDIO, LAPTOP]);
+    expect(hub.connectionOf(STUDIO.id)).toBeNull();
+    hub.setAllowed(true);
+    await settle();
+    const first = b.connectionsTo(STUDIO)[0].connection;
+    expect(hub.connectionOf(STUDIO.id)).toBe(first);
+    expect(hub.connectionOf(LAPTOP.id)).toBeNull();
+    expect(hub.connectionOf("ws-unknown")).toBeNull();
+    expect(lent).toEqual([[STUDIO.id, first]]);
+
+    // A drop: gone, then the reconnect's connection is the one lent.
+    b.connectionsTo(STUDIO)[0].drop("The Workstation ended the connection.");
+    await settle();
+    expect(hub.connectionOf(STUDIO.id)).toBeNull();
+    expect(lent[1]).toEqual([STUDIO.id, null]);
+    await vi.advanceTimersByTimeAsync(100);
+    const second = b.connectionsTo(STUDIO)[1].connection;
+    expect(hub.connectionOf(STUDIO.id)).toBe(second);
+    expect(lent[2]).toEqual([STUDIO.id, second]);
+
+    // The Unlock ending takes it back.
+    hub.setAllowed(false);
+    expect(hub.connectionOf(STUDIO.id)).toBeNull();
+    expect(lent[3]).toEqual([STUDIO.id, null]);
   });
 
   it("takes a connection whose ask fails for dead, and reconnects", async () => {

@@ -3,6 +3,7 @@ import { createDemoWorkstation } from "$companion/demo/workstation";
 import { DEMO_PACE_MS } from "$companion/state/entry";
 import type { HubWorkstation } from "$shell/hub/workstations";
 import type { VisitEndpoint } from "$shell/visit/visit";
+import { workstationEndpoint, type ConnectionSource } from "$shell/visit/workstationEndpoint";
 
 /// Runs `fn` every `ms`; returns how to stop it.
 export type Every = (fn: () => void, ms: number) => () => void;
@@ -26,10 +27,16 @@ export function demoEndpoint(schedule: Every = every): VisitEndpoint {
   };
 }
 
-/// The end a Workstation's visit reaches. Only the Demo Workstation for
-/// now; a paired Workstation's end is its encrypted connection
-/// (companion-21 and companion-23).
-export function endpointFor(workstation: HubWorkstation, schedule: Every = every): VisitEndpoint {
+/// The end a Workstation's visit reaches: the Demo Workstation hosted
+/// here, or a paired Workstation over the live hub's connection to it
+/// (`sourceFor`), through the daemon's forwarding to its desktop app.
+export function endpointFor(
+  workstation: HubWorkstation,
+  sourceFor: ((id: string) => ConnectionSource) | null,
+  schedule: Every = every,
+  log?: (line: string) => void
+): VisitEndpoint {
   if (workstation.demo) return demoEndpoint(schedule);
-  throw new Error(`no way to reach ${workstation.name} yet`);
+  if (!sourceFor) throw new Error(`no way to reach ${workstation.name} from here`);
+  return workstationEndpoint(sourceFor(workstation.id), { log });
 }

@@ -1,11 +1,12 @@
 # `app/companion-shell/` — the Companion shell
 
 The store app: a Capacitor project for iOS and Android (ADR 0002). It holds
-the Workstations hub and hosts each Workstation's UI bundle — for now the
-Demo Workstation's, embedded in the binary. Read the spec's "The Companion
-shell" section and ADR 0005's "Store compliance" first; `CONTEXT.md` has the
-words. The bundle it runs is `app/companion/` (its README has the channel's
-message set).
+the Workstations hub and hosts each Workstation's UI bundle — the Demo
+Workstation's, embedded in the binary, and each paired Workstation's own,
+served by it and run only once its signature checks (below, "Served
+bundles"). Read the spec's "The Companion shell" section and ADR 0005's
+"Store compliance" first; `CONTEXT.md` has the words. The bundle it runs
+is `app/companion/` (its README has the channel's message set).
 
 Two webviews, and the line between them is the point:
 
@@ -43,10 +44,10 @@ cd app/companion-shell && npm ci
 From `app/`:
 
 ```
-npm run companion-shell:test    # vitest: the channel, visits, pairing, the core, the Unlock, the live hub, the probe's verdict
+npm run companion-shell:test    # vitest: the channel, visits, pairing, the core, the Unlock, the live hub, served bundles, the probe's verdict
 npm run companion-shell:check   # svelte-check, the desktop's library included
 npm run companion-shell:build   # the hub and the Companion core, in companion-shell/build
-npm run companion-shell:sync    # both builds, then `cap sync` and the embedded bundles
+npm run companion-shell:sync    # both builds, then `cap sync`, the embedded bundles and the dev key's public half
 npm run companion-shell:dev     # the hub in a browser on :1440 (it cannot open a Workstation there)
 ```
 
@@ -55,7 +56,8 @@ npm run companion-shell:dev     # the hub in a browser on :1440 (it cannot open 
 `rustup target add wasm32-unknown-unknown`.
 
 `companion-shell:sync -- ios` (or `android`) syncs one platform; `--probe`
-embeds the probe bundle on iOS too (see below). Then open
+embeds the probe bundle on iOS too (see below); `--release` leaves the dev
+key's public half out (see "Served bundles"). Then open
 `ios/App/App.xcodeproj` in Xcode or `android/` in Android Studio and run, or
 build from a terminal the way `scripts/probe.sh` does.
 
@@ -94,7 +96,7 @@ boot simulators of their own.
 | | iOS | Android |
 |---|---|---|
 | origin | `gavin-bundle://<workstation>`, a `WKURLSchemeHandler` | `https://<workstation>.bundle.gavin.invalid`, answered in `shouldInterceptRequest` |
-| files | only the Workstation's folder under `Bundles/`; nothing outside it | only `assets/bundles/<workstation>/`; every other request refused (403) |
+| files | one bundle's folder — embedded under `Bundles/`, or the cache's `bundles/<hash>/` — and nothing outside it | the same: `assets/bundles/<name>/`, or `<noBackupFilesDir>/bundles/<hash>/`; every other request refused (403) |
 | bridge | none: a plain `WKWebView` | none: a plain `WebView`, no `addJavascriptInterface` anywhere |
 | channel | `gavinChannel` script-message handler; accepted only from the main frame at the bundle's origin | `addWebMessageListener` with the bundle's origin; accepted only from the main frame |
 | policy | a Content-Security-Policy on every page: `connect-src 'self'`, scripts only its own files and its own inline scripts (hashed at serve time) | the same policy (`BundleFiles.policy`, kept in step with `BundleSchemeHandler.policy`) |
@@ -280,7 +282,8 @@ the core's rule, `ws://` only to this machine or this network.
 - **Android's back gesture closes the bundle** and returns to the hub; the
   channel has no message for going back inside a bundle.
 - **The first open on a cold emulator takes seconds**: a new process and its
-  first WebView.
+  first WebView. The first open of a paired Workstation takes the fetch
+  as well; after that its bundle is in the cache.
 - **A debug build logs every plugin answer**, the Noise key's included:
   Capacitor's own bridge logging, on in debug builds only. A release build
   logs nothing of it.
@@ -309,6 +312,99 @@ the core's rule, `ws://` only to this machine or this network.
   build's WebView can be asked directly: `adb -s <serial> forward
   tcp:9333 localabstract:webview_devtools_remote_<pid>`, then the page's
   DevTools socket from `http://127.0.0.1:9333/json`.
+
+## Served bundles
+
+ADR 0005: a paired Workstation's UI is a bundle built from the same
+commit as its desktop app, signed by the publisher, shipped inside the
+desktop app and served to the phone over its connection; the shell runs
+it only once the signature checks against a key it pins. The contract —
+the archive (a plain ustar tar), the manifest, the signing message, the
+chunk cap — is `crates/protocol/src/companion_bundle.rs`, and
+`test-fixtures/companion-bundle/` pins the desktop's Node packer and
+signer (`app/src-tauri/companion-bundle.mjs`), the Rust verifier and the
+core in the shell to one another.
+
+**Opening a paired Workstation** (`src/shell/bundle/`, `visit.ts`):
+
+1. **Ask** (`GetCompanionBundle`, API version 1) over the live hub's
+   connection to it — the same connection the hub asks what is waiting
+   on. The answer is the manifest: the archive's SHA-256 (also the name
+   it is cached under), its size, an Ed25519 signature and the key it
+   verifies under. A desktop that carries no bundle says so; a desktop
+   that is not running is the same state as for attention.
+2. **Trust** (`trust.ts`), on the manifest alone, before a byte is
+   fetched: the signer must be a key this build trusts. A **store build**
+   trusts the pinned publisher key (`publisherKey.ts`) and nothing else.
+   A **debug build** also trusts the dev key made on the developer's
+   machine, whose public half the native side hands over only in a DEBUG
+   build (`BundleView.devPublisherKey`). Until a publisher key is pinned
+   a store build trusts no key at all, and refuses every bundle, saying
+   so.
+3. **Cache** (`bundle.ts`): a hash the native store already holds
+   (`BundleView.installed`) opens at once. A Workstation that upgraded
+   names a new hash, which is fetched; the old one is pruned once every
+   paired Workstation's last-seen bundle is known (`store.ts`).
+4. **Fetch** (`fetch.ts`): the archive a chunk at a time, 256 KiB each,
+   base64 in the daemon's own protocol, through the daemon's forwarding
+   to the desktop app that embeds it. A desktop that changes its bundle
+   mid-fetch is caught by the manifest every answer carries.
+5. **Verify and unpack**, in the Companion core (`bundle-open`): the
+   archive is the one the manifest names and the signature checks under
+   one of the trusted keys, then the files come out — base64, which is
+   what the native store takes. A bad signature, an untrusted key or a
+   changed archive is refused in the verifier's own words, and nothing
+   is installed.
+6. **Install** (`BundleView.install`): the native side writes the files
+   into a folder beside the cache and moves it into place in one step,
+   under the hash, checking every path again; a bundle half installed
+   is never served. iOS keeps the cache under `Library/Application
+   Support/bundles/`, excluded from backup; Android under
+   `noBackupFilesDir/bundles/`. `open` then names the hash, and the view
+   serves that folder at the Workstation's own origin exactly as it
+   serves an embedded one.
+
+The hub shows each step under the Workstation's name while it opens.
+
+**The channel to a paired Workstation** (`visit/workstationEndpoint.ts`):
+`invoke` becomes `InvokeDesktop` on the connection and its
+`DesktopResult` the `result`; `listen` becomes `ListenDesktop` once per
+event name and a desktop event the daemon pushes (`DesktopEvent`) an
+`event` to each listener of that name; `unlisten` ends the wire's listen
+with the last listener. A call made while the connection is down is
+answered with an error the bundle shows, never dropped, and every event
+still listened for is listened for again when the connection comes back
+— the daemon keeps a listen per connection. The connection itself hands
+pushes to whoever listens (`Connection.onPush`); with nobody listening
+they wait for the next request to pass over, as before.
+
+**Landing.** Tapping an inbox item opens its Workstation with the item's
+workspace and target in the channel's first `capabilities` answer
+(`landing`), once. The bundle opens that workspace's board on the card
+the item names — or the card whose agent is the session it names — and
+outlines it.
+
+**The dev key.** `app/src-tauri/stage-companion.mjs` (run by every
+`tauri dev` and `tauri build`) makes an Ed25519 key under gavin's data
+directory the first time it needs one (`companion-dev-bundle-key.json`,
+beside the daemon's databases, one per machine), and signs the dev
+desktop's bundle with it; `scripts/sync.mjs` embeds its public half —
+on Android in the `debug` source set, on iOS under `Bundles/`, where
+`--release` leaves it out and the native side reads it only in a DEBUG
+build. Never the seed. A release desktop is signed with the publisher
+key instead (`docs/RELEASING.md`, "The Companion bundle key").
+
+```
+GAVIN_E2E=1 npx vitest run src/shell/bundle/bundle.e2e.ts   # also in scripts/pair.sh node
+```
+
+runs the shell's own modules and the real core in Node against a real
+daemon behind a real Relay (`scripts/devstack.mjs`), whose desk serves a
+bundle the desktop's packer and signer made: fetched in chunks, verified,
+installed, then a cache hit; refused by a store build's trust and with a
+bad signature; fetched again after an upgrade; and the channel's `invoke`
+and `listen` over the same connection, through forwarding, to the desk —
+a layout-saving command refused by the daemon's table on the way.
 
 ## The Unlock and the live hub
 
@@ -378,8 +474,11 @@ front it must ask again and both answer again.
 ## What is here, and what is not
 
 The hub lists the paired Workstations, live while unlocked, with the
-combined inbox, and the Demo Workstation, and opens the Demo's embedded
-bundle. The Device's keys (companion-20), pairing (companion-21), and the
-Unlock and the live hub (companion-22) are here. Served, signed, cached
-bundles -- opening a paired Workstation, and landing on an inbox item --
-are companion-23's.
+combined inbox, and the Demo Workstation; it opens the Demo's embedded
+bundle and each paired Workstation's served one. The Device's keys
+(companion-20), pairing (companion-21), the Unlock and the live hub
+(companion-22), and served, signed, cached bundles with landing on an
+inbox item (companion-23) are here. What the bundle can do once open is
+the bundle's own README's: a board to read, with the rest of the surfaces
+(companion-26 to -30) still to come. Notifications and the Push gateway
+are not here either.

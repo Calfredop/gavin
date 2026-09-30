@@ -33,6 +33,9 @@ function scriptedCore(dials = [{ url: "ws://127.0.0.1:8443", hello: '{"role":"de
 } {
   const started: Array<Record<string, unknown>> = [];
   const exchange: CoreExchange = {
+    bundleOpen: () => {
+      throw new Error("no bundle here");
+    },
     pairingStart(options) {
       started.push({ ...options });
       return { send: new Uint8Array([1]), dials, workstationKey: KEPT.workstationKey };

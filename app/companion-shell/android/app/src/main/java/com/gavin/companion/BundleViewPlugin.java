@@ -6,6 +6,7 @@ import android.content.pm.ApplicationInfo;
 import android.net.Uri;
 import android.util.Log;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -36,18 +37,20 @@ public class BundleViewPlugin extends Plugin implements BundleChannel.Events {
     public void open(PluginCall call) {
         Integer session = call.getInt("session");
         String workstation = call.getString("workstation");
-        if (session == null || session <= 0 || workstation == null) {
-            call.reject("open needs a session and a workstation");
+        String bundle = call.getString("bundle");
+        if (session == null || session <= 0 || workstation == null || bundle == null) {
+            call.reject("open needs a session, a workstation and a bundle");
             return;
         }
-        if (!BundleFiles.carries(getContext().getAssets(), workstation)) {
+        if (!BundleFiles.isHost(workstation) || BundleFiles.source(getContext(), bundle) == null) {
             call.reject("this app carries no UI for “" + workstation + "”");
             return;
         }
         BundleChannel.opening(session);
         Intent intent = new Intent(getContext(), BundleActivity.class)
             .putExtra(BundleActivity.EXTRA_SESSION, (int) session)
-            .putExtra(BundleActivity.EXTRA_WORKSTATION, workstation);
+            .putExtra(BundleActivity.EXTRA_WORKSTATION, workstation)
+            .putExtra(BundleActivity.EXTRA_BUNDLE, bundle);
         getActivity().runOnUiThread(() -> {
             getActivity().startActivity(intent);
             // Answered once the activity is on its way, before its page
@@ -97,6 +100,67 @@ public class BundleViewPlugin extends Plugin implements BundleChannel.Events {
         } catch (ActivityNotFoundException e) {
             call.reject("nothing on this phone opens " + raw);
         }
+    }
+
+    // The cache (companion-23). Only the shell's web layer reaches these,
+    // and `install` only with the files of a bundle the Companion core
+    // verified and unpacked.
+
+    @PluginMethod
+    public void installed(PluginCall call) {
+        String hash = call.getString("hash");
+        if (hash == null) {
+            call.reject("installed needs a hash");
+            return;
+        }
+        JSObject answer = new JSObject();
+        answer.put("installed", BundleCache.installed(getContext(), hash));
+        call.resolve(answer);
+    }
+
+    @PluginMethod
+    public void install(PluginCall call) {
+        String hash = call.getString("hash");
+        JSArray files = call.getArray("files");
+        if (hash == null || files == null) {
+            call.reject("install needs a hash and the files");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                BundleCache.install(getContext(), hash, files);
+                Log.i(BundleChannel.TAG, "installed bundle " + hash.substring(0, 12) + " (" + files.length() + " files)");
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("the bundle could not be installed: " + e.getMessage());
+            }
+        }, "gavin-bundle-install").start();
+    }
+
+    @PluginMethod
+    public void prune(PluginCall call) {
+        JSArray keep = call.getArray("keep");
+        java.util.Set<String> hashes = new java.util.HashSet<>();
+        if (keep != null) {
+            for (int i = 0; i < keep.length(); i++) {
+                String hash = keep.optString(i, null);
+                if (hash != null) hashes.add(hash);
+            }
+        }
+        new Thread(() -> {
+            BundleCache.prune(getContext(), hashes);
+            call.resolve();
+        }, "gavin-bundle-prune").start();
+    }
+
+    /** The dev key's public half, in a debuggable build; null otherwise. */
+    @PluginMethod
+    public void devPublisherKey(PluginCall call) {
+        JSObject answer = new JSObject();
+        String key = BundleCache.devPublisherKey(getContext());
+        if (key == null) answer.put("key", JSObject.NULL);
+        else answer.put("key", key);
+        call.resolve(answer);
     }
 
     /** Never true in a release build. */

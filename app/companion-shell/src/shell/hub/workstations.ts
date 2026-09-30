@@ -3,8 +3,9 @@
 // The Workstations this Device has paired with, each with its live state
 // while the Companion is unlocked (`hub/live.ts`), then the Demo
 // Workstation: it is built into the binary, needs no pairing, and is what
-// App Review explores (ADR 0005, Guideline 2.1(a)). Opening a paired
-// Workstation's UI is companion-23's.
+// App Review explores (ADR 0005, Guideline 2.1(a)). A paired Workstation
+// opens once it is ready: its desktop app is what serves its UI and
+// answers it (ADR 0003).
 import { DEMO } from "$companion/demo/sampleData";
 import { liveLabel, liveSummary, type LiveState, type LiveStateName } from "$shell/hub/live";
 import type { PairedWorkstation } from "$shell/hub/paired";
@@ -19,8 +20,8 @@ export interface HubWorkstation {
   /// The line under the name.
   summary: string;
   state: WorkstationState;
-  /// Whether tapping it opens its UI. Not yet for a paired one: there is
-  /// no connection to carry its bundle.
+  /// Whether tapping it opens its UI: the Demo always; a paired one when
+  /// it is ready, since its desktop app serves the bundle and answers it.
   openable: boolean;
 }
 
@@ -52,8 +53,7 @@ export function hubWorkstations(
         demo: false,
         summary: liveSummary(state),
         state: state.state,
-        // Its UI is served over its connection: companion-23.
-        openable: false,
+        openable: state.state === "ready",
       };
     }),
     DEMO_WORKSTATION,

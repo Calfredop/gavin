@@ -13,7 +13,12 @@
 #        live hub (src/shell/hub/hub.e2e.ts): one phone paired with two
 #        Workstations, one Unlock connecting both, a dropped connection
 #        back without a prompt, a desktop app that quit, a Workstation
-#        that left its Relay, and the Unlock ending on background.
+#        that left its Relay, and the Unlock ending on background. And
+#        the served bundle (src/shell/bundle/bundle.e2e.ts): a signed
+#        bundle fetched in chunks, verified, installed and then cached,
+#        refused by a store build's trust and with a bad signature,
+#        fetched again after an upgrade, and invoke and listen over the
+#        same connection through forwarding.
 # ios    Builds a DEBUG app, installs it fresh on the Simulator named, and
 #        pairs it for real. The desk shows a code; the app is launched with
 #        that code in place of a scan (a Simulator has no camera); the

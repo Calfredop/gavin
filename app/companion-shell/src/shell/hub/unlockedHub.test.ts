@@ -135,6 +135,9 @@ function workstations() {
     pairingStart: () => {
       throw new Error("no pairing here");
     },
+    bundleOpen: () => {
+      throw new Error("no bundle here");
+    },
     pairingReceive: () => [],
     pairingProve: () => [],
     connectStart: (o) => ({ send: new Uint8Array([1]), dials: o.relays.map((url) => ({ url, hello: "hello" })) }),
@@ -232,6 +235,35 @@ describe("the Unlock driving the hub", () => {
     expect(w.legsTo(STUDIO)).toHaveLength(2);
     expect(native.keys.unlock).toHaveBeenCalledTimes(1);
     expect(get(hub.live)[LAPTOP.id].state).toBe("ready");
+  });
+
+  it("lends a visit the connection to a Workstation, following drops, reconnects and the lock", async () => {
+    const { native, w, hub } = await started();
+    const source = hub.connectionSource(STUDIO.id);
+    const heard: Array<boolean> = [];
+    const stop = source.subscribe((c) => heard.push(c !== null));
+    const first = source.current();
+    expect(first).not.toBeNull();
+    expect(hub.connectionSource(LAPTOP.id).current()).not.toBe(first);
+
+    w.legsTo(STUDIO)[0].hangUp();
+    await settle();
+    expect(source.current()).toBeNull();
+    await vi.advanceTimersByTimeAsync(100);
+    const second = source.current();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    expect(heard).toEqual([false, true]);
+
+    native.emit("background");
+    await settle();
+    expect(source.current()).toBeNull();
+    expect(heard).toEqual([false, true, false]);
+    stop();
+    native.emit("foreground");
+    await settle();
+    expect(source.current()).not.toBeNull();
+    expect(heard).toEqual([false, true, false]);
   });
 
   it("stays locked when the owner dismisses the prompt, until they ask", async () => {

@@ -103,3 +103,5 @@ app/src/main/res/xml/config.xml
 # Workstation UI bundles embedded by scripts/sync.mjs
 app/src/main/assets/bundles
 app/src/debug/assets/bundles
+# The dev bundle-signing key's public half, embedded by scripts/sync.mjs
+app/src/debug/assets/dev-bundle-key.json

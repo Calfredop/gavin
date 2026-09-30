@@ -8,3 +8,17 @@ import { readFileSync } from "node:fs";
 export function coreWasm(): Uint8Array {
   return new Uint8Array(readFileSync(new URL("../../../static/companion-core.wasm", import.meta.url)));
 }
+
+/// `test-fixtures/companion-bundle/expected.json`: the bundle the Rust
+/// reader, the Node packer and this core are all held to.
+export function readFixture(): {
+  files: string[];
+  archiveSha256: string;
+  archiveBase64: string;
+  seed: string;
+  manifest: { hash: string; size: number; signature: string; signer: string; format: string; gavinVersion: string };
+} {
+  return JSON.parse(
+    readFileSync(new URL("../../../../../test-fixtures/companion-bundle/expected.json", import.meta.url), "utf8")
+  );
+}

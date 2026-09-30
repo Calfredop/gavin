@@ -49,6 +49,8 @@
   }: Props = $props();
 
   const opening = $derived(visit.status === "opening" ? visit.workstation.id : null);
+  /// What the visit is doing meanwhile: fetching the Workstation's UI.
+  const openingDetail = $derived(visit.status === "opening" ? visit.detail : null);
 </script>
 
 <main class="hub">
@@ -106,7 +108,9 @@
                 {opening === ws.id ? "Opening…" : stateLabel(ws.state)}
               </span>
             </span>
-            {#if ws.summary}
+            {#if opening === ws.id && openingDetail}
+              <span class="summary">{openingDetail}</span>
+            {:else if ws.summary}
               <span class="summary">{ws.summary}</span>
             {/if}
           </button>

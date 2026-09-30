@@ -16,129 +16,12 @@ import { get } from "svelte/store";
 import { loadCore, type CoreModule } from "$shell/core/core";
 import { combinedInbox } from "$shell/hub/inbox";
 import { keepPairing, type PairedWorkstation } from "$shell/hub/paired";
-import { createUnlockedHub, type UnlockedHub, type UnlockKeys } from "$shell/hub/unlockedHub";
+import { createUnlockedHub, type UnlockedHub } from "$shell/hub/unlockedHub";
 import type { LiveState } from "$shell/hub/live";
-import { fromHex, toHex, unlockMessage } from "$shell/keys/deviceKeys";
-import type { LifecyclePhase } from "$shell/native/deviceKeys";
-import { pair, type PairingKeys } from "$shell/pairing/pairing";
+import { pair } from "$shell/pairing/pairing";
 import { webSocketOpener, type OpenRelaySocket, type RelaySocket, type WebSocketConstructor } from "$shell/pairing/relaySocket";
 import { coreWasm } from "$shell/testing/coreWasm";
-
-interface App {
-  setItems(items: unknown[]): void;
-  quit(): void;
-}
-interface Stack {
-  desk: {
-    offer(): Promise<string>;
-    asked(timeoutMs?: number): Promise<{ device_id: string; name: string; sas: string }>;
-    confirm(deviceId: string): Promise<void>;
-    startApp(items?: unknown[]): Promise<App>;
-    remoteAccess(enabled: boolean): Promise<void>;
-  };
-  registered(qr: string): Promise<void>;
-  daemonLog(): string;
-  stop(): Promise<void>;
-}
-
-/// ECDSA's fixed-width `r || s`, as WebCrypto signs, in the ASN.1 DER a
-/// phone's hardware returns and the daemon reads.
-function p1363ToDer(signature: Uint8Array): Uint8Array {
-  const integer = (half: Uint8Array): number[] => {
-    let bytes = Array.from(half);
-    while (bytes.length > 1 && bytes[0] === 0) bytes = bytes.slice(1);
-    if (bytes[0] & 0x80) bytes = [0, ...bytes];
-    return [0x02, bytes.length, ...bytes];
-  };
-  const body = [...integer(signature.subarray(0, 32)), ...integer(signature.subarray(32))];
-  return new Uint8Array([0x30, body.length, ...body]);
-}
-
-/// A phone that can be a Device, whose hardware key signs a pairing when
-/// asked and a connection only under a held Unlock.
-async function softwarePhone() {
-  const pairKeys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  const hardwareKey = toHex(new Uint8Array(await crypto.subtle.exportKey("raw", pairKeys.publicKey)));
-  const noise = toHex(crypto.getRandomValues(new Uint8Array(32)));
-  const made = { hardwareKey, backing: "software-debug" as const, attestation: [] };
-  let created = false;
-  let held = false;
-  let listener: ((e: { phase: LifecyclePhase }) => void) | null = null;
-  const counts = { prompts: 0, silentSigns: 0 };
-
-  const signHash = async (handshakeHash: string): Promise<string> => {
-    const hash = fromHex(handshakeHash);
-    if (!hash || hash.length !== 32) throw Object.assign(new Error("bad hash"), { code: "bad-hash" });
-    const raw = new Uint8Array(
-      await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pairKeys.privateKey, unlockMessage(hash))
-    );
-    return toHex(p1363ToDer(raw));
-  };
-
-  const pairing: PairingKeys = {
-    status: async () => ({
-      platform: "ios",
-      passcodeSet: true,
-      hardwareKeystore: false,
-      softwareFallback: true,
-      keys: created ? { backing: "software-debug" } : null,
-      debugBuild: true,
-      checkRequested: false,
-    }),
-    createKeys: async () => {
-      created = true;
-      return made;
-    },
-    publicKeys: async () => made,
-    noiseKey: async () => ({ privateKey: noise }),
-    sign: async ({ handshakeHash }) => ({ signature: await signHash(handshakeHash) }),
-  };
-
-  const unlock: UnlockKeys = {
-    noiseKey: async () => ({ privateKey: noise }),
-    unlock: async () => {
-      counts.prompts += 1;
-      held = true;
-    },
-    signUnlocked: async ({ handshakeHash }) => {
-      if (!held) throw Object.assign(new Error("no Unlock is held"), { code: "locked" });
-      counts.silentSigns += 1;
-      return { signature: await signHash(handshakeHash) };
-    },
-    lock: async () => {
-      held = false;
-    },
-    unlockState: async () => ({ unlocked: held, foreground: true }),
-    addListener: async (_event, fn) => {
-      listener = fn;
-      return { remove: async () => void (listener = null) };
-    },
-  };
-
-  return {
-    pairing,
-    unlock,
-    counts,
-    /// The app's lifecycle, as the native side reports it -- having ended
-    /// its own Unlock first.
-    emit(phase: LifecyclePhase) {
-      if (phase !== "foreground") held = false;
-      listener?.({ phase });
-    },
-  };
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function until<T>(what: string, check: () => T | null | undefined | false, timeoutMs = 30_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = check();
-    if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await sleep(50);
-  }
-}
+import { softwarePhone, startStack, until, type App, type Stack } from "$shell/testing/e2ePhone";
 
 let studio: Stack;
 let laptop: Stack;
@@ -167,9 +50,7 @@ async function pairWith(stack: Stack, name: string): Promise<PairedWorkstation> 
 }
 
 beforeAll(async () => {
-  const devstack = new URL("../../../scripts/devstack.mjs", import.meta.url).href;
-  const { startDevStack } = (await import(/* @vite-ignore */ devstack)) as { startDevStack(): Promise<Stack> };
-  [studio, laptop] = await Promise.all([startDevStack(), startDevStack()]);
+  [studio, laptop] = await Promise.all([startStack(), startStack()]);
   core = await loadCore(coreWasm());
   phone = await softwarePhone();
 }, 90_000);

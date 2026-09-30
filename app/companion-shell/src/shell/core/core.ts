@@ -13,11 +13,12 @@
 // module afresh, for one pairing or one connection. A trap (a panic, on
 // that target) ends the exchange it happened in and nothing else, and no
 // state crosses from one exchange to the next.
+import type { BundleManifest } from "$shell/bundle/manifest";
 import { fromHex, toHex } from "$shell/keys/deviceKeys";
 
 /// Why the core stopped: `CoreError` in `crates/companion-core`, by name,
-/// plus `request` for a call it did not accept and `trapped` for a module
-/// that stopped running.
+/// plus `request` for a call it did not accept, `bundle` for a Companion
+/// bundle it refused, and `trapped` for a module that stopped running.
 export type CoreFailureKind =
   | "offer"
   | "entropy"
@@ -28,6 +29,7 @@ export type CoreFailureKind =
   | "not-ready"
   | "finished"
   | "request"
+  | "bundle"
   | "trapped";
 
 export class CoreError extends Error {
@@ -106,6 +108,19 @@ export type RelayReplyReading =
   | { reply: "refused"; reason: string; message: string }
   | { reply: "other" };
 
+/// One file of an opened bundle. `data` is base64: what the native store
+/// takes, so the web layer never re-encodes a bundle's worth of bytes.
+export interface BundleFile {
+  path: string;
+  data: string;
+}
+
+export interface OpenedBundle {
+  /// The manifest's hash: what the bundle is cached under.
+  hash: string;
+  files: BundleFile[];
+}
+
 export interface CoreExchange {
   pairingStart(options: {
     qr: string;
@@ -134,6 +149,12 @@ export interface CoreExchange {
   /// protocol, without its newline -- to the Workstation.
   connectSend(message: string): Uint8Array;
   relayReply(text: string): RelayReplyReading;
+  /// Verifies a fetched Companion bundle -- the archive is the one the
+  /// manifest names, signed by one of `trustedKeys` (hex) -- and unpacks
+  /// it. Throws a `bundle` `CoreError` with the verifier's own sentence
+  /// for one that is refused. Not an exchange, but it takes an instance
+  /// of its own like one: a bundle that traps the core traps nothing else.
+  bundleOpen(options: { archive: Uint8Array; manifest: BundleManifest; trustedKeys: string[] }): OpenedBundle;
 }
 
 export interface CoreModule {
@@ -227,6 +248,8 @@ function exchangeOver(exports: Exports): CoreExchange {
     connectProve: (signature) => events<ConnectEvent>(call({ op: "connect-prove", signature })),
     connectSend: (message) => bytes((call({ op: "connect-send", message }) as { bytes: string }).bytes),
     relayReply: (text) => call({ op: "relay-reply", text }) as RelayReplyReading,
+    bundleOpen: ({ archive, manifest, trustedKeys }) =>
+      call({ op: "bundle-open", archive: toHex(archive), manifest, trustedKeys }) as OpenedBundle,
   };
 }
 

@@ -5,8 +5,9 @@
 // crate's own tests' (`crates/companion-wasm`), and the whole pairing
 // against a real daemon is `scripts/pair.sh`'s.
 import { beforeAll, describe, expect, it } from "vitest";
+import { fromBase64 } from "$shell/bundle/fetch";
 import { CONNECT_ENTROPY, CoreError, loadCore, PAIRING_ENTROPY, type CoreModule } from "$shell/core/core";
-import { coreWasm } from "$shell/testing/coreWasm";
+import { coreWasm, readFixture } from "$shell/testing/coreWasm";
 
 const wasm = coreWasm();
 
@@ -158,6 +159,49 @@ describe("the Companion core in the shell", () => {
       expect(() => other.connectStart({ ...kept, workstationKey: "42".repeat(31) })).toThrow(
         expect.objectContaining({ kind: "offer" })
       );
+    });
+  });
+
+  describe("a bundle", () => {
+    // The fixture the Rust reader and the Node packer are pinned to:
+    // its archive, signed by the Node signer under the fixture's seed.
+    const fixture = readFixture();
+
+    function archiveBytes(): Uint8Array {
+      return fromBase64(fixture.archiveBase64);
+    }
+
+    it("opens under its signer into its files, base64", async () => {
+      const opened = (await core.exchange()).bundleOpen({
+        archive: archiveBytes(),
+        manifest: fixture.manifest,
+        trustedKeys: ["00".repeat(32), fixture.manifest.signer],
+      });
+      expect(opened.hash).toBe(fixture.manifest.hash);
+      expect(opened.files.map((f) => f.path)).toEqual(fixture.files);
+      const page = opened.files.find((f) => f.path === "index.html")!;
+      expect(atob(page.data)).toContain("<!doctype html>");
+      expect(opened.files.find((f) => f.path === "empty.txt")!.data).toBe("");
+    });
+
+    it("is refused under keys that did not sign it, with a bad signature, and when the archive changed", async () => {
+      const untrusted = await core.exchange();
+      expect(() =>
+        untrusted.bundleOpen({ archive: archiveBytes(), manifest: fixture.manifest, trustedKeys: ["00".repeat(32)] })
+      ).toThrow(expect.objectContaining({ kind: "bundle", message: expect.stringMatching(/does not trust/) }));
+
+      const forged = await core.exchange();
+      const signature = `${fixture.manifest.signature.slice(0, -2)}${fixture.manifest.signature.endsWith("00") ? "01" : "00"}`;
+      expect(() =>
+        forged.bundleOpen({ archive: archiveBytes(), manifest: { ...fixture.manifest, signature }, trustedKeys: [fixture.manifest.signer] })
+      ).toThrow(expect.objectContaining({ kind: "bundle", message: expect.stringMatching(/signature/) }));
+
+      const changed = archiveBytes();
+      changed[600] ^= 1;
+      const altered = await core.exchange();
+      expect(() =>
+        altered.bundleOpen({ archive: changed, manifest: fixture.manifest, trustedKeys: [fixture.manifest.signer] })
+      ).toThrow(expect.objectContaining({ kind: "bundle", message: expect.stringMatching(/not the one/) }));
     });
   });
 });

@@ -10,7 +10,7 @@
 import { writable, type Readable } from "svelte/store";
 import type { PluginListenerHandle } from "@capacitor/core";
 import { askAttention } from "$shell/connection/attention";
-import { connect, type ConnectionKeys } from "$shell/connection/connection";
+import { connect, type Connection, type ConnectionKeys } from "$shell/connection/connection";
 import type { CoreModule } from "$shell/core/core";
 import { errorCode } from "$shell/keys/deviceKeys";
 import type { LiveState } from "$shell/hub/live";
@@ -26,6 +26,7 @@ import {
   type UnlockEvent,
   type UnlockState,
 } from "$shell/unlock/unlock";
+import type { ConnectionSource } from "$shell/visit/workstationEndpoint";
 
 export type UnlockKeys = ConnectionKeys & Pick<UnlockPlugin, "unlock" | "lock" | "unlockState" | "addListener">;
 
@@ -45,6 +46,9 @@ export interface UnlockedHub {
   setPaired(records: PairedWorkstation[]): void;
   /// The human pressed Unlock.
   requestUnlock(): void;
+  /// Where a visit to a Workstation gets its connection: the one this
+  /// hub holds to it, as it comes and goes (companion-23).
+  connectionSource(id: string): ConnectionSource;
   /// Starts listening to the app's lifecycle, and asks at once if the app
   /// is in front with something to unlock.
   start(): Promise<void>;
@@ -61,6 +65,8 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
   let listening: PluginListenerHandle | null = null;
   /// What was last logged for each Workstation, so a log says changes.
   const logged = new Map<string, string>();
+  /// Who hears a Workstation's connection come and go, by id.
+  const connectionListeners = new Map<string, Set<(connection: Connection | null) => void>>();
 
   const hub = createLiveHub({
     connect: async (target, signal) => {
@@ -90,6 +96,9 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
         logged.set(id, line);
       }
       live.set(snapshot);
+    },
+    onConnection: (id, connection) => {
+      for (const listener of [...(connectionListeners.get(id) ?? [])]) listener(connection);
     },
     onNotHeld: () => dispatch({ type: "not-held" }),
     onLapsed: () => dispatch({ type: "lapsed" }),
@@ -156,6 +165,19 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
     },
 
     requestUnlock: () => dispatch({ type: "unlock-requested" }),
+
+    connectionSource: (id) => ({
+      current: () => hub.connectionOf(id),
+      subscribe(listener) {
+        const set = connectionListeners.get(id) ?? new Set();
+        set.add(listener);
+        connectionListeners.set(id, set);
+        return () => {
+          set.delete(listener);
+          if (set.size === 0) connectionListeners.delete(id);
+        };
+      },
+    }),
 
     async start() {
       listening = await deps.keys.addListener("lifecycle", (e) => {

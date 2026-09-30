@@ -26,6 +26,7 @@ import {
   readWorkstationMessage,
   type Capabilities,
   type ErrorCode,
+  type Landing,
 } from "$companion/channel/messages";
 import type { ChannelEndpoint } from "$companion/channel/port";
 
@@ -51,6 +52,11 @@ export interface ShellChannelOptions {
   origin: string;
   /// The Workstation this channel reaches, as `capabilities` names it.
   workstation: Capabilities["workstation"];
+  /// Where the bundle should land once open -- an inbox item's session
+  /// or card -- handed over in the first `capabilities` answer and then
+  /// forgotten, so a bundle that asks again (a reload) lands nowhere in
+  /// particular.
+  landing?: Landing | null;
   /// That Workstation's end of the channel.
   endpoint: ChannelEndpoint;
   acts: ShellActs;
@@ -81,6 +87,7 @@ export function isWebLink(url: string): boolean {
 
 export function createShellChannel(options: ShellChannelOptions): ShellChannel {
   const { origin, workstation, endpoint, acts, deliver, onDrop } = options;
+  let landing = options.landing ?? null;
   let closed = false;
 
   function toBundle(raw: string): void {
@@ -148,6 +155,10 @@ export function createShellChannel(options: ShellChannelOptions): ShellChannel {
             messages: [...MESSAGE_TYPES],
             workstation: { ...workstation },
           };
+          if (landing) {
+            answer.landing = landing;
+            landing = null;
+          }
           ok(message.id, answer);
           return;
         }

@@ -64,6 +64,8 @@ import java.util.List;
 public class BundleActivity extends AppCompatActivity {
     static final String EXTRA_SESSION = "session";
     static final String EXTRA_WORKSTATION = "workstation";
+    /** What the view serves: an embedded bundle's name, or a cached one's hash. */
+    static final String EXTRA_BUNDLE = "bundle";
 
     /** WebView keeps its data per process, and this process needs its own. */
     private static boolean suffixed = false;
@@ -130,7 +132,9 @@ public class BundleActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         session = getIntent().getIntExtra(EXTRA_SESSION, 0);
         String workstation = getIntent().getStringExtra(EXTRA_WORKSTATION);
-        if (session <= 0 || !BundleFiles.carries(getAssets(), workstation)
+        String bundle = getIntent().getStringExtra(EXTRA_BUNDLE);
+        BundleFiles.Source source = BundleFiles.source(this, bundle);
+        if (session <= 0 || !BundleFiles.isHost(workstation) || source == null
             || !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             // Never a fallback to addJavascriptInterface: without an
             // origin-gated listener there is no channel, so there is no view.
@@ -138,7 +142,7 @@ public class BundleActivity extends AppCompatActivity {
             finish();
             return;
         }
-        files = new BundleFiles(getAssets(), workstation);
+        files = new BundleFiles(source, workstation);
         origin = BundleFiles.origin(workstation);
 
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);

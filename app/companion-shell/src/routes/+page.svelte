@@ -7,6 +7,9 @@
   import { onMount } from "svelte";
   import { Capacitor } from "@capacitor/core";
   import { assets } from "$app/paths";
+  import { readyBundle } from "$shell/bundle/bundle";
+  import { bundlesToKeep, nativeBundleStore, rememberBundle, type BundleMemory } from "$shell/bundle/store";
+  import { trustedKeys } from "$shell/bundle/trust";
   import { combinedInbox, type InboxRow } from "$shell/hub/inbox";
   import { pairedStore, type PairedWorkstation } from "$shell/hub/paired";
   import { createUnlockedHub } from "$shell/hub/unlockedHub";
@@ -30,10 +33,51 @@
 
   /// Set only while a debug build runs the bundle probe.
   let probe: ProbeBench | null = null;
+  /// The keys a served bundle may be signed by: the pinned publisher
+  /// key, and in a debug build the dev key the native side embeds.
+  let trusted: string[] = [];
+
+  /// Where the page remembers which bundle each Workstation last served.
+  function bundleMemory(): BundleMemory | null {
+    try {
+      return localStorage;
+    } catch {
+      return null;
+    }
+  }
 
   const visits = createVisits({
     view: BundleView,
-    endpointFor: (ws) => (probe && ws.id === PROBE_WORKSTATION.id ? probe.visit : endpointFor(ws)),
+    endpointFor: (ws) =>
+      probe && ws.id === PROBE_WORKSTATION.id
+        ? probe.visit
+        : endpointFor(ws, unlocked ? (id) => unlocked.connectionSource(id) : null, undefined, (line) => {
+            if (debugBuild) console.log(line);
+          }),
+    // The Demo's bundle (and the probe's, in a debug build) ships in the
+    // binary; a paired Workstation's is served by it, over the live
+    // hub's connection, and cached by hash.
+    prepare: async (ws, say, signal) => {
+      if (ws.demo) return "demo";
+      if (probe && ws.id === PROBE_WORKSTATION.id) return "probe";
+      const connection = unlocked?.connectionSource(ws.id).current();
+      if (!connection) throw new Error("it is not connected. Unlock the Companion, and wait for it to be ready");
+      const ready = await readyBundle({
+        connection,
+        store: nativeBundleStore(BundleView),
+        core,
+        trusted,
+        say,
+        signal,
+      });
+      if (debugBuild) console.log(`[gavin-shell] ${ws.id}: bundle ${ready.hash.slice(0, 12)}… ${ready.fetched ? "fetched" : "cached"}`);
+      const memory = bundleMemory();
+      rememberBundle(memory, ws.id, ready.hash);
+      if (ready.fetched) {
+        void BundleView.prune({ keep: bundlesToKeep(memory, paired.map((p) => p.id), ready.hash) }).catch(() => {});
+      }
+      return ready.hash;
+    },
     onDrop: (drop) => {
       probe?.drops.push(drop);
       console.warn(`[gavin-shell] dropped ${JSON.stringify(drop)}`);
@@ -90,9 +134,11 @@
   function openItem(row: InboxRow): void {
     const ws = hubWorkstations(paired, $live ?? {}).find((w) => w.id === row.workstationId);
     if (!ws) return;
-    // Landing on the item itself is the served UI's (companion-23).
-    if (ws.openable) void visits.open(ws);
-    else notice = `${ws.name}’s own screens do not open on this phone yet. At the desk: ${row.text}`;
+    if (ws.openable) {
+      void visits.open(ws, row.target ? { workspace: row.workspace, target: row.target } : null);
+    } else {
+      notice = `${ws.name} is not ready to open right now. At the desk: ${row.text}`;
+    }
   }
 
   async function loadPaired(): Promise<void> {
@@ -115,6 +161,9 @@
       void DeviceKeys.status()
         .then(async (status) => {
           debugBuild = status.debugBuild;
+          const { key: devKey } = await BundleView.devPublisherKey().catch(() => ({ key: null }));
+          trusted = trustedKeys({ debugBuild: status.debugBuild, devKey });
+          if (status.debugBuild) console.log(`[gavin-shell] trusts ${trusted.length} bundle key(s)`);
           await loadPaired();
           if (status.debugBuild) {
             console.log(`[gavin-shell] hub lists ${paired.length} paired: ${paired.map((ws) => ws.id).join(" ") || "none"}`);

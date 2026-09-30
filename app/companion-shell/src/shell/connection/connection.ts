@@ -83,6 +83,12 @@ export interface Connection {
   /// it does not accept is passed over. One request at a time: a second
   /// waits for the first.
   request(message: unknown, answers: (reply: unknown) => boolean, timeoutMs: number): Promise<unknown>;
+  /// Hears every message the Workstation sends that no request was
+  /// waiting for: its pushes (`DesktopEvent` for a listened event, and
+  /// whatever else the daemon pushes to a Device). Returns how to stop
+  /// listening. With nobody listening such a message is kept for the
+  /// next request to pass over, as before.
+  onPush(handler: (message: unknown) => void): () => void;
   /// Hangs up. `closed` then settles.
   close(why?: string): void;
   /// Settles, with why, once the stream has ended for any reason.
@@ -261,7 +267,9 @@ function keysProblem(e: unknown): string {
 /// lasts, and requests answered one at a time.
 function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: string[]): Connection {
   const inbox: string[] = [...early];
-  let waiter: ((text: string) => void) | null = null;
+  /// The request waiting for its answer, if one is.
+  let waiter: { answers(reply: unknown): boolean; resolve(reply: unknown): void } | null = null;
+  const pushHandlers = new Set<(message: unknown) => void>();
   let isClosed = false;
   let settle!: (why: string) => void;
   const closed = new Promise<string>((resolve) => (settle = resolve));
@@ -277,9 +285,25 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
     settle(why);
   };
 
+  /// A message from the Workstation: the answer the waiting request
+  /// wants, else a push for whoever listens, else kept for the next
+  /// request to look at.
   const deliver = (text: string): void => {
-    if (waiter) waiter(text);
-    else inbox.push(text);
+    let reply: unknown;
+    try {
+      reply = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (waiter?.answers(reply)) {
+      waiter.resolve(reply);
+      return;
+    }
+    if (pushHandlers.size > 0) {
+      for (const handler of [...pushHandlers]) handler(reply);
+      return;
+    }
+    inbox.push(text);
   };
 
   void (async () => {
@@ -351,7 +375,13 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
       }
       // What arrived before this request, then whatever arrives next.
       while (inbox.length > 0) if (offer(inbox.shift()!)) return;
-      waiter = (text) => void offer(text);
+      waiter = {
+        answers,
+        resolve: (reply) => {
+          finish();
+          resolve(reply);
+        },
+      };
       timer = setTimeout(() => {
         finish();
         reject(new Error("the Workstation did not answer in time"));
@@ -363,6 +393,12 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
       const run = queue.then(() => once(message, answers, timeoutMs));
       queue = run.catch(() => {});
       return run;
+    },
+    onPush(handler) {
+      pushHandlers.add(handler);
+      return () => {
+        pushHandlers.delete(handler);
+      };
     },
     close: (why = "The connection was closed.") => end(why),
     closed,

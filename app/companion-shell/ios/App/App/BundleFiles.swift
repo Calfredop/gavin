@@ -30,11 +30,18 @@ enum BundleOrigin {
     }
 }
 
-/// The bundles this binary carries, embedded by `scripts/sync.mjs` under
-/// `Bundles/`. Today that is the Demo Workstation's; a paired
-/// Workstation's bundle is fetched and verified instead (companion-23).
+/// Where a bundle's files are: embedded in this binary by `scripts/
+/// sync.mjs` under `Bundles/` (the Demo Workstation's; the probe's in a
+/// debug build), or installed in the cache by hash (`BundleCache`) after
+/// the shell fetched and verified it (ADR 0005, companion-23).
 enum BundleCatalog {
-    static func folder(for workstation: String) -> URL? {
+    /// The folder for the bundle `name` names: an embedded bundle's name,
+    /// or a cached bundle's hash. Nothing else is served, whatever else
+    /// sits in either place.
+    static func folder(for name: String) -> URL? {
+        if BundleCache.isHash(name) {
+            return BundleCache.installed(name) ? BundleCache.folder(name) : nil
+        }
         let embedded: Set<String>
         #if DEBUG
         // The probe is a debug build's only: `scripts/probe.sh`.
@@ -42,10 +49,133 @@ enum BundleCatalog {
         #else
         embedded = ["demo"]
         #endif
-        guard embedded.contains(workstation),
-              let url = Bundle.main.url(forResource: workstation, withExtension: nil, subdirectory: "Bundles")
+        guard embedded.contains(name),
+              let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Bundles")
         else { return nil }
         return url
+    }
+
+    /// The public half of the dev bundle-signing key `scripts/sync.mjs`
+    /// embedded, in a DEBUG build. A release build answers nil whatever
+    /// the binary carries: a store build trusts the publisher key alone.
+    static func devPublisherKey() -> String? {
+        #if DEBUG
+        guard let url = Bundle.main.url(forResource: "dev-bundle-key", withExtension: "json", subdirectory: "Bundles"),
+              let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = json["publicKey"] as? String,
+              key.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+        else { return nil }
+        return key
+        #else
+        return nil
+        #endif
+    }
+}
+
+/// The cache of served bundles, by content hash: `Library/Application
+/// Support/bundles/<hash>/`, each folder one bundle's files, whole or
+/// not there at all.
+///
+/// A bundle is written into a folder of its own beside the cache and
+/// moved into place in one step, so a bundle that is being installed --
+/// or one whose install failed -- is never served. Nothing but the
+/// shell's web layer installs here, and only out of a bundle the
+/// Companion core accepted; the paths are checked again on the way in.
+/// The cache is a cache: excluded from backup, and pruned to the bundles
+/// the paired Workstations serve.
+enum BundleCache {
+    static func isHash(_ name: String) -> Bool {
+        name.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+    }
+
+    static var root: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return support.appendingPathComponent("bundles", isDirectory: true)
+    }
+
+    static func folder(_ hash: String) -> URL {
+        root.appendingPathComponent(hash, isDirectory: true)
+    }
+
+    static func installed(_ hash: String) -> Bool {
+        isHash(hash) && FileManager.default.fileExists(atPath: folder(hash).appendingPathComponent("index.html").path)
+    }
+
+    /// Whether a bundle's path may be written under its folder: relative,
+    /// no segment that goes up or nowhere. The web layer and the core
+    /// check the same; this is the last check before the write.
+    static func isSafePath(_ path: String) -> Bool {
+        !path.isEmpty
+            && path.utf8.count <= 255
+            && !path.hasPrefix("/")
+            && !path.contains("\\")
+            && !path.contains("\0")
+            && path.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    enum InstallError: Error, CustomStringConvertible {
+        case notAHash
+        case badPath(String)
+        case notBase64(String)
+        case noPage
+
+        var description: String {
+            switch self {
+            case .notAHash: return "a bundle is installed under its hash"
+            case .badPath(let path): return "\(path) is not a path a bundle may hold"
+            case .notBase64(let path): return "\(path) is not base64"
+            case .noPage: return "a bundle holds an index.html"
+            }
+        }
+    }
+
+    /// Writes `files` (`path` and base64 `data`) under `hash`, replacing
+    /// a bundle already there under it.
+    static func install(_ hash: String, files: [(path: String, data: String)]) throws {
+        guard isHash(hash) else { throw InstallError.notAHash }
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var rootURL = root
+        try? rootURL.setResourceValues(values)
+
+        let staging = root.appendingPathComponent(".installing-\(hash)-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        var wrotePage = false
+        do {
+            for file in files {
+                guard isSafePath(file.path) else { throw InstallError.badPath(file.path) }
+                guard let bytes = Data(base64Encoded: file.data) else { throw InstallError.notBase64(file.path) }
+                let target = staging.appendingPathComponent(file.path).standardizedFileURL
+                guard target.path.hasPrefix(staging.standardizedFileURL.path + "/") else { throw InstallError.badPath(file.path) }
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try bytes.write(to: target, options: .atomic)
+                if file.path == "index.html" { wrotePage = true }
+            }
+            guard wrotePage else { throw InstallError.noPage }
+            let final = folder(hash)
+            if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
+            try fm.moveItem(at: staging, to: final)
+        } catch {
+            try? fm.removeItem(at: staging)
+            throw error
+        }
+    }
+
+    /// Removes every cached bundle whose hash is not in `keep`, and any
+    /// install left half done.
+    static func prune(keep: Set<String>) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        for entry in entries {
+            let name = entry.lastPathComponent
+            if isHash(name) ? !keep.contains(name) : name.hasPrefix(".installing-") {
+                try? fm.removeItem(at: entry)
+            }
+        }
     }
 }
 

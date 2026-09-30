@@ -22,6 +22,9 @@ function scriptedCore(options: { dials?: Array<typeof DIAL>; refusal?: ConnectEv
     pairingStart: () => {
       throw new Error("a connection does not pair");
     },
+    bundleOpen: () => {
+      throw new Error("a connection opens no bundle");
+    },
     pairingReceive: () => [],
     pairingProve: () => [],
     connectStart: () => ({ send: new Uint8Array([1]), dials: options.dials ?? [DIAL] }),
@@ -298,6 +301,37 @@ describe("a live connection", () => {
     expect(await connection.closed).toBe("The Workstation ended the connection.");
     expect(connection.isClosed).toBe(true);
     await expect(connection.request({}, () => true, 10)).rejects.toThrow("closed");
+  });
+
+  it("hands a push to whoever listens, and the answer to the request waiting", async () => {
+    const { connection, relay, sent, lines } = await connected();
+    const pushed: unknown[] = [];
+    const stop = connection.onPush((m) => pushed.push(m));
+    // With nothing asked, a push goes to the listener and is not kept.
+    lines.push('{"type":"DesktopEvent","event":"e","payload":1}');
+    relay.push(byte(7));
+    await vi.waitFor(() => expect(pushed).toHaveLength(1));
+    // While a request waits, a push still goes to the listener and the
+    // answer to the request.
+    const answered = connection.request({ type: "GetAttention", version: 1 }, (r) => (r as { type: string }).type === "Attention", 1000);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    lines.push('{"type":"DesktopEvent","event":"e","payload":2}', '{"type":"Attention","state":"ready","items":[]}');
+    relay.push(byte(7));
+    relay.push(byte(7));
+    expect(await answered).toEqual({ type: "Attention", state: "ready", items: [] });
+    await vi.waitFor(() => expect(pushed).toHaveLength(2));
+    expect(pushed[1]).toEqual({ type: "DesktopEvent", event: "e", payload: 2 });
+    // Stopped: a later push is kept for the next request to pass over.
+    stop();
+    lines.push('{"type":"DesktopEvent","event":"e","payload":3}');
+    relay.push(byte(7));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(pushed).toHaveLength(2);
+    const later = connection.request({}, (r) => (r as { answer?: number }).answer === 4, 1000);
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    lines.push('{"answer":4}');
+    relay.push(byte(7));
+    expect(await later).toEqual({ answer: 4 });
   });
 
   it("ends on a frame that does not open: the channel's count is wrong for good", async () => {

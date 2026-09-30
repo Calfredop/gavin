@@ -30,6 +30,9 @@ export interface LiveHubDeps {
   /// Runs `fn` after `ms`; returns how to cancel it.
   after(ms: number, fn: () => void): () => void;
   onChange(live: Record<string, LiveState>): void;
+  /// A Workstation's connection came up (`connection`) or went away
+  /// (`null`): what a visit to it invokes and listens over (companion-23).
+  onConnection?(id: string, connection: Connection | null): void;
   /// A new connection found no Unlock held natively.
   onNotHeld(): void;
   /// A new connection found the Unlock no longer covers it.
@@ -49,6 +52,9 @@ export interface LiveHub {
   refresh(): void;
   /// The live state of each tracked Workstation, by id.
   snapshot(): Record<string, LiveState>;
+  /// The connection to a Workstation, while there is one. A visit
+  /// invokes and listens over it; the hub keeps asking on it too.
+  connectionOf(id: string): Connection | null;
   dispose(): void;
 }
 
@@ -100,7 +106,10 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     const connection = t.connection;
     t.connection = null;
     t.connectedAt = null;
-    connection?.close(why);
+    if (connection) {
+      connection.close(why);
+      if (!disposed) deps.onConnection?.(t.record.id, null);
+    }
   };
 
   const current = (t: Tracked, generation: number): boolean =>
@@ -166,6 +175,7 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
         t.connection = connection;
         t.connectedAt = deps.now();
         deps.log?.(`[gavin-hub] ${t.record.id}: connected as ${outcome.deviceId}`);
+        deps.onConnection?.(t.record.id, connection);
         void connection.closed.then((why) => {
           if (current(t, generation) && t.connection === connection) lost(t, why);
         });
@@ -275,6 +285,8 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     },
 
     snapshot,
+
+    connectionOf: (id) => tracked.get(id)?.connection ?? null,
 
     dispose() {
       disposed = true;

@@ -264,12 +264,18 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
       },
       /// Starts the desktop app, as far as a Device can tell: the
       /// forwarding connection, answering every attention ask with
-      /// `items` (`AttentionItem`s) and every forwarded command with
-      /// null. Until it is started, and after `quit()`, the daemon
-      /// answers "desktop app not running".
-      async startApp(items = []) {
+      /// `items` (`AttentionItem`s), every forwarded command with what
+      /// `options.commands(command, args)` returns (null without one),
+      /// and every bundle ask from `options.bundle` -- `{ manifest,
+      /// archive }`, as `stage-companion.mjs` would have staged it -- or
+      /// as a desktop that carries none. Until it is started, and after
+      /// `quit()`, the daemon answers "desktop app not running".
+      async startApp(items = [], options = {}) {
         const forward = await DeskConnection.open(socketPath, daemonToken, "forward", version);
         let answering = items;
+        let bundle = options.bundle ?? null;
+        const commands = options.commands ?? (() => null);
+        const received = [];
         let running = true;
         void (async () => {
           while (running) {
@@ -284,7 +290,23 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
             if (message.type === "ForwardAttention") {
               forward.socket.write(`${JSON.stringify({ type: "AttentionResult", call_id: message.call_id, items: answering })}\n`);
             } else if (message.type === "ForwardCommand") {
-              forward.socket.write(`${JSON.stringify({ type: "ForwardResult", call_id: message.call_id, value: null, error: null })}\n`);
+              received.push({ command: message.command, args: message.args });
+              let value = null;
+              let error = null;
+              try {
+                value = await commands(message.command, message.args);
+              } catch (e) {
+                error = e instanceof Error ? e.message : String(e);
+              }
+              forward.socket.write(`${JSON.stringify({ type: "ForwardResult", call_id: message.call_id, value, error })}\n`);
+            } else if (message.type === "ForwardBundle") {
+              const answer = { type: "BundleResult", call_id: message.call_id, offset: message.offset, data: "" };
+              if (bundle) {
+                const end = Math.min(bundle.archive.length, message.offset + message.length);
+                answer.manifest = bundle.manifest;
+                answer.data = bundle.archive.subarray(message.offset, end).toString("base64");
+              }
+              forward.socket.write(`${JSON.stringify(answer)}\n`);
             }
           }
         })();
@@ -292,6 +314,20 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
         return {
           setItems(next) {
             answering = next;
+          },
+          /// The desktop upgraded: it serves another bundle from now on.
+          setBundle(next) {
+            bundle = next;
+          },
+          /// The commands forwarded so far, in order.
+          received: () => [...received],
+          /// Emits a desktop event, which the daemon relays to the
+          /// Devices listening for it. Written, not asked: the loop above
+          /// is what reads this socket, and the daemon's `Ok` reaches it
+          /// there as a stray, exactly as the desktop's own thread sees it.
+          async offer(event, payload) {
+            forward.socket.write(`${JSON.stringify({ type: "OfferDesktopEvent", event, payload })}\n`);
+            await new Promise((resolve) => setTimeout(resolve, 100));
           },
           quit() {
             running = false;

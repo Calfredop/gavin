@@ -23,7 +23,7 @@ describe("the Workstations hub's list", () => {
     );
   });
 
-  it("lists paired Workstations first, by their names, locked until the Unlock, and not yet openable", () => {
+  it("lists paired Workstations first, by their names, locked until the Unlock, and not openable until ready", () => {
     const list = hubWorkstations([{ ...paired, name: "Studio Mac" }]);
     expect(list).toEqual([
       {
@@ -51,6 +51,8 @@ describe("the Workstations hub's list", () => {
       [other.id]: { state: "desktop-app-not-running" },
       [third.id]: { state: "asleep" },
     });
+    // Only a ready Workstation opens: its desktop app serves its UI.
+    expect(list.slice(0, 3).map((ws) => ws.openable)).toEqual([true, false, false]);
     expect(list.slice(0, 3).map((ws) => [ws.state, stateLabel(ws.state), ws.summary])).toEqual([
       ["ready", "Ready", "1 waiting on you."],
       [
