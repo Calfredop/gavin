@@ -1,7 +1,7 @@
 ---
-order: 5120
+order: 6176
 title: Show Gavin's own memory in the task manager
-status: In Progress
+status: Done
 complexity: moderate
 ---
 The task manager lists only the daemon's sessions, so it cannot answer "how much of this is Gavin itself?". Asked after a "Gavin is using ~20 GB" scare. That figure turned out to be 17 GB of session trees (a dev stack, 17 agents, an e2e run) plus about 1.2 GB of Gavin: the webview at ~1.1 GB, the host at 45 MB and the daemon at 73 MB.
