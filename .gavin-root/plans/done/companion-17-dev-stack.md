@@ -2,7 +2,7 @@
 order: 19456
 kind: task
 title: Companion 17: local dev stack and dev-build guard
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -19,6 +19,6 @@ Part of `companion.md`. Read the spec (section "The desktop app", the dev-build 
 
 ## Acceptance criteria
 
-- [ ] The compose stack starts both services, and is documented
-- [ ] A dev build refuses a public Relay URL, while a release build accepts it (tested)
-- [ ] The sandboxed gateway makes no outbound calls to Apple or Google
+- [x] The compose stack starts both services, and is documented
+- [x] A dev build refuses a public Relay URL, while a release build accepts it (tested)
+- [x] The sandboxed gateway makes no outbound calls to Apple or Google

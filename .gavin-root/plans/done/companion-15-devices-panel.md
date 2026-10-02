@@ -2,7 +2,7 @@
 order: 17408
 kind: task
 title: Companion 15: Devices panel at the desk
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -25,5 +25,6 @@ Logic goes in a pure module, and the `.svelte` file stays thin. Surfaces that ne
 - [ ] Unit tests: the pure module computes the panel and the badge from Device state
 - [ ] Settings no longer shows pairing or the Device list
 - [ ] A static check: grep the committed source for the new footer row and panel strings
+- [ ] Human test: Pair the test Device from the sidebar's Devices panel, see the footer badge count it as connected, then Revoke it and see the badge drop
 
 When done, file a human test: pair the test Device from the panel, see the badge count it as connected, then Revoke it and see it drop.

@@ -2,7 +2,7 @@
 order: 27648
 kind: task
 title: Companion 28: rails and orchestration on the phone
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -22,7 +22,8 @@ The Companion never ticks rails: starting a rail arms it, and the desk's schedul
 
 ## Acceptance criteria
 
-- [ ] Seam 2 tests for rail actions, including one that proves the scheduler never starts in the bundle
-- [ ] The desktop orchestration suites still pass
+- [x] Seam 2 tests for rail actions, including one that proves the scheduler never starts in the bundle
+- [x] The desktop orchestration suites still pass
+- [ ] Human test: After rebuilding the desktop app from companion/phone: on the phone, open a workspace's Rails tab, press Start on an idle rail, and watch the desk's Orchestration tab launch its first step (and the phone show it running)
 
 When done, file a human test: start a rail from the phone, and watch the desk run it.

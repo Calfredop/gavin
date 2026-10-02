@@ -2,7 +2,7 @@
 order: 33792
 kind: task
 title: Companion 34: the desk is told when a Device is refused
-status: To Do
+status: Done
 parent: companion.md
 priority: medium
 complexity: moderate

@@ -2,7 +2,7 @@
 order: 20480
 kind: task
 title: Companion 18: signed Docker images and self-hosting docs
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: simple
@@ -18,6 +18,6 @@ Part of `companion.md`. Read the spec (sections "The Relay" and "The Push gatewa
 
 ## Acceptance criteria
 
-- [ ] Both images are signed, and the signatures can be verified
-- [ ] The self-hosting doc is written
-- [ ] The release notes list the digests
+- [x] Both images are signed, and the signatures can be verified
+- [x] The self-hosting doc is written
+- [x] The release notes list the digests

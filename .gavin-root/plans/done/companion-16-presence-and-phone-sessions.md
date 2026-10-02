@@ -2,7 +2,7 @@
 order: 18432
 kind: task
 title: Companion 16: presence and phone-started sessions at the desk
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: complex
@@ -19,8 +19,9 @@ Part of `companion.md`. Read the spec (sections "Forwarding to the desktop app" 
 
 ## Acceptance criteria
 
-- [ ] Seam 1: presence pushes reflect the forwarded activity of two Devices at once
-- [ ] Pure-module tests for placing a Device-started session as a labelled tab
-- [ ] Sessions the desktop launches itself are unaffected
+- [x] Seam 1: presence pushes reflect the forwarded activity of two Devices at once
+- [x] Pure-module tests for placing a Device-started session as a labelled tab
+- [x] Sessions the desktop launches itself are unaffected
+- [ ] Human test: With a v58 daemon and dev app (companion/wire, rebuilt and restarted) and a paired test Device: run a card from the Device — at the desk it opens as a tab on that workspace's Agents page labelled "<session> · <Device name>"; type into a terminal from the Device — its tab shows the Device marker, which clears a few seconds after typing stops; the Devices panel row says where the Device is and what it started.
 
 When done, file a human test: run a card from the test Device; at the desk it's a tab labelled with the Device, and typing from the Device shows the marker.

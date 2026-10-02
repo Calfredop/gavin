@@ -2,7 +2,7 @@
 order: 30720
 kind: task
 title: Companion 31: confirming a pairing takes the desk's own confirmation
-status: To Do
+status: Done
 parent: companion.md
 priority: high
 complexity: moderate
@@ -38,3 +38,12 @@ The same script can read the Relay's admission token, because `begin_pairing` re
 - [ ] `commandGate.test.ts` classifies `confirm_pairing` as gated, with the reasoning, and restates the reasoning for the commands left ordinary
 - [ ] The Settings pairing flow still pairs the test Device (`crates/daemon/tests/device_wire.rs` is the daemon half; the app half is a static pre-flight)
 - [ ] `docs/security/06-companion.md` (ticket 08) names this threat, or this card files the note for it
+
+## Result
+
+- `confirm_pairing` is gated (`confirm_gate.rs` `GATED_ACTIONS`, `pairing_subject(device_id, code)`); the command takes `code` and `token` and spends before it reaches the daemon. Settings mints the grant with `grantForAnsweredPrompt("confirm_pairing", [pairingSubject(id, sas)])`. Rust tests: wrong device, wrong code and no token are each refused.
+- `commandGate.test.ts`: `confirm_pairing` is gated with reasoning; `begin_pairing` (the desk must draw the QR, so the page can read it anyway) and `set_remote_access` (no admission token goes with a new Relay, and gating it would gate the off switch) stay ordinary, reasons recorded.
+- Is pairing the case that justifies a host-drawn confirmation? It is the strongest one so far: the only command that widens who reaches the machine. Not built here; it is 06-companion Q15, and it should be decided before the Remote role gets reach in companion-12.
+- `docs/security/06-companion.md` CT-7 updated.
+- Suites: confirm_gate cargo tests pass; vitest guards+core pass except two failures that also fail on a clean HEAD (`remoteAccessSurfaces` device-push emit, `mainThreadCommands` forwarding.rs:362). Uncommitted.
+- [ ] Human test: pair the test Device from Settings and confirm the six-digit prompt still completes the pairing.

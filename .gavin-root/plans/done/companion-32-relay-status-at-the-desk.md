@@ -2,7 +2,7 @@
 order: 31744
 kind: task
 title: Companion 32: the desk says whether the daemon reached its Relay
-status: To Do
+status: Done
 parent: companion.md
 priority: medium
 complexity: moderate

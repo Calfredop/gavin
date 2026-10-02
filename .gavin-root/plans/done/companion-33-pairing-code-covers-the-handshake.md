@@ -2,7 +2,7 @@
 order: 32768
 kind: task
 title: Companion 33: the six digits cover the pairing they are shown for
-status: To Do
+status: Done
 parent: companion.md
 priority: high
 complexity: moderate
@@ -46,3 +46,4 @@ Ticket 11 did what it could without changing the ceremony: pairing again now dro
 - [ ] The spec or ADR 0001 records the change to what the code covers
 - [ ] Decision: The spec says the pairing SAS is "reused as-is", but as it is, two pairings made with one copied Noise key show the same six digits whatever hardware key each registers. What should the six digits be derived from?
   Options: A) The pairing handshake's hash (recommended: any handshake the owner's phone did not make shows other digits) B) The two static keys plus the hardware key being registered C) Leave the code as it is; add only the acknowledgement and the dialog's notice
+- [ ] Human test: Pair a phone that is already paired (same install): the confirm dialog shows the "already trusts … Confirming REPLACES that device's keys" line above the trust-store line; pairing a new phone shows no such line.
