@@ -3526,7 +3526,14 @@ export function handleSessionExited(
     // Leave the tab and its xterm alone. The exit code is already in
     // `sessionExits` (recorded before this call), and the tool-run row
     // is closed by the daemon; what the human still needs is the text.
+    // Force a Snapshot: the daemon keeps the screen until KillSession,
+    // and a sub-second run can finish before the pane's listener was
+    // live -- or the pane may not be mounted yet (another page), so the
+    // first restore on mount is what paints then. Asking again here
+    // covers the already-mounted race; a missing terminal is a no-op
+    // until mount's own restoreScreen runs against the kept screen.
     settleExitedStatus(sessionId);
+    void terminalRegistry.restoreScreen(sessionId, { force: true });
     return;
   }
   retainedOnExit.delete(sessionId);
@@ -3570,6 +3577,12 @@ export function handleSessionExited(
     focusedSessionId,
   }));
   terminalRegistry.destroyTerminal(sessionId);
+  // The daemon keeps an exited session's screen until KillSession so a
+  // retained tool tab can still Snapshot it. A non-retained exit never
+  // needed that, and without this call the screen would leak for the
+  // daemon's lifetime -- KillSession is the free, and forget_session
+  // already ran in the pump so this is screen cleanup only.
+  void backend.killSession(sessionId).catch(() => {});
   void persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 

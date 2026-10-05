@@ -147,6 +147,7 @@ vi.mock("$lib/core/backend", () => ({
 vi.mock("$lib/terminal/terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
   setCwdForLinks: vi.fn(),
+  restoreScreen: vi.fn().mockResolvedValue(undefined),
   // themeState.init() runs at the top of bootstrap() and pushes the
   // resolved theme into the terminal registry.
   applyTerminalTheme: vi.fn(),
@@ -1285,12 +1286,15 @@ describe("handleSessionExited", () => {
       "ws-1",
       "a"
     );
+    vi.mocked(backend.killSession).mockClear();
 
     handleSessionExited("c");
 
     const state = get(layoutState);
     expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["b"]));
-    expect(backend.killSession).not.toHaveBeenCalled();
+    // Non-retained exits free the daemon's kept screen; KillSession is
+    // that free (the pump already forgot the row).
+    expect(backend.killSession).toHaveBeenCalledWith("c");
   });
 
   it("takes the session's follow-up queue pane with it", async () => {
@@ -1344,6 +1348,8 @@ describe("handleSessionExited", () => {
   it("keeps a retained tab and its terminal when the session exits", () => {
     setState([ws("ws-1", [page("page-1", leaf(["tool-1"]))])], "ws-1", "tool-1");
     retainTabOnExit("tool-1");
+    vi.mocked(terminalRegistry.restoreScreen).mockClear();
+    vi.mocked(backend.killSession).mockClear();
 
     handleSessionExited("tool-1");
 
@@ -1352,6 +1358,10 @@ describe("handleSessionExited", () => {
     expect(state.focusedSessionId).toBe("tool-1");
     expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalled();
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    // Do not free the screen: the tab still needs Snapshot. Force a
+    // restore so a sub-second run that beat the listener still paints.
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(terminalRegistry.restoreScreen).toHaveBeenCalledWith("tool-1", { force: true });
   });
 
   it("still removes a retained tab when the human closes it", async () => {

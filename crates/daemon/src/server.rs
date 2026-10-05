@@ -4284,13 +4284,24 @@ impl SessionManager {
 
     /// Ends a session and answers without waiting for its process to go.
     ///
-    /// Nothing of its own left: `forget_session` is the whole body, and
-    /// the pump's teardown calls the same thing. The two ways a session
-    /// ends have to leave the daemon in one state, and the reaper
-    /// described below is what stops either of them from paying
-    /// portable-pty's grace loop on a thread that owes somebody a reply.
+    /// `forget_session` drops the registry row and the PTY; the pump's
+    /// teardown calls the same thing when a process exits on its own.
+    /// The screen (and the other per-session maps below) stay until HERE
+    /// on purpose: a shell tool tab that outlives its PTY still needs a
+    /// Snapshot of what it printed, and the pump used to drop the screen
+    /// at exit so a pane that mounted later painted nothing. The app
+    /// reaches this when the human closes the tab (retained or not) and
+    /// when a non-retained exit takes the tab -- that is the moment the
+    /// scrollback is no longer owed to anyone. The reaper described
+    /// below is what stops either end path from paying portable-pty's
+    /// grace loop on a thread that owes somebody a reply.
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
-        self.forget_session(id)
+        self.forget_session(id)?;
+        self.screens.lock().unwrap().remove(id);
+        self.failure_patterns.lock().unwrap().remove(id);
+        self.acknowledged_failures.lock().unwrap().remove(id);
+        self.slept_mid_turn.lock().unwrap().remove(id);
+        Ok(())
     }
 
     /// Opens the window in which this session's output is the program
@@ -5152,20 +5163,16 @@ impl SessionManager {
             if let Some(w) = removed {
                 let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
             }
-            // The screen model is per-session state like the writer above,
-            // and this is the one place that runs for BOTH a natural exit and
-            // a kill_session (which makes the pump's read return 0). Dropping
-            // it here is what stops a session's grid and scrollback -- by far
-            // the largest thing the daemon holds per session -- leaking for the
-            // daemon's whole lifetime, and also stops a dead session's stale
-            // screen being restored to a later Attach.
-            manager.screens.lock().unwrap().remove(&id);
-            // Same reason as the screen above: per-session state that
-            // would otherwise leak for the daemon's whole lifetime, and
-            // would answer for a session id the daemon no longer hosts.
-            manager.failure_patterns.lock().unwrap().remove(&id);
-            manager.acknowledged_failures.lock().unwrap().remove(&id);
-            manager.slept_mid_turn.lock().unwrap().remove(&id);
+            // The screen (and failure_patterns / acknowledged_failures /
+            // slept_mid_turn) are NOT dropped here. A kept-open shell tool
+            // tab still needs Snapshot to answer after the PTY is gone --
+            // dropping the screen at exit left every off-page tool run
+            // empty when its pane finally mounted. `kill_session` frees
+            // them when the app no longer needs the tab. A kill that
+            // closes the PTY still reaches this block (the pump's read
+            // returns 0), so those maps must survive a second pass after
+            // kill_session already cleared them -- remove on a missing
+            // key is a no-op.
         });
     }
 }
@@ -16881,8 +16888,52 @@ mod tests {
         assert!(
             !manager.screens.lock().unwrap().contains_key(&id),
             "the screen model -- grid plus scrollback, the largest thing held \
-             per session -- must be dropped on teardown, not leaked for the \
+             per session -- must be dropped on KillSession, not leaked for the \
              daemon's lifetime"
+        );
+    }
+
+    #[test]
+    fn a_natural_exit_keeps_its_screen_until_kill_session() {
+        // A kept-open shell tool tab often mounts its pane AFTER the PTY
+        // exits (the rail ran on another page). Snapshot is what paints
+        // that pane, and it can only answer while the screen is still
+        // held. Dropping it at SessionExited left every such tab empty.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let id = manager
+            .create_session("/tmp", "/tmp", Some("echo hello; exit 0"), Launch::Shell)
+            .unwrap();
+
+        let (_client, server_side) = Stream::pair().unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server_side)));
+
+        let painted = |id: &str| {
+            manager.screens.lock().unwrap().get(id).is_some_and(|s| {
+                String::from_utf8_lossy(&s.lock().unwrap().snapshot()).contains("hello")
+            })
+        };
+        let forgotten = |id: &str| {
+            !manager.list_sessions().unwrap().iter().any(|s| s.id == id)
+        };
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while Instant::now() < deadline && !(forgotten(&id) && painted(&id)) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            forgotten(&id),
+            "precondition: the process should have exited and the row forgotten"
+        );
+        assert!(
+            painted(&id),
+            "the screen must still hold what the run printed after a natural exit, \
+             so a late Snapshot can repaint a kept-open tool tab"
+        );
+
+        manager.kill_session(&id).unwrap();
+        assert!(
+            !manager.screens.lock().unwrap().contains_key(&id),
+            "KillSession is what frees the screen once nobody needs the tab"
         );
     }
 

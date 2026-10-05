@@ -58,6 +58,14 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v59 keeps an exited session's screen until `KillSession`, so a
+/// kept-open shell tool tab can still `Snapshot` what the run printed
+/// after the PTY is gone (`fix-kept-open-tool-tab-shows-nothing.md`).
+/// No new Request variant: `Snapshot` and `KillSession` are unchanged;
+/// only the pump's teardown stops dropping the screen. An older daemon
+/// still empties the tab; the app's restore path is best-effort either
+/// way, so no `FEATURE_MIN_VERSION` entry is owed.
+///
 /// v58 is `RunGitCapped`: `RunGit` with the caller's stdout cap, so a
 /// host whose git produces megabytes (a big `diff`, a long `log`) keeps
 /// at most that many bytes plus one and answers inside `MAX_LINE_BYTES`
@@ -740,7 +748,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 58;
+pub const PROTOCOL_VERSION: u32 = 59;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -6947,7 +6955,9 @@ mod tests {
         // the UI the Device runs (ADR 0005). Two new TYPES.
         // v58: RunGitCapped -- host stdout cap so a GitRun reply fits
         // under MAX_LINE_BYTES. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 58);
+        // v59: exited sessions keep their screen until KillSession --
+        // behaviour only, no new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 59);
     }
 
     #[test]

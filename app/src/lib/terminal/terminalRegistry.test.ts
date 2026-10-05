@@ -103,6 +103,33 @@ describe("restoring a terminal's screen", () => {
     destroyTerminal("s2");
   });
 
+  it("force-repaints after a fast exit even when the first restore already ran", async () => {
+    getOrCreateTerminal("s-fast", 13);
+    resolveListen?.();
+    await restoreScreen("s-fast");
+    expect(backend.snapshotSession).toHaveBeenCalledTimes(1);
+
+    resolveListen?.();
+    await restoreScreen("s-fast", { force: true });
+    expect(backend.snapshotSession).toHaveBeenCalledTimes(2);
+    destroyTerminal("s-fast");
+  });
+
+  it("does not mark restored when no terminal exists yet", async () => {
+    // A retained tool tab whose page is not on screen: exit asks for a
+    // force restore before any pane has mounted. Snapshotting then would
+    // push to nobody, and marking restored would make the later mount
+    // skip the real restore against the daemon's kept screen.
+    await restoreScreen("s-absent", { force: true });
+    expect(backend.snapshotSession).not.toHaveBeenCalled();
+
+    getOrCreateTerminal("s-absent", 13);
+    resolveListen?.();
+    await restoreScreen("s-absent");
+    expect(backend.snapshotSession).toHaveBeenCalledWith("s-absent");
+    destroyTerminal("s-absent");
+  });
+
   it("leaves the terminal alone when the daemon refuses the request", async () => {
     vi.mocked(backend.snapshotSession).mockRejectedValueOnce(new Error("too old"));
     getOrCreateTerminal("s3", 13);

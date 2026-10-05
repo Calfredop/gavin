@@ -3,7 +3,7 @@ order: 13312
 kind: task
 title: [fix] A kept-open shell tool tab can show nothing
 labels: bug
-status: To Do
+status: Done
 ---
 A command or script tool step on a rail finished, and its tab stayed open,
 as cd708524 intended, but it was EMPTY. Seen on tempo-game's skeleton rail,
@@ -61,3 +61,5 @@ reveals its tab, but can still lose that race.
 
 Pin whatever decides the outcome with tests in the pure modules. The
 rendered pane is the owner's to confirm in the running app.
+
+- [ ] Human test: After rebuilding and restarting the daemon (protocol v59): put a fast `echo hello` script tool on a rail, start the rail from a different page, then open the rail's page — the kept-open tool tab must show `hello`. Repeat with the rail's page already on screen; same result.

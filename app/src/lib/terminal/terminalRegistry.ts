@@ -278,7 +278,7 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 }
 
 /// Repaints a terminal from the daemon's screen model, once per session per
-/// frontend load.
+/// frontend load -- or again when `force` is set.
 ///
 /// A `Terminal` holds its contents in the webview and nothing else does, so a
 /// frontend reload -- a window reload, or relaunching the app -- comes up with
@@ -292,11 +292,25 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 /// carries the terminals across the module's re-execution, so the entry this
 /// runs beside is already painted and `restored` already holds the id.
 ///
+/// `force` is for a kept-open shell tool tab whose process has just exited.
+/// A sub-second run can finish before the `pty-output` listener lands, so the
+/// first restore (or the live stream) paints nothing; asking again after
+/// `session-exited` is what picks up the screen the daemon still holds.
+///
 /// Awaits the listener before asking, or the push it triggers would be emitted
 /// to nobody. Best-effort otherwise: a daemon too old to have a screen model
 /// refuses the request and the terminal is left exactly as it was found.
-export async function restoreScreen(sessionId: string): Promise<void> {
-  if (restored.has(sessionId)) return;
+export async function restoreScreen(
+  sessionId: string,
+  opts: { force?: boolean } = {}
+): Promise<void> {
+  if (!opts.force && restored.has(sessionId)) return;
+  // No terminal yet -- typically a retained tool tab whose page is not
+  // the active one. Snapshotting now would push Output to nobody, and
+  // marking restored would make the later mount's restore a no-op, so
+  // the kept screen would never reach a pane. Leave restored alone and
+  // let TerminalPane's first mount ask.
+  if (!registry.has(sessionId)) return;
   restored.add(sessionId);
   await pendingListen.get(sessionId);
   await backend.snapshotSession(sessionId).catch(() => {});
