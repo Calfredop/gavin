@@ -74,9 +74,14 @@ export const NO_COMPLEXITY = "";
 /// "hard cards get opus" -- and making it expressible is what stops the
 /// table forcing a profile choice nobody wanted. An empty `model` in
 /// turn means that profile's own default.
+///
+/// `effort` is how hard that agent thinks. Optional because every table
+/// and card stored before it existed has none, and absent means the
+/// same as empty: whatever effort the agent would otherwise launch at.
 export interface ComplexityAgent {
   profile: string;
   model: string;
+  effort?: string;
 }
 
 /// The stored tables. `Partial` rather than a full record because
@@ -95,6 +100,15 @@ export interface AgentDefaults {
   /// has no verified way to put a model on it, and every model control
   /// for `custom` stays hidden rather than guessing a flag.
   customModelFlag: string;
+  /// The argv that carries an effort level into that command -- `--effort`,
+  /// or `--think=` for one that takes it attached. Absent or empty hides
+  /// every effort control for `custom`, exactly as `customModelFlag` does.
+  customEffortFlag?: string;
+  /// The app-wide default effort per profile id, beside the default model
+  /// (`agentModelDefaultsStore`). Absent key means the agent's own default.
+  /// Here rather than a Tauri command of its own, so it rides the same
+  /// wholesale `setAgentDefaults` save as the complexity table.
+  agentEfforts?: Record<string, string>;
   /// The API that command speaks -- `anthropic`, `openai` -- which is
   /// what lets Headroom compress it. Absent is None, the default: no
   /// recipe, and the agent launches as it always did. See
@@ -124,12 +138,32 @@ export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
   actionPromptOverrides: {},
 };
 
-/// Whether an entry says anything at all. A row with neither half filled
-/// in is not stored: it would be indistinguishable from "inherit" when
-/// read back, and storing it would make the workspace table shadow the
-/// app one with nothing.
+/// The app-wide defaults with one profile's default effort set, or
+/// removed when `effort` is blank -- removing rather than storing "" for
+/// `setAgentModelDefault`'s reason: the picker's inherit row has to be
+/// able to UNDO a default. Never mutates `defaults`.
+export function withAgentEffort(
+  defaults: AgentDefaults,
+  profileId: string,
+  effort: string
+): AgentDefaults {
+  const agentEfforts = { ...(defaults.agentEfforts ?? {}) };
+  const chosen = effort.trim();
+  if (chosen) agentEfforts[profileId] = chosen;
+  else delete agentEfforts[profileId];
+  return { ...defaults, agentEfforts };
+}
+
+/// Whether an entry says anything at all. A row with nothing filled in is
+/// not stored: it would be indistinguishable from "inherit" when read
+/// back, and storing it would make the workspace table shadow the app one
+/// with nothing. An effort alone IS something -- "this workspace's agent,
+/// thinking harder" is the whole row for a hard level on a one-CLI
+/// machine.
 export function isAttributed(entry: ComplexityAgent | undefined | null): boolean {
-  return Boolean(entry && (entry.profile.trim() || entry.model.trim()));
+  return Boolean(
+    entry && (entry.profile.trim() || entry.model.trim() || (entry.effort ?? "").trim())
+  );
 }
 
 /// The entry that governs one level: the workspace's own if it says
@@ -181,16 +215,21 @@ export function agentConfigWithAttribution(
   if (!entry) return base;
   const profile = entry.profile.trim();
   const model = entry.model.trim() || null;
+  const effort = (entry.effort ?? "").trim() || null;
   if (!profile) {
-    // Model only: everything about the workspace's agent survives,
-    // because it really is the same agent.
-    return { ...(base ?? { profile: null, file: null, command: null }), model };
+    // No profile: everything about the workspace's agent survives,
+    // because it really is the same agent -- including whichever of
+    // model and effort the attribution leaves empty. A row that says only
+    // "max effort" must not also drop the workspace's pinned model back
+    // to the app-wide default.
+    const own = base ?? { profile: null, file: null, command: null };
+    return { ...own, model: model ?? own.model ?? null, effort: effort ?? own.effort ?? null };
   }
   const sameProfile = (base?.profile ?? "").trim() === profile;
   if (!sameProfile) {
-    return { profile, file: null, command: null, mcpFile: null, mcpFormat: null, model };
+    return { profile, file: null, command: null, mcpFile: null, mcpFormat: null, model, effort };
   }
-  return { ...(base ?? { profile, file: null, command: null }), profile, model };
+  return { ...(base ?? { profile, file: null, command: null }), profile, model, effort };
 }
 
 /// How the level reads where it has to be said in one phrase -- a
@@ -206,9 +245,19 @@ export function complexitySummary(
   if (!entry) return `${name} — runs this workspace's agent.`;
   const agent = entry.profile.trim() ? profileLabel(entry.profile.trim()) : null;
   const model = entry.model.trim();
-  if (agent && model) return `${name} — runs ${agent} on ${model}.`;
-  if (agent) return `${name} — runs ${agent}.`;
-  return `${name} — runs this workspace's agent on ${model}.`;
+  const at = effortPhrase(entry);
+  if (agent && model) return `${name} — runs ${agent} on ${model}${at}.`;
+  if (agent) return `${name} — runs ${agent}${at}.`;
+  if (model) return `${name} — runs this workspace's agent on ${model}${at}.`;
+  return `${name} — runs this workspace's agent${at}.`;
+}
+
+/// ", at max effort" for an attribution that names one, "" otherwise --
+/// the tail every one-phrase description of an attribution shares, so a
+/// caller can append it unconditionally.
+export function effortPhrase(entry: { effort?: string | null } | null | undefined): string {
+  const effort = (entry?.effort ?? "").trim();
+  return effort ? `, at ${effort} effort` : "";
 }
 
 /// What the agent-change confirm wizard does to the workspace complexity

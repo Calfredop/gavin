@@ -1,12 +1,16 @@
 // What the Workstations hub lists.
 //
-// For now that is the Demo Workstation alone: it is built into the
-// binary, needs no pairing, and is what App Review explores (ADR 0005,
-// Guideline 2.1(a)). Paired Workstations join it with companion-21, and
-// their states ("desktop app not running", "asleep") with companion-22.
+// The Workstations this Device has paired with, each with its live state
+// while the Companion is unlocked (`hub/live.ts`), then the Demo
+// Workstation: it is built into the binary, needs no pairing, and is what
+// App Review explores (ADR 0005, Guideline 2.1(a)). A paired Workstation
+// opens once it is ready: its desktop app is what serves its UI and
+// answers it (ADR 0003).
 import { DEMO } from "$companion/demo/sampleData";
+import { liveLabel, liveSummary, type LiveState, type LiveStateName } from "$shell/hub/live";
+import type { PairedWorkstation } from "$shell/hub/paired";
 
-export type WorkstationState = "ready";
+export type WorkstationState = LiveStateName;
 
 export interface HubWorkstation {
   /// Also the host of its bundle's origin, so it is a DNS label.
@@ -16,6 +20,9 @@ export interface HubWorkstation {
   /// The line under the name.
   summary: string;
   state: WorkstationState;
+  /// Whether tapping it opens its UI: the Demo always; a paired one when
+  /// it is ready, since its desktop app serves the bundle and answers it.
+  openable: boolean;
 }
 
 /// The Demo Workstation, under the identity its own end of the channel
@@ -26,17 +33,35 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   demo: DEMO.workstation.demo,
   summary: "Sample workspaces, cards and agents to explore. Nothing to pair.",
   state: "ready",
+  openable: true,
 };
 
-export function hubWorkstations(): HubWorkstation[] {
-  return [DEMO_WORKSTATION];
+const LOCKED: LiveState = { state: "locked" };
+
+/// `live` is each paired Workstation's state by id; one it does not
+/// name is locked.
+export function hubWorkstations(
+  paired: PairedWorkstation[] = [],
+  live: Readonly<Record<string, LiveState>> = {}
+): HubWorkstation[] {
+  return [
+    ...paired.map((ws): HubWorkstation => {
+      const state = live[ws.id] ?? LOCKED;
+      return {
+        id: ws.id,
+        name: ws.name,
+        demo: false,
+        summary: liveSummary(state),
+        state: state.state,
+        openable: state.state === "ready",
+      };
+    }),
+    DEMO_WORKSTATION,
+  ];
 }
 
 export function stateLabel(state: WorkstationState): string {
-  switch (state) {
-    case "ready":
-      return "Ready";
-  }
+  return liveLabel(state);
 }
 
 /// A Workstation's id becomes a host name in its bundle's origin. Anything

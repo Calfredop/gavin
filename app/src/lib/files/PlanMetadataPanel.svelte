@@ -34,6 +34,7 @@
   /// back as carrying none. Disabled with the reason, like the level
   /// above.
   const cardAgentBlocked = $derived(featureBlockedReason($daemonCompat, "cardAgent"));
+  const cardEffortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
 
   let titleDraft = $state(plan.title);
   let error = $state<string | null>(null);
@@ -83,7 +84,7 @@
   /// True when the field was actually written -- a caller holding a
   /// control's own draft has to know whether to put it back.
   async function commit(
-    key: "title" | "status" | "priority" | "complexity" | "agent" | "model",
+    key: "title" | "status" | "priority" | "complexity" | "agent" | "model" | "effort",
     value: string
   ): Promise<boolean> {
     error = null;
@@ -172,6 +173,7 @@
     profiles={$agentProfilesStore}
     card={plan}
     blocked={cardAgentBlocked}
+    effortBlocked={cardEffortBlocked}
     onChange={(key, value) => void commit(key, value)}
   />
   {#if plan.labels.length > 0}

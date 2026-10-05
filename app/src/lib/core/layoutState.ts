@@ -2151,7 +2151,11 @@ function createDaemonSession(
 /// One spelling so a launcher, a settings panel and a derived store
 /// cannot each unpack the struct slightly differently.
 function customAgentDefault(defaults: AgentDefaults) {
-  return { command: defaults.customCommand, modelFlag: defaults.customModelFlag };
+  return {
+    command: defaults.customCommand,
+    modelFlag: defaults.customModelFlag,
+    effortFlag: defaults.customEffortFlag ?? "",
+  };
 }
 
 /// Where a workspace stands on the three config.toml keys that name
@@ -2333,7 +2337,8 @@ export function resolvedAgentFor(workspaceId: string) {
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId)
+    customResumeArgsFor(workspaceId),
+    get(agentDefaultsStore).agentEfforts
   );
 }
 
@@ -2376,7 +2381,8 @@ export function agentForCard(
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId)
+    customResumeArgsFor(workspaceId),
+    get(agentDefaultsStore).agentEfforts
   );
 }
 
@@ -2388,11 +2394,13 @@ export function agentForProfile(workspaceId: string, profileId: string) {
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
       profile: profileId,
       model: "",
+      effort: "",
     }),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId)
+    customResumeArgsFor(workspaceId),
+    get(agentDefaultsStore).agentEfforts
   );
 }
 
@@ -2421,7 +2429,8 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId)
+    customResumeArgsFor(workspaceId),
+    get(agentDefaultsStore).agentEfforts
   );
 }
 
@@ -2450,7 +2459,8 @@ export const resolvedAgents = derived(
         {
           workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
           app: $customResumeArgs ?? undefined,
-        }
+        },
+        $defaults.agentEfforts
       )
 );
 
@@ -2482,7 +2492,8 @@ export const cardAgents = derived(
         {
           workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
           app: $customResumeArgs ?? undefined,
-        }
+        },
+        $defaults.agentEfforts
       );
     }
 );
@@ -2590,7 +2601,16 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
 /// watcher push -- no optimistic local copy to fall out of sync.
 export async function setAgentField(
   workspaceId: string,
-  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" | "model_flag",
+  key:
+    | "profile"
+    | "file"
+    | "command"
+    | "mcp_file"
+    | "mcp_format"
+    | "model"
+    | "model_flag"
+    | "effort"
+    | "effort_flag",
   value: string
 ): Promise<void> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
@@ -2601,7 +2621,7 @@ export async function setAgentField(
     setError(String(e));
     return;
   }
-  // Two of the seven keys are the ones workspace trust gates, so writing
+  // Two of the nine keys are the ones workspace trust gates, so writing
   // one through gavin's own Settings panel or setup wizard would
   // otherwise revoke the human's trust the instant they exercised it --
   // they would type a command, save, and be asked to approve what they

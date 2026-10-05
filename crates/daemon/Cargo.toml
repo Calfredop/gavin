@@ -23,6 +23,14 @@ toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"
 snow = "0.10.0"
+# The dial to the Relay (`remote.rs`): a blocking WebSocket over TLS, and
+# none of the Relay itself -- the daemon runs no async runtime, and with
+# `server` off this brings none in.
+gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"] }
+# Verifying a Device's hardware signature (`unlock.rs`): ECDSA over
+# P-256. Already built, at this version, under the TLS the dial above
+# runs on, so naming it here adds nothing to what is compiled.
+ring = "0.17"
 # Companion notification AEAD (ChaCha20-Poly1305). Same construction the
 # phone's Notification Service Extension / Android data-message handler
 # will open; the Push gateway never holds the key (security 06 §5.6).
@@ -41,6 +49,11 @@ trash = { version = "5", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+# Seam 1 (`tests/device_wire.rs`): a real local Relay, the test Device
+# built from the Companion core, and a certificate for the Relay to serve.
+gavin-relay = { path = "../gavin-relay", features = ["server", "client"] }
+companion-core = { path = "../companion-core", features = ["test-device"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
 # `proc.rs` reaches for libc on the two unix arms and for Win32 on the
 # third; neither exists on the other's target, and both are absent from

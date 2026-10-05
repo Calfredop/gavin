@@ -1,0 +1,14 @@
+App Store name (30 max; must be unique in App Store Connect):
+Gavin Companion
+
+App Store subtitle (30 max):
+Your coding agents, in reach
+
+App Store keywords (100 max, comma-separated, no spaces needed):
+coding,agents,AI,kanban,developer,remote,desktop,workstation,board,claude,codex
+
+App Store promotional text (170 max; editable without a new review):
+See which of your coding agents need you, and follow their work on each workspace's board, from your phone.
+
+Play short description (80 max):
+Follow your Gavin desktop's coding agents and their boards from your phone.

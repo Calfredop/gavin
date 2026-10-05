@@ -40,6 +40,12 @@ public class BundleChannelService extends Service {
                 case BundleChannel.CLOSED:
                     BundleChannel.closed(session);
                     break;
+                case BundleChannel.STARTED:
+                    BundleChannel.shown(session, true);
+                    break;
+                case BundleChannel.STOPPED:
+                    BundleChannel.shown(session, false);
+                    break;
                 default:
                     super.handleMessage(message);
             }

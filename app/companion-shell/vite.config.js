@@ -26,10 +26,15 @@ function noTauri() {
   };
 }
 
+/// Through `globalThis`: this file is type-checked without Node's types.
+const e2e = Boolean(/** @type {any} */ (globalThis).process?.env?.GAVIN_E2E);
+
 export default defineConfig(async () => ({
   plugins: [noTauri(), sveltekit()],
   test: {
-    include: ["src/**/*.{test,spec}.ts"],
+    // The scripted pairing against a real daemon runs only when asked
+    // for (`scripts/pair.sh node`): it needs the daemon and the Relay built.
+    include: e2e ? ["src/**/*.e2e.ts"] : ["src/**/*.{test,spec}.ts"],
   },
   clearScreen: false,
   server: {

@@ -57,6 +57,16 @@ same guarantee.
 `bundle.version` in `tauri.conf.json`, so a downloaded artefact can always
 be traced back to a commit.
 
+### The Companion bundle, staged before the app
+
+`beforeBuildCommand` also runs `stage-companion.mjs --release`: it builds
+the Companion UI bundle (`app/companion/`) from the same commit, packs it
+into a plain tar, signs it with the bundle key, and stages both under
+`app/src-tauri/companion/` for the app's `build.rs` to embed. So every
+release desktop carries the UI a phone runs to work on it and serves it
+to paired phones (ADR 0005). A bare `cargo build` embeds nothing and
+says so to a phone; `tauri build` and `tauri dev` always stage first.
+
 ## Key custody
 
 Every secret below lives in **GitHub Actions repository secrets**, and
@@ -90,6 +100,7 @@ an accident nobody notices.
 | `LINUX_GPG_KEY_PASSWORD` | its passphrase, if it has one | optional; `preflight` does not require it |
 | `TAURI_SIGNING_PRIVATE_KEY` | the updater's minisign private key — the contents of the file `tauri signer generate` wrote | `npx tauri signer generate -w gavin-updater.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its passphrase | chosen at generation; **required**, for the reason below |
+| `GAVIN_BUNDLE_SIGNING_KEY` | the Companion bundle's Ed25519 seed, 64 hex characters | `node app/src-tauri/companion-key.mjs generate`; see "The Companion bundle key" |
 
 The App Store Connect API key is used rather than an Apple ID and an
 app-specific password because it is scoped to notarization, is revocable on
@@ -116,6 +127,28 @@ The public half goes in `plugins.updater.pubkey` in
 line of config; `preflight` refuses a release whose pubkey is empty,
 which is what stops the repository's placeholder shipping by accident.
 
+**The Companion bundle key is a second key of that kind**, and kept
+apart from the updater's on purpose (ADR 0005). Each desktop build
+carries the Companion UI bundle a phone runs to work on it, and serves
+it to paired phones; the store build of the Companion runs only a bundle
+whose signature checks against the public key it pins
+(`app/companion-shell/src/shell/bundle/publisherKey.ts`). So this key
+signs code that runs on a phone next to its keys for every other
+Workstation -- and the updater key signs code that runs on the desktop.
+A leak of either must not be a leak of both, which is why they are two.
+The build signs in `app/src-tauri/stage-companion.mjs`, with Node's own
+`crypto` and the raw seed: make it with `node app/src-tauri/
+companion-key.mjs generate`, on a machine that does not run agents; keep
+the seed off the machine that builds; put the only other copy in the
+GitHub secret; and pin the public half it printed in `publisherKey.ts`,
+committed and reviewed like any other line. `preflight` derives the
+public half of the secret and refuses a release unless it is the pinned
+one, and refuses while the pin is null -- a release whose bundle no
+phone would run is not a release. A developer never needs this key: a
+dev desktop build signs with a key made on that machine, which a debug
+build of the Companion trusts and a store build does not
+(`app/companion-shell/README.md`, "Served bundles").
+
 **Rotation.** Revoke and re-issue on any suspicion, and on every change in
 who holds them. Apple's Developer ID certificate outlives most of them —
 five years — which makes it the one worth watching: a revoked certificate
@@ -125,7 +158,11 @@ is a different act, because there is nothing to revoke: a build signed
 with the new key is only accepted by an install that already carries the
 new public half, so the rotation has to reach existing installs through
 one last update signed with the OLD key. Anything older than that has to
-be downloaded again by hand.
+be downloaded again by hand. Rotating the BUNDLE key is a store release
+of the Companion with the new pin, and then desktop releases signed with
+the new key: a Companion from before the release refuses bundles from a
+desktop after it, and says so on the hub, until it updates from the
+store.
 
 ## What each platform gets
 
@@ -203,7 +240,8 @@ job stays.
    intended outcome, but failing at step 3 is cheaper.
 4. Every secret in the table above is present. `preflight` checks this, but
    check it first if any of them was rotated. It also refuses a release
-   whose `plugins.updater.pubkey` is empty.
+   whose `plugins.updater.pubkey` is empty, and one whose
+   `GAVIN_BUNDLE_SIGNING_KEY` is not the key `publisherKey.ts` pins.
 5. Tag and push: `git tag -a vX.Y.Z -m 'gavin X.Y.Z' && git push origin vX.Y.Z`.
 6. Watch the run. Every job must be green: green means signed, verified and
    — on macOS — notarized and stapled.

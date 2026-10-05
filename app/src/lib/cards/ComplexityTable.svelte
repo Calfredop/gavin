@@ -1,5 +1,5 @@
 <script lang="ts">
-  /// The five-row table that says which agent and model each complexity
+  /// The five-row table that says which agent, model and effort each complexity
   /// level runs. One component for both panels -- the app-wide Settings
   /// modal and a workspace's Settings tab -- because they are the same
   /// table with the same vocabulary, and two copies is how the app-wide
@@ -18,6 +18,7 @@
     type ComplexityTable,
   } from "$lib/cards/complexity";
   import type { AgentProfileInfo } from "$lib/core/settings";
+  import { effortPresets } from "$lib/agents/agentModel";
 
   interface Props {
     profiles: AgentProfileInfo[];
@@ -40,7 +41,7 @@
   const profileLabel = (id: string) => profiles.find((p) => p.id === id)?.label ?? id;
 
   function entryFor(level: Complexity): ComplexityAgent {
-    return table[level] ?? { profile: "", model: "" };
+    return table[level] ?? { profile: "", model: "", effort: "" };
   }
 
   /// What this row does if left alone, said in the option's own label so
@@ -49,9 +50,9 @@
     const shared = inherited?.[level];
     if (!isAttributed(shared)) return "This workspace's agent";
     const agent = shared!.profile.trim();
-    const model = shared!.model.trim();
+    const what = [shared!.model.trim(), (shared!.effort ?? "").trim()].filter(Boolean).join(" · ");
     const who = agent ? profileLabel(agent) : "this workspace's agent";
-    return model ? `Default (${who} · ${model})` : `Default (${who})`;
+    return what ? `Default (${who} · ${what})` : `Default (${who})`;
   }
 
   /// A row is stored only when it says something. Writing an empty entry
@@ -67,6 +68,23 @@
 
   function typeModel(level: Complexity, value: string): void {
     commit(level, { ...entryFor(level), model: value });
+  }
+
+  /// Free text, so a level a newer CLI added is never out of reach; the
+  /// box suggests the levels the row's agent documents (`effortPresets`).
+  function typeEffort(level: Complexity, value: string): void {
+    commit(level, { ...entryFor(level), effort: value.trim() });
+  }
+
+  /// Whether the effort this row names can reach the profile it names --
+  /// `modelUnreachable`'s twin, and asked only about a NAMED profile for
+  /// the same reason.
+  function effortUnreachable(level: Complexity): boolean {
+    const entry = entryFor(level);
+    const id = entry.profile.trim();
+    if (!id || !(entry.effort ?? "").trim()) return false;
+    const profile = profiles.find((p) => p.id === id);
+    return Boolean(profile) && !profile!.effortFlag;
   }
 
   /// Whether gavin has any way to put a model on the profile this row
@@ -108,6 +126,22 @@
             if (e.key === "Enter") e.currentTarget.blur();
           }}
         />
+        <input
+          class="effort"
+          spellcheck="false"
+          placeholder="effort"
+          list="complexity-effort-{level}"
+          value={entry.effort ?? ""}
+          onchange={(e) => typeEffort(level, e.currentTarget.value)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+        <datalist id="complexity-effort-{level}">
+          {#each effortPresets(profiles, entry.profile) as effort (effort)}
+            <option value={effort}></option>
+          {/each}
+        </datalist>
         <button
           type="button"
           class="clear"
@@ -124,6 +158,12 @@
           <span class="warn">
             gavin knows no model flag for {profileLabel(entry.profile.trim())} — set the model in
             its command instead.
+          </span>
+        {/if}
+        {#if effortUnreachable(level)}
+          <span class="warn">
+            gavin knows no effort flag for {profileLabel(entry.profile.trim())}, so this effort is
+            not passed on.
           </span>
         {/if}
       </p>
@@ -174,6 +214,13 @@
   }
   select {
     min-width: 140px;
+  }
+  /* An effort is one short word -- `high`, `xhigh` -- so its box is
+     narrow on purpose: the four controls still have to read as one row
+     under a 110px label in the 380px app modal. */
+  input.effort {
+    flex: 0 1 90px;
+    min-width: 0;
   }
   /* Kept in the flow even when there is nothing to clear, so the four
      rows above and below it stay on one grid. */

@@ -321,7 +321,7 @@ mod tests {
             pinned_at: Some(10 * n),
             complexity_agents: HashMap::from([(
                 "complex".to_string(),
-                ComplexityAgent { profile: s("profile"), model: s("model") },
+                ComplexityAgent { profile: s("profile"), model: s("model"), effort: s("effort") },
             )]),
             git_tracking_asked: flavour == "a",
             trusted_config_hash: Some(s("hash")),

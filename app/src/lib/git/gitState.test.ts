@@ -1166,7 +1166,7 @@ describe("commit via agent", () => {
     vi.mocked(resolvedAgentFor).mockReturnValueOnce({
       profileId: "codex", label: "Codex CLI", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
-      promptArgs: "", model: "", modelFlag: "--model", launchCommand: "codex",
+      promptArgs: "", model: "", modelFlag: "--model", effort: "", effortFlag: "", launchCommand: "codex",
       failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "",
     });
     ensureGitView("ws", "/r");

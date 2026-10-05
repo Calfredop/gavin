@@ -21,6 +21,7 @@ export const PROBE_WORKSTATION: HubWorkstation = {
   demo: false,
   summary: "",
   state: "ready",
+  openable: true,
 };
 
 /// The command the probe page reports with, and the one its frames try.
@@ -50,6 +51,11 @@ export interface ChecksReport {
   capabilities: { workstation?: { id?: string } } | null;
   globals: Record<string, string>;
   pluginCalls: ProbeAttempt[];
+  /// The same calls, made to the Device's keys plugin.
+  keyCalls: ProbeAttempt[];
+  /// And to the plugins pairing added: the paired Workstations' store,
+  /// which holds their notification keys, and the camera.
+  pairingCalls: ProbeAttempt[];
   frames: ProbeFrame[];
   fetches: ProbeAttempt[];
 }
@@ -119,6 +125,21 @@ export function probeVerdict({ reports, invokes, drops }: VerdictInput): ProbeVe
       "a plugin call from the bundle webview fails",
       checks.pluginCalls.length > 0 && checks.pluginCalls.every((c) => failed(c.outcome)),
       checks.pluginCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+    );
+    add(
+      "the Device's keys are out of the bundle's reach",
+      checks.keyCalls.length > 0 && checks.keyCalls.every((c) => failed(c.outcome)),
+      checks.keyCalls.length > 0
+        ? checks.keyCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+        : "the probe made no call to the keys plugin"
+    );
+    const pairingCalls = checks.pairingCalls ?? [];
+    add(
+      "the paired Workstations and the camera are out of the bundle's reach",
+      pairingCalls.length > 0 && pairingCalls.every((c) => failed(c.outcome)),
+      pairingCalls.length > 0
+        ? pairingCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+        : "the probe made no call to the Workstations or QrScanner plugin"
     );
 
     const nativeDrops = drops.filter((d): d is Extract<VisitDrop, { where: "native" }> => d.where === "native");
@@ -220,7 +241,10 @@ export function createProbeBench(): ProbeBench {
 }
 
 /// Opens the probe, waits for it to finish (or for `timeoutMs`), and
-/// writes the verdict to the log on one line the probe script can find.
+/// writes the verdict to the log for the probe script to find: a line a
+/// check, then one saying whether they all passed and how many there
+/// were. Not the whole verdict on one line: a device log cuts a line off
+/// at about 4 KB, and the checks' details together run past that.
 export async function runProbe(options: {
   visits: Visits;
   bench: ProbeBench;
@@ -239,7 +263,8 @@ export async function runProbe(options: {
   ]);
   clearTimeout(timer);
   const verdict = probeVerdict(bench);
-  log(`${VERDICT_MARK} ${JSON.stringify(verdict)}`);
+  for (const check of verdict.checks) log(`${VERDICT_MARK} check ${JSON.stringify(check)}`);
+  log(`${VERDICT_MARK} ${JSON.stringify({ passed: verdict.passed, checks: verdict.checks.length })}`);
   await visits.close();
   return verdict;
 }

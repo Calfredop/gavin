@@ -8,6 +8,7 @@ import {
   CHANNEL_VERSION,
   CORE_MESSAGES,
   encode,
+  readLanding,
   readWorkstationMessage,
   type BundleMessage,
   type Capabilities,
@@ -69,7 +70,7 @@ function readCapabilities(value: unknown): Capabilities | null {
   if (typeof answer.version !== "number") return null;
   if (!Array.isArray(answer.messages) || !answer.messages.every((m) => typeof m === "string")) return null;
   const ws = answer.workstation as Record<string, unknown> | null | undefined;
-  return {
+  const read: Capabilities = {
     version: answer.version,
     messages: answer.messages,
     workstation: {
@@ -78,6 +79,9 @@ function readCapabilities(value: unknown): Capabilities | null {
       demo: ws?.demo === true,
     },
   };
+  const landing = readLanding(answer.landing);
+  if (landing) read.landing = landing;
+  return read;
 }
 
 /// Only a web link leaves the app. The shell checks too -- it is the one

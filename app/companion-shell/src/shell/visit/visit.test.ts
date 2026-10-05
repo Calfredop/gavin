@@ -32,7 +32,7 @@ function fakeView() {
   let gate: Promise<void> | null = null;
   let failWith: string | null = null;
   const view = {
-    open: vi.fn(async (_o: { session: number; workstation: string }) => {
+    open: vi.fn(async (_o: { session: number; workstation: string; bundle: string }) => {
       if (gate) await gate;
       if (failWith) throw new Error(failWith);
       return { origin: ORIGIN };
@@ -116,13 +116,14 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await new Promise<void>((r) => queueMicrotask(r));
 }
 
-function setup(options: { endpointFor?: VisitDeps["endpointFor"] } = {}) {
+function setup(options: { endpointFor?: VisitDeps["endpointFor"]; prepare?: VisitDeps["prepare"] } = {}) {
   const native = fakeView();
   const clock = manualClock();
   const drops: VisitDrop[] = [];
   const demos: ReturnType<typeof createDemoWorkstation>[] = [];
   const visits = createVisits({
     view: native.view,
+    prepare: options.prepare,
     endpointFor:
       options.endpointFor ??
       (() => {
@@ -143,7 +144,7 @@ describe("visiting a Workstation", () => {
   it("opens the Demo Workstation's bundle in the native view and connects it to the demo", async () => {
     const { native, visits, demos } = setup();
     await visits.open(DEMO_WORKSTATION);
-    expect(native.view.open).toHaveBeenCalledWith({ session: sessionOf(native), workstation: "demo" });
+    expect(native.view.open).toHaveBeenCalledWith({ session: sessionOf(native), workstation: "demo", bundle: "demo" });
     expect(get(visits.state)).toEqual({ status: "open", workstation: DEMO_WORKSTATION });
 
     const bundle = native.bundle(sessionOf(native));
@@ -258,6 +259,75 @@ describe("visiting a Workstation", () => {
       status: "failed",
       workstation: DEMO_WORKSTATION,
       reason: "no bundle for this Workstation",
+    });
+  });
+
+  describe("a paired Workstation's bundle", () => {
+    const PAIRED: HubWorkstation = { id: "ws-1234", name: "Studio", demo: false, summary: "", state: "ready", openable: true };
+
+    it("is readied before the view opens, saying what it is doing, and the view serves it by hash", async () => {
+      const seen: string[] = [];
+      const { native, visits } = setup({
+        prepare: async (ws, say) => {
+          expect(ws).toBe(PAIRED);
+          say("Fetching its UI… 50%");
+          await settle();
+          seen.push(get(visits.state).status === "opening" ? String((get(visits.state) as { detail: string | null }).detail) : "?");
+          say("Installing it…");
+          return "ab".repeat(32);
+        },
+      });
+      await visits.open(PAIRED);
+      expect(seen).toEqual(["Fetching its UI… 50%"]);
+      expect(native.view.open).toHaveBeenCalledWith({ session: sessionOf(native), workstation: "ws-1234", bundle: "ab".repeat(32) });
+      expect(get(visits.state)).toEqual({ status: "open", workstation: PAIRED });
+    });
+
+    it("does not open when the bundle cannot be readied, and says why", async () => {
+      const { native, visits } = setup({
+        prepare: async () => {
+          throw new Error("The Workstation's UI was signed by a key this Companion does not trust.");
+        },
+      });
+      await visits.open(PAIRED);
+      expect(native.view.open).not.toHaveBeenCalled();
+      expect(get(visits.state)).toEqual({
+        status: "failed",
+        workstation: PAIRED,
+        reason: "The Workstation's UI was signed by a key this Companion does not trust.",
+      });
+    });
+
+    it("stops readying when the hub moves on, and opens nothing", async () => {
+      let stopped = false;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const { native, visits } = setup({
+        prepare: async (_ws, _say, signal) => {
+          signal.addEventListener("abort", () => (stopped = true));
+          await gate;
+          return "ab".repeat(32);
+        },
+      });
+      const opening = visits.open(PAIRED);
+      await settle();
+      expect(get(visits.state)).toEqual({ status: "opening", workstation: PAIRED, detail: null });
+      await visits.close();
+      expect(stopped).toBe(true);
+      release();
+      await opening;
+      expect(native.view.open).not.toHaveBeenCalled();
+      expect(get(visits.state)).toEqual({ status: "hub" });
+    });
+
+    it("hands the bundle where to land, once", async () => {
+      const { native, visits } = setup({ prepare: async () => "demo" });
+      const landing = { workspace: "w1", target: { kind: "card" as const, path: "/w1/.gavin-root/plans/a.md" } };
+      await visits.open(DEMO_WORKSTATION, landing);
+      const bundle = native.bundle(sessionOf(native));
+      expect((await bundle.capabilities()).landing).toEqual(landing);
+      const again = native.bundle(sessionOf(native));
+      expect((await again.capabilities()).landing).toBeUndefined();
     });
   });
 

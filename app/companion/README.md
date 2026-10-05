@@ -42,7 +42,7 @@ exactly one `result` with that id.
 
 | from the bundle | carries | answered with |
 |---|---|---|
-| `capabilities` | — | `{ version, messages, workstation: { id, name, demo } }` |
+| `capabilities` | — | `{ version, messages, workstation: { id, name, demo }, landing? }` |
 | `invoke` | `cmd`, `args` | the command's value, or its error |
 | `listen` | `event` | nothing, once the listener is registered |
 | `unlisten` | `listener` (the `listen`'s id) | nothing |
@@ -60,6 +60,14 @@ unknown field is ignored. A bundle asks `capabilities` before using anything
 beyond the core set (`invoke`, `result`, `listen`, `event`, `unlisten`), and an
 end that cannot answer the question is taken to carry exactly that set — so a
 shell older than its bundle costs a button, never the page.
+
+`landing` is optional and read only by a bundle that knows it: where the
+shell wants the bundle to land, when it opened it for an inbox item — the
+item's workspace and its target, a session or a card (`readLanding`). The
+shell hands it over in the first `capabilities` answer and never again.
+The bundle opens that workspace's board on the card the item names, or on
+the card whose agent is the session it names (`landingCard`), and outlines
+it until the human goes somewhere else.
 
 **The shell's side of the contract** (companion-19, `app/companion-shell/`):
 put an object at `window.gavinChannel` with `postMessage(string)` and an
@@ -158,7 +166,10 @@ demo lacks, that is where it shows.
 
 The first surface: the workspace list and one workspace's board, to read. The
 board draws the desktop's own `BoardCard` with no workspace id, which is the
-card the desk draws in previews — no Run, no session jump, no drag.
+card the desk draws in previews — no Run, no session jump, no drag. An inbox
+item lands on its card (above). How this bundle reaches a phone — built and
+signed by the desktop build, served by the Workstation, verified and cached
+by the shell — is the shell's README's ("Served bundles").
 
 Opening a card, acting on one, sessions and terminals, rails, Git, files and
 settings are the cards that follow (companion-26 to -30), each extending the

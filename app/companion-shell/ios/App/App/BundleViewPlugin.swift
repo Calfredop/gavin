@@ -18,17 +18,23 @@ public class BundleViewPlugin: CAPPlugin, CAPBridgedPlugin, BundleViewEvents {
         CAPPluginMethod(name: "close", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openExternal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "probeRequested", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "installed", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "install", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "prune", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "devPublisherKey", returnType: CAPPluginReturnPromise),
     ]
 
     /// The one open bundle. Opening another closes it first.
     private var current: BundleViewController?
 
     @objc func open(_ call: CAPPluginCall) {
-        guard let session = call.getInt("session"), let workstation = call.getString("workstation") else {
-            call.reject("open needs a session and a workstation")
+        guard let session = call.getInt("session"), let workstation = call.getString("workstation"),
+              let bundle = call.getString("bundle")
+        else {
+            call.reject("open needs a session, a workstation and a bundle")
             return
         }
-        guard BundleOrigin.isHost(workstation), let root = BundleCatalog.folder(for: workstation) else {
+        guard BundleOrigin.isHost(workstation), let root = BundleCatalog.folder(for: bundle) else {
             call.reject("this app carries no UI for “\(workstation)”")
             return
         }
@@ -101,6 +107,59 @@ public class BundleViewPlugin: CAPPlugin, CAPBridgedPlugin, BundleViewEvents {
         #else
         call.resolve(["probe": false])
         #endif
+    }
+
+    // MARK: the cache
+
+    @objc func installed(_ call: CAPPluginCall) {
+        guard let hash = call.getString("hash") else {
+            call.reject("installed needs a hash")
+            return
+        }
+        call.resolve(["installed": BundleCache.installed(hash)])
+    }
+
+    /// Only the shell's web layer reaches this, and only with the files of
+    /// a bundle the Companion core verified and unpacked.
+    @objc func install(_ call: CAPPluginCall) {
+        guard let hash = call.getString("hash"), let list = call.getArray("files") else {
+            call.reject("install needs a hash and the files")
+            return
+        }
+        var files: [(path: String, data: String)] = []
+        for entry in list {
+            guard let file = entry as? [String: Any], let path = file["path"] as? String, let data = file["data"] as? String else {
+                call.reject("a bundle file is a path and its data")
+                return
+            }
+            files.append((path: path, data: data))
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try BundleCache.install(hash, files: files)
+                NSLog("[gavin-shell] installed bundle %@ (%d files)", String(hash.prefix(12)), files.count)
+                call.resolve()
+            } catch {
+                call.reject("the bundle could not be installed: \(error)")
+            }
+        }
+    }
+
+    @objc func prune(_ call: CAPPluginCall) {
+        let keep = Set((call.getArray("keep") as? [String]) ?? [])
+        DispatchQueue.global(qos: .utility).async {
+            BundleCache.prune(keep: keep)
+            call.resolve()
+        }
+    }
+
+    /// The dev key's public half, in a DEBUG build; null in a release.
+    @objc func devPublisherKey(_ call: CAPPluginCall) {
+        if let key = BundleCatalog.devPublisherKey() {
+            call.resolve(["key": key])
+        } else {
+            call.resolve(["key": NSNull()])
+        }
     }
 
     // MARK: BundleViewEvents

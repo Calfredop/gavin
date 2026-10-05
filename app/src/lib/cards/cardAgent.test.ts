@@ -3,6 +3,7 @@ import {
   cardAgentEntry,
   cardAgentOverride,
   cardAgentSummary,
+  cardEffortUnreachable,
   cardModelUnreachable,
   cardOverrideNote,
 } from "$lib/cards/cardAgent";
@@ -16,12 +17,20 @@ const label = (id: string) => (id === "codex" ? "Codex" : id === "claude-code" ?
 
 describe("cardAgentOverride", () => {
   it("reads either half on its own, since either is a whole answer", () => {
-    expect(cardAgentOverride({ agent: "codex" })).toEqual({ profile: "codex", model: "" });
-    expect(cardAgentOverride({ model: "opus" })).toEqual({ profile: "", model: "opus" });
+    expect(cardAgentOverride({ agent: "codex" })).toEqual({ profile: "codex", model: "", effort: "" });
+    expect(cardAgentOverride({ model: "opus" })).toEqual({ profile: "", model: "opus", effort: "" });
     expect(cardAgentOverride({ agent: "codex", model: "gpt-5.1" })).toEqual({
       profile: "codex",
       model: "gpt-5.1",
+      effort: "",
     });
+  });
+
+  it("reads an effort on its own as an override too", () => {
+    // "This workspace's agent, thinking harder" -- a whole answer, and
+    // the commonest one on a machine with one CLI installed.
+    expect(cardAgentOverride({ effort: " max " })).toEqual({ profile: "", model: "", effort: "max" });
+    expect(cardAgentOverride({ effort: "   " })).toBeNull();
   });
 
   it("treats an absent, empty or whitespace line as no override at all", () => {
@@ -38,6 +47,7 @@ describe("cardAgentOverride", () => {
     expect(cardAgentOverride({ agent: "not-a-profile" })).toEqual({
       profile: "not-a-profile",
       model: "",
+      effort: "",
     });
   });
 });
@@ -59,10 +69,19 @@ describe("cardAgentEntry", () => {
     expect(cardAgentEntry({ complexity: "intricate", model: "opus" }, app, {})).toEqual({
       profile: "",
       model: "opus",
+      effort: "",
     });
     expect(cardAgentEntry({ complexity: "intricate", agent: "gemini" }, app, {})).toEqual({
       profile: "gemini",
       model: "",
+      effort: "",
+    });
+    // An effort alone replaces the level's pair as well: the card runs
+    // the WORKSPACE's agent harder, not the level's codex.
+    expect(cardAgentEntry({ complexity: "intricate", effort: "high" }, app, {})).toEqual({
+      profile: "",
+      model: "",
+      effort: "high",
     });
   });
 
@@ -114,6 +133,12 @@ describe("cardAgentSummary", () => {
     );
   });
 
+  it("says what an effort-only card beats", () => {
+    expect(cardAgentSummary({ complexity: "intricate", effort: "max" }, app, {}, label)).toBe(
+      "This card runs this workspace's agent, at max effort — overriding what its intricate level would run (Codex on gpt-5.1)."
+    );
+  });
+
   it("claims no fight with a level that attributes nothing", () => {
     expect(cardAgentSummary({ complexity: "moderate", agent: "codex" }, app, {}, label)).toBe(
       "This card runs Codex."
@@ -143,6 +168,15 @@ describe("cardOverrideNote", () => {
       "This card runs the workspace's agent at opus."
     );
   });
+
+  it("names the effort on every shape, and alone", () => {
+    expect(cardOverrideNote({ agent: "codex", model: "gpt-5.1", effort: "high" })).toBe(
+      "This card runs on codex at gpt-5.1, at high effort, not the workspace's agent."
+    );
+    expect(cardOverrideNote({ effort: "max" })).toBe(
+      "This card runs the workspace's agent, at max effort."
+    );
+  });
 });
 
 describe("cardModelUnreachable", () => {
@@ -153,5 +187,13 @@ describe("cardModelUnreachable", () => {
     // warning about every card in the workspace would be noise.
     expect(cardModelUnreachable({}, "")).toBe(false);
     expect(cardModelUnreachable({ model: "  " }, "")).toBe(false);
+  });
+});
+
+describe("cardEffortUnreachable", () => {
+  it("warns only about an effort that has no flag to ride on", () => {
+    expect(cardEffortUnreachable({ effort: "high" }, "")).toBe(true);
+    expect(cardEffortUnreachable({ effort: "high" }, "--effort")).toBe(false);
+    expect(cardEffortUnreachable({}, "")).toBe(false);
   });
 });

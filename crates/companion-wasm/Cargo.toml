@@ -1,0 +1,30 @@
+[package]
+name = "companion-wasm"
+version = "0.1.0"
+edition = "2021"
+
+# The Companion core as the shell loads it: a `.wasm` its web layer
+# instantiates with nothing to import. Built for `wasm32-unknown-unknown`
+# by the shell's own pipeline (`app/companion-shell/scripts/core.mjs`),
+# and natively by the workspace like any other member, which is where its
+# tests run.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Without `test-device`: the core the shell runs, which does no I/O and
+# draws no randomness of its own.
+companion-core = { path = "../companion-core" }
+protocol = { path = "../protocol", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The Workstation's half of the pairing handshake, written out with the
+# same `snow` the daemon runs, so the tests drive this face against the
+# handshake the daemon speaks rather than against itself.
+snow = { version = "0.10.0", default-features = false, features = [
+  "use-chacha20poly1305",
+  "use-blake2",
+  "use-curve25519",
+] }

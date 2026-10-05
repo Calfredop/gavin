@@ -100,8 +100,11 @@ export function tabRowKindWord(kind: PageTabKind, followUps: boolean): string {
 }
 
 export interface TabRowTip {
-  /// The first line: the agent's own status sentence for a terminal row,
-  /// else what kind of tab it is (tabRowKindWord).
+  /// The first line: the tab's own name, which the row ellipsizes to fit.
+  /// Empty draws no line.
+  name: string;
+  /// Then the agent's own status sentence for a terminal row, else what
+  /// kind of tab it is (tabRowKindWord).
   lead: string;
   /// Where the row points -- a context folder, a file, a card path, a
   /// cwd. Empty where the row has none, in which case no line is drawn
@@ -111,15 +114,17 @@ export interface TabRowTip {
   git: GitStatus | null;
 }
 
-/// ONE bubble for the whole row: what it is, where it lives, and -- for a
-/// session in a repo -- the checkout in full, spelled out where the row
-/// itself can only afford glyphs.
+/// ONE bubble for the whole row: its name, what it is, where it lives,
+/// and -- for a session in a repo -- the checkout in full, spelled out
+/// where the row itself can only afford glyphs.
 ///
 /// Deliberately one and not two: mouseenter does not bubble, so a second
 /// tooltip on the git line inside the row would take the row's own over
 /// and never hand it back.
 export function tabRowTip(input: TabRowTip): string {
-  const lines = [input.lead];
+  const lines: string[] = [];
+  if (input.name) lines.push(input.name);
+  lines.push(input.lead);
   if (input.where) lines.push(input.where);
   const status = input.git;
   if (status) {

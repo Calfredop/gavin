@@ -22,7 +22,7 @@ import { handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import { themeState } from "$lib/ui/themeState.svelte";
-import type { Capabilities } from "$companion/channel/messages";
+import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
 import {
@@ -52,9 +52,14 @@ export type Connection =
 
 const connectionStore = writable<Connection>({ status: "connecting" });
 const viewStore = writable<ViewState>(initialView());
+/// Where the shell asked this bundle to land: an inbox item's session or
+/// card, until the human goes somewhere else. Not remembered on the
+/// Device -- a landing is for this opening alone.
+const landingStore = writable<Landing | null>(null);
 
 export const connection: Readable<Connection> = { subscribe: connectionStore.subscribe };
 export const view: Readable<ViewState> = { subscribe: viewStore.subscribe };
+export const landing: Readable<Landing | null> = { subscribe: landingStore.subscribe };
 
 /// Writes a view down on the Device. Null until a Workstation is
 /// connected, since a view belongs to one.
@@ -74,11 +79,23 @@ function show(next: ViewState): void {
 
 export function openWorkspace(workspaceId: string): void {
   if (!get(layoutState).workspaces.some((w) => w.id === workspaceId)) return;
+  landingStore.set(null);
   show(openWorkspaceIn(get(viewStore), workspaceId));
 }
 
 export function showWorkspaces(): void {
+  landingStore.set(null);
   show(backToWorkspaces(get(viewStore)));
+}
+
+/// Lands where the shell asked: the item's workspace, with its card (or
+/// the card running its session) for the board to reveal. A workspace
+/// this Workstation no longer has is not a place, and the view stays
+/// where it was remembered.
+export function land(where: Landing): void {
+  if (!get(layoutState).workspaces.some((w) => w.id === where.workspace)) return;
+  landingStore.set(where);
+  show(openWorkspaceIn(get(viewStore), where.workspace));
 }
 
 /// Leaves this Workstation for the Workstations hub.
@@ -198,6 +215,8 @@ export async function connectWorkstation(
     layoutState.update((s) => ({ ...s, activeWorkspaceId: get(viewStore).workspaceId }));
     remember = (next) => saveView(storage, workstationId, next);
     adoptWorkspaces(data);
+    landingStore.set(null);
+    if (capabilities.landing) land(capabilities.landing);
 
     connectionStore.set({
       status: "ready",

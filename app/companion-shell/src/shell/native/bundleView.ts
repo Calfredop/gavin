@@ -28,10 +28,30 @@ export interface BundleClosedEvent {
   session: number;
 }
 
+/// One file of a bundle to install. `data` is base64.
+export interface BundleFileToInstall {
+  path: string;
+  data: string;
+}
+
 export interface BundleViewPlugin {
   /// Opens a Workstation's bundle full-screen over the hub. `session`
   /// tags every event from this view; resolves with the bundle's origin.
-  open(options: { session: number; workstation: string }): Promise<{ origin: string }>;
+  /// `bundle` names what the view serves at that origin: an embedded
+  /// bundle (`demo`; `probe` in a debug build), or the hash of one
+  /// `install` put in the cache.
+  open(options: { session: number; workstation: string; bundle: string }): Promise<{ origin: string }>;
+  /// Whether the cache holds a bundle by hash.
+  installed(options: { hash: string }): Promise<{ installed: boolean }>;
+  /// Puts a bundle's files in the cache under `hash`, whole or not at
+  /// all: an install that fails leaves no bundle to serve.
+  install(options: { hash: string; files: BundleFileToInstall[] }): Promise<void>;
+  /// Removes every cached bundle whose hash is not in `keep`.
+  prune(options: { keep: string[] }): Promise<void>;
+  /// The public half of the dev bundle-signing key this build embeds,
+  /// hex -- in a debug build. A release build answers null whatever it
+  /// carries (ADR 0005: a store build refuses self-built bundles).
+  devPublisherKey(): Promise<{ key: string | null }>;
   /// Hands a message to the bundle's main frame, if `session` is still
   /// the open view.
   post(options: { session: number; data: string }): Promise<void>;

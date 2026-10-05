@@ -27,8 +27,14 @@ Part of `companion.md`. Read ADR 0005's "Store compliance" section and the store
 - [ ] Both submissions are made, with the review notes
 - [ ] The outcome is recorded here
 - [ ] ADR 0005 is updated if Apple's answer changes it
-- [ ] Decision: Companion 23 (end-to-end signed UI) is still To Do, blocked by 22 and 13. Agent prep (review notes, store description, owner wizard) is on this card. Wait for 23 before any store submit, or submit the current Demo-only shell early against ADR 0005?
+- [x] Decision: Companion 23 (end-to-end signed UI) is still To Do, blocked by 22 and 13. Agent prep (review notes, store description, owner wizard) is on this card. Wait for 23 before any store submit, or submit the current Demo-only shell early against ADR 0005?
   Options: A) Wait for companion-23 B) Submit Demo-only shell now
+  Moot (2026-09-30): companion-23 is Done, so there is no Demo-only-or-wait choice left. The submission uses its build. The live question is the next one.
+- [ ] Decision: The end-to-end build (companion-23) shows a paired desktop's workspaces and boards READ-ONLY. Terminals (companion-26) and git/files (29) are In Progress, and card actions, rails and settings (27, 28, 30) are To Do. Submit it now, as ADR 0005 says, to learn Apple's stance on served bundles early? The risk is a Guideline 4.2 "minimum functionality" rejection, which would answer nothing about the architecture. Or wait for companion-26, so the reviewer sees terminals too? Recommended: B, since 26 is already In Progress and a 4.2 rejection would cost a review cycle without the answer this card exists for.
+  Options: A) Submit the read-only build now B) Wait for companion-26 (terminals), then submit
+- [ ] Decision: The shell targets iPhone AND iPad (TARGETED_DEVICE_FAMILY 1,2), so App Store Connect wants 13" iPad screenshots and App Review may test on an iPad. Nothing in the Companion has been designed or checked for iPad. Make the first submission iPhone-only (it still runs on iPad in compatibility mode)? Recommended: A.
+  Options: A) iPhone-only for now B) Keep iPhone + iPad
+- [ ] Human test: On a phone or Simulator with a release sync of `companion/desk-prep` (`npm run companion-shell:sync -- ios android --release`), check the new home-screen icon (iOS rounded tile; Android adaptive ">G" on dark, in a circle and a squircle launcher) and the dark launch screen look right and not cropped. They were drawn by `app/companion-shell/scripts/icons.mjs` from the desktop's icon.svg.
 - [ ] Human test: After companion-23 is Done: submit the end-to-end iOS build to App Store Connect for full review with Manual Release, using the Prepared App Store Notes for Review on this card. Record version/build and confirm approval will not publish.
 - [ ] Human test: After companion-23 is Done: upload the release AAB to Play Console Internal testing with the Prepared Play notes on this card. Record the internal release name/version under Play internal testing on this card.
 - [ ] Decision: When App Review replies: paste the decision, date, and any guideline cites into Apple's response on this card. If rejected, say so here so ADR 0005 can get the binary-embed fallback.
@@ -39,111 +45,47 @@ Cannot submit yet. `companion-23-served-signed-ui` is still **To Do**, and itsel
 
 Agent prep below is ready to paste the moment that build exists. Submissions wait on 23 + the owner's accounts.
 
+**Update (2026-09-30):** companion-23 is Done (committed on `companion/phone`, a528f161). The early-submit decision above is moot: the submission uses its end-to-end build. A readiness pass over the shell found gaps that would stop the upload or invite a rejection, whatever the review notes say. They are the plan below. The work is on branch `companion/desk-prep` (worktree `.gavin-worktrees/companion-desk-prep`).
+
+## Plan (agent prep, 2026-09-30)
+
+- [x] iOS privacy manifest: the App target reads `UserDefaults` (in three plugins) with no `PrivacyInfo.xcprivacy`, so App Store Connect would refuse the upload (ITMS-91053). Added `ios/App/App/PrivacyInfo.xcprivacy` with reason CA92.1, no tracking and nothing collected, and registered it in the Xcode project. Capacitor's package ships its own
+- [x] App icons: iOS and Android still had Capacitor's placeholder icon (the blue X on a grid). `scripts/icons.mjs` now draws them from `app/src-tauri/icons/icon.svg`: the iOS icon is the tile full-bleed at 1024, opaque; Android gets an adaptive icon, the ">G" glyphs inside the 66dp safe circle on the tile colour; plus `store/play-icon-512.png`
+- [x] Splash: Capacitor's placeholder replaced with the ">G" mark on the tile's dark colour, for iOS and every Android density and orientation
+- [x] Android release signing: `bundleRelease` now signs with the upload key named in `android/keystore.properties` or `GAVIN_ANDROID_UPLOAD_*` (keystore files gitignored). Without either it stays unsigned. `-PversionCodeOverride=N` sets the versionCode
+- [x] Review notes: checked against the build. The message types, the "Demo Workstation" label and Safari for external links hold. The surfaces did not: the first draft listed terminals, git, files, settings and rails, and none is in this build. Rewritten into `store/` to describe what ships (see below)
+- [x] Owner wizard: `scripts/store-submit.sh` (see below)
+- [x] Checks: shell vitest 241/241. svelte-check reports 1 error, which predates this work and sits in `src/shell/bundle/bundle.e2e.ts:182` (a manifest cast), a file this work does not touch. Built with `companion-shell:sync -- ios android --release`. `xcodebuild` Release for `generic/platform=iOS`, unsigned: BUILD SUCCEEDED, and the .app carries `PrivacyInfo.xcprivacy`, the icon and only the demo bundle, with no dev key. `bundleRelease` against a throwaway key gave a signed AAB (`jarsigner -verify`: jar verified), unsigned without the key, versionCode override honoured
+
+Uncommitted on `companion/desk-prep`: `app/companion-shell/{ios/App/App/PrivacyInfo.xcprivacy, ios/App/App.xcodeproj/project.pbxproj, android/app/build.gradle, android/.gitignore, scripts/icons.mjs, scripts/store-submit.sh, store/, README.md}` plus the regenerated icon and splash PNGs and `values/ic_launcher_background.xml`.
+
 ## Prepared: App Store — Notes for Review
 
-Paste into App Store Connect → App Review Information → Notes:
+The review notes, the store description, the listing and the Play release notes are now files that live with the build they describe: `app/companion-shell/store/` (on `companion/desk-prep`), and the wizard copies each one to the clipboard at the step that needs it:
 
-```
-Gavin Companion is a remote control for the user's own Gavin desktop (a
-coding-agent workstation on their Mac/PC). It is not a website wrapper.
+- `app-review-notes.txt` goes in ASC → App Review Information → Notes. It covers the UI the user's own desktop serves, signed by the publisher and run with no native bridge (DPLA 3.3.1(B), Guideline 4.7.2), and the built-in Demo Workstation for reviewers, which needs no account and no pairing.
+- `description.txt` and `listing.txt` are the App Store and Play description, name, subtitle, keywords, promotional text and Play short description.
+- `play-release-notes.txt` is for Play internal testing.
 
-How the UI works
-- Paired Workstations serve a publisher-signed web UI bundle over an
-  encrypted channel. The shell verifies the signature against a key pinned
-  in the binary, then runs the bundle in a separate webview with no
-  Capacitor / native-plugin bridge. The bundle's only outlet is a closed,
-  versioned message channel owned by the shell (invoke/listen to that
-  Workstation alone; open external links in Safari; return to the hub).
-- Bundles never change native capabilities, permissions, or the app's
-  purpose. Those ship only as store updates.
-- This matches DPLA §3.3.1(B) (interpreted code that keeps the advertised
-  purpose) and Guideline 4.7.2 (no exposure of native platform APIs to
-  downloaded software).
+**These describe what the companion-23 build does, not the finished product.** That build is the hub, pairing, Unlock, the inbox, and each workspace's board to read (`app/companion/README.md`, "What is here"). Terminals, card actions, rails, git, files and settings are companion-26 to -30, and none has landed. The first draft on this card listed all of them. Guideline 2.3 rejects metadata that names what a build cannot do, and a reviewer checks the Demo against it. Widen the texts as those cards land (the rule is in `store/README.md`).
 
-Demo for reviewers (no account, no pairing)
-- Open the app. The Workstations hub lists "Demo Workstation".
-- Tap it. You get a full working UI (sample sessions, cards, rails) at the
-  same version as this binary. No login, no backend, no pairing required.
-- That satisfies Guideline 2.1(a) without a hosted server or reviewer Device.
+## Owner submission wizard
 
-What to exercise
-- Demo Workstation: browse terminals, board/cards, rails, git, files, settings.
-- Hub only: the Demo entry is enough for review. Pairing a real desktop is
-  optional and needs the user's own Gavin install.
+`app/companion-shell/scripts/store-submit.sh` (on `companion/desk-prep`). Eleven stages, each asking before any upload or submit:
 
-Release
-- Version submitted with Manual Release. Approval must not publish.
-```
+1. Publisher key: generate it on a machine that runs no agents, and paste only the public half, which the wizard pins in `publisherKey.ts` (companion-23's open decision).
+2. Apple App ID `com.gavin.companion`, and your Team ID.
+3. The App Store Connect app record.
+4. The Play Console app.
+5. The Play upload key, stored in `android/keystore.properties` (gitignored).
+6. A release sync, then the iOS archive and the AAB, with a build number.
+7. Upload to App Store Connect (`xcodebuild -exportArchive`), or through the Organizer instead.
+8. The ASC listing and screenshots.
+9. Privacy, age rating, and the encryption facts. The app uses Noise (X25519, ChaCha20-Poly1305, BLAKE2s) and Ed25519, all standard algorithms, and the exemption is the owner's legal answer.
+10. Review notes, **Manually release this version**, then submit.
+11. Play internal testing.
 
-## Prepared: store description (App Store + Play)
-
-Short description / subtitle-length:
-
-```
-Remote control for your Gavin desktop — terminals, board, git, files, settings.
-```
-
-Full description:
-
-```
-Gavin Companion puts your Gavin workstations in your pocket.
-
-Pair each phone once at your desk. One Face ID or passcode Unlock gives full
-control of the running desktop until you background the app or lock the phone.
-
-From the Workstations hub you open the same surfaces you use at the desk:
-terminals (with compose and raw typing), the kanban board and cards, rails
-and orchestration, Git, files, and settings. Everything goes through your
-own desktop — it must be running — via an encrypted relay you can self-host.
-
-A built-in Demo Workstation lets you explore the app with no account and no
-pairing. Managing Devices stays at the desk.
-```
-
-## Prepared: Play Console — notes for internal testers
-
-```
-Internal testing build of Gavin Companion.
-
-Architecture: the store binary is a native shell (hub, pairing, Unlock,
-keys). Each paired Workstation serves a publisher-signed UI bundle; the
-shell verifies the signature and runs it in a separate process/webview
-with no JavaScript interface to native plugins — only a closed message
-channel. Matches Play's interpreter exception and JS-interface rule.
-
-Reviewers / testers: open the app → Demo Workstation. No account, no
-pairing. Full sample UI for terminals, board, git, files, settings.
-```
-
-## Owner submission wizard (when companion-23 is Done)
-
-Do these in order. Bundle id / applicationId is `com.gavin.companion`; display name **Gavin**.
-
-### A. Accounts and signing (once)
-
-1. Apple Developer Program membership active; create App ID `com.gavin.companion` if missing.
-2. App Store Connect: new iOS app, bundle id `com.gavin.companion`, name Gavin Companion (or Gavin — match ASC uniqueness).
-3. Google Play Console: create app, package `com.gavin.companion`; enrol in Play App Signing.
-4. Xcode: Development Team on the App target; archive a **Release** (non-probe) build from the companion-23 end-to-end tree after `npm run companion-shell:sync -- ios`.
-5. Android Studio / `./gradlew bundleRelease`: upload an AAB signed for Play.
-
-### B. App Store — full review, manual release
-
-1. Upload the archive via Xcode Organizer or `xcrun altool` / Transporter.
-2. Fill metadata: paste the store description above; privacy nutrition / privacy policy URL as you already use for Gavin.
-3. Paste **Prepared: App Store — Notes for Review** into Notes for Review.
-4. Demo account fields: leave blank; notes already say Demo Workstation needs none.
-5. Version → **Manually release this version** (not automatic).
-6. Submit for App Review.
-7. Paste Apple's decision under **Apple's response** below (approve / reject + guideline cites). Approval must not release.
-
-### C. Play — internal testing
-
-1. Play Console → Testing → Internal testing → create release → upload AAB.
-2. Add yourself (and any testers) to the internal testers list.
-3. Paste the Play notes above into the release notes / tester instructions.
-4. Roll out to internal track (not production).
-5. Note the release name/version under **Play internal testing** below.
+It ends by printing the lines to record below.
 
 ## Apple's response
 

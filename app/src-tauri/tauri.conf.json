@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.gavin.app",
   "build": {
-    "beforeDevCommand": "node src-tauri/dev-sidecars.mjs && npm run dev",
+    "beforeDevCommand": "node src-tauri/dev-sidecars.mjs && node src-tauri/stage-companion.mjs && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node src-tauri/stage-sidecars.mjs --release && npm run build",
+    "beforeBuildCommand": "node src-tauri/stage-sidecars.mjs --release && node src-tauri/stage-companion.mjs --release && npm run build",
     "frontendDist": "../build"
   },
   "app": {

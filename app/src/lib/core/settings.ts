@@ -1,4 +1,4 @@
-import { composeLaunchCommand } from "$lib/agents/agentModel";
+import { composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
 import type { FailureCausePattern } from "$lib/agents/autoResume";
 import type { AgentConfig } from "$lib/core/gavin";
 import { isAbsolutePath } from "$lib/core/paths";
@@ -35,6 +35,14 @@ export interface AgentProfileInfo {
   /// Stable model aliases offered as picks; empty where the CLI has none
   /// worth pinning, and the user types their own instead.
   models: string[];
+  /// The flag that sets how hard the agent thinks, e.g. `--effort`, or one
+  /// ending in `=` that takes the level attached. Empty where the CLI's
+  /// launched command takes none, which hides every effort control for
+  /// the profile exactly as an empty `modelFlag` hides the model ones.
+  /// Optional because a host built before effort does not send it.
+  effortFlag?: string;
+  /// The effort levels the CLI documents, lowest first.
+  efforts?: string[];
   /// What this agent prints when it has STOPPED because something broke.
   /// Empty where nobody has verified the text -- which reads as no
   /// failure detection, never as "nothing failed"
@@ -329,8 +337,17 @@ export interface ResolvedAgent {
   /// two configurable layers get folded into it -- so the picker, the
   /// launcher and the complexity table all read one answer.
   modelFlag: string;
-  /// `command` with the model flag composed on. What every LAUNCHER
-  /// uses. `command` above stays the raw configured value, because that
+  /// The effort this workspace launches with -- `model`'s twin, resolved
+  /// by the same layers: its own `[agent] effort`, else the app-wide
+  /// default for the RESOLVED profile, else "" (the agent's own default).
+  effort: string;
+  /// The flag `effort` is composed with, by `modelFlag`'s three layers:
+  /// the workspace's own `[agent] effort_flag`, else the app-wide custom
+  /// one when the profile IS `custom`, else the table's verified flag.
+  /// Empty means gavin has no way to put an effort on this command.
+  effortFlag: string;
+  /// `command` with the model flag, then the effort flag, composed on.
+  /// What every LAUNCHER uses. `command` above stays the raw configured value, because that
   /// is what the settings box edits and writes back to config.toml -- a
   /// flag folded into it would be persisted and then appended again.
   launchCommand: string;
@@ -381,7 +398,10 @@ export function resolveAgentConfig(
   /// agent" reproduces exactly the behaviour those call sites have
   /// today. Making it required would have forced a dozen edits to
   /// restate the empty case.
-  customAgent: { command: string; modelFlag: string } = { command: "", modelFlag: "" },
+  customAgent: { command: string; modelFlag: string; effortFlag?: string } = {
+    command: "",
+    modelFlag: "",
+  },
   /// The `custom` profile's resume flag (v38): this workspace's own
   /// override (`Workspace.customResumeArgs`), then the app-wide default
   /// (`getCustomResumeArgs`). Unlike `customAgent` above this has no
@@ -390,7 +410,12 @@ export function resolveAgentConfig(
   /// no `config?.resumeArgs` to check first. OPTIONAL for the same
   /// reason `customAgent` is: every existing call site keeps resolving
   /// "no custom resume flag" exactly as it does today.
-  customResumeArgs: { workspace?: string; app?: string } = {}
+  customResumeArgs: { workspace?: string; app?: string } = {},
+  /// The app-wide default effort per profile id (config.json's
+  /// `agentDefaults.agentEfforts`). OPTIONAL, for `customAgent`'s reason:
+  /// every call site that predates effort resolves "no app-wide effort",
+  /// which is what they launched with before it existed.
+  globalEfforts: Record<string, string> = {}
 ): ResolvedAgent {
   const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
   const configured = nonEmpty(config?.mcpFile);
@@ -424,12 +449,24 @@ export function resolveAgentConfig(
     (profileId === "custom" ? nonEmpty(customAgent.modelFlag) : null) ??
     nonEmpty(effective?.modelFlag) ??
     "";
+  // The same two questions again, one field over: which level, and which
+  // flag carries it. Keyed by the RESOLVED profile for `model`'s reason.
+  const effort = nonEmpty(config?.effort) ?? nonEmpty(globalEfforts[profileId]) ?? "";
+  const effortFlag =
+    nonEmpty(config?.effortFlag) ??
+    (profileId === "custom" ? nonEmpty(customAgent.effortFlag) : null) ??
+    nonEmpty(effective?.effortFlag) ??
+    "";
   return {
     profileId,
     label: effective?.label ?? profileId,
     model,
     modelFlag,
-    launchCommand: composeLaunchCommand(command, modelFlag, model),
+    effort,
+    effortFlag,
+    // Model first, then effort: the order `claude --help` lists them in,
+    // and the one a human reading "Launches as" expects.
+    launchCommand: composeEffort(composeLaunchCommand(command, modelFlag, model), effortFlag, effort),
     // `custom` carries empty defaults, so an unfilled custom profile still
     // resolves to something openable rather than an empty path.
     file:

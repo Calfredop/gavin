@@ -1,0 +1,62 @@
+[package]
+name = "gavin-relay"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gavin-relay"
+path = "src/main.rs"
+required-features = ["server"]
+
+[features]
+default = ["server", "client"]
+# The Relay itself: admission, matching, and the copy. The only part of
+# this workspace that runs on an async runtime, because its whole job is
+# holding many sockets open and moving bytes between pairs of them.
+server = [
+  "dep:tokio",
+  "dep:tokio-tungstenite",
+  "dep:tokio-rustls",
+  "dep:futures-util",
+  "protocol/os",
+]
+# What dials it: a blocking WebSocket over TLS, for the daemon and for the
+# test Device. No runtime -- the daemon is threads and blocking I/O, and a
+# dependency that brought one in to open a socket would be the tail
+# wagging the dog.
+client = ["dep:rustls-native-certs"]
+
+[dependencies]
+protocol = { path = "../protocol", default-features = false }
+anyhow = "1"
+# Blocking WebSocket framing and the opening handshake. TLS is done here,
+# by rustls, and tungstenite is handed the stream: its own TLS features
+# would choose a provider and a root store for us.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+# `ring` and not the default `aws-lc-rs`: ring builds on all three
+# platforms this workspace targets with no assembler or cmake on the
+# machine. The provider is named at every `builder_with_provider` call, so
+# nothing here depends on which one a sibling crate's features selected.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# The platform's own trust store, so a self-hoster's private CA is trusted
+# the way their browser trusts it -- and `SSL_CERT_FILE` replaces it,
+# which is how seam 1 trusts a Relay whose certificate was minted a moment
+# before.
+rustls-native-certs = { version = "0.8", optional = true }
+
+tokio = { version = "1", optional = true, features = [
+  "rt-multi-thread",
+  "net",
+  "time",
+  "sync",
+  "macros",
+  "signal",
+] }
+tokio-tungstenite = { version = "0.28", optional = true, default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+
+[dev-dependencies]
+# Mints the certificate the TLS test's Relay serves.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+tempfile = "3"

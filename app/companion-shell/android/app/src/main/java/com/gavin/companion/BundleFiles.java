@@ -1,5 +1,6 @@
 package com.gavin.companion;
 
+import android.content.Context;
 import android.content.res.AssetManager;
 import android.net.Uri;
 import android.util.Base64;
@@ -7,6 +8,8 @@ import android.webkit.WebResourceResponse;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -31,21 +34,84 @@ import java.util.regex.Pattern;
  * origin is {@code gavin-bundle://<workstation>}; the shell's web layer
  * takes whichever the native side reports.
  *
- * <p>The bundles are embedded by {@code scripts/sync.mjs} under
- * {@code assets/bundles/}: the Demo Workstation's in every build, the
- * probe's in debug builds only ({@code src/debug/assets}).
+ * <p>A bundle's files are embedded by {@code scripts/sync.mjs} under
+ * {@code assets/bundles/} -- the Demo Workstation's in every build, the
+ * probe's in debug builds only ({@code src/debug/assets}) -- or installed
+ * in the cache by hash ({@link BundleCache}) after the shell fetched and
+ * verified them (ADR 0005, companion-23). {@link #source} names which.
  */
 final class BundleFiles {
     static final String DOMAIN = ".bundle.gavin.invalid";
 
     private static final Pattern HOST = Pattern.compile("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
 
-    private final AssetManager assets;
+    /** Where one bundle's files are read from. */
+    interface Source {
+        /** The file at {@code relative}, or null. */
+        byte[] read(String relative);
+    }
+
+    /** An embedded bundle: {@code assets/bundles/<name>/}. */
+    static final class AssetSource implements Source {
+        private final AssetManager assets;
+        private final String name;
+
+        AssetSource(AssetManager assets, String name) {
+            this.assets = assets;
+            this.name = name;
+        }
+
+        @Override
+        public byte[] read(String relative) {
+            try (InputStream in = assets.open("bundles/" + name + "/" + relative)) {
+                return readAll(in);
+            } catch (IOException e) {
+                return null;
+            }
+        }
+    }
+
+    /** A cached bundle: a folder of files, and nothing outside it. */
+    static final class DirSource implements Source {
+        private final File root;
+
+        DirSource(File root) {
+            this.root = root;
+        }
+
+        @Override
+        public byte[] read(String relative) {
+            File file = new File(root, relative);
+            try {
+                if (!file.getCanonicalPath().startsWith(root.getCanonicalPath() + File.separator)) return null;
+                if (!file.isFile()) return null;
+                try (InputStream in = new FileInputStream(file)) {
+                    return readAll(in);
+                }
+            } catch (IOException e) {
+                return null;
+            }
+        }
+    }
+
+    private final Source source;
     private final String workstation;
 
-    BundleFiles(AssetManager assets, String workstation) {
-        this.assets = assets;
+    BundleFiles(Source source, String workstation) {
+        this.source = source;
         this.workstation = workstation;
+    }
+
+    /**
+     * The files the bundle {@code name} names: an embedded bundle's name,
+     * or a cached bundle's hash. Null when this app has neither.
+     */
+    static Source source(Context context, String name) {
+        if (name == null) return null;
+        if (BundleCache.isHash(name)) {
+            return BundleCache.installed(context, name) ? new DirSource(BundleCache.folder(context, name)) : null;
+        }
+        return carries(context.getAssets(), name) ? new AssetSource(context.getAssets(), name) : null;
     }
 
     /** A Workstation id becomes a host name, so it must be one (a DNS label). */
@@ -121,15 +187,15 @@ final class BundleFiles {
     }
 
     private byte[] read(String relative) {
-        try (InputStream in = assets.open("bundles/" + workstation + "/" + relative)) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[16 * 1024];
-            int n;
-            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-            return out.toByteArray();
-        } catch (IOException e) {
-            return null;
-        }
+        return source.read(relative);
+    }
+
+    private static byte[] readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[16 * 1024];
+        int n;
+        while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+        return out.toByteArray();
     }
 
     private static String extension(String path) {

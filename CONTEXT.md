@@ -44,6 +44,18 @@ _Avoid_: hub (on its own, that is the desktop app's view one level above any wor
 A simulated Workstation built into the Companion, with sample sessions, cards and rails, for exploring the app before any real Workstation is paired.
 _Avoid_: demo mode, sample data, offline mode
 
+**Workstation UI bundle**:
+The web UI a Device runs to work on one Workstation, built from the same commit as that Workstation's desktop app, signed by the publisher, shipped inside the desktop app and served to the Device over its connection. The Companion runs one only once its signature checks against the publisher key it pins, and keeps it by content hash.
+_Avoid_: remote UI, web app, the Companion's UI (that is the shell's own hub)
+
+**Publisher key**:
+The key that signs every Workstation UI bundle a release ships, whose public half the Companion pins. Separate from the updater's key. A debug build of the Companion also trusts a dev key made on the developer's machine.
+_Avoid_: bundle key (on its own), signing key (which one?)
+
+**Landing**:
+Where a Workstation UI bundle opens when the human tapped an inbox item: the item's workspace, and the card it names or the card whose agent is the session it names.
+_Avoid_: deep link, route
+
 **Unlock**:
 One authentication on a Device (a biometric, or the phone's passcode), together with how long it lasts: until the Companion goes to the background or the phone locks.
 _Avoid_: session (that is a terminal), login

@@ -1,5 +1,5 @@
-/// Composing a chosen model onto an agent's launch command, and the
-/// option list a model picker renders. Pure and separate from settings.ts
+/// Composing a chosen model and effort onto an agent's launch command,
+/// and the option lists their pickers render. Pure and separate from settings.ts
 /// because every launcher needs the first half and both settings panels
 /// need the second -- the .svelte files stay templates over this.
 
@@ -65,6 +65,76 @@ export function composeLaunchCommand(command: string, flag: string, model: strin
   const chosen = model.trim();
   if (!chosen || !flag || commandSpecifiesModel(command, flag)) return command;
   return `${command} ${flag} ${quoteModel(chosen)}`;
+}
+
+/// Whether a flag is safe to write into a shell command as it stands.
+/// Every token has to be inert: unlike a model or an effort LEVEL, a flag
+/// is appended unquoted -- it has to stay a flag -- and the workspace's
+/// own `[agent] effort_flag` arrives in a repo's config.toml, where
+/// `--x; curl … | sh` is a string like any other. A flag with a shell
+/// character in it is dropped rather than quoted into something the
+/// agent would then refuse.
+function flagIsInert(flag: string): boolean {
+  const tokens = flag.trim().split(/\s+/);
+  return tokens.every((token) => token !== "" && !SHELL_SPECIAL.test(token));
+}
+
+/// Whether the command already sets an effort, by the same token rule as
+/// `commandSpecifiesModel`. Only the flag's LAST token is looked for:
+/// codex's `-c model_reasoning_effort=` is a generic override flag and a
+/// key, and it is the key that says the effort is set -- a command that
+/// already carries `-c model="gpt-5"` has not chosen one.
+///
+/// An attached flag (ending in `=`) matches any token it begins, so
+/// `model_reasoning_effort="high"` counts; a separated one matches itself
+/// or its own `=` form, so `--effortless` does not.
+export function commandSpecifiesEffort(command: string, flag: string): boolean {
+  const last = flag.trim().split(/\s+/).pop() ?? "";
+  if (!last) return false;
+  const tokens = command.split(/\s+/);
+  if (last.endsWith("=")) return tokens.some((token) => token.startsWith(last));
+  return tokens.some((token) => token === last || token.startsWith(`${last}=`));
+}
+
+/// `command` plus the effort, when there is one to add, a usable flag to
+/// add it with, and the command does not already carry one. Returns
+/// `command` untouched otherwise, for `composeLaunchCommand`'s reason.
+///
+/// Two shapes, the `headless_args` convention the Rust table uses: a flag
+/// ending in `=` takes the level attached (`-c model_reasoning_effort=high`),
+/// anything else takes it as the next argument (`--effort high`). The
+/// level is quoted exactly as a model name is, and in the attached shape
+/// the quotes still close on the same word: `--think='a b'` is one argv.
+export function composeEffort(command: string, flag: string, effort: string): string {
+  const chosen = effort.trim();
+  const usable = flag.trim();
+  if (!chosen || !usable || !flagIsInert(usable) || commandSpecifiesEffort(command, usable)) {
+    return command;
+  }
+  const level = quoteModel(chosen);
+  return usable.endsWith("=") ? `${command} ${usable}${level}` : `${command} ${usable} ${level}`;
+}
+
+/// The rows an EFFORT picker renders: inherit (labelled with what it
+/// inherits), each level the CLI documents, then Custom. The same shape
+/// as `modelChoices`, and the same sentinel, so a panel that already
+/// draws a model picker draws this one with the same template.
+export function effortChoices(
+  profile: { efforts: string[] },
+  inheritedDefault: string
+): ModelOption[] {
+  return modelChoices({ models: profile.efforts }, inheritedDefault);
+}
+
+/// The rows a SETTINGS effort picker renders -- empty for a profile with
+/// no effort flag, for `modelOptions`' reason: a control that cannot
+/// reach the agent is worse than no control.
+export function effortOptions(
+  profile: { effortFlag: string; efforts: string[] },
+  globalDefault: string
+): ModelOption[] {
+  if (!profile.effortFlag) return [];
+  return effortChoices(profile, globalDefault);
 }
 
 /// The rows themselves: inherit, then each preset, then Custom. The
@@ -146,4 +216,28 @@ export function mergeDiscoveredModels<P extends { id: string; models: string[] }
 /// edit somebody else's setting.
 export function modelIsCustom(boxOpen: boolean, ownModel: string, presets: readonly string[]): boolean {
   return boxOpen || (ownModel !== "" && !presets.includes(ownModel));
+}
+
+/// The effort levels to suggest for a row that may or may not name a
+/// profile -- a complexity table row, where an empty profile means "this
+/// workspace's agent", which the table cannot see.
+///
+/// A named profile gets its own levels. An unnamed one gets every level
+/// any profile documents, deduped in first-seen order, because the row
+/// has to offer SOMETHING and a suggestion is only that: the box stays
+/// free text, and a level the eventual agent lacks is caught by the
+/// launch (`composeEffort` drops an effort it has no flag for).
+export function effortPresets(
+  profiles: readonly { id: string; efforts?: string[] }[],
+  profileId: string
+): string[] {
+  const id = profileId.trim();
+  if (id) return [...(profiles.find((p) => p.id === id)?.efforts ?? [])];
+  const out: string[] = [];
+  for (const profile of profiles) {
+    for (const level of profile.efforts ?? []) {
+      if (!out.includes(level)) out.push(level);
+    }
+  }
+  return out;
 }

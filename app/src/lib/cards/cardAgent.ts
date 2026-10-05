@@ -20,6 +20,7 @@
 
 import {
   complexityEntry,
+  effortPhrase,
   isAttributed,
   parseComplexity,
   COMPLEXITY_LABELS,
@@ -33,6 +34,10 @@ import {
 export interface CardAgentFields {
   agent?: string | null;
   model?: string | null;
+  /// How hard that agent thinks. The third half of the override: a card
+  /// naming only `effort: max` runs the workspace's own agent and model,
+  /// thinking harder.
+  effort?: string | null;
   complexity?: string | null;
 }
 
@@ -56,6 +61,7 @@ export function cardAgentOverride(
   const entry = {
     profile: (card?.agent ?? "").trim(),
     model: (card?.model ?? "").trim(),
+    effort: (card?.effort ?? "").trim(),
   };
   return isAttributed(entry) ? entry : null;
 }
@@ -93,9 +99,11 @@ function attributionPhrase(
   if (!entry) return null;
   const agent = entry.profile.trim() ? profileLabel(entry.profile.trim()) : null;
   const model = entry.model.trim();
-  if (agent && model) return `${agent} on ${model}`;
-  if (agent) return agent;
-  if (model) return `this workspace's agent on ${model}`;
+  const at = effortPhrase(entry);
+  if (agent && model) return `${agent} on ${model}${at}`;
+  if (agent) return `${agent}${at}`;
+  if (model) return `this workspace's agent on ${model}${at}`;
+  if (at) return `this workspace's agent${at}`;
   return null;
 }
 
@@ -152,11 +160,13 @@ export function cardOverrideNote(card: CardAgentFields | null | undefined): stri
   const entry = cardAgentOverride(card);
   if (!entry) return null;
   const { profile, model } = entry;
+  const at = effortPhrase(entry);
   if (profile && model) {
-    return `This card runs on ${profile} at ${model}, not the workspace's agent.`;
+    return `This card runs on ${profile} at ${model}${at}, not the workspace's agent.`;
   }
-  if (profile) return `This card runs on ${profile}, not the workspace's agent.`;
-  return `This card runs the workspace's agent at ${model}.`;
+  if (profile) return `This card runs on ${profile}${at}, not the workspace's agent.`;
+  if (model) return `This card runs the workspace's agent at ${model}${at}.`;
+  return `This card runs the workspace's agent${at}.`;
 }
 
 /// Whether gavin has a verified way to put a model on the agent this
@@ -174,4 +184,14 @@ export function cardModelUnreachable(
   resolvedModelFlag: string
 ): boolean {
   return Boolean((card?.model ?? "").trim()) && !resolvedModelFlag.trim();
+}
+
+/// `cardModelUnreachable` for the effort: the card names one, and the
+/// agent it lands on has no effort flag gavin knows, so `composeEffort`
+/// will drop it and the run thinks at the agent's own default.
+export function cardEffortUnreachable(
+  card: CardAgentFields | null | undefined,
+  resolvedEffortFlag: string
+): boolean {
+  return Boolean((card?.effort ?? "").trim()) && !resolvedEffortFlag.trim();
 }

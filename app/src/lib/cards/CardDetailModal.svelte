@@ -294,7 +294,16 @@
 
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
-    key: "title" | "status" | "priority" | "labels" | "attachments" | "complexity" | "agent" | "model",
+    key:
+      | "title"
+      | "status"
+      | "priority"
+      | "labels"
+      | "attachments"
+      | "complexity"
+      | "agent"
+      | "model"
+      | "effort",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -387,6 +396,9 @@
   // lines, so a card that already carries an override reads back as
   // carrying none and runs at the workspace's default.
   const cardAgentBlocked = $derived(featureBlockedReason($daemonCompat, "cardAgent"));
+  /// The effort line's own gate: a v55 daemon keeps `agent:`/`model:` but
+  /// refuses, and never parses, `effort:` (daemonCompat.ts, agentEffort).
+  const cardEffortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
   /// Read off `layoutState` rather than through `workspaceComplexityTable`,
   /// which is a one-shot `get()`: this is a component, and a table read
   /// once at mount would keep whatever the workspace said then.
@@ -398,6 +410,7 @@
   const agentFields = $derived({
     agent: card.agent ?? "",
     model: card.model ?? "",
+    effort: card.effort ?? "",
     complexity,
   });
   /// What this card will actually launch, in one line under the row --
@@ -1226,6 +1239,7 @@
           profiles={$agentProfilesStore}
           card={agentFields}
           blocked={cardAgentBlocked}
+          effortBlocked={cardEffortBlocked}
           onChange={(key, value) => void writeField(key, value)}
         />
         {#if card.parent}

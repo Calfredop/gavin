@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// The label the app's first window always has -- Tauri's own default
 /// for the window declared in tauri.conf.json, and the fallback owner of
@@ -54,7 +54,7 @@ fn snapshot(state: &WorkspaceWindows) -> HashMap<String, String> {
 /// learn it lost it just as much as the one that took it, and the sidebar
 /// in a third window has to stop offering to switch to it.
 fn broadcast(app: &AppHandle, state: &WorkspaceWindows) {
-    let _ = app.emit("workspace-windows-changed", snapshot(state));
+    let _ = crate::forwarding::emit(&app, "workspace-windows-changed", snapshot(state));
 }
 
 /// The window a workspace is currently shown in.
@@ -366,7 +366,7 @@ fn duty_successor(survivors: &[String]) -> Option<String> {
 /// Tells every window who holds the duty and which windows are open.
 pub fn broadcast_duty(app: &AppHandle, gone: Option<&str>) {
     let holder = app.state::<DutyWindow>().0.lock().unwrap().clone();
-    let _ = app.emit("app-duty-changed", app_duty_now(app, holder, gone));
+    let _ = crate::forwarding::emit(&app, "app-duty-changed", app_duty_now(app, holder, gone));
 }
 
 /// Registered for EVERY window in lib.rs, the main one included: the

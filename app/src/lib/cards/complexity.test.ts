@@ -10,6 +10,8 @@ import {
   parseComplexity,
   realignComplexityTable,
   recommendedComplexityAction,
+  withAgentEffort,
+  EMPTY_AGENT_DEFAULTS,
   type ComplexityTable,
 } from "$lib/cards/complexity";
 
@@ -53,6 +55,9 @@ describe("isAttributed", () => {
     expect(isAttributed({ profile: "codex", model: "" })).toBe(true);
     expect(isAttributed({ profile: "", model: "opus" })).toBe(true);
     expect(isAttributed({ profile: "  ", model: "  " })).toBe(false);
+    // An effort alone is a whole row: the workspace's agent, harder.
+    expect(isAttributed({ profile: "", model: "", effort: "max" })).toBe(true);
+    expect(isAttributed({ profile: "", model: "", effort: " " })).toBe(false);
     expect(isAttributed(undefined)).toBe(false);
     expect(isAttributed(null)).toBe(false);
   });
@@ -107,7 +112,17 @@ describe("agentConfigWithAttribution", () => {
     const r = agentConfigWithAttribution(base, { profile: "", model: "opus" });
     // The wrapper script and the hand-written MCP path survive: it
     // really is the same agent, only the model differs.
-    expect(r).toEqual({ ...base, model: "opus" });
+    expect(r).toEqual({ ...base, model: "opus", effort: null });
+  });
+
+  it("keeps the workspace's model when the level names only an effort", () => {
+    // The D68 case: "max effort" on the workspace's own agent must not
+    // quietly drop the model the workspace pinned back to the default.
+    const r = agentConfigWithAttribution({ ...base, effort: "low" }, { profile: "", model: "", effort: "max" });
+    expect(r).toEqual({ ...base, model: "sonnet", effort: "max" });
+    // ...and a model-only level keeps the workspace's effort.
+    const m = agentConfigWithAttribution({ ...base, effort: "low" }, { profile: "", model: "opus" });
+    expect(m).toEqual({ ...base, model: "opus", effort: "low" });
   });
 
   it("drops the workspace's binary-specific keys when the level switches profile", () => {
@@ -119,12 +134,19 @@ describe("agentConfigWithAttribution", () => {
       mcpFile: null,
       mcpFormat: null,
       model: "gpt-5.1",
+      effort: null,
     });
   });
 
   it("keeps them when the level names the profile the workspace already runs", () => {
     const r = agentConfigWithAttribution(base, { profile: "claude-code", model: "opus" });
-    expect(r).toEqual({ ...base, model: "opus" });
+    expect(r).toEqual({ ...base, model: "opus", effort: null });
+  });
+
+  it("carries a named effort across a profile switch", () => {
+    const r = agentConfigWithAttribution(base, { profile: "codex", model: "", effort: "xhigh" });
+    expect(r?.effort).toBe("xhigh");
+    expect(r?.model).toBeNull();
   });
 
   it("reads an empty model as the profile's own default, not as a blank", () => {
@@ -147,11 +169,32 @@ describe("complexitySummary", () => {
     );
   });
 
+  it("names the effort when the level sets one", () => {
+    expect(
+      complexitySummary("intricate", { profile: "codex", model: "gpt-5.1", effort: "xhigh" }, label)
+    ).toBe("Intricate — runs Codex CLI on gpt-5.1, at xhigh effort.");
+    expect(complexitySummary("complex", { profile: "", model: "", effort: "high" }, label)).toBe(
+      "Complex — runs this workspace's agent, at high effort."
+    );
+  });
+
   it("says so when a level is rated but attributed to nothing", () => {
     expect(complexitySummary("moderate", null, label)).toBe(
       "Moderate — runs this workspace's agent."
     );
     expect(complexitySummary(null, null, label)).toBeNull();
+  });
+});
+
+describe("withAgentEffort", () => {
+  it("sets one profile's default and clears it on a blank", () => {
+    const set = withAgentEffort(EMPTY_AGENT_DEFAULTS, "claude-code", " high ");
+    expect(set.agentEfforts).toEqual({ "claude-code": "high" });
+    expect(EMPTY_AGENT_DEFAULTS.agentEfforts).toBeUndefined();
+    const cleared = withAgentEffort(set, "claude-code", "");
+    expect(cleared.agentEfforts).toEqual({});
+    // Everything else rides through untouched: this is a wholesale save.
+    expect({ ...cleared, agentEfforts: undefined }).toEqual({ ...EMPTY_AGENT_DEFAULTS, agentEfforts: undefined });
   });
 });
 
