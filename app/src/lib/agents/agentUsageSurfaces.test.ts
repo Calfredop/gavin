@@ -37,6 +37,16 @@ describe("usage cache surfaces", () => {
     expect(source("IconButton.svelte")).toMatch(/\bspin\?: boolean/);
   });
 
+  // Same shell Settings → Agents uses: one tab per agent in use, not a
+  // stacked list of every profile's bars under one scroll.
+  it("separates agents into tabs like the Settings Agents hub", () => {
+    const modal = source("AgentUsageModal.svelte");
+    expect(modal).toContain("AgentsHubTabs");
+    expect(modal).toContain("profileOptionLabel");
+    expect(modal).not.toContain("{#each profiles as profile");
+    expect(modal).not.toContain("<h3>{profile.label}</h3>");
+  });
+
   it("does not draw a fleet-wide refreshing badge on the hub or sidebar", () => {
     expect(source("AppHubView.svelte")).not.toContain("usageRefreshingIndicator");
     expect(source("Sidebar.svelte")).not.toContain("usageRefreshingIndicator");
