@@ -6,6 +6,12 @@ rem
 rem `.mcp.json` and `.cursor/mcp.json` name `scripts/gavin-mcp` on both
 rem platforms; Windows resolves that through PATHEXT to this file.
 rem
+rem GAVIN_MCP is normally set by the daemon that opened this tab
+rem (`PtySession::spawn`): the gavin-mcp beside that daemon. A freshly-cut
+rem worktree with no target\ still runs that build. A dev iterating on
+rem gavin-mcp in a worktree must set GAVIN_MCP to their build explicitly
+rem -- the daemon's pin wins over this checkout's target\.
+rem
 rem Every statement here is a SINGLE line on purpose. `.gitattributes`
 rem pins the whole tree to LF on disk, and cmd.exe mis-parses multi-line
 rem parenthesised blocks and goto labels in an LF-only batch file.

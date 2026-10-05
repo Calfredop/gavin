@@ -223,6 +223,18 @@ impl PtySession {
         if let Ok(socket) = protocol::socket_path() {
             cmd.env("GAVIN_SESSION_SOCKET", socket.as_os_str());
         }
+        // Which gavin-mcp belongs to THIS build. The workspace's MCP
+        // config names the relative launcher `scripts/gavin-mcp`, which
+        // tries the installed app and then this checkout's target/ --
+        // and a freshly-cut worktree has no target/, so without this
+        // pin the agent connects to nothing. Beside this daemon is
+        // where both `target/debug` and the app bundle put the sibling
+        // binary (`resolve_mcp_binary_path` does the same join). Skipped
+        // when the file is missing rather than fatal: a half-built tree
+        // still opens a terminal, and the launcher falls back as before.
+        if let Some(mcp) = gavin_mcp_beside_this_binary() {
+            cmd.env("GAVIN_MCP", mcp);
+        }
         cmd.env("TERM_PROGRAM", "ghostty");
         // An inherited version string from some *other* terminal would
         // contradict the pin above; drop it rather than invent one.
@@ -290,9 +302,10 @@ impl PtySession {
         // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
         // *install* -- two sessions of the same install share it -- so
         // none of those are this bug. Deliberately still passed in above:
-        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN and GAVIN_SESSION_SOCKET,
-        // which name THIS session and the daemon serving it, and are the
-        // entire point of setting them.
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN, GAVIN_SESSION_SOCKET and
+        // GAVIN_MCP, which name THIS session, the daemon serving it and
+        // the gavin-mcp beside that daemon, and are the entire point of
+        // setting them.
         for key in [
             // "you are running under Claude Code", and by which entrypoint.
             "CLAUDECODE",
@@ -558,6 +571,18 @@ impl PtySession {
 /// session retired or dropped before its child exits closes the master
 /// itself, and the watcher notices and stops rather than polling a
 /// process nothing is going to end.
+/// `gavin-mcp` next to this executable, the way the desktop app resolves
+/// its own (`resolve_mcp_binary_path`): the three binaries of a build are
+/// siblings by construction. `None` when `current_exe` cannot be read or
+/// the sibling is not on disk yet — the caller skips the env pin then.
+fn gavin_mcp_beside_this_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe
+        .parent()?
+        .join(format!("gavin-mcp{}", std::env::consts::EXE_SUFFIX));
+    path.is_file().then_some(path)
+}
+
 fn watch_for_exit(child: Arc<Mutex<Box<dyn Child + Send + Sync>>>, master: Arc<Mutex<Master>>) {
     std::thread::spawn(move || {
         loop {
@@ -891,6 +916,37 @@ mod tests {
 
         let output = read_until_contains(&mut *reader, "SOCKMARK=[", Duration::from_secs(3));
         session.kill().unwrap();
+        assert!(output.contains(&format!("{name}]")), "got: {output}");
+    }
+
+    /// Which gavin-mcp belongs to this build, so a freshly-cut worktree
+    /// with no `target/` still runs the binary beside the daemon that
+    /// opened the tab. Asserted on the file name rather than the whole
+    /// path for the same Windows-MSYS reason as the socket test above.
+    ///
+    /// The sibling is created for the test: `current_exe` under cargo
+    /// test is the harness in `target/debug/deps/`, where no real
+    /// gavin-mcp ships, and the pin is skipped when the file is absent.
+    #[test]
+    fn spawn_exports_this_builds_gavin_mcp_into_the_pty() {
+        let _guard = lock_env();
+        let name = format!("gavin-mcp{}", std::env::consts::EXE_SUFFIX);
+        let path = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(&name);
+        std::fs::write(&path, b"").unwrap();
+
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "sid-mcp", None).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'MCP%s=[%s]\\n' MARK \"$GAVIN_MCP\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "MCPMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        let _ = std::fs::remove_file(&path);
         assert!(output.contains(&format!("{name}]")), "got: {output}");
     }
 

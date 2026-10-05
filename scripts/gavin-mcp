@@ -27,10 +27,14 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(dirname -- "$here")
 
-# Order matters: the installed app is the one binary that exists on both
-# machines and in every freshly-cut worktree (a new worktree has no target/
-# at all), so it leads. A dev iterating on gavin-mcp itself overrides with
-# GAVIN_MCP rather than by deleting their install.
+# Order matters. GAVIN_MCP is normally set by the daemon that opened this
+# tab (`PtySession::spawn`): the gavin-mcp beside that daemon, so a
+# freshly-cut worktree with no target/ still runs the same build that
+# launched the agent, with no version skew against an installed release.
+# A dev iterating on gavin-mcp in a worktree must set GAVIN_MCP to their
+# build explicitly — the daemon's pin wins over this checkout's target/.
+# Without GAVIN_MCP the installed app leads (it exists on both machines
+# and in every worktree), then this checkout's target/, then PATH.
 candidates=$(cat <<EOF
 ${GAVIN_MCP:-}
 $HOME/Applications/Gavin.app/Contents/MacOS/gavin-mcp
