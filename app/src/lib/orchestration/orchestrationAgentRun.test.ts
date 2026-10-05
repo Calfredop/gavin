@@ -71,7 +71,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),

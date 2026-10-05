@@ -25,7 +25,7 @@ const layout = vi.hoisted(() => {
   const layoutState = store({
     workspaces: [] as Array<{
       id: string;
-      agentFallback?: string[] | null;
+      fallbackChains?: Record<string, string[]>;
       armedAgents?: string[];
       declinedAgents?: string[];
     }>,
@@ -35,7 +35,7 @@ const layout = vi.hoisted(() => {
     customCommand: "",
     customModelFlag: "",
     complexity: {} as Record<string, { profile: string; model: string }>,
-    agentFallback: [] as string[],
+    fallbackChains: {},
   });
   return {
     layoutState,
@@ -88,7 +88,7 @@ beforeEach(() => {
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [],
+    fallbackChains: {},
   });
   layout.resolvedAgentFor.mockReturnValue({ profileId: "claude-code" });
   layout.workspaceComplexityTable.mockReturnValue({});
@@ -97,14 +97,14 @@ beforeEach(() => {
 describe("owedArming", () => {
   it("names unarmed chain and complexity profiles, not the workspace agent", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: [] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
       activeWorkspaceId: "w1",
     });
     layout.agentDefaultsStore.set({
       customCommand: "",
       customModelFlag: "",
       complexity: { intricate: { profile: "gemini", model: "" } },
-      agentFallback: [],
+      fallbackChains: {},
     });
     layout.workspaceComplexityTable.mockReturnValue({});
     expect(owedArming("w1")).toEqual(["codex", "gemini"]);
@@ -112,10 +112,34 @@ describe("owedArming", () => {
 
   it("leaves out an agent the human said not to ask about again", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex", "gemini"], declinedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, declinedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     });
     expect(owedArming("w1")).toEqual(["gemini"]);
+  });
+
+  it("unions every primary's effective chain, not only the workspace agent's", () => {
+    layout.layoutState.set({
+      workspaces: [
+        { id: "w1", fallbackChains: { "claude-code": ["codex"], gemini: ["opencode"] }, armedAgents: [] },
+      ],
+      activeWorkspaceId: "w1",
+    });
+    expect(owedArming("w1")).toEqual(["codex", "opencode"]);
+  });
+
+  it("treats a workspace's empty chain for a primary as no fallback for it", () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": [] }, armedAgents: [] }],
+      activeWorkspaceId: "w1",
+    });
+    layout.agentDefaultsStore.set({
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      fallbackChains: { "claude-code": ["codex"] },
+    });
+    expect(owedArming("w1")).toEqual([]);
   });
 });
 
@@ -132,7 +156,7 @@ describe("armNewlyAdded", () => {
 
   it("asks again about an agent the human explicitly put back in the chain", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["gemini"], declinedAgents: ["gemini"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["gemini"] }, declinedAgents: ["gemini"] }],
       activeWorkspaceId: "w1",
     });
     await armNewlyAdded("w1", [], ["gemini"]);
@@ -153,7 +177,7 @@ describe("requestArm", () => {
 describe("declineArmRequest", () => {
   it("records the choice so no later focus or launch reopens the wizard", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w-decline", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w-decline", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: null,
     });
     requestArm("w-decline", "codex");
@@ -169,7 +193,7 @@ describe("declineArmRequest", () => {
 describe("askAgainToArm", () => {
   it("drops the recorded choice and opens the wizard", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w-again", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w-again", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: null,
     });
     requestArm("w-again", "codex");
@@ -183,7 +207,7 @@ describe("askAgainToArm", () => {
 describe("completeArmRequest", () => {
   it("records the arm and queues the next owed profile", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex", "gemini"], armedAgents: [] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, armedAgents: [] }],
       activeWorkspaceId: "w1",
     });
     requestArm("w1", "codex");
@@ -196,7 +220,7 @@ describe("completeArmRequest", () => {
 describe("startArmOnFocus", () => {
   it("queues the first owed agent when the active workspace changes", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: [] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
       activeWorkspaceId: null,
     });
     const stop = startArmOnFocus();

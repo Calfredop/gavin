@@ -74,7 +74,7 @@ vi.mock("$lib/core/backend", () => ({
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
   getAgentDefaults: vi
     .fn()
-    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, agentFallback: [] }),
+    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, fallbackChains: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
   getCustomResumeArgs: vi.fn().mockResolvedValue(null),
@@ -4438,8 +4438,8 @@ describe("workspace settings go through their own command", () => {
     ["setWorkspaceFlag", () => setWorkspaceFlag("ws-1", "notifyFinished", false), { notifyFinished: false }],
     ["setWorkspacePause", () => setWorkspacePause("ws-1", pause), { agentPause: pause }],
     ["setWorkspacePause(null)", () => setWorkspacePause("ws-1", null), { agentPause: null }],
-    ["setWorkspaceFallback", () => setWorkspaceFallback("ws-1", ["codex"]), { agentFallback: ["codex"] }],
-    ["setWorkspaceFallback(null)", () => setWorkspaceFallback("ws-1", null), { agentFallback: null }],
+    ["setWorkspaceFallback", () => setWorkspaceFallback("ws-1", "claude-code", ["codex"]), { fallbackChains: { "claude-code": ["codex"] } }],
+    ["setWorkspaceFallback(null)", () => setWorkspaceFallback("ws-1", "claude-code", null), { fallbackChains: null }],
     [
       "markAgentArmed",
       () => markAgentArmed("ws-1", "codex"),

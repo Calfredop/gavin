@@ -102,11 +102,21 @@ export interface ComplexityAgent {
 /// no entry there runs the workspace's own agent.
 export type ComplexityTable = Partial<Record<Complexity, ComplexityAgent>>;
 
+/// Fallback chains keyed by the launch's resolved (primary) profile id.
+/// Missing key means pause-only (app) or inherit the app chain (workspace).
+export type FallbackChainsByPrimary = Record<string, string[]>;
+
 /// The app-wide agent defaults, as config.json stores them. Mirrors
 /// `config::AgentDefaultsConfig`.
 export interface AgentDefaults {
   /// Named app-wide custom agent profiles. Empty is the shipped state.
   customProfiles?: CustomProfile[];
+  /// The app-wide default agent: the profile a workspace with no
+  /// `[agent] profile` of its own resolves to. The stored Option is
+  /// resolved at the boundary (`EMPTY_AGENT_DEFAULTS` spreads in
+  /// "claude-code", the hard-coded fallback every older build used), so
+  /// this is always a usable id here.
+  defaultAgent: string;
   /// Legacy single-custom fields — kept optional so older fixtures and
   /// the Settings UI that still edits them compile during the transition.
   /** @deprecated Prefer `customProfiles`. */
@@ -123,9 +133,9 @@ export interface AgentDefaults {
   /** @deprecated Prefer `customProfiles[].apiFamily`. */
   customApiFamily?: string;
   complexity: ComplexityTable;
-  /// App-wide fallback chain. Empty means pause-only when a launch's
-  /// resolved agent is over its usage-probe threshold.
-  agentFallback: string[];
+  /// App-wide fallback chains keyed by primary profile id. Empty map /
+  /// missing primary means pause-only for that primary.
+  fallbackChains: FallbackChainsByPrimary;
   /// Per-profile percent at which a new launch walks away. Missing key
   /// means 90. Resume still uses the pause cycle's limitPercent.
   fallbackThresholds: Record<string, number>;
@@ -139,11 +149,19 @@ export interface AgentDefaults {
 
 export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
   customProfiles: [],
+  defaultAgent: "claude-code",
   complexity: {},
-  agentFallback: [],
+  fallbackChains: {},
   fallbackThresholds: {},
   actionPromptOverrides: {},
 };
+
+/// The profile id a profile-less workspace resolves to: the configured
+/// default agent, or "claude-code" while it is empty.
+export function effectiveDefaultAgent(defaults: AgentDefaults | null | undefined): string {
+  const id = (defaults?.defaultAgent ?? "").trim();
+  return id || "claude-code";
+}
 
 /// The app-wide defaults with one profile's default effort set, or
 /// removed when `effort` is blank -- removing rather than storing "" for

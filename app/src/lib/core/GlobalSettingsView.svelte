@@ -21,18 +21,33 @@
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
-  import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
+  import {
+    chainForPrimary,
+    effectiveFallbackChain,
+    sanitizeFallbackThreshold,
+    withFallbackChainForPrimary,
+  } from "$lib/agents/agentFallback";
+  import { effectiveDefaultAgent } from "$lib/cards/complexity";
   import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
   import { effortOptions, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
     AGENTS_SECTION,
-    APP_AGENTS_TABS,
+    GENERAL_TAB,
+    addCustomProfile,
+    agentsHubTabs,
     agentsTabForQuery,
     isCustomProfileId,
-    type AppAgentsTab,
+    type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
-  import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
+  import {
+    deleteCustomProfile,
+    renameCustomProfile,
+    updateCustomProfile,
+  } from "$lib/agents/agentsHub";
+  import { API_FAMILIES, type ApiFamily } from "$lib/agents/apiFamily";
+  import { askConfirm } from "$lib/core/dialog";
+  import type { CustomProfile } from "$lib/cards/complexity";
   import { mergeAgentProfiles } from "$lib/core/settings";
   import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
   import { DEFAULT_HEADROOM } from "$lib/agents/compression";
@@ -841,14 +856,68 @@
   }
 
   // --- Agents hub --------------------------------------------------------
-  let agentsTab = $state<AppAgentsTab>("defaults");
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let agentsQuerySeen = $state("");
+  let newCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(allProfiles));
   $effect(() => {
     const q = settingsQuery;
     if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
     agentsQuerySeen = q;
-    agentsTab = agentsTabForQuery("app", q) as AppAgentsTab;
+    agentsTab = agentsTabForQuery("app", q, allProfiles);
   });
+  $effect(() => {
+    if (agentsTab === GENERAL_TAB) return;
+    if (allProfiles.some((p) => p.id === agentsTab)) return;
+    agentsTab = GENERAL_TAB;
+  });
+
+  const activeAgentProfile = $derived(allProfiles.find((p) => p.id === agentsTab) ?? null);
+  const activeCustom = $derived(
+    ($agentDefaultsStore.customProfiles ?? []).find((p) => p.id === agentsTab) ?? null
+  );
+
+  async function addAppCustom(): Promise<void> {
+    const next = addCustomProfile($agentDefaultsStore.customProfiles ?? [], newCustomName.trim() || "Custom");
+    const added = next.find((p) => !($agentDefaultsStore.customProfiles ?? []).some((o) => o.id === p.id));
+    await setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next });
+    newCustomName = "";
+    if (added) agentsTab = added.id;
+  }
+
+  async function patchActiveCustom(partial: Partial<Omit<CustomProfile, "id">>): Promise<void> {
+    if (!activeCustom) return;
+    await setAgentDefaults({
+      ...$agentDefaultsStore,
+      customProfiles: updateCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, partial),
+    });
+  }
+
+  async function renameActiveCustom(label: string): Promise<void> {
+    if (!activeCustom) return;
+    await setAgentDefaults({
+      ...$agentDefaultsStore,
+      customProfiles: renameCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, label),
+    });
+  }
+
+  async function deleteActiveCustom(): Promise<void> {
+    if (!activeCustom) return;
+    const ok = await askConfirm({
+      title: `Delete “${activeCustom.label}”?`,
+      lines: [
+        "Workspaces still pointing at this custom will fall back to the default agent until they pick another.",
+      ],
+      confirmLabel: "Delete custom",
+      danger: true,
+    });
+    if (!ok) return;
+    await setAgentDefaults({
+      ...$agentDefaultsStore,
+      customProfiles: deleteCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id),
+    });
+    agentsTab = GENERAL_TAB;
+  }
 </script>
 
 <div class="global-settings">
@@ -1035,86 +1104,62 @@
 
     <section hidden={!settingsFilter.visible("agents") || selectedSection !== "agents"}>
       <h3>Agents</h3>
-      <AgentsHubTabs tabs={APP_AGENTS_TABS} tab={agentsTab} onTab={(t) => (agentsTab = t as AppAgentsTab)} />
+      <AgentsHubTabs tabs={agentsTabs} tab={agentsTab} onTab={(t) => (agentsTab = t)} />
 
-      {#if agentsTab === "defaults"}
-        {#if profiles.length === 0}
-          <p class="hint">Waiting for the agent profile table…</p>
-        {:else}
-          {#each profiles as profile (profile.id)}
-            <div class="row">
-              <span>{profile.label}</span>
-              <select
-                value={selectValue(profile)}
-                onchange={(e) => pick(profile.id, e.currentTarget.value)}
-              >
-                {#each modelOptions(profile, "") as opt (opt.value)}
-                  <option value={opt.value}>{opt.label}</option>
-                {/each}
-              </select>
-              {#if isCustom(profile)}
-                <input
-                  class="custom"
-                  spellcheck="false"
-                  placeholder="model name"
-                  value={drafts[profile.id] ?? stored(profile.id)}
-                  oninput={(e) => (drafts = { ...drafts, [profile.id]: e.currentTarget.value })}
-                  onblur={() => commitCustom(profile.id)}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                />
-              {/if}
-            </div>
-          {/each}
-          <p class="hint">
-            Used by any workspace that sets no model of its own. Only Claude Code publishes stable
-            aliases — for the rest, type the model name your CLI expects. Named customs from the
-            Customs tab appear here too once they exist.
-          </p>
-        {/if}
-        {#if effortProfiles.length > 0}
-          <h3 class="sub">Effort</h3>
-          {#each effortProfiles as profile (profile.id)}
-            <div class="row">
-              <span>{profile.label}</span>
-              <select
-                value={effortIsCustom(profile) ? CUSTOM_MODEL : storedEffort(profile.id)}
-                onchange={(e) => pickEffort(profile.id, e.currentTarget.value)}
-              >
-                {#each effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "") as opt (opt.value)}
-                  <option value={opt.value}>{opt.label}</option>
-                {/each}
-              </select>
-              {#if effortIsCustom(profile)}
-                <input
-                  class="custom"
-                  spellcheck="false"
-                  placeholder="effort"
-                  value={effortDrafts[profile.id] ?? storedEffort(profile.id)}
-                  oninput={(e) => (effortDrafts = { ...effortDrafts, [profile.id]: e.currentTarget.value })}
-                  onblur={() => commitCustomEffort(profile.id)}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                />
-              {/if}
-            </div>
-          {/each}
-          <p class="hint">
-            How hard each agent thinks, for any workspace that sets no effort of its own — the
-            fallback chain launches each agent at this too. Higher levels are slower and spend more of
-            the subscription. The levels are the ones each CLI documents; Custom… takes one it adds
-            later. Gemini, Cursor and opencode take no effort flag gavin can pass.
-          </p>
-        {/if}
-      {:else if agentsTab === "customs"}
-        <CustomsEditor
-          profiles={$agentDefaultsStore.customProfiles ?? []}
-          apiFamilyBlocked={apiFamilyBlocked}
-          onChange={(next) => void setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next })}
+      {#if agentsTab === GENERAL_TAB}
+        <label class="row">
+          <span>Default agent</span>
+          <select
+            value={effectiveDefaultAgent($agentDefaultsStore)}
+            onchange={(e) =>
+              void setAgentDefaults({
+                ...$agentDefaultsStore,
+                defaultAgent: e.currentTarget.value === "claude-code" ? null : e.currentTarget.value,
+              })}
+          >
+            {#each allProfiles as profile (profile.id)}
+              <option value={profile.id}>{profile.label}</option>
+            {/each}
+          </select>
+        </label>
+        <p class="hint">
+          Used when a workspace has not chosen its own agent. Today that silent fallback was Claude
+          Code; this setting makes it explicit.
+        </p>
+
+        <h3 class="sub">Fallback for {effectiveDefaultAgent($agentDefaultsStore)}</h3>
+        <p class="hint">
+          When that default agent is over its usage threshold, walk this chain instead of pausing.
+          Each agent’s own tab edits the chain for that agent as primary. Switching the default
+          above shows that agent’s chain here.
+        </p>
+        <FallbackChainEditor
+          profiles={allProfiles}
+          value={chainForPrimary(
+            $agentDefaultsStore.fallbackChains,
+            effectiveDefaultAgent($agentDefaultsStore)
+          )}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackChains: withFallbackChainForPrimary(
+                $agentDefaultsStore.fallbackChains,
+                effectiveDefaultAgent($agentDefaultsStore),
+                chain ?? []
+              ),
+            })}
+          onThresholdChange={(profileId, percent) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackThresholds: {
+                ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                [profileId]: sanitizeFallbackThreshold(percent),
+              },
+            })}
         />
-      {:else if agentsTab === "complexity"}
+
+        <h3 class="sub">Complexity</h3>
         <p class="hint">
           A card can say how hard its work is, and each level can run a different agent — so a rename
           need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
@@ -1126,31 +1171,8 @@
           table={$agentDefaultsStore.complexity}
           onChange={setComplexity}
         />
-      {:else if agentsTab === "fallback"}
-        <p class="hint">
-          When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
-          workspace can override the chain; workspaces that inherit it are asked to set each agent up
-          on focus. Does not rewrite the workspace's active agent.
-        </p>
-        <FallbackChainEditor
-          profiles={allProfiles}
-          value={$agentDefaultsStore.agentFallback ?? []}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              agentFallback: chain ?? [],
-            })}
-          onThresholdChange={(profileId, percent) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })}
-        />
-      {:else if agentsTab === "pause"}
+
+        <h3 class="sub">Pause</h3>
         <p class="hint">
           Sit out part of every window so a rail does not spend a subscription limit
           while nobody is watching. Nothing already running is interrupted — only
@@ -1218,6 +1240,171 @@
             applies.
           </p>
         {/if}
+
+        <h3 class="sub">Customs</h3>
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New custom name"
+            bind:value={newCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addAppCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addAppCustom()}>Add custom</button>
+        </div>
+        <p class="hint">Each custom gets its own tab for command, flags, API family and fallback.</p>
+      {:else if activeAgentProfile}
+        {#if activeCustom}
+          <label class="row">
+            <span>Name</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.label}
+              onblur={(e) => void renameActiveCustom(e.currentTarget.value)}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Command</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.command}
+              onblur={(e) => void patchActiveCustom({ command: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Model flag</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.modelFlag}
+              onblur={(e) => void patchActiveCustom({ modelFlag: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Effort flag</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.effortFlag ?? ""}
+              onblur={(e) => void patchActiveCustom({ effortFlag: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>API family</span>
+            <select
+              value={activeCustom.apiFamily ?? ""}
+              disabled={Boolean(apiFamilyBlocked)}
+              title={apiFamilyBlocked ?? ""}
+              onchange={(e) =>
+                void patchActiveCustom({ apiFamily: e.currentTarget.value as ApiFamily | "" })}
+            >
+              <option value="">—</option>
+              {#each API_FAMILIES as family (family.value)}
+                <option value={family.value}>{family.label}</option>
+              {/each}
+            </select>
+          </label>
+          {#if apiFamilyBlocked}
+            <p class="hint warn">{apiFamilyBlocked}</p>
+          {/if}
+          <p class="row-actions">
+            <button type="button" class="danger" onclick={() => void deleteActiveCustom()}>Delete</button>
+          </p>
+        {/if}
+
+        {#if activeAgentProfile.modelFlag || isCustomProfileId(activeAgentProfile.id)}
+          <div class="row">
+            <span>Default model</span>
+            <select
+              value={selectValue(activeAgentProfile)}
+              onchange={(e) => pick(activeAgentProfile.id, e.currentTarget.value)}
+            >
+              {#each modelOptions(activeAgentProfile, "") as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            {#if isCustom(activeAgentProfile)}
+              <input
+                class="custom"
+                spellcheck="false"
+                placeholder="model name"
+                value={drafts[activeAgentProfile.id] ?? stored(activeAgentProfile.id)}
+                oninput={(e) => (drafts = { ...drafts, [activeAgentProfile.id]: e.currentTarget.value })}
+                onblur={() => commitCustom(activeAgentProfile.id)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+            {/if}
+          </div>
+        {/if}
+        {#if activeAgentProfile.effortFlag || isCustomProfileId(activeAgentProfile.id)}
+          <div class="row">
+            <span>Default effort</span>
+            <select
+              value={effortIsCustom(activeAgentProfile) ? CUSTOM_MODEL : storedEffort(activeAgentProfile.id)}
+              onchange={(e) => pickEffort(activeAgentProfile.id, e.currentTarget.value)}
+            >
+              {#each effortOptions({ effortFlag: activeAgentProfile.effortFlag ?? "", efforts: activeAgentProfile.efforts ?? [] }, "") as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            {#if effortIsCustom(activeAgentProfile)}
+              <input
+                class="custom"
+                spellcheck="false"
+                placeholder="effort"
+                value={effortDrafts[activeAgentProfile.id] ?? storedEffort(activeAgentProfile.id)}
+                oninput={(e) =>
+                  (effortDrafts = { ...effortDrafts, [activeAgentProfile.id]: e.currentTarget.value })}
+                onblur={() => commitCustomEffort(activeAgentProfile.id)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+            {/if}
+          </div>
+        {/if}
+
+        <h3 class="sub">Fallback</h3>
+        <p class="hint">
+          When a launch whose resolved agent is {activeAgentProfile.label} is over its usage
+          threshold, walk this chain instead of pausing.
+        </p>
+        <FallbackChainEditor
+          profiles={allProfiles}
+          value={chainForPrimary($agentDefaultsStore.fallbackChains, activeAgentProfile.id)}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackChains: withFallbackChainForPrimary(
+                $agentDefaultsStore.fallbackChains,
+                activeAgentProfile.id,
+                chain ?? []
+              ),
+            })}
+          onThresholdChange={(profileId, percent) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackThresholds: {
+                ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                [profileId]: sanitizeFallbackThreshold(percent),
+              },
+            })}
+        />
       {/if}
     </section>
 

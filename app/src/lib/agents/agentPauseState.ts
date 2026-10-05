@@ -327,12 +327,18 @@ function recordSample(profileId: string, report: AgentUsageReport, persist: bool
 /// a call and a row that mean nothing.
 export function profilesInUse(): string[] {
   const ids = new Set<string>();
-  const appChain = get(agentDefaultsStore).agentFallback ?? [];
+  const appMap = get(agentDefaultsStore).fallbackChains ?? {};
   for (const workspace of get(layoutState).workspaces) {
     const agent = resolvedAgentFor(workspace.id);
     if (agent.profileId) ids.add(agent.profileId);
-    for (const id of effectiveFallbackChain(workspace.agentFallback, appChain)) {
-      ids.add(id);
+    // Every primary's effective chain: usage is polled for any agent a
+    // launch in this workspace could walk to, whichever primary the card
+    // resolves to.
+    const wsMap = workspace.fallbackChains ?? {};
+    for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
+      for (const id of effectiveFallbackChain(wsMap, appMap, primary)) {
+        ids.add(id);
+      }
     }
   }
   return [...ids];
@@ -472,8 +478,9 @@ export function launchDecision(
   const cyclePaused = cycle ? cyclePhase(cycle, nowMs).paused : false;
   const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   const chain = effectiveFallbackChain(
-    workspace?.agentFallback,
-    get(agentDefaultsStore).agentFallback
+    workspace?.fallbackChains,
+    get(agentDefaultsStore).fallbackChains,
+    resolvedProfileId ?? ""
   );
   const workspaceProfile = resolvedAgentFor(workspaceId).profileId;
   const armed = new Set<string>([

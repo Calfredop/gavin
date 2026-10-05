@@ -32,11 +32,13 @@
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import {
     AGENTS_SECTION,
-    WORKSPACE_AGENTS_TABS,
+    GENERAL_TAB,
+    addCustomProfile,
+    agentsHubTabs,
     agentsTabForQuery,
     isCustomProfileId,
     profileOptionLabel,
-    type WorkspaceAgentsTab,
+    type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
@@ -109,9 +111,11 @@
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
   import { armNewlyAdded, askAgainToArm } from "$lib/agents/agentFallbackState";
   import {
+    chainForPrimary,
     effectiveFallbackChain,
     fallbackThresholdFor,
     sanitizeFallbackThreshold,
+    workspaceOwnsFallbackChain,
   } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
@@ -162,7 +166,8 @@
       $agentModelDefaultsStore,
       {},
       {},
-      $agentDefaultsStore.agentEfforts
+      $agentDefaultsStore.agentEfforts,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const configWarning = $derived(Boolean(rootContext?.configWarning));
@@ -322,15 +327,32 @@
   }
 
   // --- Agents hub --------------------------------------------------------
-  let agentsTab = $state<WorkspaceAgentsTab>("this-agent");
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let agentsQuerySeen = $state("");
+  let newLocalCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(profiles));
   $effect(() => {
     const q = settingsQuery;
     if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
     agentsQuerySeen = q;
-    agentsTab = agentsTabForQuery("workspace", q) as WorkspaceAgentsTab;
+    agentsTab = agentsTabForQuery("workspace", q, profiles);
+  });
+  $effect(() => {
+    if (agentsTab === GENERAL_TAB) return;
+    if (profiles.some((p) => p.id === agentsTab)) return;
+    agentsTab = GENERAL_TAB;
   });
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
+
+  async function addLocalCustom(): Promise<void> {
+    const next = addCustomProfile(ws?.customProfiles ?? [], newLocalCustomName.trim() || "Custom", {
+      local: true,
+    });
+    const added = next.find((p) => !(ws?.customProfiles ?? []).some((o) => o.id === p.id));
+    await setWorkspaceCustomProfiles(workspaceId, next);
+    newLocalCustomName = "";
+    if (added) agentsTab = added.id;
+  }
 
   // --- terminal ---------------------------------------------------------
   /// What this workspace inherits when it sets no size of its own: the
@@ -913,12 +935,12 @@
     <section hidden={!settingsFilter.visible("agents") || selectedSection !== "agents"}>
       <h3>Agents</h3>
       <AgentsHubTabs
-        tabs={WORKSPACE_AGENTS_TABS}
+        tabs={agentsTabs}
         tab={agentsTab}
-        onTab={(t) => (agentsTab = t as WorkspaceAgentsTab)}
+        onTab={(t) => (agentsTab = t)}
       />
 
-      {#if agentsTab === "this-agent"}
+      {#if agentsTab === GENERAL_TAB}
       <!-- Above the Command field it gates: the field shows the RESOLVED
            command, so without this the panel would silently answer with
            the profile's while config.toml said something else. -->
@@ -956,8 +978,153 @@
             Set up {profileLabel} again…
           </button>
           — re-run MCP, skills and Superpowers for this agent without changing the profile.
+          Per-agent setup (command, file, MCP) lives on that agent’s tab.
         </p>
-        {#if profileInfo?.usageProbe}
+      {/if}
+
+        <h3 class="sub">Complexity</h3>
+        <p class="hint">
+          Which agent runs a card of each difficulty, in this workspace only. A level left on its
+          default follows the app-wide table in Settings, so leaving one alone is how this workspace
+          tracks that; naming an agent, a model or an effort here overrides that level and nothing
+          else.
+        </p>
+        <ComplexityTable
+          profiles={profiles}
+          table={complexityTable}
+          inherited={$agentDefaultsStore.complexity}
+          onChange={setComplexity}
+        />
+
+        <h3 class="sub">Pause</h3>
+        <!-- Absent means INHERIT, which is not the same as off: a
+             workspace that wants no pause while the app has one stores a
+             cycle with enabled:false, so clearing and disabling are two
+             different controls. -->
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={ws.agentPause != null}
+            onchange={(e) =>
+              void setWorkspacePause(
+                workspaceId,
+                e.currentTarget.checked ? { ...inheritedCycle } : null
+              )}
+          />
+          Give this workspace its own pause settings
+        </label>
+        {#if ws.agentPause == null}
+          <p class="hint">
+            {#if appCycle?.enabled}
+              Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
+              {appCycle.periodMinutes} minutes.
+            {:else}
+              Following the app-wide setting, which is off. Settings → Agents → General
+              changes it for every workspace.
+            {/if}
+          </p>
+        {:else}
+          {@const own = ws.agentPause}
+          <div class="pause-row">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={own.enabled}
+                onchange={(e) =>
+                  void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
+              />
+              Pause on a cycle
+            </label>
+          </div>
+          <div class="pause-row">
+            <span>Pause for</span>
+            <input
+              class="num"
+              type="number"
+              min="1"
+              disabled={!own.enabled}
+              value={own.pauseMinutes}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  pauseMinutes: Number(e.currentTarget.value),
+                })}
+            />
+            <span>minutes every</span>
+            <input
+              class="num"
+              type="number"
+              min={MIN_PERIOD_MINUTES}
+              disabled={!own.enabled}
+              value={own.periodMinutes}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  periodMinutes: Number(e.currentTarget.value),
+                })}
+            />
+            <span>minutes</span>
+          </div>
+          <div class="pause-row">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={own.limitEnabled}
+                onchange={(e) =>
+                  void setWorkspacePause(workspaceId, {
+                    ...own,
+                    limitEnabled: e.currentTarget.checked,
+                  })}
+              />
+              Hold when a window is
+            </label>
+            <input
+              class="num"
+              type="number"
+              min="1"
+              max="100"
+              disabled={!own.limitEnabled}
+              value={own.limitPercent}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  limitPercent: Number(e.currentTarget.value),
+                })}
+            />
+            <span>% used</span>
+          </div>
+        {/if}
+        <p class="hint">
+          A pause stops gavin STARTING work — a rail's next step, a card run, an automatic resume. An
+          agent already mid-turn finishes, and your own Run button always works.
+          {#if pauseNow.paused}
+            Right now: {pauseNow.why}.
+          {/if}
+        </p>
+
+        <h3 class="sub">Local customs</h3>
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New local custom name"
+            bind:value={newLocalCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addLocalCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addLocalCustom()}>Add local custom</button>
+        </div>
+        <p class="hint">Locals are marked on their tabs and only exist in this workspace.</p>
+      {:else if agentsTab === agent.profileId}
+        {#if !hasRoot}
+          <p class="hint">Bind a root folder to configure the agent.</p>
+        {:else if configWarning}
+          <p class="hint warn">
+            This root's config.toml can't be parsed — fix it to edit these settings.
+          </p>
+        {:else}
+          {#if profileInfo?.usageProbe}
           <label class="row">
             <span>Walk at</span>
             <span class="pct-row">
@@ -982,7 +1149,7 @@
             New launches walk the fallback chain at this percent, so a tenth of the window stays
             free. Resume of a conversation already on this agent still uses the pause threshold.
           </p>
-        {/if}
+          {/if}
         <label class="row">
           <span>Command</span>
           <input
@@ -1262,44 +1429,25 @@
           </p>
         </div>
       {/if}
-      {:else if agentsTab === "customs"}
-        <CustomsEditor
-          local
-          profiles={ws.customProfiles ?? []}
-          apiFamilyBlocked={apiFamilyBlocked}
-          onChange={(next) => void setWorkspaceCustomProfiles(workspaceId, next)}
-        />
-      {:else if agentsTab === "complexity"}
+
+        <h3 class="sub">Fallback</h3>
         <p class="hint">
-          Which agent runs a card of each difficulty, in this workspace only. A level left on its
-          default follows the app-wide table in Settings, so leaving one alone is how this workspace
-          tracks that; naming an agent, a model or an effort here overrides that level and nothing
-          else.
-        </p>
-        <ComplexityTable
-          profiles={profiles}
-          table={complexityTable}
-          inherited={$agentDefaultsStore.complexity}
-          onChange={setComplexity}
-        />
-      {:else if agentsTab === "fallback"}
-        <p class="hint">
-          When this workspace's agent is over its usage threshold, new launches walk this chain
-          instead of pausing. The workspace agent is not rewritten. An agent that is not set up yet
-          opens a setup wizard rather than launching degraded.
+          When a launch whose resolved agent is {profileLabel} is over its usage threshold, new
+          launches walk this chain instead of pausing.
         </p>
         <FallbackChainEditor
           profiles={profiles}
-          value={ws.agentFallback ?? []}
-          inherited={$agentDefaultsStore.agentFallback ?? []}
-          inheriting={ws.agentFallback == null}
+          value={chainForPrimary(ws.fallbackChains, agent.profileId)}
+          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agent.profileId)}
+          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agent.profileId)}
           thresholds={$agentDefaultsStore.fallbackThresholds}
           onChange={(chain) => {
             const before = effectiveFallbackChain(
-              ws.agentFallback,
-              $agentDefaultsStore.agentFallback
+              ws.fallbackChains,
+              $agentDefaultsStore.fallbackChains,
+              agent.profileId
             );
-            void setWorkspaceFallback(workspaceId, chain).then(() => {
+            void setWorkspaceFallback(workspaceId, agent.profileId, chain).then(() => {
               if (chain) void armNewlyAdded(workspaceId, before, chain);
             });
           }}
@@ -1313,9 +1461,6 @@
             })}
         />
         {#if (ws.declinedAgents ?? []).length > 0}
-          <!-- The one way back from the arming wizard's "Don't ask again":
-               without it the answer could only be undone by hand-editing
-               config.json. -->
           <div class="sp-row">
             <span class="sp-title">Not set up here, by your choice</span>
             {#each ws.declinedAgents ?? [] as id (id)}
@@ -1324,121 +1469,46 @@
                 <button type="button" onclick={() => void askAgainToArm(workspaceId, id)}>Ask again</button>
               </div>
             {/each}
-            <p class="hint">
-              You chose "Don't ask again" when gavin offered to set these up, so launches here skip
-              them in the chain.
-            </p>
           </div>
         {/if}
-      {:else if agentsTab === "pause"}
-        <!-- Absent means INHERIT, which is not the same as off: a
-             workspace that wants no pause while the app has one stores a
-             cycle with enabled:false, so clearing and disabling are two
-             different controls. -->
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={ws.agentPause != null}
-            onchange={(e) =>
-              void setWorkspacePause(
-                workspaceId,
-                e.currentTarget.checked ? { ...inheritedCycle } : null
-              )}
+      {:else}
+        {#if (ws.customProfiles ?? []).some((p) => p.id === agentsTab)}
+          <CustomsEditor
+            local
+            profiles={(ws.customProfiles ?? []).filter((p) => p.id === agentsTab)}
+            apiFamilyBlocked={apiFamilyBlocked}
+            onChange={(next) => {
+              const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
+              void setWorkspaceCustomProfiles(workspaceId, [...others, ...next]);
+            }}
           />
-          Give this workspace its own pause settings
-        </label>
-        {#if ws.agentPause == null}
-          <p class="hint">
-            {#if appCycle?.enabled}
-              Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
-              {appCycle.periodMinutes} minutes.
-            {:else}
-              Following the app-wide setting, which is off. Settings → Agents → Pause
-              changes it for every workspace.
-            {/if}
-          </p>
-        {:else}
-          {@const own = ws.agentPause}
-          <div class="pause-row">
-            <label class="check">
-              <input
-                type="checkbox"
-                checked={own.enabled}
-                onchange={(e) =>
-                  void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
-              />
-              Pause on a cycle
-            </label>
-          </div>
-          <div class="pause-row">
-            <span>Pause for</span>
-            <input
-              class="num"
-              type="number"
-              min="1"
-              disabled={!own.enabled}
-              value={own.pauseMinutes}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  pauseMinutes: Number(e.currentTarget.value),
-                })}
-            />
-            <span>minutes every</span>
-            <input
-              class="num"
-              type="number"
-              min={MIN_PERIOD_MINUTES}
-              disabled={!own.enabled}
-              value={own.periodMinutes}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  periodMinutes: Number(e.currentTarget.value),
-                })}
-            />
-            <span>minutes</span>
-          </div>
-          <div class="pause-row">
-            <label class="check">
-              <input
-                type="checkbox"
-                checked={own.limitEnabled}
-                onchange={(e) =>
-                  void setWorkspacePause(workspaceId, {
-                    ...own,
-                    limitEnabled: e.currentTarget.checked,
-                  })}
-              />
-              Hold when a window is
-            </label>
-            <input
-              class="num"
-              type="number"
-              min="1"
-              max="100"
-              disabled={!own.limitEnabled}
-              value={own.limitPercent}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  limitPercent: Number(e.currentTarget.value),
-                })}
-            />
-            <span>% used</span>
-          </div>
-          {#if own.enabled && validateCycle(own)}
-            <p class="hint error">{validateCycle(own)}</p>
-          {/if}
         {/if}
-        <p class="hint">
-          A pause stops gavin STARTING work — a rail's next step, a card run, an
-          automatic resume. An agent already mid-turn finishes, and your own Run
-          button always works.
-          {#if pauseNow.paused}
-            Right now: {pauseNow.why}.
-          {/if}
-        </p>
+        <h3 class="sub">Fallback</h3>
+        <FallbackChainEditor
+          profiles={profiles}
+          value={chainForPrimary(ws.fallbackChains, agentsTab)}
+          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agentsTab)}
+          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agentsTab)}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) => {
+            const before = effectiveFallbackChain(
+              ws.fallbackChains,
+              $agentDefaultsStore.fallbackChains,
+              agentsTab
+            );
+            void setWorkspaceFallback(workspaceId, agentsTab, chain).then(() => {
+              if (chain) void armNewlyAdded(workspaceId, before, chain);
+            });
+          }}
+          onThresholdChange={(profileId, percent) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackThresholds: {
+                ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                [profileId]: sanitizeFallbackThreshold(percent),
+              },
+            })}
+        />
       {/if}
     </section>
 

@@ -54,7 +54,7 @@ function everyKey(id: string, flavour: string): Workspace {
       limitPercent: 95,
       limitEnabled: true,
     },
-    agentFallback: [`fb-${flavour}`],
+    fallbackChains: { "claude-code": [`fb-${flavour}`] },
     armedAgents: [`armed-${flavour}`],
     declinedAgents: [`declined-${flavour}`],
     pinnedAt: flavour === "a" ? 10 : 20,

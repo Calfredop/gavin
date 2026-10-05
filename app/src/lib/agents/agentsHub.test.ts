@@ -1,42 +1,68 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENTS_SECTION,
-  APP_AGENTS_TABS,
-  WORKSPACE_AGENTS_TABS,
+  GENERAL_TAB,
   addCustomProfile,
+  agentsHubTabs,
   agentsTabForQuery,
   deleteCustomProfile,
+  isCustomProfileId,
   localCustomId,
   renameCustomProfile,
   slugifyCustomId,
   updateCustomProfile,
 } from "./agentsHub";
+import type { AgentProfileInfo } from "$lib/core/settings";
+
+function profile(
+  over: Partial<AgentProfileInfo> & Pick<AgentProfileInfo, "id" | "label">
+): AgentProfileInfo {
+  return {
+    command: over.id,
+    instructionsFile: "",
+    mcpSupported: false,
+    mcpConfigFile: "",
+    promptArgs: "",
+    headlessArgs: "",
+    modelFlag: "",
+    models: [],
+    effortFlag: "",
+    efforts: [],
+    failurePatterns: [],
+    failureCauses: [],
+    sessionIdArgs: "",
+    sessionIdDiscovery: "",
+    resumeArgs: "",
+    usageProbe: false,
+    ...over,
+  };
+}
+
+const PROFILES: AgentProfileInfo[] = [
+  profile({ id: "claude-code", label: "Claude Code", usageProbe: true }),
+  profile({ id: "codex", label: "Codex", usageProbe: true }),
+  profile({ id: "work-agent", label: "Work", modelFlag: "--model" }),
+  profile({ id: "local:desk", label: "Desk", local: true }),
+];
 
 describe("agents hub tabs", () => {
-  it("app tabs are Defaults | Customs | Complexity | Fallback | Pause", () => {
-    expect(APP_AGENTS_TABS.map((t) => t.label)).toEqual([
-      "Defaults",
-      "Customs",
-      "Complexity",
-      "Fallback",
-      "Pause",
+  it("is General plus one tab per agent, locals marked", () => {
+    expect(agentsHubTabs(PROFILES).map((t) => t.label)).toEqual([
+      "General",
+      "Claude Code",
+      "Codex",
+      "Work",
+      "Desk (local)",
     ]);
-  });
-
-  it("workspace tabs are This agent | Customs | Complexity | Fallback | Pause", () => {
-    expect(WORKSPACE_AGENTS_TABS.map((t) => t.label)).toEqual([
-      "This agent",
-      "Customs",
-      "Complexity",
-      "Fallback",
-      "Pause",
-    ]);
+    expect(agentsHubTabs(PROFILES)[0].id).toBe(GENERAL_TAB);
   });
 
   it("search section is a single agents id with the old pane keywords", () => {
     expect(AGENTS_SECTION.id).toBe("agents");
     expect(AGENTS_SECTION.keywords[0]).toBe("Agents");
     for (const word of [
+      "General",
+      "Default agent",
       "Agent defaults",
       "Custom agent",
       "API family",
@@ -52,18 +78,23 @@ describe("agents hub tabs", () => {
 });
 
 describe("agentsTabForQuery", () => {
-  it("opens Customs for API-family / command queries", () => {
-    expect(agentsTabForQuery("app", "API family")).toBe("customs");
-    expect(agentsTabForQuery("workspace", "named custom")).toBe("customs");
+  it("opens General for complexity / pause / default", () => {
+    expect(agentsTabForQuery("app", "complexity", PROFILES)).toBe(GENERAL_TAB);
+    expect(agentsTabForQuery("app", "pause cycle", PROFILES)).toBe(GENERAL_TAB);
+    expect(agentsTabForQuery("workspace", "default agent", PROFILES)).toBe(GENERAL_TAB);
   });
 
-  it("opens Fallback for quota / arm", () => {
-    expect(agentsTabForQuery("app", "quota")).toBe("fallback");
-    expect(agentsTabForQuery("workspace", "arm fallback")).toBe("fallback");
+  it("opens a named agent for quota / custom / command", () => {
+    expect(agentsTabForQuery("app", "quota", PROFILES)).toBe("claude-code");
+    expect(agentsTabForQuery("app", "API family", PROFILES)).toBe("work-agent");
+    expect(agentsTabForQuery("workspace", "Codex", PROFILES)).toBe("codex");
   });
 
-  it("does not invent This agent on the app hub", () => {
-    expect(agentsTabForQuery("app", "this agent profile")).toBe("defaults");
+  it("treats custom ids as customs", () => {
+    expect(isCustomProfileId("work-agent")).toBe(true);
+    expect(isCustomProfileId("local:desk")).toBe(true);
+    expect(isCustomProfileId("claude-code")).toBe(false);
+    expect(isCustomProfileId("general")).toBe(false);
   });
 });
 

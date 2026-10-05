@@ -297,27 +297,35 @@ describe("the Agents settings hub", () => {
   const app = () => codeOf(companionSource("companion/surfaces/PhoneAppSettings.svelte"));
   const workspace = () => codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte"));
 
-  it("reuses the desk's tab shell and Customs editor on both screens", () => {
+  it("reuses the desk's tab shell on both screens", () => {
     for (const text of [app(), workspace()]) {
       expect(text).toContain('import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte"');
-      expect(text).toContain('import CustomsEditor from "$lib/agents/CustomsEditor.svelte"');
       expect(text).toContain("<AgentsHubTabs");
-      expect(text).toContain("<CustomsEditor");
       expect(text).toContain('title="Agents"');
+      expect(text).toContain("agentsHubTabs");
+      expect(text).toContain("GENERAL_TAB");
     }
   });
 
-  it("app screen uses app tabs and writes customProfiles through setAgentDefaults", () => {
-    expect(app()).toContain("APP_AGENTS_TABS");
-    expect(app()).toContain("customProfiles: next");
-    expect(app()).not.toContain("WORKSPACE_AGENTS_TABS");
+  it("app screen: General + per-agent tabs, customs inline, setAgentDefaults", () => {
+    expect(app()).toContain("Default agent");
+    expect(app()).toContain("Add custom");
+    expect(app()).toContain("addCustomProfile");
+    expect(app()).toContain("customProfiles:");
+    expect(app()).toContain("withFallbackChainForPrimary");
+    expect(app()).not.toContain("CustomsEditor");
+    expect(app()).not.toContain("APP_AGENTS_TABS");
     expect(app()).not.toContain("customCommand");
   });
 
-  it("workspace screen uses workspace tabs and writes locals through setWorkspaceCustomProfiles", () => {
-    expect(workspace()).toContain("WORKSPACE_AGENTS_TABS");
+  it("workspace screen: General + per-agent tabs, CustomsEditor on local customs", () => {
+    expect(workspace()).toContain("Add local custom");
     expect(workspace()).toContain("setWorkspaceCustomProfiles");
+    expect(workspace()).toContain('import CustomsEditor from "$lib/agents/CustomsEditor.svelte"');
+    expect(workspace()).toContain("<CustomsEditor");
     expect(workspace()).toContain("local");
+    expect(workspace()).toContain("workspaceOwnsFallbackChain");
+    expect(workspace()).not.toContain("WORKSPACE_AGENTS_TABS");
   });
 });
 

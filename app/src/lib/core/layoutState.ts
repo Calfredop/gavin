@@ -2400,7 +2400,8 @@ export function resolvedAgentFor(workspaceId: string) {
     get(agentModelDefaultsStore),
     undefined,
     undefined,
-    get(agentDefaultsStore).agentEfforts
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
 }
 
@@ -2444,7 +2445,8 @@ export function agentForCard(
     get(agentModelDefaultsStore),
     undefined,
     undefined,
-    get(agentDefaultsStore).agentEfforts
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
 }
 
@@ -2462,7 +2464,8 @@ export function agentForProfile(workspaceId: string, profileId: string) {
     get(agentModelDefaultsStore),
     undefined,
     undefined,
-    get(agentDefaultsStore).agentEfforts
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
 }
 
@@ -2492,7 +2495,8 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
     get(agentModelDefaultsStore),
     undefined,
     undefined,
-    get(agentDefaultsStore).agentEfforts
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
 }
 
@@ -2520,7 +2524,8 @@ export const resolvedAgents = derived(
         $models,
         undefined,
         undefined,
-        $defaults.agentEfforts
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
       );
     }
 );
@@ -2548,7 +2553,8 @@ export const cardAgents = derived(
         $models,
         undefined,
         undefined,
-        $defaults.agentEfforts
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
       );
     }
 );
@@ -3117,15 +3123,27 @@ export async function setWorkspacePause(
   await saveWorkspaceSettings(workspaceId, { agentPause: cycle });
 }
 
-/// This workspace's own fallback chain. `null` REMOVES the override
-/// (inherit the app-wide chain). An empty array is an explicit "no
-/// fallback" override — the same inherit-vs-off split `setWorkspacePause`
-/// uses.
+/// This workspace's own fallback chain FOR ONE PRIMARY profile. `null`
+/// REMOVES the key, so that primary inherits the app-wide chain again; an
+/// empty array is an explicit "no fallback" override for it — the same
+/// inherit-vs-off split `setWorkspacePause` uses, per primary. When the
+/// last key goes the map itself is stored as absent, so a workspace that
+/// never chose keeps no trace.
 export async function setWorkspaceFallback(
   workspaceId: string,
+  primaryId: string,
   chain: string[] | null
 ): Promise<void> {
-  await saveWorkspaceSettings(workspaceId, { agentFallback: chain });
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = { ...(workspace.fallbackChains ?? {}) };
+  if (chain == null) delete map[id];
+  else map[id] = chain.map((s) => s.trim()).filter(Boolean);
+  await saveWorkspaceSettings(workspaceId, {
+    fallbackChains: Object.keys(map).length > 0 ? map : null,
+  });
 }
 
 /// Record that this profile's setup-only arming finished in this

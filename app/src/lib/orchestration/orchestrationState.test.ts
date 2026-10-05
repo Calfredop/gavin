@@ -74,7 +74,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   // The launching profile, as the real one names it against a daemon
   // new enough to read it (`compressedLaunch`).

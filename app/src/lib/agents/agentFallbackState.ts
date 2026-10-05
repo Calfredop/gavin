@@ -91,7 +91,15 @@ export function owedArming(workspaceId: string): string[] {
   const workspace = state.workspaces.find((w) => w.id === workspaceId);
   if (!workspace) return [];
   const app = get(agentDefaultsStore);
-  const chain = effectiveFallbackChain(workspace.agentFallback, app.agentFallback);
+  // Union of EVERY primary's effective chain, not only the workspace
+  // agent's: a complexity table can launch a card on another primary,
+  // whose chain then walks agents this workspace was never asked to arm.
+  const appMap = app.fallbackChains ?? {};
+  const wsMap = workspace.fallbackChains ?? {};
+  const chain: string[] = [];
+  for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
+    chain.push(...effectiveFallbackChain(wsMap, appMap, primary));
+  }
   const wsTable = workspaceComplexityTable(workspaceId);
   const complexityProfiles: string[] = [];
   for (const level of COMPLEXITY_LEVELS) {

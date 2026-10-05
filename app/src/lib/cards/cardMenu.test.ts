@@ -67,7 +67,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   // The SAME function object, deliberately: no fixture in here carries a
   // level or an `agent:`/`model:` line, so the card's own resolver lands

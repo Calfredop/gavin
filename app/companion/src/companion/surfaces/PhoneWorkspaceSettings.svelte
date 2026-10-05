@@ -28,11 +28,17 @@
     terminalFontSizeDefault,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
-  import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import {
-    WORKSPACE_AGENTS_TABS,
+    chainForPrimary,
+    sanitizeFallbackThreshold,
+    workspaceOwnsFallbackChain,
+  } from "$lib/agents/agentFallback";
+  import {
+    GENERAL_TAB,
+    addCustomProfile,
+    agentsHubTabs,
     profileOptionLabel,
-    type WorkspaceAgentsTab,
+    type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
@@ -112,7 +118,8 @@
       $agentModelDefaultsStore,
       {},
       {},
-      $agentDefaultsStore.agentEfforts
+      $agentDefaultsStore.agentEfforts,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const agent = $derived(
@@ -129,7 +136,25 @@
   const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
 
-  let agentsTab = $state<WorkspaceAgentsTab>("this-agent");
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
+  let newLocalCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(profiles));
+  $effect(() => {
+    if (agentsTab === GENERAL_TAB) return;
+    if (profiles.some((p) => p.id === agentsTab)) return;
+    agentsTab = GENERAL_TAB;
+  });
+
+  function addLocalCustom(): void {
+    const next = addCustomProfile(ws.customProfiles ?? [], newLocalCustomName.trim() || "Custom", {
+      local: true,
+    });
+    const added = next.find((p) => !(ws.customProfiles ?? []).some((o) => o.id === p.id));
+    void saveSetting(() => setWorkspaceCustomProfiles(id, next)).then(() => {
+      newLocalCustomName = "";
+      if (added) agentsTab = added.id;
+    });
+  }
 
   // --- complexity ---------------------------------------------------------
   function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
@@ -145,6 +170,10 @@
   /// own and switching it off are two different controls.
   function editPause(own: PauseCycle, patch: Partial<PauseCycle>): void {
     void saveSetting(() => setWorkspacePause(id, { ...own, ...patch }));
+  }
+
+  function saveFallback(primaryId: string, chain: string[] | null): void {
+    void saveSetting(() => setWorkspaceFallback(id, primaryId, chain));
   }
 </script>
 
@@ -238,15 +267,11 @@
 
   <PhoneSettingsGroup
     title="Agents"
-    intro="This workspace's agent, its local customs, complexity, fallback and pause — the same Agents hub as at the desk."
+    intro="General settings plus one tab per agent — the same Agents hub as at the desk."
   >
-    <AgentsHubTabs
-      tabs={WORKSPACE_AGENTS_TABS}
-      tab={agentsTab}
-      onTab={(t) => (agentsTab = t as WorkspaceAgentsTab)}
-    />
+    <AgentsHubTabs tabs={agentsTabs} tab={agentsTab} onTab={(t) => (agentsTab = t)} />
 
-    {#if agentsTab === "this-agent"}
+    {#if agentsTab === GENERAL_TAB}
       {#if !ws.rootPath}
         <p class="note">This workspace is bound to no folder, so it has no agent to configure.</p>
       {:else if rootContext?.configWarning}
@@ -260,45 +285,8 @@
             })}</span
           >
         </PhoneSetting>
-        {#if agent.modelFlag}
-          <PhoneSetting label="Model" control="ws-model" warn={modelBlocked}>
-            <PhoneModelPicker
-              id="ws-model"
-              options={modelOptions({ modelFlag: agent.modelFlag, models: agent.models }, agent.inheritedModel)}
-              own={agent.ownModel}
-              presets={agent.models}
-              placeholder="model name"
-              disabled={modelBlocked !== null}
-              onPick={(model) => void saveSetting(() => setAgentField(id, "model", model))}
-            />
-          </PhoneSetting>
-        {:else}
-          <p class="note">gavin has no model flag for {agent.profileLabel}, so it cannot put a model on it.</p>
-        {/if}
-        {#if agent.effortFlag}
-          <PhoneSetting label="Effort" control="ws-effort" warn={effortBlocked}>
-            <PhoneModelPicker
-              id="ws-effort"
-              options={effortOptions({ effortFlag: agent.effortFlag, efforts: agent.efforts }, agent.inheritedEffort)}
-              own={agent.ownEffort}
-              presets={agent.efforts}
-              placeholder="effort"
-              disabled={effortBlocked !== null}
-              onPick={(effort) => void saveSetting(() => setAgentField(id, "effort", effort))}
-            />
-          </PhoneSetting>
-        {/if}
       {/if}
-    {:else if agentsTab === "customs"}
-      <div class="desk-part">
-        <CustomsEditor
-          local
-          profiles={ws.customProfiles ?? []}
-          apiFamilyBlocked={apiFamilyBlocked}
-          onChange={(next) => void saveSetting(() => setWorkspaceCustomProfiles(id, next))}
-        />
-      </div>
-    {:else if agentsTab === "complexity"}
+
       <p class="note">
         Which agent runs a card of each difficulty, here only. A level left on its default follows the
         Workstation's table.
@@ -311,32 +299,7 @@
           onChange={setComplexity}
         />
       </div>
-    {:else if agentsTab === "fallback"}
-      <p class="note">
-        When this workspace's agent is over its usage threshold, new launches walk this chain instead of
-        pausing.
-      </p>
-      <div class="desk-part">
-        <FallbackChainEditor
-          profiles={profiles}
-          value={ws.agentFallback ?? []}
-          inherited={$agentDefaultsStore.agentFallback ?? []}
-          inheriting={ws.agentFallback == null}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) => void saveSetting(() => setWorkspaceFallback(id, chain))}
-          onThresholdChange={(profileId, percent) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackThresholds: {
-                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                  [profileId]: sanitizeFallbackThreshold(percent),
-                },
-              })
-            )}
-        />
-      </div>
-    {:else if agentsTab === "pause"}
+
       <PhoneToggle
         label="Give this workspace its own pause settings"
         checked={ws.agentPause != null}
@@ -387,6 +350,118 @@
           <span class="unit">% used</span>
         </PhoneSetting>
       {/if}
+
+      <PhoneSetting
+        label="Add local custom"
+        control="ws-new-local-custom"
+        hint="Locals are marked on their tabs and only exist in this workspace."
+      >
+        <input
+          id="ws-new-local-custom"
+          spellcheck="false"
+          placeholder="New local custom name"
+          bind:value={newLocalCustomName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") addLocalCustom();
+          }}
+        />
+        <button type="button" class="add-custom" onclick={addLocalCustom}>Add local custom</button>
+      </PhoneSetting>
+    {:else if agentsTab === resolved.profileId}
+      {#if !ws.rootPath}
+        <p class="note">This workspace is bound to no folder, so it has no agent to configure.</p>
+      {:else if rootContext?.configWarning}
+        <p class="warn">This folder's config.toml can't be read. Fix it at the desk to change the agent here.</p>
+      {:else}
+        {#if agent.modelFlag}
+          <PhoneSetting label="Model" control="ws-model" warn={modelBlocked}>
+            <PhoneModelPicker
+              id="ws-model"
+              options={modelOptions({ modelFlag: agent.modelFlag, models: agent.models }, agent.inheritedModel)}
+              own={agent.ownModel}
+              presets={agent.models}
+              placeholder="model name"
+              disabled={modelBlocked !== null}
+              onPick={(model) => void saveSetting(() => setAgentField(id, "model", model))}
+            />
+          </PhoneSetting>
+        {:else}
+          <p class="note">gavin has no model flag for {agent.profileLabel}, so it cannot put a model on it.</p>
+        {/if}
+        {#if agent.effortFlag}
+          <PhoneSetting label="Effort" control="ws-effort" warn={effortBlocked}>
+            <PhoneModelPicker
+              id="ws-effort"
+              options={effortOptions({ effortFlag: agent.effortFlag, efforts: agent.efforts }, agent.inheritedEffort)}
+              own={agent.ownEffort}
+              presets={agent.efforts}
+              placeholder="effort"
+              disabled={effortBlocked !== null}
+              onPick={(effort) => void saveSetting(() => setAgentField(id, "effort", effort))}
+            />
+          </PhoneSetting>
+        {/if}
+      {/if}
+
+      <p class="note">
+        When a launch whose resolved agent is {agent.profileLabel} is over its usage threshold, new
+        launches walk this chain instead of pausing.
+      </p>
+      <div class="desk-part">
+        <FallbackChainEditor
+          profiles={profiles}
+          value={chainForPrimary(ws.fallbackChains, resolved.profileId)}
+          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, resolved.profileId)}
+          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, resolved.profileId)}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) => saveFallback(resolved.profileId, chain)}
+          onThresholdChange={(profileId, percent) =>
+            void saveSetting(() =>
+              setAgentDefaults({
+                ...$agentDefaultsStore,
+                fallbackThresholds: {
+                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                  [profileId]: sanitizeFallbackThreshold(percent),
+                },
+              })
+            )}
+        />
+      </div>
+    {:else}
+      {#if (ws.customProfiles ?? []).some((p) => p.id === agentsTab)}
+        <div class="desk-part">
+          <CustomsEditor
+            local
+            profiles={(ws.customProfiles ?? []).filter((p) => p.id === agentsTab)}
+            apiFamilyBlocked={apiFamilyBlocked}
+            onChange={(next) => {
+              const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
+              void saveSetting(() => setWorkspaceCustomProfiles(id, [...others, ...next]));
+            }}
+          />
+        </div>
+      {/if}
+      <p class="note">Fallback when this agent is the resolved primary.</p>
+      <div class="desk-part">
+        <FallbackChainEditor
+          profiles={profiles}
+          value={chainForPrimary(ws.fallbackChains, agentsTab)}
+          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agentsTab)}
+          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agentsTab)}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) => saveFallback(agentsTab, chain)}
+          onThresholdChange={(profileId, percent) =>
+            void saveSetting(() =>
+              setAgentDefaults({
+                ...$agentDefaultsStore,
+                fallbackThresholds: {
+                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                  [profileId]: sanitizeFallbackThreshold(percent),
+                },
+              })
+            )}
+        />
+      </div>
     {/if}
   </PhoneSettingsGroup>
 
@@ -471,6 +546,16 @@
      than every other hint here. */
   .desk-part {
     font-size: 0.8125rem;
+  }
+  .add-custom {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font: inherit;
   }
   button:focus-visible {
     outline: 2px solid var(--border-focus);

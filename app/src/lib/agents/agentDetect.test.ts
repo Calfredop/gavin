@@ -43,7 +43,7 @@ describe("suggestMainProfile", () => {
       suggestMainProfile({
         detected: SWEEP,
         currentProfileId: "codex",
-        appFallback: ["gemini"],
+        appChains: { "claude-code": ["gemini"] },
         commandAlreadySet: true,
       })
     ).toBe("codex");
@@ -54,18 +54,18 @@ describe("suggestMainProfile", () => {
       suggestMainProfile({
         detected: SWEEP,
         currentProfileId: "opencode",
-        appFallback: ["gemini"],
+        appChains: { "claude-code": ["gemini"] },
         commandAlreadySet: false,
       })
     ).toBe("opencode");
   });
 
-  it("prefers a found id from the app fallback chain over the first found", () => {
+  it("prefers a found id from any primary's chain over the first found", () => {
     expect(
       suggestMainProfile({
         detected: SWEEP,
         currentProfileId: "codex",
-        appFallback: ["cursor", "gemini", "opencode"],
+        appChains: { "claude-code": ["cursor"], gemini: ["gemini", "opencode"] },
         commandAlreadySet: false,
       })
     ).toBe("gemini");
@@ -76,7 +76,7 @@ describe("suggestMainProfile", () => {
       suggestMainProfile({
         detected: SWEEP,
         currentProfileId: "codex",
-        appFallback: ["cursor"],
+        appChains: { "claude-code": ["cursor"] },
         commandAlreadySet: false,
       })
     ).toBe("claude-code");
@@ -84,33 +84,46 @@ describe("suggestMainProfile", () => {
 });
 
 describe("suggestFallbackChain", () => {
-  it("leaves an existing app chain alone", () => {
+  it("leaves an existing chain for the main profile alone", () => {
     expect(
       suggestFallbackChain({
         detected: SWEEP,
         mainProfileId: "claude-code",
-        appFallback: ["codex", "gemini"],
+        appChains: { "claude-code": ["codex", "gemini"] },
       })
     ).toBeNull();
   });
 
-  it("seeds other found agents when the app chain is empty", () => {
+  it("seeds other found agents when the main profile has no chain yet", () => {
     expect(
       suggestFallbackChain({
         detected: SWEEP,
         mainProfileId: "claude-code",
-        appFallback: [],
+        appChains: {},
       })
     ).toEqual(["gemini", "opencode"]);
+  });
+
+  it("still seeds for a primary another primary's chain does not cover", () => {
+    expect(
+      suggestFallbackChain({
+        detected: SWEEP,
+        mainProfileId: "gemini",
+        appChains: { "claude-code": ["codex"] },
+      })
+    ).toEqual(["claude-code", "opencode"]);
   });
 });
 
 describe("missingFromAppFallback", () => {
-  it("names app-chain ids the sweep marked missing", () => {
-    expect(missingFromAppFallback(SWEEP, ["codex", "gemini", "cursor"])).toEqual([
-      "codex",
-      "cursor",
-    ]);
+  it("names ids in the main profile's chain the sweep marked missing", () => {
+    expect(
+      missingFromAppFallback(SWEEP, { "claude-code": ["codex", "gemini", "cursor"] }, "claude-code")
+    ).toEqual(["codex", "cursor"]);
+  });
+
+  it("says nothing for a primary with no chain", () => {
+    expect(missingFromAppFallback(SWEEP, { "claude-code": ["codex"] }, "gemini")).toEqual([]);
   });
 });
 

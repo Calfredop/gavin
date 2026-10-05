@@ -186,9 +186,11 @@ export interface Workspace {
   /// app-wide one, which is not the same as off: a workspace that wants
   /// no pause while the app has one stores a cycle with `enabled: false`.
   agentPause?: PauseCycle;
-  /// This workspace's own fallback chain. Absent means INHERIT the
-  /// app-wide one; an empty array is an explicit "no fallback" override.
-  agentFallback?: string[];
+  /// This workspace's own fallback chains keyed by primary profile id.
+  /// A missing key inherits the app-wide chain for that primary; a present
+  /// empty array is an explicit "no fallback" override for that primary.
+  /// An empty / absent map inherits every primary.
+  fallbackChains?: Record<string, string[]>;
   /// Profile ids this workspace has armed for fallback launch without
   /// switching the active agent. The workspace's own profile is not
   /// listed here — init and agent-change cover that.

@@ -80,10 +80,15 @@ pub const LEGACY_CUSTOM_PROFILE_ID: &str = "custom";
 /// with an app-wide custom slug the human chose.
 pub const LOCAL_PROFILE_PREFIX: &str = "local:";
 
+/// The five stock built-in profile ids, in their shipped order. Migration
+/// folds a legacy single fallback chain onto exactly these plus every
+/// custom id known at the time.
+pub const STOCK_PROFILE_IDS: [&str; 5] = ["claude-code", "codex", "gemini", "cursor", "opencode"];
+
 /// Stock built-in profile ids. A custom slug must not use these; Headroom
 /// and `api_family_for_daemon` treat anything else as custom-like.
 pub fn is_stock_profile_id(id: &str) -> bool {
-    matches!(id, "claude-code" | "codex" | "gemini" | "cursor" | "opencode")
+    STOCK_PROFILE_IDS.contains(&id)
 }
 
 /// One named custom agent the human defined — app-wide on
@@ -501,16 +506,25 @@ pub struct Workspace {
     /// app-wide custom slugs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_profiles: Vec<CustomProfile>,
-    /// This workspace's own fallback chain. Absent means INHERIT the
-    /// app-wide `AgentDefaultsConfig::agent_fallback`, which is not the
-    /// same as off — a workspace that wants no fallback while the app
-    /// has one stores an empty vec, and `skip_serializing_if` keeps the
-    /// key out of config.json for the ordinary inheriting case.
+    /// Legacy single fallback chain — one list walked no matter which
+    /// agent was spent. Deserialized so `migrate_fallback_chains` can fold
+    /// it onto `fallback_chains` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
+    pub agent_fallback: Option<Vec<String>>,
+    /// This workspace's own fallback chains, keyed by PRIMARY profile id:
+    /// the chain walked when that agent is the launch's resolved agent and
+    /// is spent. A key absent means INHERIT the app-wide chain for that
+    /// primary, which is not the same as off — a workspace that wants no
+    /// fallback for a primary stores an empty vec under its key. The
+    /// primary is never an element of its own chain. An empty map — the
+    /// ordinary case — inherits every primary's chain, and
+    /// `skip_serializing_if` keeps the key out of config.json then.
     ///
     /// Machine-local like `agent_pause`: which CLI this human spends
     /// when a subscription window is full is a fact about this machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_fallback: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fallback_chains: HashMap<String, Vec<String>>,
     /// Profile ids this workspace has completed setup-only arming for
     /// (Integration / Superpowers / skills) without switching the active
     /// agent. The workspace's own profile is armed by init / agent-change,
@@ -795,18 +809,32 @@ pub struct AgentDefaultsConfig {
     /// the field existed.
     #[serde(default)]
     pub complexity: HashMap<String, ComplexityAgent>,
-    /// Ordered fallback profile ids when a launch's resolved agent is
-    /// over its usage-probe threshold. Empty — the shipped default — is
-    /// pause-only, the behaviour every install had before this field.
+    /// The app-wide default agent: the profile a workspace with no
+    /// `[agent] profile` of its own resolves to. Absent — the shipped
+    /// state — means "claude-code", the hard-coded fallback every build
+    /// before this field used, so no migration is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    /// Legacy single fallback chain — one list walked no matter which
+    /// agent was spent. Deserialized so `migrate_fallback_chains` can fold
+    /// it onto `fallback_chains` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
+    pub agent_fallback: Vec<String>,
+    /// Ordered fallback profile ids when a launch's resolved agent is over
+    /// its usage-probe threshold, keyed by that PRIMARY agent's profile id
+    /// (the primary is never an element of its own chain). A primary with
+    /// no entry is pause-only, the behaviour every install had before
+    /// fallback chains existed.
     ///
     /// Lives here rather than as a thirteenth `persist_workspaces`
     /// positional because it is the same machine-local "which agent"
     /// question this struct already answers, and a new argument on that
     /// list is how a save site silently drops a setting. A workspace
-    /// override lives on `Workspace::agent_fallback`; absence there
-    /// inherits this chain.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agent_fallback: Vec<String>,
+    /// override lives on `Workspace::fallback_chains`; a key absent there
+    /// inherits this chain for that primary.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fallback_chains: HashMap<String, Vec<String>>,
     /// Per-profile percent at which a NEW launch walks away from that
     /// agent. Missing key means 90. Distinct from the pause cycle's
     /// `limit_percent`, which still gates resume. Machine-local with the
@@ -1152,6 +1180,22 @@ fn rewrite_profile_ids(ids: &mut [String], replacement: &str) {
     }
 }
 
+/// Whether any key or element of a per-primary chain map names the
+/// retired hard-coded `custom` profile.
+fn chain_map_references(map: &HashMap<String, Vec<String>>) -> bool {
+    map.keys().any(|k| profile_id_is_legacy_custom(k))
+        || map.values().flatten().any(|id| profile_id_is_legacy_custom(id))
+}
+
+/// The `rewrite_profile_ids` pass over a per-primary chain map: the
+/// legacy id can sit in a key (the primary) as well as in a chain.
+fn rewrite_chain_map_profile_ids(map: &mut HashMap<String, Vec<String>>, replacement: &str) {
+    rename_map_key(map, LEGACY_CUSTOM_PROFILE_ID, replacement);
+    for chain in map.values_mut() {
+        rewrite_profile_ids(chain, replacement);
+    }
+}
+
 fn rename_map_key<V>(map: &mut HashMap<String, V>, from: &str, to: &str) {
     if let Some(value) = map.remove(from) {
         map.entry(to.to_string()).or_insert(value);
@@ -1203,6 +1247,7 @@ fn references_legacy_custom(config: &AppConfig) -> bool {
     let d = &config.agent_defaults;
     if d.complexity.values().any(|a| profile_id_is_legacy_custom(&a.profile))
         || d.agent_fallback.iter().any(|id| profile_id_is_legacy_custom(id))
+        || chain_map_references(&d.fallback_chains)
         || d.fallback_thresholds.contains_key(LEGACY_CUSTOM_PROFILE_ID)
         || d.agent_efforts.contains_key(LEGACY_CUSTOM_PROFILE_ID)
         || config.agent_models.contains_key(LEGACY_CUSTOM_PROFILE_ID)
@@ -1215,6 +1260,7 @@ fn references_legacy_custom(config: &AppConfig) -> bool {
                 .agent_fallback
                 .as_ref()
                 .is_some_and(|c| c.iter().any(|id| profile_id_is_legacy_custom(id)))
+            || chain_map_references(&ws.fallback_chains)
             || ws.declined_agents.iter().any(|id| profile_id_is_legacy_custom(id))
             || ws.armed_agents.iter().any(|id| profile_id_is_legacy_custom(id))
         {
@@ -1294,6 +1340,10 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
         rewrite_profile_id(&mut entry.profile, MIGRATED_CUSTOM_PROFILE_ID);
     }
     rewrite_profile_ids(&mut config.agent_defaults.agent_fallback, MIGRATED_CUSTOM_PROFILE_ID);
+    rewrite_chain_map_profile_ids(
+        &mut config.agent_defaults.fallback_chains,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
     rename_map_key(
         &mut config.agent_defaults.fallback_thresholds,
         LEGACY_CUSTOM_PROFILE_ID,
@@ -1390,6 +1440,7 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
         if let Some(ref mut chain) = ws.agent_fallback {
             rewrite_profile_ids(chain, &replacement);
         }
+        rewrite_chain_map_profile_ids(&mut ws.fallback_chains, &replacement);
         rewrite_profile_ids(&mut ws.declined_agents, &replacement);
         rewrite_profile_ids(&mut ws.armed_agents, &replacement);
         if let Some(root) = root.as_deref() {
@@ -1398,6 +1449,58 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
     }
 
     true
+}
+
+/// Fold the legacy single fallback chain — one list walked no matter
+/// which agent was spent — into the per-primary maps: the old vec becomes
+/// EVERY known primary's chain (the five stock ids plus every custom id
+/// known at migration time), because the old model offered it for any
+/// spent agent. A workspace legacy `None` means it never chose, which the
+/// new model already spells as an empty map (inherit). Runs AFTER
+/// `migrate_custom_profiles` so the fold carries the rewritten ids and
+/// knows the migrated custom profiles. Idempotent: legacy fields are
+/// cleared as they are folded, so a second call returns false.
+pub fn migrate_fallback_chains(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+
+    if !config.agent_defaults.agent_fallback.is_empty() {
+        if config.agent_defaults.fallback_chains.is_empty() {
+            let chain = std::mem::take(&mut config.agent_defaults.agent_fallback);
+            for id in STOCK_PROFILE_IDS.iter().map(|s| s.to_string()).chain(app_custom_ids.iter().cloned()) {
+                config.agent_defaults.fallback_chains.insert(id, chain.clone());
+            }
+        } else {
+            // A map a newer build wrote wins; the legacy vec is dropped.
+            config.agent_defaults.agent_fallback.clear();
+        }
+        changed = true;
+    }
+
+    for ws in &mut config.workspaces {
+        let Some(chain) = ws.agent_fallback.take() else {
+            continue;
+        };
+        if ws.fallback_chains.is_empty() {
+            let ids = STOCK_PROFILE_IDS
+                .iter()
+                .map(|s| s.to_string())
+                .chain(app_custom_ids.iter().cloned())
+                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+            for id in ids {
+                ws.fallback_chains.insert(id, chain.clone());
+            }
+        }
+        changed = true;
+    }
+
+    changed
 }
 
 /// Look up the API family a launch should send for `profile_id`: the
@@ -1436,7 +1539,10 @@ pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
     // ListSessions check in session::bootstrap), not something that
     // should block launch.
     let mut config: AppConfig = serde_json::from_str(&contents).unwrap_or_default();
-    if migrate_custom_profiles(&mut config) {
+    // `|` rather than `||`: both passes must run even when the first one
+    // already changed something (the fallback fold needs the custom
+    // migration's rewritten ids).
+    if migrate_custom_profiles(&mut config) | migrate_fallback_chains(&mut config) {
         // Persist so a second load is a no-op and legacy keys leave the
         // file; a failed write still returns the migrated in-memory shape.
         let _ = save(config_dir, &config);
@@ -1543,6 +1649,7 @@ mod tests {
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -1607,14 +1714,17 @@ mod tests {
     fn fallback_chain_and_armed_agents_roundtrip_and_default_to_inherit() {
         let dir = tempfile::tempdir().unwrap();
         let mut ws = sample_workspace();
-        ws.agent_fallback = Some(vec!["codex".to_string(), "gemini".to_string()]);
+        ws.fallback_chains = HashMap::from([(
+            "claude-code".to_string(),
+            vec!["codex".to_string(), "gemini".to_string()],
+        )]);
         ws.armed_agents = vec!["codex".to_string()];
         ws.declined_agents = vec!["gemini".to_string()];
         save(dir.path(), &AppConfig { workspaces: vec![ws], ..Default::default() }).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(
-            loaded.workspaces[0].agent_fallback.as_deref(),
-            Some(["codex".to_string(), "gemini".to_string()].as_slice())
+            loaded.workspaces[0].fallback_chains.get("claude-code"),
+            Some(&vec!["codex".to_string(), "gemini".to_string()])
         );
         assert_eq!(loaded.workspaces[0].armed_agents, vec!["codex".to_string()]);
         assert_eq!(loaded.workspaces[0].declined_agents, vec!["gemini".to_string()]);
@@ -1625,10 +1735,11 @@ mod tests {
         )
         .unwrap();
         let old = load(dir.path()).unwrap();
-        assert_eq!(old.workspaces[0].agent_fallback, None);
+        assert!(old.workspaces[0].fallback_chains.is_empty());
         assert!(old.workspaces[0].armed_agents.is_empty());
         assert!(old.workspaces[0].declined_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
+        assert!(old.agent_defaults.fallback_chains.is_empty());
         assert!(old.agent_defaults.fallback_thresholds.is_empty());
     }
 
@@ -1736,10 +1847,18 @@ mod tests {
             loaded.agent_defaults.complexity["intricate"].profile,
             MIGRATED_CUSTOM_PROFILE_ID
         );
-        assert_eq!(
-            loaded.agent_defaults.agent_fallback,
-            vec![MIGRATED_CUSTOM_PROFILE_ID.to_string(), "gemini".to_string()]
-        );
+        // The legacy single chain was rewritten, then folded onto every
+        // known primary (the five stock ids plus the migrated custom one)
+        // by `migrate_fallback_chains`.
+        assert!(loaded.agent_defaults.agent_fallback.is_empty());
+        let expected_chain = vec![MIGRATED_CUSTOM_PROFILE_ID.to_string(), "gemini".to_string()];
+        for id in STOCK_PROFILE_IDS.iter().chain([MIGRATED_CUSTOM_PROFILE_ID].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.fallback_chains.get(*id),
+                Some(&expected_chain),
+                "app chain for {id}"
+            );
+        }
         assert!(loaded
             .agent_defaults
             .fallback_thresholds
@@ -1762,10 +1881,20 @@ mod tests {
         );
         assert!(loaded.workspaces[0].custom_resume_args.is_none());
         assert_eq!(loaded.workspaces[0].complexity_agents["complex"].profile, local_id);
-        assert_eq!(
-            loaded.workspaces[0].agent_fallback.as_deref(),
-            Some([local_id.clone(), "codex".to_string()].as_slice())
-        );
+        // The workspace's legacy chain folded onto every known primary:
+        // stock, the app-wide custom, and this workspace's new local.
+        assert!(loaded.workspaces[0].agent_fallback.is_none());
+        let expected_ws_chain = vec![local_id.clone(), "codex".to_string()];
+        for id in STOCK_PROFILE_IDS
+            .iter()
+            .chain([MIGRATED_CUSTOM_PROFILE_ID, local_id.as_str()].iter())
+        {
+            assert_eq!(
+                loaded.workspaces[0].fallback_chains.get(*id),
+                Some(&expected_ws_chain),
+                "workspace chain for {id}"
+            );
+        }
         assert_eq!(loaded.workspaces[0].armed_agents, vec![local_id.clone()]);
         assert_eq!(loaded.workspaces[0].declined_agents, vec![local_id.clone()]);
         let toml = std::fs::read_to_string(root.join(".gavin-root").join("config.toml")).unwrap();
@@ -1922,12 +2051,103 @@ mod tests {
     fn agent_defaults_fallback_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.agent_defaults.agent_fallback = vec!["codex".to_string()];
+        config
+            .agent_defaults
+            .fallback_chains
+            .insert("claude-code".to_string(), vec!["codex".to_string()]);
         config.agent_defaults.fallback_thresholds.insert("claude-code".to_string(), 80);
         save(dir.path(), &config).unwrap();
         let loaded = load(dir.path()).unwrap().agent_defaults;
-        assert_eq!(loaded.agent_fallback, vec!["codex".to_string()]);
+        assert_eq!(
+            loaded.fallback_chains.get("claude-code"),
+            Some(&vec!["codex".to_string()])
+        );
+        assert!(loaded.agent_fallback.is_empty());
         assert_eq!(loaded.fallback_thresholds.get("claude-code"), Some(&80));
+    }
+
+    /// The app-wide default agent round-trips, and a config written before
+    /// the field existed reads as absent — which the frontend resolves to
+    /// "claude-code", the hard-coded fallback every older build used.
+    #[test]
+    fn default_agent_roundtrips_and_defaults_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.default_agent = Some("codex".to_string());
+        save(dir.path(), &config).unwrap();
+        assert_eq!(
+            load(dir.path()).unwrap().agent_defaults.default_agent.as_deref(),
+            Some("codex")
+        );
+
+        std::fs::write(config_path(dir.path()), r#"{"workspaces":[],"agent_defaults":{"complexity":{}}}"#).unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.default_agent, None);
+    }
+
+    /// The legacy single fallback chain — one list for every agent —
+    /// folds onto every known primary at both levels, once; a workspace
+    /// that never chose inherits (empty map), and a second load is a
+    /// no-op.
+    #[test]
+    fn migrates_legacy_fallback_chains_once_and_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{
+  "workspaces": [
+    {
+      "id": "with-chain",
+      "name": "With Chain",
+      "pages": [],
+      "activePageId": null,
+      "activeView": null,
+      "agentFallback": ["codex", "gemini"],
+      "customProfiles": [{"id": "local:bot", "label": "Bot", "command": "bot", "modelFlag": ""}]
+    },
+    {
+      "id": "inheriting",
+      "name": "Inheriting",
+      "pages": [],
+      "activePageId": null,
+      "activeView": null
+    }
+  ],
+  "agent_defaults": {
+    "complexity": {},
+    "agentFallback": ["codex"],
+    "customProfiles": [{"id": "my-bot", "label": "My Bot", "command": "mb", "modelFlag": ""}]
+  }
+}"#;
+        std::fs::write(config_path(dir.path()), raw).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert!(loaded.agent_defaults.agent_fallback.is_empty());
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot"].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.fallback_chains.get(*id),
+                Some(&vec!["codex".to_string()]),
+                "app chain for {id}"
+            );
+        }
+        let ws = &loaded.workspaces[0];
+        assert!(ws.agent_fallback.is_none());
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot", "local:bot"].iter()) {
+            assert_eq!(
+                ws.fallback_chains.get(*id),
+                Some(&vec!["codex".to_string(), "gemini".to_string()]),
+                "workspace chain for {id}"
+            );
+        }
+        // Legacy None: never chose, so an empty map — inherit.
+        assert!(loaded.workspaces[1].fallback_chains.is_empty());
+
+        // The file no longer carries the legacy key, and a second load is
+        // a no-op.
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("agentFallback"), "{written}");
+        assert!(written.contains("fallbackChains"), "{written}");
+        let again = load(dir.path()).unwrap();
+        assert_eq!(again, loaded);
+        let mut again_mut = again.clone();
+        assert!(!migrate_fallback_chains(&mut again_mut));
     }
 
     /// Both halves of the setting round-trip, and both read as absent from

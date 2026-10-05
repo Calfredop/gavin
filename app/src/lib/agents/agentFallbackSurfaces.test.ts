@@ -24,9 +24,13 @@ describe("fallback agent surfaces", () => {
   });
 
   it("edits the chain in app settings, workspace settings, and the init wizard", () => {
-    expect(source("GlobalSettingsView.svelte")).toContain("Fallback agent");
+    // Per-primary since the chains became a map keyed by primary profile
+    // id: the app view edits the default agent's chain, the workspace
+    // view the resolved profile's (and, on the per-agent tabs, any
+    // primary's).
+    expect(source("GlobalSettingsView.svelte")).toContain("withFallbackChainForPrimary");
     expect(source("GlobalSettingsView.svelte")).toContain("FallbackChainEditor");
-    expect(source("SettingsHubView.svelte")).toContain("Fallback agent");
+    expect(source("SettingsHubView.svelte")).toContain("chainForPrimary");
     expect(source("SettingsHubView.svelte")).toContain("setWorkspaceFallback");
     expect(source("AgentStep.svelte")).toContain("FallbackChainEditor");
   });

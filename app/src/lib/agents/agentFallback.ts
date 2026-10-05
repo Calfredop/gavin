@@ -20,9 +20,12 @@
 
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import { usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";
+import type { FallbackChainsByPrimary } from "$lib/cards/complexity";
 
 /// Ordered profile ids. Empty means no fallback (pause-only).
 export type FallbackChain = string[];
+
+export type { FallbackChainsByPrimary };
 
 /// Drop blanks and duplicates, keep first-seen order.
 export function sanitizeChain(ids: readonly string[] | null | undefined): FallbackChain {
@@ -37,13 +40,64 @@ export function sanitizeChain(ids: readonly string[] | null | undefined): Fallba
   return out;
 }
 
-/// Workspace override if present (including empty), else the app chain.
-export function effectiveFallbackChain(
-  workspaceChain: FallbackChain | null | undefined,
-  appChain: FallbackChain | null | undefined
+/// The chain stored for one primary. Missing key is pause-only on the app
+/// map; on a workspace map, callers use `effectiveFallbackChain` instead.
+export function chainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
 ): FallbackChain {
-  if (workspaceChain != null) return sanitizeChain(workspaceChain);
-  return sanitizeChain(appChain);
+  const id = (primaryId ?? "").trim();
+  if (!id || map == null || !Object.prototype.hasOwnProperty.call(map, id)) return [];
+  return sanitizeChain(map[id]);
+}
+
+/// Workspace key if present (including an explicit empty chain), else the
+/// app chain for that primary. An empty workspace map inherits every
+/// primary — only a present key overrides.
+export function effectiveFallbackChain(
+  workspaceMap: FallbackChainsByPrimary | null | undefined,
+  appMap: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): FallbackChain {
+  const id = (primaryId ?? "").trim();
+  if (!id) return [];
+  if (workspaceMap != null && Object.prototype.hasOwnProperty.call(workspaceMap, id)) {
+    return sanitizeChain(workspaceMap[id]);
+  }
+  return chainForPrimary(appMap, id);
+}
+
+/// Whether this workspace overrides the app chain for `primaryId`.
+export function workspaceOwnsFallbackChain(
+  workspaceMap: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): boolean {
+  const id = (primaryId ?? "").trim();
+  return Boolean(id && workspaceMap && Object.prototype.hasOwnProperty.call(workspaceMap, id));
+}
+
+/// Copy of `map` with one primary's chain set.
+export function withFallbackChainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string,
+  chain: readonly string[] | null | undefined
+): FallbackChainsByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: FallbackChainsByPrimary = { ...(map ?? {}) };
+  if (!id) return next;
+  next[id] = sanitizeChain(chain);
+  return next;
+}
+
+/// Copy of `map` without `primaryId`, so that primary inherits again.
+export function withoutFallbackChainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): FallbackChainsByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: FallbackChainsByPrimary = { ...(map ?? {}) };
+  if (id) delete next[id];
+  return next;
 }
 
 /// Profile ids in `after` that were not in `before`. Used to open arming

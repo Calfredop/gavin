@@ -51,17 +51,27 @@ describe("sanitizeChain", () => {
 });
 
 describe("effectiveFallbackChain", () => {
-  it("inherits the app chain when the workspace has none", () => {
-    expect(effectiveFallbackChain(undefined, ["codex"])).toEqual(["codex"]);
-    expect(effectiveFallbackChain(null, ["codex"])).toEqual(["codex"]);
+  const app = { "claude-code": ["codex"], codex: ["gemini"] };
+
+  it("inherits the app chain for the primary when the workspace has no key", () => {
+    expect(effectiveFallbackChain(undefined, app, "claude-code")).toEqual(["codex"]);
+    expect(effectiveFallbackChain({}, app, "claude-code")).toEqual(["codex"]);
+    expect(effectiveFallbackChain({ codex: ["gemini"] }, app, "claude-code")).toEqual(["codex"]);
   });
 
-  it("treats an empty workspace array as an override to no fallback", () => {
-    expect(effectiveFallbackChain([], ["codex"])).toEqual([]);
+  it("treats a present workspace key as an override, including empty", () => {
+    expect(effectiveFallbackChain({ "claude-code": [] }, app, "claude-code")).toEqual([]);
   });
 
-  it("uses the workspace chain when present", () => {
-    expect(effectiveFallbackChain(["gemini"], ["codex"])).toEqual(["gemini"]);
+  it("uses the workspace chain for that primary when present", () => {
+    expect(effectiveFallbackChain({ "claude-code": ["gemini"] }, app, "claude-code")).toEqual([
+      "gemini",
+    ]);
+  });
+
+  it("keys by the primary profile id", () => {
+    expect(effectiveFallbackChain(undefined, app, "codex")).toEqual(["gemini"]);
+    expect(effectiveFallbackChain(undefined, app, "gemini")).toEqual([]);
   });
 });
 

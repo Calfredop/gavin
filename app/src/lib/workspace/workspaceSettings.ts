@@ -55,7 +55,7 @@ export const WORKSPACE_SETTINGS_KEYS = [
   "autoCommit",
   "autoResumeRuns",
   "agentPause",
-  "agentFallback",
+  "fallbackChains",
   "armedAgents",
   "declinedAgents",
   "complexityAgents",

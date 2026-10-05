@@ -12,35 +12,25 @@ describe("Desktop Agents hub surfaces", () => {
       expect(text).toContain("<h3>Agents</h3>");
       expect(text).toContain("AGENTS_SECTION");
       expect(text).toContain("AgentsHubTabs");
-      expect(text).toContain("CustomsEditor");
+      expect(text).toContain("agentsHubTabs");
+      expect(text).toContain("GENERAL_TAB");
     }
   });
 
-  it("app tabs are Defaults | Customs | Complexity | Fallback | Pause", () => {
-    const text = source(APP);
-    expect(text).toContain("APP_AGENTS_TABS");
-    expect(text).not.toContain("WORKSPACE_AGENTS_TABS");
-    expect(source("agentsHub.ts")).toContain('label: "Defaults"');
-    expect(source("agentsHub.ts")).toContain('label: "Customs"');
-    expect(source("agentsHub.ts")).toContain('label: "Complexity"');
-    expect(source("agentsHub.ts")).toContain('label: "Fallback"');
-    expect(source("agentsHub.ts")).toContain('label: "Pause"');
+  it("tabs are General plus one per agent", () => {
+    expect(source("agentsHub.ts")).toContain('label: "General"');
+    expect(source("agentsHub.ts")).toContain("agentsHubTabs");
+    expect(source(APP)).toContain("Default agent");
+    expect(source(HUB)).toContain("Local customs");
   });
 
-  it("workspace tabs are This agent | Customs | Complexity | Fallback | Pause", () => {
-    const text = source(HUB);
-    expect(text).toContain("WORKSPACE_AGENTS_TABS");
-    expect(source("agentsHub.ts")).toContain('label: "This agent"');
-  });
-
-  it("Customs CRUD strings are present in the shared editor both views mount", () => {
-    const editor = source("CustomsEditor.svelte");
-    for (const s of ["Add custom", "Delete", "Command", "Model flag", "Effort flag", "API family"]) {
-      expect(editor).toContain(s);
-    }
-    expect(source(HUB)).toContain("local");
+  it("per-agent tabs carry customs CRUD and fallback", () => {
+    expect(source(APP)).toContain("Add custom");
+    expect(source(APP)).toContain("Delete");
+    expect(source(HUB)).toContain("Add local custom");
     expect(source(HUB)).toContain("setWorkspaceCustomProfiles");
-    expect(source(APP)).toContain("customProfiles: next");
+    expect(source(APP)).toContain("FallbackChainEditor");
+    expect(source(HUB)).toContain("FallbackChainEditor");
   });
 
   it("leaves Headroom, Tools and TypeSafe as their own top-level sections on the app page", () => {

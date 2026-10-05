@@ -25,7 +25,7 @@ vi.mock("$lib/core/layoutState", async () => {
       customCommand: "",
       customModelFlag: "",
       complexity: {},
-      agentFallback: [] as string[],
+      fallbackChains: {},
       fallbackThresholds: {} as Record<string, number>,
       actionPromptOverrides: {} as Record<string, string>,
     }),
@@ -106,7 +106,7 @@ beforeEach(() => {
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [],
+    fallbackChains: {},
     fallbackThresholds: {},
     actionPromptOverrides: {},
   });
@@ -418,10 +418,20 @@ describe("profilesInUse", () => {
 
   it("includes fallback-chain ids so their usage is polled", () => {
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: "w1",
     } as never);
     expect(profilesInUse()).toEqual(["claude-code", "codex"]);
+  });
+
+  it("unions every primary's chain, not only the workspace agent's", () => {
+    layoutState.set({
+      workspaces: [
+        { id: "w1", fallbackChains: { "claude-code": ["codex"], gemini: ["opencode"] } },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "codex", "opencode"]);
   });
 });
 
@@ -461,7 +471,7 @@ describe("the gate", () => {
   it("walks an armed fallback instead of holding when the primary is spent", () => {
     agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -489,12 +499,12 @@ describe("the gate", () => {
       customCommand: "",
       customModelFlag: "",
       complexity: {},
-      agentFallback: [],
+      fallbackChains: {},
       fallbackThresholds: { "claude-code": 80 },
       actionPromptOverrides: {},
     });
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -521,7 +531,7 @@ describe("the gate", () => {
   it("blocks and names the unarmed next chain agent rather than skipping it", () => {
     agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -575,9 +585,101 @@ describe("the gate", () => {
     });
   });
 
+  /// Per-primary chains: the chain that walks is the one stored FOR the
+  /// launch's resolved agent, not the workspace profile's — a card the
+  /// complexity table attributes to Claude walks Claude's chain even in a
+  /// Cursor workspace.
+  it("walks the chain of the card's resolved primary, not the workspace profile's", () => {
+    resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({
+      workspaces: [
+        {
+          id: "w1",
+          fallbackChains: { "claude-code": ["codex"], cursor: ["gemini"] },
+          armedAgents: ["codex", "gemini"],
+        },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+      // The workspace agent is spent too, so the walk reaches the chain —
+      // and must find claude-code's codex, never cursor's gemini.
+      cursor: {
+        state: "ready",
+        windows: [
+          { id: "total", label: "Total", usedPercent: 99, resetsAt: null },
+          { id: "auto", label: "Auto", usedPercent: 99, resetsAt: null },
+        ],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+    // And cursor's own launches walk cursor's chain.
+    expect(launchDecision("w1", "cursor", false)).toEqual({
+      kind: "use",
+      profileId: "gemini",
+      viaFallback: true,
+    });
+  });
+
+  /// The workspace-agent-first hop survives the per-primary map: it is
+  /// tried after the spent primary and before that primary's chain.
+  it("still tries the workspace agent before the resolved primary's chain", () => {
+    resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({
+      workspaces: [
+        {
+          id: "w1",
+          fallbackChains: { "claude-code": ["codex"] },
+          armedAgents: ["codex"],
+        },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+      cursor: {
+        state: "ready",
+        windows: [
+          { id: "total", label: "Total", usedPercent: 45, resetsAt: null },
+          { id: "auto", label: "Auto", usedPercent: 45, resetsAt: null },
+        ],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "cursor",
+      viaFallback: true,
+    });
+  });
+
   it("does not invent a usage pause when no cycle is configured at all", () => {
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -640,7 +742,7 @@ describe("pausedWorkspaces", () => {
     agentUsageStore.set({ "claude-code": atLimit(97) });
     layoutState.set({
       workspaces: [
-        { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+        { id: "w1", name: "One", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] },
       ],
       activeWorkspaceId: "w1",
     } as never);
@@ -698,7 +800,7 @@ describe("pausedWorkspaces", () => {
       // is the remaining way one workspace frees while another does not.
       layoutState.set({
         workspaces: [
-          { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+          { id: "w1", name: "One", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] },
           { id: "w2", name: "Two" },
         ],
         activeWorkspaceId: "w1",

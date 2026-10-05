@@ -76,7 +76,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   // The three the follow-up queue reads through queuedInputActions.
   // `daemonCompat` null means "not connected yet", which

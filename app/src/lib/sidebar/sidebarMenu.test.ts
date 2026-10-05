@@ -16,7 +16,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code" })),
   closeWorkspace: vi.fn().mockResolvedValue(undefined),

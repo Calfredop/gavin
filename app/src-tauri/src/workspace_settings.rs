@@ -64,7 +64,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "autoCommit",
     "autoResumeRuns",
     "agentPause",
-    "agentFallback",
+    "fallbackChains",
     "armedAgents",
     "declinedAgents",
     "complexityAgents",
@@ -414,7 +414,8 @@ mod tests {
                 api_family: String::new(),
                 resume_args: None,
             }],
-            agent_fallback: Some(vec![s("fallback")]),
+            agent_fallback: None,
+            fallback_chains: HashMap::from([(s("claude-code"), vec![s("fallback")])]),
             armed_agents: vec![s("armed")],
             declined_agents: vec![s("declined")],
             action_prompt_overrides: HashMap::from([("action:run-task".to_string(), s("prompt"))]),
@@ -740,7 +741,7 @@ mod tests {
                 "modelFlag": "--model",
                 "resumeArgs": "--resume"
               }],
-              "agentFallback": ["codex"],
+              "fallbackChains": { "claude-code": ["codex"] },
               "armedAgents": ["codex"],
               "declinedAgents": ["opencode"],
               "actionPromptOverrides": { "action:run-task": "Do it." }

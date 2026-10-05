@@ -428,11 +428,14 @@ export interface ResolvedAgent {
   resumeArgs: string;
 }
 
-const FALLBACK_PROFILE = "claude-code";
+/// The last-resort agent: the profile a workspace resolves to when it has
+/// no configured profile AND the app-wide default agent (`AgentDefaults.
+/// defaultAgent`) is empty or names nothing installed.
+export const FALLBACK_PROFILE = "claude-code";
 
-/// Explicit config beats the profile default beats claude-code's default
-/// (spec §4.2). Expressed once so the panel, the hub label, the home tile
-/// and the agent-file view can never disagree.
+/// Explicit config beats the profile default beats the app-wide default
+/// agent (empty → claude-code; spec §4.2). Expressed once so the panel,
+/// the hub label, the home tile and the agent-file view can never disagree.
 ///
 /// Callers should pass `mergeAgentProfiles(builtIns, appCustoms,
 /// workspaceCustoms)` as `profiles` so named customs carry their own
@@ -457,15 +460,19 @@ export function resolveAgentConfig(
   /// `agentDefaults.agentEfforts`). OPTIONAL: every call site that
   /// predates effort resolves "no app-wide effort", which is what they
   /// launched with before it existed.
-  globalEfforts: Record<string, string> = {}
+  globalEfforts: Record<string, string> = {},
+  /// App-wide default agent when the workspace has no profile. Empty /
+  /// omitted means `claude-code`.
+  appDefaultProfile: string = ""
 ): ResolvedAgent {
-  const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
+  const defaultId = nonEmpty(appDefaultProfile) ?? FALLBACK_PROFILE;
+  const requested = nonEmpty(config?.profile) ?? defaultId;
   const configured = nonEmpty(config?.mcpFile);
   const customMcpFile = configured && !validateMcpConfigPath(configured) ? configured : null;
   const profile = profiles.find((p) => p.id === requested);
-  const fallback = profiles.find((p) => p.id === FALLBACK_PROFILE);
+  const fallback = profiles.find((p) => p.id === defaultId) ?? profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
-  const profileId = effective?.id ?? FALLBACK_PROFILE;
+  const profileId = effective?.id ?? defaultId;
   const command =
     nonEmpty(config?.command) ??
     nonEmpty(effective?.command) ??

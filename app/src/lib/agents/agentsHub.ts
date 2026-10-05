@@ -1,12 +1,12 @@
-// The Agents settings hub: one top-level Settings section with inner
-// tabs, shared by the app-wide page and the workspace Settings tab.
+// The Agents settings hub: one top-level Settings section with a General
+// tab plus one tab per agent (built-ins, then app-wide customs, then
+// workspace locals marked). Shared by the app-wide page, the workspace
+// Settings tab, and Companion.
 //
-// Search still hides whole SECTIONS (settingsSearch.ts). The old
-// agent-defaults / custom-agent / complexity / fallback-agent /
-// agent-pause ids are gone — one `agents` entry carries every keyword
-// those panes used to claim, so a query for "quota" or "API family"
-// still lands here. Which INNER tab opens is a local choice; when search
-// just revealed the section, `agentsTabForQuery` picks the best tab.
+// Search still hides whole SECTIONS (settingsSearch.ts). One `agents`
+// entry carries every keyword the old panes claimed. Which INNER tab
+// opens is a local choice; when search just revealed the section,
+// `agentsTabForQuery` picks General or the best agent tab.
 
 import type { CustomProfile } from "$lib/cards/complexity";
 import type { AgentProfileInfo } from "$lib/core/settings";
@@ -14,35 +14,24 @@ import type { SettingsSection } from "$lib/core/settingsSearch";
 
 export type AgentsHubScope = "app" | "workspace";
 
-export type AppAgentsTab = "defaults" | "customs" | "complexity" | "fallback" | "pause";
-export type WorkspaceAgentsTab = "this-agent" | "customs" | "complexity" | "fallback" | "pause";
-export type AgentsHubTab = AppAgentsTab | WorkspaceAgentsTab;
+/// `"general"` or a profile id (built-in or custom).
+export type AgentsHubTab = "general" | (string & {});
 
 export interface AgentsHubTabDef {
   id: AgentsHubTab;
   label: string;
 }
 
-export const APP_AGENTS_TABS: readonly AgentsHubTabDef[] = [
-  { id: "defaults", label: "Defaults" },
-  { id: "customs", label: "Customs" },
-  { id: "complexity", label: "Complexity" },
-  { id: "fallback", label: "Fallback" },
-  { id: "pause", label: "Pause" },
-];
+export const GENERAL_TAB: AgentsHubTab = "general";
 
-export const WORKSPACE_AGENTS_TABS: readonly AgentsHubTabDef[] = [
-  { id: "this-agent", label: "This agent" },
-  { id: "customs", label: "Customs" },
-  { id: "complexity", label: "Complexity" },
-  { id: "fallback", label: "Fallback" },
-  { id: "pause", label: "Pause" },
-];
+export const GENERAL_TAB_DEF: AgentsHubTabDef = { id: GENERAL_TAB, label: "General" };
 
 /// Keywords for the single top-level Agents section. First entry is the
 /// nav label (`sectionLabel` takes keywords[0]).
 export const AGENTS_SECTION_KEYWORDS: readonly string[] = [
   "Agents",
+  "General",
+  "Default agent",
   "Defaults",
   "Customs",
   "This agent",
@@ -74,7 +63,6 @@ export const AGENTS_SECTION_KEYWORDS: readonly string[] = [
   "cycle",
   "schedule",
   "usage",
-  // Workspace This-agent tab (harmless on the app page).
   "Profile",
   "Agent file",
   "PRD file",
@@ -94,26 +82,95 @@ export function isStockProfileId(id: string): boolean {
   return STOCK_IDS.has(id);
 }
 
-/// Which inner tab a search query should open when the Agents section
-/// just became visible. Falls back to the scope's first tab.
-export function agentsTabForQuery(scope: AgentsHubScope, query: string): AgentsHubTab {
-  const q = query.trim().toLowerCase();
-  const tabs = scope === "app" ? APP_AGENTS_TABS : WORKSPACE_AGENTS_TABS;
-  if (!q) return tabs[0].id;
+/// True when the id is a named custom (app-wide or `local:`), not a
+/// built-in. Replaces the old `profileId === "custom"` checks.
+export function isCustomProfileId(id: string): boolean {
+  return Boolean(id) && id !== GENERAL_TAB && !isStockProfileId(id);
+}
 
-  const hits: [AgentsHubTab, string[]][] = [
-    ["customs", ["custom", "command", "model flag", "effort flag", "api family", "named"]],
-    ["complexity", ["complexity", "difficulty"]],
-    ["fallback", ["fallback", "arm", "usage limit", "quota", "rate limit"]],
-    ["pause", ["pause", "cycle", "schedule"]],
-    ["defaults", ["default", "effort", "reasoning", "thinking"]],
-    ["this-agent", ["this agent", "profile", "agent file", "mcp", "superpowers"]],
+/// Label for a profile picker option. Locals are marked so a workspace
+/// list of built-ins ∪ app-wide ∪ locals stays readable.
+export function profileOptionLabel(profile: { label: string; local?: boolean }): string {
+  return profile.local ? `${profile.label} (local)` : profile.label;
+}
+
+/// General + one tab per agent, in merge order (built-ins, app customs,
+/// workspace locals). Locals are marked in the tab label.
+export function agentsHubTabs(profiles: readonly AgentProfileInfo[]): AgentsHubTabDef[] {
+  return [
+    GENERAL_TAB_DEF,
+    ...profiles.map((p) => ({
+      id: p.id as AgentsHubTab,
+      label: profileOptionLabel(p),
+    })),
   ];
-  for (const [tab, words] of hits) {
-    if (!tabs.some((t) => t.id === tab)) continue;
-    if (words.some((w) => q.includes(w))) return tab;
+}
+
+/// Which inner tab a search query should open when the Agents section
+/// just became visible. Falls back to General.
+export function agentsTabForQuery(
+  _scope: AgentsHubScope,
+  query: string,
+  profiles: readonly AgentProfileInfo[] = []
+): AgentsHubTab {
+  const q = query.trim().toLowerCase();
+  if (!q) return GENERAL_TAB;
+
+  const generalHits = [
+    "general",
+    "default agent",
+    "default",
+    "complexity",
+    "difficulty",
+    "pause",
+    "cycle",
+    "schedule",
+    "this agent",
+    "profile",
+    "workspace agent",
+  ];
+  if (generalHits.some((w) => q.includes(w))) return GENERAL_TAB;
+
+  for (const profile of profiles) {
+    const hay = `${profile.id} ${profile.label}`.toLowerCase();
+    if (q.includes(profile.id.toLowerCase()) || q.includes(profile.label.toLowerCase())) {
+      return profile.id;
+    }
+    if (profile.local && q.includes("local") && hay.includes(q.replace("local", "").trim())) {
+      return profile.id;
+    }
   }
-  return tabs[0].id;
+
+  const agentHits = [
+    "custom",
+    "command",
+    "model flag",
+    "effort flag",
+    "api family",
+    "named",
+    "fallback",
+    "arm",
+    "usage limit",
+    "quota",
+    "rate limit",
+    "effort",
+    "reasoning",
+    "thinking",
+    "model",
+    "mcp",
+    "superpowers",
+    "agent file",
+  ];
+  if (agentHits.some((w) => q.includes(w))) {
+    // Prefer the first custom when the query is about customs; else first profile.
+    if (q.includes("custom") || q.includes("api family") || q.includes("named")) {
+      const custom = profiles.find((p) => isCustomProfileId(p.id));
+      if (custom) return custom.id;
+    }
+    return profiles[0]?.id ?? GENERAL_TAB;
+  }
+
+  return GENERAL_TAB;
 }
 
 /// Slug for a new app-wide custom. Never a stock id; collisions get a
@@ -173,8 +230,8 @@ export function deleteCustomProfile(list: CustomProfile[], id: string): CustomPr
   return list.filter((p) => p.id !== id);
 }
 
-/// Profiles the Defaults tab offers model/effort rows for: built-ins
-/// plus every custom in scope (merged list already carries locals).
+/// Profiles the model/effort rows cover: built-ins plus every custom in
+/// scope (merged list already carries locals).
 export function profilesForDefaults(profiles: AgentProfileInfo[]): AgentProfileInfo[] {
   return profiles;
 }
@@ -183,14 +240,7 @@ export function effortCapableProfiles(profiles: AgentProfileInfo[]): AgentProfil
   return profiles.filter((p) => Boolean(p.effortFlag?.trim()) || !isStockProfileId(p.id));
 }
 
-/// Label for a profile picker option. Locals are marked so a workspace
-/// list of built-ins ∪ app-wide ∪ locals stays readable.
-export function profileOptionLabel(profile: { label: string; local?: boolean }): string {
-  return profile.local ? `${profile.label} (local)` : profile.label;
-}
-
-/// True when the id is a named custom (app-wide or `local:`), not a
-/// built-in. Replaces the old `profileId === "custom"` checks.
-export function isCustomProfileId(id: string): boolean {
-  return !isStockProfileId(id);
-}
+/// @deprecated Static tab lists — tabs are now `agentsHubTabs(profiles)`.
+export const APP_AGENTS_TABS: readonly AgentsHubTabDef[] = [GENERAL_TAB_DEF];
+/// @deprecated Static tab lists — tabs are now `agentsHubTabs(profiles)`.
+export const WORKSPACE_AGENTS_TABS: readonly AgentsHubTabDef[] = [GENERAL_TAB_DEF];

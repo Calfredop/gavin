@@ -370,7 +370,7 @@ export function sampleSettings(): DemoSettings {
         },
       ],
       complexity: {},
-      agentFallback: [],
+      fallbackChains: {},
       fallbackThresholds: {},
       actionPromptOverrides: {},
     },

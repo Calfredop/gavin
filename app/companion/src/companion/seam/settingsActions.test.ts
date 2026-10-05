@@ -288,7 +288,7 @@ describe("changing a workspace's settings", () => {
     ["auto commit", () => setWorkspaceAutoCommit(DEMO.atlas, false), { autoCommit: false }],
     ["require review", () => setWorkspaceRequireReview(DEMO.atlas, true), { requireReview: true }],
     ["its pause", () => setWorkspacePause(DEMO.atlas, CYCLE), { agentPause: CYCLE }],
-    ["its fallback chain", () => setWorkspaceFallback(DEMO.atlas, ["codex"]), { agentFallback: ["codex"] }],
+    ["its fallback chain", () => setWorkspaceFallback(DEMO.atlas, "claude-code", ["codex"]), { fallbackChains: { "claude-code": ["codex"] } }],
     [
       "a notification",
       () => setWorkspaceFlag(DEMO.atlas, "notifyFinished", false),
@@ -397,14 +397,14 @@ describe("everything the settings screens send", () => {
     await saveSetting(() => setRequireReviewDefault(true));
     await saveSetting(() => setGitTrackingDefault(true));
     await saveSetting(() => setAgentModelDefault("codex", "gpt-5"));
-    await saveSetting(() => setAgentDefaults({ ...get(agentDefaultsStore), agentFallback: ["codex"] }));
+    await saveSetting(() => setAgentDefaults({ ...get(agentDefaultsStore), fallbackChains: { "claude-code": ["codex"] } }));
     await saveSetting(() => saveAgentPause(CYCLE));
     await saveSetting(() => saveLaunchConfig({ maxInFlight: 3, holdOnPressure: true, reclaimDoneSessions: true }));
     await saveSetting(() => renameWorkspace(DEMO.notes, "notes"));
     await saveSetting(() => setWorkspaceColor(DEMO.notes, "#60a5fa"));
     await saveSetting(() => setWorkspaceFontSize(DEMO.notes, 12));
     await saveSetting(() => setWorkspacePause(DEMO.notes, null));
-    await saveSetting(() => setWorkspaceFallback(DEMO.notes, null));
+    await saveSetting(() => setWorkspaceFallback(DEMO.notes, "claude-code", null));
     await saveSetting(() => setAgentField(DEMO.notes, "model", "opus"));
     await settle();
 
