@@ -38,12 +38,35 @@ pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 /// carrying its own copy of the number.
 pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
+/// Most stdout bytes a `GitRun` reply can carry as a JSON number array
+/// under [`MAX_LINE_BYTES`]. Worst case every byte is 255 (`"255,"` is
+/// four wire bytes); this leaves headroom for the envelope and a short
+/// stderr. A host that keeps more than this would answer a reply the
+/// desktop cannot read, and on a link that used to cost the command
+/// connection (`fix-link-gitrun-line-cap.md`).
+pub const MAX_GIT_STDOUT_WIRE_BYTES: usize = 200 * 1024;
+
+/// The version that introduced [`Request::RunGitCapped`]. The app picks
+/// that TYPE when the host is at least this, and falls back to
+/// [`Request::RunGit`] against an older one.
+pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
+
 /// Bumped on ANY wire-breaking change. The daemon reports it via
 /// Request::GetProtocolVersion; the app (at bootstrap) and gavin-mcp (at
 /// connect) probe it and turn mismatches -- including the
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v58 is `RunGitCapped`: `RunGit` with the caller's stdout cap, so a
+/// host whose git produces megabytes (a big `diff`, a long `log`) keeps
+/// at most that many bytes plus one and answers inside `MAX_LINE_BYTES`
+/// (`fix-link-gitrun-line-cap.md`). A new TYPE, because widening
+/// `RunGit` would be dropped silently by an older host and the uncapped
+/// reply would still blow the line. Gated by `min_version_for`; the app
+/// picks it when the host is new enough and falls back to `RunGit`
+/// otherwise. No `FEATURE_MIN_VERSION` entry: nothing in the UI greys on
+/// it, the runner chooses which TYPE to send.
 ///
 /// v57 is the served Companion bundle (`companion-23`, ADR 0005): the
 /// Workstation serves the UI the Device runs. It adds `GetCompanionBundle`
@@ -717,7 +740,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 57;
+pub const PROTOCOL_VERSION: u32 = 58;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -1057,6 +1080,22 @@ pub enum Request {
         cwd: String,
         args: Vec<String>,
         stdin: Option<String>,
+    },
+    /// `RunGit` with a stdout cap (v58): the host keeps at most
+    /// `stdout_cap + 1` bytes and drains the rest, the way the desktop's
+    /// local `run_git_capped` does. Its own request rather than a field
+    /// on `RunGit`, because `min_version_for` gates TYPES and not
+    /// payloads: a v41 host would parse a widened request, drop the cap
+    /// in silence, and answer with the whole stdout -- which past roughly
+    /// 300 KB of content exceeds `MAX_LINE_BYTES` as a JSON number array
+    /// and used to drop a link's command connection. The desktop sends
+    /// at most [`MAX_GIT_STDOUT_WIRE_BYTES`] so the reply always fits.
+    RunGitCapped {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        stdin: Option<String>,
+        stdout_cap: u64,
     },
     /// Lists a directory under a watched root, for the Files tree of a
     /// workspace on another machine (v40). `path` is absolute or
@@ -2078,6 +2117,11 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::CreateWorkspacePath { .. }
         | Request::RenameWorkspacePath { .. }
         | Request::TrashWorkspacePath { .. } => 42,
+        // Cap on a host git's stdout so the GitRun reply fits under
+        // MAX_LINE_BYTES (v58). New TYPE: a field on RunGit would be
+        // dropped by an older host and the uncapped reply would still
+        // blow the line.
+        Request::RunGitCapped { .. } => 58,
 
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
@@ -4378,10 +4422,27 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
         return Ok(None);
     }
     if !line.ends_with('\n') && (bytes_read as u64) >= MAX_LINE_BYTES {
+        // The rest of the line is still in the socket. Drain it so the
+        // next read starts on a fresh line; dropping the connection over
+        // one oversize reply is how a link used to lose every later
+        // request until the human reconnected.
+        drain_to_newline(reader)?;
         anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
     }
     let msg = serde_json::from_str(line.trim_end())?;
     Ok(Some(msg))
+}
+
+/// Reads and discards bytes until a newline or end of stream. Used when
+/// a line hit [`MAX_LINE_BYTES`] without a terminator: the excess is
+/// still buffered, and leaving it would desync every later message.
+///
+/// `read_until` stops at the newline and leaves whatever follows in the
+/// `BufRead` buffer, so the next `read_message` still sees it.
+pub fn drain_to_newline<R: BufRead>(reader: &mut R) -> std::io::Result<()> {
+    let mut sink = Vec::new();
+    reader.read_until(b'\n', &mut sink)?;
+    Ok(())
 }
 
 use std::ffi::OsString;
@@ -4780,6 +4841,33 @@ mod tests {
             assert!(gate_request(req, 40).is_err());
             assert!(gate_request(req, 41).is_ok());
         }
+    }
+
+    /// v58: `RunGitCapped` carries the caller's stdout cap. New TYPE, so
+    /// a v57 host answers `Unsupported` and the app falls back to
+    /// `RunGit` rather than silently losing the cap.
+    #[test]
+    fn run_git_capped_is_gated_at_58() {
+        let req = Request::RunGitCapped {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["status".into()],
+            stdin: None,
+            stdout_cap: MAX_GIT_STDOUT_WIRE_BYTES as u64,
+        };
+        assert_eq!(min_version_for(&req), 58);
+        assert!(gate_request(&req, 57).is_err());
+        assert!(gate_request(&req, 58).is_ok());
+        // Still its own TYPE: RunGit stays at 41.
+        assert_eq!(
+            min_version_for(&Request::RunGit {
+                root_path: "/r".into(),
+                cwd: "/r".into(),
+                args: vec!["status".into()],
+                stdin: None,
+            }),
+            41
+        );
     }
 
     /// v42: the Decisions tab's two writes. New TYPES, so this match is
@@ -6042,6 +6130,29 @@ mod tests {
         assert!(decoded.is_none());
     }
 
+    /// An oversize line is refused, and the bytes past the cap are
+    /// drained so the next line on the same stream still parses -- the
+    /// half of the fix that keeps a link's command connection alive when
+    /// a reply somehow still exceeds `MAX_LINE_BYTES`.
+    #[test]
+    fn an_oversize_line_is_skipped_and_the_next_message_still_reads() {
+        let mut buf = Vec::new();
+        // Cap + 1 of payload, then the terminator, then a real reply.
+        buf.extend(std::iter::repeat(b'x').take(MAX_LINE_BYTES as usize + 1));
+        buf.push(b'\n');
+        write_message(&mut buf, &Response::Ok).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let oversize = read_message::<_, Response>(&mut cursor);
+        assert!(oversize.is_err(), "the oversize line must be refused");
+        assert!(
+            oversize.unwrap_err().to_string().contains("protocol line exceeded"),
+            "wrong error"
+        );
+        let next: Response = read_message(&mut cursor).unwrap().unwrap();
+        assert!(matches!(next, Response::Ok));
+    }
+
     #[test]
     fn two_messages_on_same_stream_read_independently() {
         let mut buf = Vec::new();
@@ -6834,7 +6945,9 @@ mod tests {
         // payloads and no new TYPE.
         // v57: GetCompanionBundle + BundleResult -- the Workstation serves
         // the UI the Device runs (ADR 0005). Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 57);
+        // v58: RunGitCapped -- host stdout cap so a GitRun reply fits
+        // under MAX_LINE_BYTES. One new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 58);
     }
 
     #[test]
@@ -7167,6 +7280,13 @@ mod tests {
             Request::WriteWorkspaceFile { root_path: "r".into(), path: "a.md".into(), content: "c".into() },
             Request::StatWorkspacePaths { root_path: "r".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "r".into(), cwd: "r".into(), args: vec!["status".into()], stdin: None },
+            Request::RunGitCapped {
+                root_path: "r".into(),
+                cwd: "r".into(),
+                args: vec!["status".into()],
+                stdin: None,
+                stdout_cap: MAX_GIT_STDOUT_WIRE_BYTES as u64,
+            },
             Request::ListWorkspaceDir { root_path: "r".into(), path: "r".into() },
             Request::FileHumanItem {
                 path: "p".into(),
@@ -7518,6 +7638,8 @@ mod tests {
         expected.insert(55, 2);
         // GetCompanionBundle + BundleResult -- the served bundle.
         expected.insert(57, 2);
+        // RunGitCapped -- host stdout cap so a GitRun reply fits the line.
+        expected.insert(58, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

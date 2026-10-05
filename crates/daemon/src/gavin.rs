@@ -3219,6 +3219,21 @@ pub fn run_git(
     args: &[String],
     stdin: Option<&str>,
 ) -> anyhow::Result<(Vec<u8>, String, i32)> {
+    run_git_capped(root, cwd, args, stdin, None)
+}
+
+/// `run_git`, keeping at most `stdout_cap + 1` bytes of stdout when a cap
+/// is given: one past it is all a caller's `len() > cap` check needs, and
+/// the rest is drained so git still exits instead of blocking on a full
+/// pipe. What `RunGitCapped` asks for, and what the desktop's local
+/// `run_git_capped` already does.
+pub fn run_git_capped(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    stdin: Option<&str>,
+    stdout_cap: Option<usize>,
+) -> anyhow::Result<(Vec<u8>, String, i32)> {
     use std::io::{Read, Write};
     let resolved = confined_dir(root, cwd)?;
     let mut child = crate::program::command("git")
@@ -3250,7 +3265,15 @@ pub fn run_git(
     let (err_tx, err_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
+        match stdout_cap {
+            None => {
+                let _ = out.read_to_end(&mut buf);
+            }
+            Some(cap) => {
+                let _ = out.by_ref().take(cap as u64 + 1).read_to_end(&mut buf);
+                let _ = std::io::copy(&mut out, &mut std::io::sink());
+            }
+        }
         let _ = out_tx.send(buf);
     });
     std::thread::spawn(move || {
@@ -7002,6 +7025,26 @@ mod tests {
         )
         .unwrap();
         assert_ne!(code, 0);
+    }
+
+    /// A megabyte through a 100-byte cap: 101 bytes come back, and git
+    /// still exits 0 -- the rest is drained so an undrained pipe would
+    /// not hold it until the timeout.
+    #[test]
+    fn run_git_capped_keeps_one_byte_past_the_cap_and_lets_git_finish() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        let input = "x".repeat(1 << 20) + "\n";
+        let (stdout, _stderr, code) = run_git_capped(
+            dir.path(),
+            &lossy(dir.path()),
+            &["stripspace".to_string()],
+            Some(&input),
+            Some(100),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(stdout.len(), 101);
     }
 
     #[test]

@@ -327,7 +327,7 @@ pub fn diff_since(
         too_large: false,
         hunks: vec![],
     };
-    if out.stdout.len() > MAX_DIFF_BYTES {
+    if out.stdout.len() > MAX_DIFF_BYTES || out.wire_truncated {
         result.too_large = true;
         return Ok(result);
     }

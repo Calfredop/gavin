@@ -46,7 +46,7 @@
 //! deadline of its own behind it (`Worker::settle`).
 
 use protocol::transport::Stream;
-use protocol::{write_message, Request, Response, MAX_LINE_BYTES};
+use protocol::{drain_to_newline, write_message, Request, Response, MAX_LINE_BYTES};
 use std::future::Future;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
@@ -87,7 +87,9 @@ pub(crate) fn deadline_for(req: &Request) -> Duration {
         // signing there, and the daemon puts no ceiling on it
         // (`gavin::run_git`). Ten minutes is the ceiling the daemon gives
         // the streaming ops (`GIT_OP_TIMEOUT`).
-        Request::RunGit { .. } | Request::RunGitEnv { .. } => Duration::from_secs(600),
+        Request::RunGit { .. } | Request::RunGitCapped { .. } | Request::RunGitEnv { .. } => {
+            Duration::from_secs(600)
+        }
         // A tree read can wait on a rescan the watcher runs under its
         // lock; on a large repo that has taken tens of seconds.
         Request::GetGavinTree { .. } | Request::ScanGavinRoot { .. } => Duration::from_secs(120),
@@ -581,6 +583,12 @@ impl Worker {
                 self.owed += 1;
                 Err(e)
             }
+            Err(e) if e.is::<LineTooLong>() => {
+                // The excess was drained to the newline; the connection
+                // is still in sync. Dropping it here is what used to
+                // cost a link every later request until reconnect.
+                Err(e)
+            }
             Err(e) => {
                 // Closed, unparseable, or timed out where a fresh
                 // connection is to be had -- a new daemon thread, not
@@ -722,6 +730,20 @@ impl std::fmt::Display for TimedOut {
 
 impl std::error::Error for TimedOut {}
 
+/// A reply whose line exceeded [`MAX_LINE_BYTES`]. The excess was drained
+/// to the newline, so the connection is still usable — unlike a parse
+/// error mid-stream, which leaves the lane one message out of step.
+#[derive(Debug)]
+struct LineTooLong;
+
+impl std::fmt::Display for LineTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "protocol line exceeded {MAX_LINE_BYTES} bytes without a newline")
+    }
+}
+
+impl std::error::Error for LineTooLong {}
+
 /// Reads the reply to `req`, skipping unsolicited pushes, for at most
 /// `deadline` per read.
 fn read_reply(conn: &mut Conn, deadline: Duration, peer: &str, req: &Request) -> anyhow::Result<Response> {
@@ -756,7 +778,12 @@ fn next_reply(conn: &mut Conn) -> anyhow::Result<Option<Response>> {
         (&mut conn.reader).take(room).read_until(b'\n', &mut conn.partial)?;
         if !conn.partial.ends_with(b"\n") {
             if conn.partial.len() as u64 >= MAX_LINE_BYTES {
-                anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
+                // Drain the rest so the next request's reply starts on a
+                // fresh line; then refuse this one without dropping the
+                // connection (`LineTooLong` in `round_trip`).
+                conn.partial.clear();
+                drain_to_newline(&mut conn.reader)?;
+                return Err(LineTooLong.into());
             }
             // End of stream, before a line or part-way through one.
             return Ok(None);
@@ -1582,9 +1609,45 @@ mod tests {
             args: vec![],
             stdin: None
         }) >= Duration::from_secs(600));
+        assert!(deadline_for(&Request::RunGitCapped {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec![],
+            stdin: None,
+            stdout_cap: protocol::MAX_GIT_STDOUT_WIRE_BYTES as u64,
+        }) >= Duration::from_secs(600));
         assert!(deadline_for(&Request::EndOrphan { id: "s".into() }) > DEFAULT_DEADLINE);
         assert_eq!(deadline_for(&kill(1)), DEFAULT_DEADLINE);
         assert_eq!(name_of(&kill(1)), "KillSession");
         assert_eq!(name_of(&Request::SessionProcesses), "SessionProcesses");
+    }
+
+    /// An oversize reply is refused for that request, and the rest of the
+    /// line is drained so the next request on the same connection is
+    /// still answered -- the half of the fix that keeps a link alive when
+    /// a reply somehow still exceeds `MAX_LINE_BYTES`
+    /// (`fix-link-gitrun-line-cap.md`).
+    #[test]
+    fn an_oversize_reply_is_skipped_and_the_next_request_is_answered() {
+        let (lane, daemon) = lane_and_daemon();
+        let fake = std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let first = id_of(&next(&mut reader).unwrap());
+            assert_eq!(first, "s-1");
+            // Cap + 1 of payload, then the terminator -- unreadable as JSON,
+            // and past MAX_LINE_BYTES so the lane must drain past it.
+            let mut oversize = vec![b'x'; MAX_LINE_BYTES as usize + 1];
+            oversize.push(b'\n');
+            (&daemon).write_all(&oversize).unwrap();
+            let second = id_of(&next(&mut reader).unwrap());
+            assert_eq!(second, "s-2");
+            write_message(&mut &daemon, &Response::Error { message: second }).unwrap();
+        });
+
+        let err = lane.ask(&parity(), kill(1)).unwrap_err();
+        assert!(err.is::<LineTooLong>(), "{err}");
+        assert_eq!(message(lane.ask(&parity(), kill(2)).unwrap()), "s-2");
+        drop(lane);
+        fake.join().unwrap();
     }
 }

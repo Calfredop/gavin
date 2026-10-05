@@ -5435,6 +5435,19 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::run_git(std::path::Path::new(&root_path), &cwd, &args, stdin.as_deref())
                 .map(|(stdout, stderr, code)| Response::GitRun { stdout, stderr, code })
         }
+        Request::RunGitCapped { root_path, cwd, args, stdin, stdout_cap } => {
+            // Cap at the wire ceiling even when the caller asks for more:
+            // a JSON number-array reply past MAX_LINE_BYTES is unreadable.
+            let cap = (stdout_cap as usize).min(protocol::MAX_GIT_STDOUT_WIRE_BYTES);
+            crate::gavin::run_git_capped(
+                std::path::Path::new(&root_path),
+                &cwd,
+                &args,
+                stdin.as_deref(),
+                Some(cap),
+            )
+            .map(|(stdout, stderr, code)| Response::GitRun { stdout, stderr, code })
+        }
         Request::ListWorkspaceDir { root_path, path } => {
             crate::gavin::list_workspace_dir(std::path::Path::new(&root_path), &path)
                 .map(|entries| Response::WorkspaceDir { entries })
@@ -6109,8 +6122,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::StatWorkspacePaths { .. }
         // The Git tab and Files tree over ssh (v40), likewise the
         // desktop's: `RunGit` runs a process here, which an agent (own
-        // fs) and a remote (names no path) must never do.
+        // fs) and a remote (names no path) must never do. `RunGitCapped`
+        // is the same reach with a stdout bound (v58).
         | Request::RunGit { .. }
+        | Request::RunGitCapped { .. }
         | Request::ListWorkspaceDir { .. }
         // Remote access (v42) is the desktop's alone. An agent that could
         // pair a device would be deciding who else reaches this machine
@@ -6234,8 +6249,10 @@ fn is_privileged(req: &Request) -> bool {
             // Runs `git`, which mutates the working tree and -- via a
             // config an argv could set -- can run a program, the same
             // reach as the shell `CreateSession` starts. Behind the
-            // require_local_token narrowing with the rest.
+            // require_local_token narrowing with the rest. `RunGitCapped`
+            // is the same process with a stdout bound (v58).
             | Request::RunGit { .. }
+            | Request::RunGitCapped { .. }
             // Remote access (v42). Strictly more reach than
             // `SetRootConfigField` above: pairing a device decides who
             // ELSE can reach this machine, and revoking one decides who
@@ -7681,6 +7698,60 @@ mod tests {
         assert!(hit.join().unwrap());
     }
 
+    /// A `RunGitCapped` whose git produces 2 MB of stdout answers with a
+    /// reply that fits under `MAX_LINE_BYTES`: the host keeps at most
+    /// the wire ceiling plus one, so a link's reader never hits
+    /// "protocol line exceeded" for this request
+    /// (`fix-link-gitrun-line-cap.md`).
+    ///
+    /// The large content is a committed file, not stdin: a 2 MB stdin
+    /// would itself exceed `MAX_LINE_BYTES` on the request line.
+    #[test]
+    fn a_run_git_capped_whose_stdout_is_two_megabytes_answers_within_the_line_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = streaming_repo(dir.path());
+        std::fs::write(dir.path().join("big.txt"), "x".repeat(2 * 1024 * 1024)).unwrap();
+        for args in [
+            &["add", "big.txt"][..],
+            &["commit", "-q", "-m", "big"][..],
+        ] {
+            let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            crate::gavin::run_git(dir.path(), &root, &argv, None).unwrap();
+        }
+        let (socket_path, _server) = start_test_server();
+        let mut conn = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut conn,
+            &Request::RunGitCapped {
+                root_path: root.clone(),
+                cwd: root,
+                args: vec!["show".into(), "HEAD:big.txt".into()],
+                stdin: None,
+                stdout_cap: protocol::MAX_GIT_STDOUT_WIRE_BYTES as u64,
+            },
+        );
+        match resp {
+            Response::GitRun { stdout, code, .. } => {
+                assert_eq!(code, 0, "git show should succeed");
+                assert_eq!(
+                    stdout.len(),
+                    protocol::MAX_GIT_STDOUT_WIRE_BYTES + 1,
+                    "host keeps cap+1 so the caller can tell it was cut"
+                );
+                // The reply itself must be a readable protocol line.
+                let mut wire = Vec::new();
+                write_message(&mut wire, &Response::GitRun { stdout, stderr: String::new(), code: 0 })
+                    .unwrap();
+                assert!(
+                    wire.len() as u64 <= protocol::MAX_LINE_BYTES,
+                    "serialized GitRun is {} bytes, over MAX_LINE_BYTES",
+                    wire.len()
+                );
+            }
+            other => panic!("expected GitRun, got {other:?}"),
+        }
+    }
+
     /// The v42 git/tree requests, by role and by privilege
     /// (`2026-09-23-ssh-git-sync-and-conflicts-design.md` §5). An agent
     /// has its own filesystem and no business running git or moving files
@@ -8009,6 +8080,13 @@ mod tests {
             Request::WriteWorkspaceFile { root_path: "/x".into(), path: "a.md".into(), content: "c".into() },
             Request::StatWorkspacePaths { root_path: "/x".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "/x".into(), cwd: "/x".into(), args: vec!["status".into()], stdin: None },
+            Request::RunGitCapped {
+                root_path: "/x".into(),
+                cwd: "/x".into(),
+                args: vec!["status".into()],
+                stdin: None,
+                stdout_cap: protocol::MAX_GIT_STDOUT_WIRE_BYTES as u64,
+            },
             Request::ListWorkspaceDir { root_path: "/x".into(), path: "/x".into() },
             Request::RunGitEnv {
                 root_path: "/x".into(),
