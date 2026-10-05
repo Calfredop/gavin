@@ -10,15 +10,21 @@
 // waiting on a human about, a status no column matches, a second context,
 // a rail in mid-run and one waiting to be started, and a workspace with
 // no root at all. The cards are files (sampleCards.ts), and the trees
-// are what a scan of them reads.
+// are what a scan of them reads; the two projects' other files and their
+// Git histories are sampleProjects.ts.
+import type { PauseCycle } from "$lib/agents/agentPause";
+import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { SessionBaseline } from "$lib/core/backend";
 import type { Board } from "$lib/board/kanban";
+import type { AgentDefaults } from "$lib/cards/complexity";
 import type { GavinContext, GavinTree } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { scanPlans } from "$companion/demo/cardFiles";
+import type { DemoRepo } from "$companion/demo/repo";
 import { sampleCardFiles } from "$companion/demo/sampleCards";
+import { projectFiles, sampleRepos } from "$companion/demo/sampleProjects";
 import type { DemoTerminal } from "$companion/demo/sessions";
 import { sampleTerminals } from "$companion/demo/transcripts";
 
@@ -30,7 +36,26 @@ export const DEMO = {
   notesRoot: "/Users/demo/code/field-notes",
   scratch: "demo-scratch",
   home: "/Users/demo",
+  /// A project on the demo's disk that no workspace works in yet: what
+  /// adding a workspace from the phone finds.
+  weatherRoot: "/Users/demo/code/weather-station",
 } as const;
+
+/// The Workstation's app-wide settings, as config.json holds them: null
+/// is "nobody chose", which inherits gavin's own default.
+export interface DemoSettings {
+  theme: string | null;
+  terminalFontSize: number | null;
+  autoCommit: boolean | null;
+  requireReview: boolean | null;
+  gitTracking: boolean | null;
+  headroom: boolean | null;
+  customResumeArgs: string | null;
+  agentModels: Record<string, string>;
+  agentDefaults: AgentDefaults;
+  agentPause: PauseCycle | null;
+  launch: LaunchConfig | null;
+}
 
 /// Everything a Demo Workstation can be asked about, and the only thing
 /// its commands read. Mutable: the demo's activity script and its write
@@ -42,13 +67,16 @@ export interface DemoState {
   orchestrations: Record<string, Orchestration>;
   sessions: SessionBaseline[];
   sessionNames: Record<string, string>;
-  /// The machine's disk, by absolute path: every card file the trees are
-  /// scanned from (cardFiles.ts), each project's PRD, and what a card
-  /// points an agent at.
+  /// The machine's disk: every file, by absolute path. What the Files
+  /// surface lists and the editor reads and writes, each repository's
+  /// working tree (sampleProjects.ts), every card file the trees are
+  /// scanned from (cardFiles.ts), and each project's PRD.
   files: Record<string, string>;
-  /// The files something is watching, and how many times over: a desk
-  /// says a file changed only while it is watched.
-  watchedFiles: Record<string, number>;
+  /// The Git repositories, by root.
+  repos: Record<string, DemoRepo>;
+  /// What is being watched, and by how many: a desk reports a file's or a
+  /// checkout's changes only while something watches it.
+  watches: { files: Record<string, number>; git: Record<string, number> };
   /// Follow-ups waiting for an agent that was busy when they came.
   queuedInputs: QueuedInput[];
   /// Every live session's terminal: what it has written, and what it
@@ -57,6 +85,7 @@ export interface DemoState {
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
+  settings: DemoSettings;
 }
 
 function session(id: string, cwd: string, status: string): SessionBaseline {
@@ -82,6 +111,12 @@ function context(
     agent: kind === "root" ? { profile: "claude-code", file: "CLAUDE.md", command: null } : null,
     prd: null,
   };
+}
+
+/// The tree the daemon reports for a folder gavin was just set up in: its
+/// root context and no cards yet. A folder gavin is not in reports none.
+export function freshTree(root: string, name: string, scaffolded: boolean): GavinTree {
+  return { rootPath: root, rootMissing: false, contexts: scaffolded ? [context(root, "root", name, {})] : [] };
 }
 
 function atlasTree(files: Record<string, string>): GavinTree {
@@ -289,8 +324,67 @@ function orchestrations(): Record<string, Orchestration> {
   };
 }
 
+/// The rest of the demo's home folder: a project nobody has made a
+/// workspace of, a document, and the dotfile every home folder has.
+function homeFiles(): Record<string, string> {
+  const weather = DEMO.weatherRoot;
+  return {
+    [`${DEMO.home}/.zshrc`]: "export EDITOR=vim\n",
+    [`${DEMO.home}/Documents/packing-list.md`]: "# Packing list\n\n- charger\n- notebook\n",
+    [`${weather}/.gitignore`]: "/target\n",
+    [`${weather}/Cargo.toml`]: '[package]\nname = "weather-station"\nversion = "0.1.0"\nedition = "2021"\n',
+    [`${weather}/README.md`]: "# weather-station\n\nReads the rooftop sensors and keeps a week of readings.\n",
+    [`${weather}/src/main.rs`]: 'fn main() {\n    println!("reading the sensors");\n}\n',
+  };
+}
+
+export function sampleSettings(): DemoSettings {
+  return {
+    theme: null,
+    terminalFontSize: null,
+    autoCommit: null,
+    requireReview: null,
+    gitTracking: null,
+    headroom: null,
+    customResumeArgs: null,
+    agentModels: {},
+    agentDefaults: {
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [],
+      fallbackThresholds: {},
+      actionPromptOverrides: {},
+    },
+    agentPause: null,
+    launch: null,
+  };
+}
+
+/// Each repository with the cards under its root committed, in every
+/// commit and the index: a gavin project tracks its `.gavin-root`, so the
+/// cards the demo opens on are clean, and one the phone writes is a
+/// change on the Git surface. Copies, never edits: commits share trees.
+function trackingCards(repos: Record<string, DemoRepo>, cards: Record<string, string>): Record<string, DemoRepo> {
+  return Object.fromEntries(
+    Object.entries(repos).map(([root, repo]) => {
+      const mine = Object.fromEntries(
+        Object.entries(cards)
+          .filter(([path]) => path.startsWith(`${root}/`))
+          .map(([path, content]) => [path.slice(root.length + 1), content])
+      );
+      const commits = Object.fromEntries(
+        Object.entries(repo.commits).map(([sha, commit]) => [sha, { ...commit, tree: { ...commit.tree, ...mine } }])
+      );
+      return [root, { ...repo, commits, index: { ...repo.index, ...mine } }];
+    })
+  );
+}
+
 export function sampleState(): DemoState {
-  const files = sampleCardFiles({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot });
+  const roots = { atlas: DEMO.atlasRoot, notes: DEMO.notesRoot };
+  const cards = sampleCardFiles(roots);
+  const files = { ...projectFiles(roots), ...homeFiles(), ...cards };
   const trees = { [DEMO.atlas]: atlasTree(files), [DEMO.notes]: notesTree(files) };
   return {
     workspaces: { workspaces: workspaces(), activeWorkspaceId: DEMO.atlas, removedWorkspaces: [] },
@@ -313,9 +407,11 @@ export function sampleState(): DemoState {
       "s-notes-sync": "offline sync",
     },
     files,
-    watchedFiles: {},
+    repos: trackingCards(sampleRepos(roots), cards),
+    watches: { files: {}, git: {} },
     queuedInputs: [],
     terminals: sampleTerminals(DEMO.home),
     launched: 0,
+    settings: sampleSettings(),
   };
 }

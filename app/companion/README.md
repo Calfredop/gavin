@@ -125,8 +125,11 @@ modules agree about which workspace is open, and written nowhere else.
 `core.ts` refuses them before the channel. `seam/layoutSaving.test.ts` holds the
 refusal; `state/workstation.test.ts` drives a whole visit and reads the wire;
 `seam/bundleSources.test.ts` keeps the bundle from importing `layoutState`'s
-actions at all. That list stands in for the Remote role command table until
-companion-12 lands it in the protocol crate — reconcile the two then.
+layout actions at all — only its stores, and the settings writers that end in
+`set_workspace_settings`, a workspace's config.toml or an app-wide setting's
+own command, which the same suite reads to hold them there. That list stands
+in for the Remote role command table until companion-12 lands it in the
+protocol crate — reconcile the two then.
 
 **It never runs a rail.** This is the one that bites. The desktop's scheduler
 is not only `startScheduler`: every fetch, refresh and push of a workspace's
@@ -155,7 +158,11 @@ sample data — the thing App Review explores, and the suites' only fixture.
 - `sampleData.ts` — the machine: two projects and a Scratchpad, typed against
   the desktop's own wire types. Its cards are files (`sampleCards.ts`), and
   its trees are what a scan of them reads (`cardFiles.ts`, the daemon's own
-  parse and writers in `gavin.rs`, cut down).
+  parse and writers in `gavin.rs`, cut down). `sampleProjects.ts` is the two
+  projects' other files and Git histories: atlas-api mid-task (a change
+  staged, one not, a file untracked, a commit not pushed, a finished branch
+  to merge, a branch only on origin), field-notes clean. The cards sit in
+  the same disk, so a card the phone writes is a change on the Git surface.
 - `railCommands.ts` — a workspace's orchestration: the plan and run-state
   writes, with the daemon's guard on taking a live step off the plan, and a
   desk that ticks after each one -- launching a rail's card steps on a page
@@ -164,16 +171,31 @@ sample data — the thing App Review explores, and the suites' only fixture.
   desk's host does. It ticks as time passes too (`advance`), so a card moved
   to Done from the phone moves its rail on.
 - `cardCommands.ts` — a board's and a card's commands over those files: a
-  write edits one, then the trees are read again and pushed as
-  `gavin-tree-changed`, and a watched file is said to have changed, exactly
-  as a Workstation's watchers do. Done files a card under `done/`,
-  archiving under `archive/`, nested tasks travel with their plan, and a
-  binding or rail step that named the old path follows it.
+  write edits one, then reports through `watches.ts` like every other write
+  -- the trees read again and pushed as `gavin-tree-changed`, a watched file
+  said to have changed, exactly as a Workstation's watchers do. Done files a
+  card under `done/`, archiving under `archive/`, nested tasks travel with
+  their plan, and a binding or rail step that named the old path follows it.
 - `commands.ts` — one answer per desktop command name, each typed as what
   `backend.ts` says that command returns. A command with no entry is answered
-  with an error and recorded in `demo.unanswered()`.
+  with an error and recorded in `demo.unanswered()`. The Git tab's commands
+  are `gitCommands.ts`, over `repo.ts` (enough git for status, diffs,
+  staging, commits, branches, a merge and a push, refusals in git's words;
+  a merge that would conflict is refused whole); the Files tab's and the
+  editor's are `fileCommands.ts`. Both keep the host's fences, and both
+  report through `watches.ts`: `file-changed` and `git-changed` reach only
+  what is watched, as on a desk. A file saved in Files is a change in Git.
+  The Workstation's app-wide settings are `settingsCommands.ts` (each write
+  announced as `app-settings-synced`, as the host announces it), and the
+  workspaces as Workstation data are `workspaceCommands.ts`: each one's
+  settings, `add_workspace`, the home folder, and setting gavin up in a
+  folder. The home folder holds `code/weather-station`, a project no
+  workspace works in yet, for adding one to find.
 - `activity.ts` — a loop of what agents do, so the demo changes while someone
-  watches. The page advances it on a timer; a suite advances it by hand.
+  watches. The page advances it on a timer; a suite advances it by hand. Each
+  lap puts back only what it moved — the two scripted agents and the two
+  scripted cards — so what a visitor changed (a session, a card, a setting, a
+  saved file, a workspace added) stays.
 - `sessions.ts` and `transcripts.ts` — the terminals. Each sample session has
   a screen with history behind it and a script for what is typed into it: an
   agent waits in its input box (bracketed paste on), asks in a numbered menu
@@ -194,7 +216,7 @@ demo lacks, that is where it shows.
 
 ## Terminals (companion-26)
 
-A workspace opens on three surfaces, Board, Rails and Sessions
+A workspace's surfaces include Board, Rails and Sessions
 (`state/viewState.ts` remembers which). Sessions lists the workspace's own agent and every page's
 terminals in the desk's tab order, with the desk's names and badges
 (`surfaces/sessionList.ts`), and starts a New agent or a New terminal the way
@@ -315,11 +337,93 @@ same way: by the desk.
 
 ## What is here, and what is not
 
-The workspace list, one workspace's board and its cards (above), its rails,
-and its sessions and terminals. An inbox item lands on its card, or on the terminal
-of the session it names. How this bundle reaches a phone — built and signed
-by the desktop build, served by the Workstation, verified and cached by the
-shell — is the shell's README's ("Served bundles").
+The workspace list, with the Workstation's settings behind the gear in its
+header and **Add a workspace…** under it; and six surfaces for an open
+workspace, switched by the strip under the header (`SurfaceTabs`, which
+scrolls sideways where a phone is too narrow for all six, and counts the
+agents waiting on the human on Sessions). The view remembers which, where
+Files was, and a settings screen left open, on the Device — never a
+half-finished add — and the next workspace opens on the surface last chosen.
 
-Git, files and settings are the cards that follow (companion-29 and -30),
-each extending the Demo Workstation to match.
+**Board**, its cards, **Rails** and **Sessions** with their terminals are
+above. An inbox item lands on its card, or on the terminal of the session it
+names.
+
+**Git** (`PhoneGit*.svelte` over `phoneGit.ts`): the branch and where it
+stands, Fetch, Pull and Push, the op bar with its progress, the error and
+merge-in-progress banners; Changes (stage, unstage, a file's diff as a page of
+its own, the commit box) and Branches (switch, merge after a question, a new
+branch, a branch only the remote has). The state and every action are the
+desktop's `gitState.ts`, and the op bar, file rows, commit box and diff lines
+are the desktop's components. The desk's `GitHubView` is not: its columns,
+section folds, diff layout and worktree choice are saved with
+`setGitViewPrefs`, which is the desk's layout — so the phone always reads the
+workspace's root checkout.
+
+**Files** (`PhoneFiles.svelte` over `phoneFiles.ts`): one folder at a time
+over the desktop's tree state (`fileTree.ts`), and a file opened in the
+desktop's own `FileEditor`, which reads, autosaves and watches as at the desk,
+with `canOpenExternally={false}`. What the desk hands to another application
+(a picture, a binary) the phone says it cannot show. No create, rename or
+trash yet.
+
+**Settings** (`PhoneWorkspaceSettings.svelte`), per workspace: its name,
+colour and folder; terminal size; auto commit and review; its agent's model
+and effort; complexity, pause, fallback, unattended recovery, notifications.
+Every write is ticket 04's `set_workspace_settings`, through the desktop's own
+setters — or, for the agent, its folder's config.toml, as the desk writes it —
+and never the layout (ADR 0006). **The Workstation's settings**
+(`PhoneAppSettings.svelte`): theme, terminal, cards, git tracking, each agent's
+default model and effort, the custom agent, complexity, fallback, pause, the
+memory wall. Both are the desk's stores, writers and option lists
+(`phoneSettings.ts` has what the phone decides differently); what the desk's
+two panels have beyond them is the desk's alone — Updates, the daemon, remote
+access, Devices, Headroom and TypeSafe; the sidebar and hub-tab rows, which
+are its layout; switching an agent, which moves files and re-runs setup; and
+picking a folder. A write that fails is said on the screen (`saveSetting`),
+not in the desk's whole-window overlay.
+
+Every app-wide setter on the host announces `app-settings-synced`, and every
+desk window and every Device re-reads its settings on another writer's change
+(`loadAppSettings`). A Device's writes are announced under the origin
+`companion` (`forwarding::FORWARDED_ORIGIN`, from a header `dispatch` sets):
+under the desk window's own label, the one that dispatched the call would
+drop it as its own echo and never show what the phone did.
+
+**Adding a workspace** (`PhoneAddWorkspace.svelte` over
+`phoneAddWorkspace.ts`): the Workstation's disk a folder at a time from its
+home folder (`home_dir`), through the Files surface's `list_directory` with the
+top of the disk as its root, dotfiles left out. A folder a workspace already
+works in offers to open it; any other is added named for itself, after the
+desk's own question — set gavin up there (and track its files in git?), or add
+it as it is. The add is `add_workspace`: settings alone, an id the Workstation
+mints, no pages — what the desk's + makes. Every desk window hears it as
+`workspaces-synced` and arms the watch on its folder
+(`watchRootedWorkspaces` now watches each workspace's root once, not once per
+window).
+
+Where a desktop component was wrong for a thumb it became responsive where it
+lives, under media queries a window with a mouse never matches: `GitFileRow`
+shows its actions without hover and at a fingertip's size, `GitCommitBox` and
+`CodeMirrorView` keep text at 16px so iOS does not zoom into a field,
+`FileEditor`'s mode switch is thumb-sized, and at a phone's width
+`GitDiffUnified` wraps long lines and `MarkdownToolbar` scrolls in one row.
+`ColourPicker`'s swatches and `FallbackChainEditor`'s controls are
+fingertip-sized, and `ComplexityTable` stacks each level's controls at a
+phone's width.
+
+The desktop's Git actions name every op with `crypto.randomUUID`, which a
+page has only in a secure context; `remote/randomUUID.ts` gives the page one
+where the shell's origin (iOS's `gavin-bundle://`) may not count as secure.
+
+`seam/gitActions.test.ts`, `seam/fileActions.test.ts`,
+`seam/settingsActions.test.ts` and `seam/addWorkspace.test.ts` hold each
+action's channel traffic, and hold everything those surfaces send against the
+daemon's own Remote role table (`testing/remoteTable.ts` reads
+`protocol::remote_command_table`). Seam 1 holds the same line from the
+daemon's side: `device_wire.rs` has the workspace-settings commands and
+`add_workspace` reach the desk, and the layout saves refused before it.
+
+How this bundle reaches a phone — built and signed by the desktop build,
+served by the Workstation, verified and cached by the shell — is the shell's
+README's ("Served bundles").

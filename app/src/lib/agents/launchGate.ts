@@ -52,6 +52,17 @@ export const DEFAULT_LAUNCH: LaunchConfig = {
   reclaimDoneSessions: true,
 };
 
+/// The ceiling a settings field's text stands for. A blank field means NO
+/// CEILING, which is a real answer and not the same as the shipped four.
+/// Zero is not expressible -- a ceiling of zero holds every launch for
+/// ever -- so it reads as blank too, as does anything that is not a
+/// number. Shared by the desk's Settings and the Companion's.
+export function ceilingFrom(raw: string): number | null {
+  const value = Number(raw.trim());
+  if (!raw.trim() || !Number.isFinite(value) || value < 1) return null;
+  return Math.floor(value);
+}
+
 /// Why a launch is being held. `null` on an allowed verdict.
 ///
 /// Three reasons rather than one string because they resolve

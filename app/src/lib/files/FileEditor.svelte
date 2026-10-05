@@ -37,8 +37,20 @@
     /// and agent-file tabs put their "pick this file" row here so the
     /// toolbar stays the tab's first row.
     afterToolbar?: Snippet;
+    /// Whether "Open externally" is on offer. It hands the file to an
+    /// application at the desk, so a host that is not at the desk -- the
+    /// Companion, whose Remote role the Workstation refuses it -- turns
+    /// it off rather than showing a button that can only fail.
+    canOpenExternally?: boolean;
   }
-  let { path, initialMode, onModeChange, layout = "fill", afterToolbar }: Props = $props();
+  let {
+    path,
+    initialMode,
+    onModeChange,
+    layout = "fill",
+    afterToolbar,
+    canOpenExternally = true,
+  }: Props = $props();
 
   const AUTOSAVE_MS = 1000;
 
@@ -388,14 +400,18 @@
     <div class="overlay">
       <p>Couldn't open this file.</p>
       <p class="detail">{error}</p>
-      <button onclick={openExternally}>Open externally</button>
+      {#if canOpenExternally}
+        <button onclick={openExternally}>Open externally</button>
+      {/if}
     </div>
   {:else}
     {#if truncated}
       <div class="notice">
         This file is too large to preview in full — showing the first part only, and editing is
         disabled so saving can't truncate it.
-        <button onclick={openExternally}>Open externally</button>
+        {#if canOpenExternally}
+          <button onclick={openExternally}>Open externally</button>
+        {/if}
       </div>
     {/if}
     {#if !exists && !deleted}
@@ -465,6 +481,16 @@
   .segments button.active {
     background: var(--surface-overlay);
     color: var(--text);
+  }
+  /* A touch screen (the Companion): the mode switch fills the strip's
+     height and reads at body size, so a thumb lands on the mode it meant.
+     The strip itself keeps the desk's band height. */
+  @media (pointer: coarse) {
+    .segments button {
+      min-height: 34px;
+      padding: 0 14px;
+      font-size: 0.875em;
+    }
   }
   .segments button:disabled {
     opacity: 0.4;

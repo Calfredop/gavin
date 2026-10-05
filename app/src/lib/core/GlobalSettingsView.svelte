@@ -132,7 +132,7 @@
   } from "$lib/core/remoteAccess";
   import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
-  import type { LaunchConfig } from "$lib/agents/launchGate";
+  import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
 
   // Full-page app settings: opened via appSettingsOpen, closed by
@@ -170,15 +170,6 @@
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
   const launch = $derived($launchConfigStore);
-
-  /// A blank field means NO CEILING, which is a real answer and not the
-  /// same as the shipped four. Zero is not expressible -- a ceiling of
-  /// zero holds every launch for ever -- so it reads as blank too.
-  function ceilingFrom(raw: string): number | null {
-    const value = Number(raw.trim());
-    if (!raw.trim() || !Number.isFinite(value) || value < 1) return null;
-    return Math.floor(value);
-  }
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveLaunchConfig({ ...launch, ...patch });

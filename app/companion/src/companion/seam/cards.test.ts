@@ -465,7 +465,7 @@ describe("reading a file", () => {
       "watch_file_for_viewer",
       "unwatch_file_for_viewer",
     ]);
-    expect(demo.state.watchedFiles).toEqual({});
+    expect(demo.state.watches.files).toEqual({});
   });
 
   it("reads a card again when it changes at the Workstation", async () => {

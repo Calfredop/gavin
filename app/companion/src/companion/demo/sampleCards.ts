@@ -286,19 +286,11 @@ function prds(roots: { atlas: string; notes: string }): Record<string, string> {
   };
 }
 
-/// Every file the demo's boards are read from: the cards, each project's
-/// PRD, and what a card points an agent at.
+/// Every file the demo's boards are read from: the cards and each
+/// project's PRD. What a card points an agent at (`docs/rate-limits.md`)
+/// is a project file, tracked in its repository (sampleProjects.ts).
 export function sampleCardFiles(roots: { atlas: string; notes: string }): Record<string, string> {
-  const files: Record<string, string> = {
-    ...prds(roots),
-    [`${roots.atlas}/docs/rate-limits.md`]: [
-      "# Login rate limits",
-      "",
-      "- 5 attempts per account per 15 minutes",
-      "- 20 attempts per address per 15 minutes",
-      "",
-    ].join("\n"),
-  };
+  const files: Record<string, string> = { ...prds(roots) };
   for (const context of [...atlasContexts(roots.atlas), ...notesContexts(roots.notes)]) {
     for (const card of context.cards) files[cardPath(context, card)] = newCardText(card);
   }

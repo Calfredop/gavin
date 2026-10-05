@@ -9,14 +9,20 @@
 // here rather than a demo that quietly renders nothing.
 //
 // A board's and a card's commands have a table of their own
-// (cardCommands.ts), and so do a workspace's rails (railCommands.ts),
-// gathered in with the rest below.
+// (cardCommands.ts), as do a workspace's rails (railCommands.ts), the Git
+// tab's and the Files tab's (gitCommands.ts, fileCommands.ts), the
+// settings (settingsCommands.ts) and the workspaces as Workstation data
+// (workspaceCommands.ts), gathered in with the rest below.
 import { agentLastLine } from "$lib/agents/turnVerdict";
 import type { GavinTree } from "$lib/core/gavin";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { CARD_COMMANDS } from "$companion/demo/cardCommands";
+import { FILE_COMMANDS } from "$companion/demo/fileCommands";
+import { GIT_COMMANDS } from "$companion/demo/gitCommands";
 import { RAIL_COMMANDS } from "$companion/demo/railCommands";
 import { end, launch, repaint, screenText, type } from "$companion/demo/sessions";
+import { SETTINGS_COMMANDS } from "$companion/demo/settingsCommands";
+import { WORKSPACE_COMMANDS } from "$companion/demo/workspaceCommands";
 
 export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 
@@ -81,9 +87,6 @@ const WORK: Record<string, DemoCommand> = {
     hosts: [],
   }),
   get_session_names: (_args, demo): Answer<"getSessionNames"> => demo.state.sessionNames,
-  // No demo session sits in a repository the demo could report on.
-  get_git_baselines: (args): Answer<"getGitBaselines"> =>
-    (Array.isArray(args.cwds) ? args.cwds : []).map(() => null),
   list_queued_inputs: (_args, demo): Answer<"listQueuedInputs"> => demo.state.queuedInputs,
 
   // Each binding's launch command stays on the Workstation: the board has
@@ -163,6 +166,8 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   headlessArgs: "-p",
   modelFlag: "--model",
   models: ["opus", "sonnet", "haiku"],
+  effortFlag: "--effort",
+  efforts: ["low", "medium", "high", "xhigh", "max"],
   failurePatterns: [],
   failureCauses: [],
   sessionIdArgs: "",
@@ -171,9 +176,22 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   usageProbe: null,
 };
 
+// A second agent, so the settings that choose between agents -- the
+// complexity table, the fallback chain -- have a choice to offer.
+const CODEX: Answer<"agentProfiles">[number] = {
+  ...CLAUDE_CODE,
+  id: "codex",
+  label: "Codex CLI",
+  instructionsFile: "AGENTS.md",
+  command: "codex",
+  mcpConfigFile: ".codex/config.toml",
+  headlessArgs: "exec",
+  models: [],
+  effortFlag: "-c model_reasoning_effort=",
+  efforts: ["minimal", "low", "medium", "high", "xhigh"],
+};
+
 const TABLES: Record<string, DemoCommand> = {
-  // Null is "System": the Device's own appearance decides.
-  get_theme_pref: (): Answer<"getThemePref"> => null,
   temp_dir: (): Answer<"tempDir"> => "/tmp",
   // Null is "not probed": no banner, and no feature gated shut.
   daemon_compat: (): Answer<"daemonCompat"> => null,
@@ -188,28 +206,9 @@ const TABLES: Record<string, DemoCommand> = {
   // The desk has one window open, and it holds the app's duties.
   app_duty: (): Answer<"appDuty"> => ({ holder: "main", windows: ["main"] }),
 
-  agent_profiles: (): Answer<"agentProfiles"> => [CLAUDE_CODE],
-  agent_model_catalog: (): Answer<"agentModelCatalog"> => ({}),
+  agent_profiles: (): Answer<"agentProfiles"> => [CLAUDE_CODE, CODEX],
+  agent_model_catalog: (): Answer<"agentModelCatalog"> => ({ codex: ["gpt-5-codex", "gpt-5"] }),
   mcp_formats: (): Answer<"mcpFormats"> => [],
-  get_agent_model_defaults: (): Answer<"getAgentModelDefaults"> => ({}),
-  get_agent_defaults: (): Answer<"getAgentDefaults"> => ({
-    customCommand: "",
-    customModelFlag: "",
-    complexity: {},
-    agentFallback: [],
-    fallbackThresholds: {},
-    actionPromptOverrides: {},
-  }),
-  get_agent_pause: (): Answer<"getAgentPause"> => null,
-  get_launch_config: (): Answer<"getLaunchConfig"> => null,
-
-  // "Nobody chose": each of these inherits gavin's own default.
-  get_terminal_font_size: (): Answer<"getTerminalFontSize"> => null,
-  get_custom_resume_args: (): Answer<"getCustomResumeArgs"> => null,
-  get_auto_commit: (): Answer<"getAutoCommit"> => null,
-  get_require_review: (): Answer<"getRequireReview"> => null,
-  get_headroom_default: (): Answer<"getHeadroomDefault"> => null,
-  get_git_tracking_default: (): Answer<"getGitTrackingDefault"> => null,
 
   // On, so that a question asked in prose is read as one: the demo's
   // verdict is `demoVerdict` above, not a request that leaves the page.
@@ -258,4 +257,13 @@ const TABLES: Record<string, DemoCommand> = {
   watchman_status: (): Answer<"watchmanStatus"> => null,
 };
 
-export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES, ...CARD_COMMANDS, ...RAIL_COMMANDS };
+export const COMMANDS: Record<string, DemoCommand> = {
+  ...WORK,
+  ...TABLES,
+  ...SETTINGS_COMMANDS,
+  ...WORKSPACE_COMMANDS,
+  ...GIT_COMMANDS,
+  ...FILE_COMMANDS,
+  ...CARD_COMMANDS,
+  ...RAIL_COMMANDS,
+};

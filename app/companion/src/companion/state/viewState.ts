@@ -9,13 +9,34 @@
 // Pure: the store that holds a view and the page that draws it are
 // elsewhere (workstation.ts).
 
-/// The surfaces a workspace opens on.
-export const SURFACES = ["board", "rails", "sessions"] as const;
+/// The surfaces a workspace opens on, in the order the strip shows them.
+export const SURFACES = ["board", "rails", "sessions", "git", "files", "settings"] as const;
 export type Surface = (typeof SURFACES)[number];
+
+export const SURFACE_LABELS: Record<Surface, string> = {
+  board: "Board",
+  rails: "Rails",
+  sessions: "Sessions",
+  git: "Git",
+  files: "Files",
+  settings: "Settings",
+};
 
 /// What is open over a workspace's board: one of its cards, by path, or
 /// its PRD.
 export type BoardPage = { kind: "card"; path: string } | { kind: "prd" };
+
+/// What the Companion shows while no workspace is open: the workspace
+/// list, the Workstation's own settings, or adding a workspace.
+export const SCREENS = ["workspaces", "settings", "add-workspace"] as const;
+export type Screen = (typeof SCREENS)[number];
+
+/// Where the Files surface is: the folder on screen, and the file open
+/// over it, if one is.
+export interface FilesPlace {
+  dir: string;
+  file: string | null;
+}
 
 export interface ViewState {
   /// The workspace whose surface is open, or null at the workspace list.
@@ -28,6 +49,11 @@ export interface ViewState {
   /// The page open over its board. Absent on the board itself, and
   /// wherever the view is not on a board.
   page?: BoardPage;
+  /// Absent until the Files surface has been somewhere in this workspace.
+  files?: FilesPlace;
+  /// With no workspace open, which screen is: absent is the workspace
+  /// list, which is also how a view a bundle before this one saved reads.
+  screen?: Exclude<Screen, "workspaces">;
 }
 
 /// The part of `Storage` this needs, so a suite can hand it a map and a
@@ -41,11 +67,17 @@ export function initialView(): ViewState {
   return { workspaceId: null, surface: "board", sessionId: null };
 }
 
+/// Opens a workspace on the surface the human last chose. A page, a
+/// terminal and where Files was all belong to another workspace, so none
+/// is carried in.
 export function openWorkspace(view: ViewState, workspaceId: string): ViewState {
-  return { ...view, workspaceId, sessionId: null, page: undefined };
+  return { workspaceId, surface: view.surface, sessionId: null };
 }
 
+/// Switches the open workspace to another of its surfaces, keeping where
+/// Files was; a page or a terminal over the one it leaves is closed.
 export function showSurface(view: ViewState, surface: Surface): ViewState {
+  if (view.workspaceId === null) return view;
   return { ...view, surface, sessionId: null, page: undefined };
 }
 
@@ -69,8 +101,23 @@ export function closeTerminal(view: ViewState): ViewState {
   return { ...view, sessionId: null };
 }
 
+/// Back to the list, keeping only the surface the next workspace opens on.
 export function backToWorkspaces(view: ViewState): ViewState {
-  return { ...view, workspaceId: null, sessionId: null, page: undefined };
+  return { workspaceId: null, surface: view.surface, sessionId: null };
+}
+
+/// One of the screens that belong to the Workstation rather than to a
+/// workspace. Only from the workspace list's level: a workspace that is
+/// open is left by going back, not by jumping sideways out of it.
+export function showScreen(view: ViewState, screen: Screen): ViewState {
+  if (view.workspaceId !== null) return view;
+  const list = backToWorkspaces(view);
+  return screen === "workspaces" ? list : { ...list, screen };
+}
+
+export function placeFiles(view: ViewState, place: FilesPlace): ViewState {
+  if (view.workspaceId === null) return view;
+  return { ...view, files: { dir: place.dir, file: place.file } };
 }
 
 /// The view, given the workspaces the Workstation has NOW. One removed at
@@ -104,6 +151,22 @@ function readPage(value: unknown): BoardPage | undefined {
   return undefined;
 }
 
+/// The screen a stored view may come back to. Adding a workspace is not
+/// one: the folder it had got to and the question it was asking are not
+/// remembered, and landing half-way through an add nobody remembers
+/// starting is worse than landing on the list.
+function restorableScreen(value: unknown): ViewState["screen"] | null {
+  return value === "settings" ? value : null;
+}
+
+/// A stored Files place, or null for anything that is not one.
+function readPlace(value: unknown): FilesPlace | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { dir, file } = value as Record<string, unknown>;
+  if (typeof dir !== "string" || (file !== null && typeof file !== "string")) return null;
+  return { dir, file };
+}
+
 /// What was remembered for a Workstation, or the workspace list when
 /// nothing usable was. Never throws: storage on a phone can be absent,
 /// full, or written by a bundle newer than this one.
@@ -117,7 +180,7 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     return initialView();
   }
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return initialView();
-  const { workspaceId, surface, sessionId, page } = stored as Record<string, unknown>;
+  const { workspaceId, surface, sessionId, page, files, screen } = stored as Record<string, unknown>;
   if (workspaceId !== null && typeof workspaceId !== "string") return initialView();
   // A surface this bundle does not have is one a newer bundle saved; the
   // workspace is still the right one to open, on its board.
@@ -129,10 +192,15 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     // cannot draw: no terminal.
     sessionId: known && workspaceId && typeof sessionId === "string" ? sessionId : null,
   };
+  if (view.workspaceId === null) {
+    const restored = restorableScreen(screen);
+    return restored ? { ...view, screen: restored } : view;
+  }
   // A page is over a board, and only over the board of a workspace. One
   // this bundle cannot open is dropped, and the board shown under it.
-  const over = workspaceId && view.surface === "board" && view.sessionId === null ? readPage(page) : undefined;
-  return over ? { ...view, page: over } : view;
+  const over = view.surface === "board" && view.sessionId === null ? readPage(page) : undefined;
+  const place = readPlace(files);
+  return { ...view, ...(over ? { page: over } : {}), ...(place ? { files: place } : {}) };
 }
 
 /// Best-effort: a view that could not be saved costs the human one tap

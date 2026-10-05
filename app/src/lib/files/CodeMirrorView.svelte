@@ -100,4 +100,12 @@
   .cm-host :global(.cm-scroller) {
     font-family: monospace;
   }
+  /* A touch screen (the Companion): iOS zooms the page into an editable
+     region set below 16px as soon as it takes focus, so there the text
+     is never smaller than that. A window with a mouse keeps 0.85em. */
+  @media (pointer: coarse) {
+    .cm-host :global(.cm-editor) {
+      font-size: max(16px, 0.85em);
+    }
+  }
 </style>

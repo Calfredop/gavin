@@ -2,11 +2,24 @@
 // them. They are module-level on purpose (they belong to the app, not to
 // a component), which in a suite means one test's Workstation is still
 // in them when the next one connects.
+import { agentPauseStore } from "$lib/agents/agentPauseState";
+import { DEFAULT_LAUNCH } from "$lib/agents/launchGate";
+import { launchConfigStore } from "$lib/agents/launchQueue";
 import { __resetForTesting as resetTurnVerdict } from "$lib/agents/turnVerdictDriver";
 import { kanbanState } from "$lib/board/kanbanState";
+import { EMPTY_AGENT_DEFAULTS } from "$lib/cards/complexity";
 import { __resetForTesting as resetGavinState } from "$lib/core/gavinState";
 import { resetDialogs } from "$lib/core/dialog";
-import { layoutState, requireReviewDefault } from "$lib/core/layoutState";
+import {
+  agentDefaultsStore,
+  agentModelDefaultsStore,
+  agentProfilesStore,
+  autoCommitDefault,
+  gitTrackingDefault,
+  layoutState,
+  requireReviewDefault,
+  terminalFontSizeDefault,
+} from "$lib/core/layoutState";
 import { __resetForTesting as resetOrchestration } from "$lib/orchestration/orchestrationState";
 
 export function resetDesktopStores(): void {
@@ -14,8 +27,17 @@ export function resetDesktopStores(): void {
   resetOrchestration();
   resetGavinState();
   resetDialogs();
-  requireReviewDefault.set(null);
   kanbanState.set({});
+  // The app-wide settings, as a page finds them before its first read.
+  agentProfilesStore.set([]);
+  agentModelDefaultsStore.set({});
+  agentDefaultsStore.set(EMPTY_AGENT_DEFAULTS);
+  terminalFontSizeDefault.set(null);
+  autoCommitDefault.set(null);
+  requireReviewDefault.set(null);
+  gitTrackingDefault.set(null);
+  agentPauseStore.set(null);
+  launchConfigStore.set(DEFAULT_LAUNCH);
   layoutState.set({
     status: "connecting",
     errorMessage: "",

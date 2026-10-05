@@ -6,6 +6,16 @@
 // they read text, because drawing a surface needs a page.
 import { describe, expect, it } from "vitest";
 import { codeOf, companionSource, companionSources } from "$companion/testing/companionSources";
+import layoutStateSource from "../../../../src/lib/core/layoutState.ts?raw";
+
+/// One top-level function's text in a module's source, from its
+/// declaration to the brace that closes it at the start of a line.
+function functionBody(source: string, name: string): string {
+  const start = new RegExp(`^(export )?(async )?function ${name}\\(`, "m").exec(source);
+  if (!start) throw new Error(`no function ${name} in the source`);
+  const end = source.indexOf("\n}\n", start.index);
+  return source.slice(start.index, end === -1 ? undefined : end);
+}
 
 /// What `import { ... } from "<module>"` names in one source.
 function importedFrom(text: string, module: string): string[] {
@@ -21,42 +31,76 @@ function importedFrom(text: string, module: string): string[] {
 }
 
 describe("what the bundle takes from the desktop's layout state", () => {
-  // Every ACTION that module exports ends in a save of the desk's pages
-  // and tabs -- but one. The stores are what the desktop's components
-  // read, and the handlers only record what the Workstation said. The
-  // launch helpers are what a new session is made of at the desk -- the
-  // agent a workspace resolves to, the profile a launch names, the
-  // failure patterns it arms -- and save nothing; placing the session is
-  // the action, and that is the desk's. The one action is the review
-  // stamp: it saves a workspace SETTING (which cards the human has read),
-  // which the Remote role may write (ADR 0006), never the layout.
-  const ALLOWED = [
-    // stores
+  // What the desktop's components read, and what only records what the
+  // Workstation said: the stores, the handlers, the loaders.
+  const STORES_AND_HANDLERS = [
     "layoutState",
     "attentionStatusById",
+    "handleSessionStatusChanged",
+    "handleCwdChanged",
+    "loadAgentProfiles",
+    "reloadAppSettings",
     "agentProfilesStore",
     "agentModelDefaultsStore",
     "agentDefaultsStore",
     "customResumeArgsDefault",
+    "terminalFontSizeDefault",
+    "autoCommitDefault",
     "requireReviewDefault",
-    // handlers
-    "handleSessionStatusChanged",
-    "handleCwdChanged",
-    // launch helpers
-    "resolvedAgentFor",
-    "profileIdForLaunch",
-    "armFailureDetection",
-    // a workspace setting
+    "gitTrackingDefault",
+    "daemonCompat",
+    "trustedAgentConfigs",
+  ];
+  // What a new session is made of at the desk -- the agent a workspace
+  // resolves to, the profile a launch names, the failure patterns it arms.
+  // They save nothing; placing the session is the action, and that is the
+  // desk's.
+  const LAUNCH_HELPERS = ["resolvedAgentFor", "profileIdForLaunch", "armFailureDetection"];
+  // Most of that module's ACTIONS end in a save of the desk's pages and
+  // tabs. These do not (ADR 0006): each writes Workstation data -- a
+  // workspace's settings through `set_workspace_settings` (the review
+  // stamp among them: which cards the human has read), its agent through
+  // its config.toml, or an app-wide setting through its own command -- and
+  // the guard below reads each one's body to hold it there.
+  const SETTINGS_WRITERS = [
+    "renameWorkspace",
+    "setWorkspaceColor",
+    "setWorkspaceFontSize",
+    "setWorkspaceAutoCommit",
+    "setWorkspaceRequireReview",
+    "setWorkspaceComplexityTable",
+    "setWorkspacePause",
+    "setWorkspaceFallback",
+    "setWorkspaceFlag",
+    "setAgentField",
+    "setTerminalFontSizeDefault",
+    "setAutoCommitDefault",
+    "setRequireReviewDefault",
+    "setGitTrackingDefault",
+    "setAgentModelDefault",
+    "setAgentDefaults",
     "stampCardReview",
   ];
 
-  it("is its stores and its handlers, never its actions", () => {
+  it("is its stores, its handlers, its launch helpers and its settings writers, never a layout action", () => {
+    const allowed = [...STORES_AND_HANDLERS, ...LAUNCH_HELPERS, ...SETTINGS_WRITERS];
     const taken = Object.entries(companionSources()).flatMap(([name, text]) =>
       importedFrom(codeOf(text), "$lib/core/layoutState")
-        .filter((imported) => !ALLOWED.includes(imported))
+        .filter((imported) => !allowed.includes(imported))
         .map((imported) => `${name}: ${imported}`)
     );
     expect(taken).toEqual([]);
+  });
+
+  it("has settings writers that never reach the desk's layout save", () => {
+    // One level down as well: the helpers the writers share.
+    const reached = [...SETTINGS_WRITERS, "saveWorkspaceSettings", "stampConfigTrust"].flatMap((name) => {
+      const body = functionBody(layoutStateSource, name);
+      return /\bpersistWorkspaces\s*\(/.test(body) ? [name] : [];
+    });
+    expect(reached).toEqual([]);
+    // And the read finds one where there is one: pinning a row is layout.
+    expect(functionBody(layoutStateSource, "setWorkspacePinned")).toMatch(/\bpersistWorkspaces\s*\(/);
   });
 
   it("is never the whole module", () => {
@@ -66,7 +110,7 @@ describe("what the bundle takes from the desktop's layout state", () => {
     expect(whole).toEqual([]);
   });
 
-  it("is read by this guard in the file that takes the most", () => {
+  it("is read by this guard in the files that take the most", () => {
     expect(importedFrom(companionSource("companion/state/sessions.ts"), "$lib/core/layoutState").sort()).toEqual(
       [
         "agentDefaultsStore",
@@ -80,6 +124,12 @@ describe("what the bundle takes from the desktop's layout state", () => {
         "resolvedAgentFor",
       ]
     );
+    expect(importedFrom(companionSource("companion/state/workstation.ts"), "$lib/core/layoutState").sort()).toEqual(
+      ["handleCwdChanged", "handleSessionStatusChanged", "layoutState", "loadAgentProfiles", "reloadAppSettings"]
+    );
+    expect(
+      importedFrom(codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte")), "$lib/core/layoutState")
+    ).toContain("setWorkspaceColor");
   });
 });
 
@@ -173,7 +223,89 @@ describe("the terminal surface", () => {
   });
 });
 
+describe("the Git surface", () => {
+  const PARTS = [
+    "companion/surfaces/PhoneGit.svelte",
+    "companion/surfaces/PhoneGitChanges.svelte",
+    "companion/surfaces/PhoneGitDiff.svelte",
+    "companion/surfaces/PhoneGitBranches.svelte",
+  ];
+  const git = () => PARTS.map((part) => codeOf(companionSource(part))).join("\n");
+
+  it.each(["GitCommitBox", "GitFileRow", "GitDiffUnified", "GitOpBar"])("draws the desktop's own %s", (component) => {
+    expect(git()).toContain(`import ${component} from "$lib/git/${component}.svelte"`);
+    expect(git()).toContain(`<${component}`);
+  });
+
+  it("acts through the desktop's own Git state, and nothing of its own", () => {
+    for (const part of PARTS) {
+      const text = codeOf(companionSource(part));
+      expect(text).not.toMatch(/\bbackend\.git\w+\(/);
+      expect(text).not.toContain("invoke(");
+    }
+    expect(git()).toContain('from "$lib/git/gitState"');
+  });
+
+  // The desk's tab and its columns save their widths, folds, diff layout
+  // and worktree choice with `setGitViewPrefs` -- the desk's layout, which
+  // the Companion never writes.
+  it.each(["GitHubView", "GitToolbar", "GitNav", "GitChanges", "GitDiff", "GitWorktreeSwitcher"])(
+    "leaves the desk's %s at the desk",
+    (component) => {
+      expect(git()).not.toMatch(new RegExp(`import ${component} from`));
+    }
+  );
+
+  it.each(["setGitViewPrefs", "switchWorktree", "setGraphAll", "commitViaAgent", "openMergeTool"])(
+    "never reaches for %s",
+    (action) => {
+      expect(git()).not.toMatch(new RegExp(`\\b${action}\\b`));
+    }
+  );
+
+  it("always reads the workspace's root, never a worktree the desk chose", () => {
+    const frame = codeOf(companionSource("companion/surfaces/PhoneGit.svelte"));
+    expect(frame).toContain("ensureGitView(id, target)");
+    expect(frame).toContain("workspace.rootPath");
+    expect(frame).not.toContain("gitView");
+  });
+});
+
+describe("the Files surface", () => {
+  const files = () => codeOf(companionSource("companion/surfaces/PhoneFiles.svelte"));
+
+  it("opens a file in the desktop's own editor, with no way to open it at the desk", () => {
+    expect(files()).toContain('import FileEditor from "$lib/files/FileEditor.svelte"');
+    expect(files()).toMatch(/<FileEditor[^>]*canOpenExternally=\{false\}/);
+  });
+
+  it("walks the desktop's own tree state", () => {
+    expect(files()).toContain('from "$lib/files/fileTree"');
+    expect(files()).toContain("withChildren(");
+  });
+
+  it.each(["openPathExternally", "revealPathExternally", "saveFilesMemory", "openFileInSplit", "confirmDestructive"])(
+    "never reaches for %s",
+    (action) => {
+      expect(files()).not.toMatch(new RegExp(`\\b${action}\\b`));
+    }
+  );
+});
+
 describe("the page", () => {
+  it("can name a Git op however the shell serves it", () => {
+    // gitState.ts calls crypto.randomUUID for every commit, push,
+    // checkout and merge, and a page outside a secure context has none.
+    expect(codeOf(companionSource("routes/+layout.svelte"))).toContain("ensureRandomUUID();");
+  });
+
+  it("switches surfaces through the Companion's own view", () => {
+    const page = codeOf(companionSource("routes/+page.svelte"));
+    expect(page).toContain("<SurfaceTabs");
+    expect(page).toContain("onPick={showSurface}");
+    expect(page).toContain("onPlace={placeFiles}");
+  });
+
   const page = () => codeOf(companionSource("routes/+page.svelte"));
 
   it("connects through the bundle's own way in", () => {

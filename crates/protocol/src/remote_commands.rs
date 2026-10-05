@@ -57,6 +57,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // one without the other (ADR 0006).
     ("get_workspace_settings", RemoteAllowance::Allowed),
     ("set_workspace_settings", RemoteAllowance::Allowed),
+    // Adding one is Workstation data too: a workspace with no pages is
+    // already a valid one at the desk, so a Device adds it as settings
+    // alone rather than through the layout save it is refused.
+    ("add_workspace", RemoteAllowance::Allowed),
     ("get_theme_pref", RemoteAllowance::Allowed),
     ("set_theme_pref", RemoteAllowance::Allowed),
     ("get_terminal_font_size", RemoteAllowance::Allowed),
@@ -271,6 +275,8 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("check_for_update", RemoteAllowance::Refused), // updater
     ("install_update", RemoteAllowance::Refused), // updater
     ("temp_dir", RemoteAllowance::Allowed),
+    // Where a Device's folder browser starts when it adds a workspace.
+    ("home_dir", RemoteAllowance::Allowed),
 ];
 
 #[cfg(test)]
@@ -316,6 +322,7 @@ mod tests {
     fn workspace_settings_are_allowed_where_the_layout_is_refused() {
         assert_eq!(allowance_for("get_workspace_settings"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("set_workspace_settings"), Some(RemoteAllowance::Allowed));
+        assert_eq!(allowance_for("add_workspace"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("set_workspaces_state"), Some(RemoteAllowance::Refused));
     }
 

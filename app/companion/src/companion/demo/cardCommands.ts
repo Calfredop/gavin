@@ -14,7 +14,6 @@
 import type { CardSessionRecord } from "$lib/board/kanban";
 import type { HumanItemOutcome } from "$lib/core/gavin";
 import type { QueuedInput } from "$lib/agents/queuedInput";
-import { patchWorkspaceSettings, type WorkspaceSettingsPatch } from "$lib/workspace/workspaceSettings";
 import {
   ARCHIVE_DIR,
   folderOf,
@@ -24,13 +23,14 @@ import {
   newCardText,
   plansRootOf,
   readCard,
-  rescan,
   withChecklistItem,
   withField,
   withHumanOutcome,
 } from "$companion/demo/cardFiles";
 import { DemoFailure, text, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import type { DemoRepo } from "$companion/demo/repo";
 import { type as typeInto } from "$companion/demo/sessions";
+import { announceFiles, announceRepo, repoHolding } from "$companion/demo/watches";
 
 function optional(args: Record<string, unknown>, name: string): string | null {
   const value = args[name];
@@ -56,19 +56,19 @@ function card(demo: DemoContext, path: string): string {
 }
 
 /// Makes a change to the disk, then says what changed the way a
-/// Workstation's watchers do.
+/// Workstation's watchers do (watches.ts) -- a card in a repository's
+/// working tree is a change on its Git surface too.
 function change(demo: DemoContext, write: () => void): void {
   const before = { ...demo.state.files };
   write();
-  for (const [workspaceId, tree] of Object.entries(demo.state.trees)) {
-    const next = rescan(tree, demo.state.files);
-    if (JSON.stringify(next) === JSON.stringify(tree)) continue;
-    demo.state.trees[workspaceId] = next;
-    demo.emit("gavin-tree-changed", [workspaceId, next]);
+  announceFiles(demo, before);
+  const repos = new Set<DemoRepo>();
+  for (const path of new Set([...Object.keys(before), ...Object.keys(demo.state.files)])) {
+    if (before[path] === demo.state.files[path]) continue;
+    const repo = repoHolding(demo, path);
+    if (repo) repos.add(repo);
   }
-  for (const path of Object.keys(demo.state.watchedFiles)) {
-    if (before[path] !== demo.state.files[path]) demo.emit("file-changed", path);
-  }
+  for (const repo of repos) announceRepo(demo, repo);
 }
 
 /// A card file moves, and everything that named it by path follows: its
@@ -200,29 +200,9 @@ function checkedValue(key: string, value: string): string {
 
 // ---- The commands ---------------------------------------------------
 
+// The viewer's reads and watches of a card or a PRD are the Files tab's
+// commands (fileCommands.ts): one disk, one table of who watches it.
 export const CARD_COMMANDS: Record<string, DemoCommand> = {
-  // A path that is not there answers `exists: false` rather than an
-  // error, as the desk's does: a PRD a workspace never wrote is a file
-  // the first save creates.
-  read_file_for_viewer: (args, demo): Answer<"readFileForViewer"> => {
-    const content = demo.state.files[text(args, "path")];
-    return content === undefined
-      ? { content: "", truncated: false, exists: false }
-      : { content, truncated: false, exists: true };
-  },
-  watch_file_for_viewer: (args, demo): Answer<"watchFileForViewer"> => {
-    const path = text(args, "path");
-    demo.state.watchedFiles[path] = (demo.state.watchedFiles[path] ?? 0) + 1;
-  },
-  // Releasing what is not watched is not an error, as at the desk.
-  unwatch_file_for_viewer: (args, demo): Answer<"unwatchFileForViewer"> => {
-    const path = text(args, "path");
-    const count = demo.state.watchedFiles[path];
-    if (!count) return;
-    if (count === 1) delete demo.state.watchedFiles[path];
-    else demo.state.watchedFiles[path] = count - 1;
-  },
-
   set_plan_frontmatter_field: (args, demo): Answer<"setPlanFrontmatterField"> => {
     const path = text(args, "path");
     const key = text(args, "key");
@@ -389,19 +369,6 @@ export const CARD_COMMANDS: Record<string, DemoCommand> = {
     const name = text(args, "name").trim();
     if (name) demo.state.sessionNames[id] = name;
     else delete demo.state.sessionNames[id];
-  },
-
-  // A workspace's settings, never its layout (ADR 0006): what a launch
-  // writes when the human has read a card before its first run.
-  set_workspace_settings: (args, demo): Answer<"setWorkspaceSettings"> => {
-    const id = text(args, "workspaceId");
-    const workspaces = patchWorkspaceSettings(
-      demo.state.workspaces.workspaces,
-      id,
-      (args.patch ?? {}) as WorkspaceSettingsPatch
-    );
-    if (workspaces === demo.state.workspaces.workspaces) throw new DemoFailure(`no workspace ${id}`);
-    demo.state.workspaces = { ...demo.state.workspaces, workspaces };
   },
 
   // A follow-up for an agent, delivered the moment its input box is

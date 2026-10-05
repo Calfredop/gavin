@@ -13,21 +13,28 @@
     connectWorkstation,
     landing,
     openWorkspace,
+    placeFiles,
     returnToHub,
+    showScreen,
     showSurface,
     showWorkspaces,
     view,
   } from "$companion/state/workstation";
+  import PhoneAddWorkspace from "$companion/surfaces/PhoneAddWorkspace.svelte";
+  import PhoneAppSettings from "$companion/surfaces/PhoneAppSettings.svelte";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
   import PhoneCard from "$companion/surfaces/PhoneCard.svelte";
+  import PhoneFiles from "$companion/surfaces/PhoneFiles.svelte";
+  import PhoneGit from "$companion/surfaces/PhoneGit.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import PhonePrd from "$companion/surfaces/PhonePrd.svelte";
   import PhoneRails from "$companion/surfaces/PhoneRails.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
   import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
+  import PhoneWorkspaceSettings from "$companion/surfaces/PhoneWorkspaceSettings.svelte";
+  import SurfaceTabs from "$companion/surfaces/SurfaceTabs.svelte";
   import { trackVisibleArea } from "$companion/surfaces/viewport";
   import WorkspaceList from "$companion/surfaces/WorkspaceList.svelte";
-  import WorkspaceTabs from "$companion/surfaces/WorkspaceTabs.svelte";
 
   // Counted, never compared: a connection that finishes after the page
   // has moved on (a retry, a teardown) must not become the live one.
@@ -120,33 +127,44 @@
           onBack={showWorkspaces}
           tag={ready.workstation.demo ? "demo" : null}
         />
-        <WorkspaceTabs surface={$view.surface} onShow={showSurface} {waiting} />
-        {#if $view.surface === "sessions"}
-          <div class="scroll">
-            {#key open.id}
+        <SurfaceTabs current={$view.surface} onPick={showSurface} {waiting} />
+        <!-- Keyed on the root as well: a workspace pointed at another
+             folder at the desk is another repository and another tree. -->
+        {#key `${open.id}\u0000${open.rootPath ?? ""}`}
+          {#if $view.surface === "sessions"}
+            <div class="scroll">
               <PhoneSessions workspace={open} />
-            {/key}
-          </div>
-        {:else if $view.surface === "rails"}
-          <div class="scroll">
-            {#key open.id}
+            </div>
+          {:else if $view.surface === "rails"}
+            <div class="scroll">
               <PhoneRails workspace={open} />
-            {/key}
-          </div>
-        {:else}
-          {#key open.id}
+            </div>
+          {:else if $view.surface === "git"}
+            <PhoneGit workspace={open} />
+          {:else if $view.surface === "files"}
+            <PhoneFiles workspace={open} place={$view.files} onPlace={placeFiles} />
+          {:else if $view.surface === "settings"}
+            <PhoneWorkspaceSettings workspace={open} />
+          {:else}
             <PhoneBoard workspace={open} landing={$landing} />
-          {/key}
-        {/if}
+          {/if}
+        {/key}
+      {:else if $view.screen === "settings"}
+        <PhoneHeader title="Settings" back="Workspaces" onBack={showWorkspaces} tag={ready.workstation.demo ? "demo" : null} />
+        <PhoneAppSettings />
+      {:else if $view.screen === "add-workspace"}
+        <PhoneHeader title="Add a workspace" back="Workspaces" onBack={showWorkspaces} tag={ready.workstation.demo ? "demo" : null} />
+        <PhoneAddWorkspace />
       {:else}
         <PhoneHeader
           title={ready.workstation.name || "Workstation"}
           back={ready.canReturnToHub ? "Workstations" : null}
           onBack={ready.canReturnToHub ? () => void returnToHub() : null}
           tag={ready.workstation.demo ? "demo" : null}
+          onSettings={() => showScreen("settings")}
         />
         <div class="scroll">
-          <WorkspaceList onOpen={openWorkspace} />
+          <WorkspaceList onOpen={openWorkspace} onAdd={() => showScreen("add-workspace")} />
         </div>
       {/if}
 

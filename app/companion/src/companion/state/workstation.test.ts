@@ -17,8 +17,12 @@ import { viewKey } from "$companion/state/viewState";
 import {
   connection,
   connectWorkstation,
+  land,
+  landing,
   openWorkspace,
+  placeFiles,
   returnToHub,
+  showSurface,
   showWorkspaces,
   view,
 } from "$companion/state/workstation";
@@ -277,6 +281,53 @@ describe("the Companion's view", () => {
     });
     await connect(createDemoWorkstation(), storage);
     expect(get(view).workspaceId).toBeNull();
+  });
+
+  it("switches the open workspace's surface, and remembers it on the Device", async () => {
+    const storage = await connect(createDemoWorkstation());
+    openWorkspace(DEMO.atlas);
+    showSurface("git");
+    expect(get(view)).toEqual({ workspaceId: DEMO.atlas, surface: "git", sessionId: null });
+    showSurface("files");
+    placeFiles({ dir: `${DEMO.atlasRoot}/src`, file: `${DEMO.atlasRoot}/src/server.ts` });
+    expect(JSON.parse(storage.items[viewKey("demo")])).toEqual({
+      workspaceId: DEMO.atlas,
+      surface: "files",
+      sessionId: null,
+      files: { dir: `${DEMO.atlasRoot}/src`, file: `${DEMO.atlasRoot}/src/server.ts` },
+    });
+  });
+
+  it("comes back to the surface, and the place in Files, it was at", async () => {
+    const storage = await connect(createDemoWorkstation());
+    openWorkspace(DEMO.atlas);
+    showSurface("files");
+    placeFiles({ dir: `${DEMO.atlasRoot}/docs`, file: null });
+    disconnect!();
+    resetDesktopStores();
+
+    await connect(createDemoWorkstation(), storage);
+    expect(get(view)).toEqual({
+      workspaceId: DEMO.atlas,
+      surface: "files",
+      sessionId: null,
+      files: { dir: `${DEMO.atlasRoot}/docs`, file: null },
+    });
+  });
+
+  it("leaves a landing behind when the human goes to another surface", async () => {
+    const demo = createDemoWorkstation();
+    await connect(demo);
+    land({ workspace: DEMO.atlas, target: { kind: "card", path: "/x.md" } });
+    expect(get(landing)).not.toBeNull();
+    showSurface("git");
+    expect(get(landing)).toBeNull();
+  });
+
+  it("has no surface to switch at the workspace list", async () => {
+    await connect(createDemoWorkstation());
+    showSurface("git");
+    expect(get(view)).toEqual({ workspaceId: null, surface: "board", sessionId: null });
   });
 
   it("returns to the hub through the shell", async () => {

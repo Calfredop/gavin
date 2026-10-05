@@ -73,11 +73,14 @@ export const ACTIVITY: DemoStep[] = [
     tickNext(demo, "token-refresh.md");
   },
 
-  // And round again: the machine as it was found, said as a desk would
-  // say it. The two scripted agents are put back to asking, to be
-  // answered again from the phone or at the desk, and the two scripted
-  // cards where they started; a session the human opened or ended, and a
-  // card they moved, filed or answered, stays as they left it.
+  // And round again: what this loop moved, put back as it was found and
+  // said as a desk would say it. The two scripted agents are put back to
+  // asking, to be answered again from the phone or at the desk, and the
+  // two scripted cards where they started. Only that. What a visitor
+  // changed -- a session opened or ended, a card moved, filed or
+  // answered, a setting, a saved file, a commit, a workspace added or
+  // renamed -- stays, as it would on a real Workstation; a loop that put
+  // the whole machine back would undo it under them a lap later.
   (demo) => {
     const fresh = sampleState();
     for (const id of SCRIPTED) {

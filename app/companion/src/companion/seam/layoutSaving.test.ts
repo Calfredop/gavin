@@ -15,6 +15,7 @@ import { createDemoWorkstation } from "$companion/demo/workstation";
 import { disconnectChannel } from "$companion/remote/connection";
 import { LAYOUT_SAVING_COMMANDS, refusedOnDevice } from "$companion/remote/remoteRole";
 import { connectDemo, settle } from "$companion/testing/demoBench";
+import { allowedToRemoteRole, tableSize } from "$companion/testing/remoteTable";
 
 afterEach(() => disconnectChannel());
 
@@ -51,6 +52,11 @@ describe("the layout-saving commands", () => {
     for (const attempt of attempts) await expect(attempt).rejects.toMatch(/saves the desktop's layout/);
     await settle();
     expect(demo.received()).toEqual([]);
+  });
+
+  it.each([...LAYOUT_SAVING_COMMANDS])("%s is refused by the daemon's own table too", (cmd) => {
+    expect(tableSize()).toBeGreaterThan(100);
+    expect(allowedToRemoteRole(cmd)).toBe(false);
   });
 
   it("leave everything else alone", () => {
