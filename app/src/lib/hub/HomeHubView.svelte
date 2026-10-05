@@ -369,7 +369,7 @@
             <span class="muted">No board yet.</span>
           {:else}
             <span class="columns">
-              {#each boards.columns as column (column.name)}
+              {#each boards.columns as column (column.id)}
                 <span class="column">
                   <span class="col-name">{column.name}</span>
                   <span class="col-count">{column.planCount}</span>

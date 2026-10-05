@@ -2155,7 +2155,10 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| file_name.clone());
     PlanFileInfo {
-        path: path.to_string_lossy().to_string(),
+        // Same spelling as every other PlanFileInfo: wire_path, not
+        // to_string_lossy. On Windows the latter keeps backslashes and
+        // the board then holds two identities for one file.
+        path: protocol::wire_path(path),
         modified_at: file_modified_at(path),
         file_name,
         title: stem,

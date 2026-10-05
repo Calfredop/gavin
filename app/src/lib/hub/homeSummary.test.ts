@@ -47,8 +47,8 @@ describe("boardSummary", () => {
   it("counts plan cards per column", () => {
     const s = boardSummary(board, tree([ctx("/ws/a", [plan("p.md", "To Do"), plan("q.md", "Done")])]));
     expect(s.columns).toEqual([
-      { name: "To Do", planCount: 1 },
-      { name: "Done", planCount: 1 },
+      { id: "c1", name: "To Do", planCount: 1 },
+      { id: "c2", name: "Done", planCount: 1 },
     ]);
     expect(s.totalCards).toBe(2);
   });
@@ -62,6 +62,25 @@ describe("boardSummary", () => {
     expect(boardSummary(undefined, undefined).columns).toEqual([]);
     expect(boardSummary(undefined, undefined).totalCards).toBe(0);
     expect(boardSummary(board, undefined).totalCards).toBe(0);
+  });
+
+  // Two columns may share a name (add/rename never refuse it). The home
+  // tab's keyed each must key on id, not name — same rule the phone
+  // board's `column:${id}` keys follow — or `each_key_duplicate` blanks
+  // the whole content area under the svelte:boundary.
+  it("keeps a distinct id when two columns share a name", () => {
+    const twin: Board = {
+      columns: [
+        { id: "a", name: "To Do", position: 0 },
+        { id: "b", name: "To Do", position: 1 },
+      ],
+      labels: [],
+      cardSessions: [],
+    };
+    const s = boardSummary(twin, undefined);
+    expect(s.columns.map((c) => c.id)).toEqual(["a", "b"]);
+    expect(s.columns.map((c) => c.name)).toEqual(["To Do", "To Do"]);
+    expect(new Set(s.columns.map((c) => c.id)).size).toBe(2);
   });
 });
 

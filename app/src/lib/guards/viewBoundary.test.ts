@@ -98,8 +98,12 @@ describe("the view boundary", () => {
     // cause was a hot reload that left one module half-applied.
     expect(body).toContain("onclick={reset}");
     // The stack only exists in the console, so the boundary has to put
-    // it there -- `failed` alone means svelte logs nothing at all.
-    expect(body).toMatch(/onerror=\{\(error\) => console\.error\(/);
+    // it there -- `failed` alone means svelte logs nothing at all. The
+    // payload also names which view was on screen: a production build
+    // of each_key_duplicate is only the svelte.dev URL, and without the
+    // view the human has nothing useful to report.
+    expect(body).toContain('console.error("view render failed"');
+    expect(body).toContain("view:");
   });
 
   it("is created by a state change and never by the page's first mount", () => {

@@ -6,6 +6,11 @@ import type { Orchestration, RailState } from "$lib/orchestration/orchestration"
 import { mergePlanCards } from "$lib/core/planBoard";
 
 export interface ColumnSummary {
+  /// The column's id — what a keyed each must use. Names are not unique:
+  /// add/rename never refuse a duplicate spelling, and two "To Do"
+  /// columns keyed on name throw `each_key_duplicate` (the phone board
+  /// already keys on `column:${id}` for the same reason).
+  id: string;
   name: string;
   planCount: number;
 }
@@ -22,6 +27,7 @@ export function boardSummary(board: Board | undefined, tree: GavinTree | undefin
   if (!board) return { columns: [], autoColumns: [], totalCards: 0 };
   const merged = mergePlanCards(board, tree);
   const columns = merged.columns.map((dc) => ({
+    id: dc.column.id,
     name: dc.column.name,
     planCount: dc.planCards.length,
   }));
