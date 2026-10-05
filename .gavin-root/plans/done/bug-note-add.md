@@ -1,11 +1,14 @@
 ---
+agent: cursor
 order: 12288
 kind: task
 title: [bug] new card modal note
-status: In Progress
+status: Done
 ---
 Note mode lacks title
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
 <!-- /gavin:auto-commit -->
+
+- [ ] Human test: Open New card, switch to note: a Title label and Note title… field are visible above Column

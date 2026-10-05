@@ -12,7 +12,10 @@
   // the task chip (DEFAULT_COMPOSE_KIND), so that file is runnable work
   // by default -- a bare Enter simply leaves the prompt empty. The other
   // chips reshape it in place: plan swaps the prompt for a body, note
-  // drops the body entirely.
+  // drops the body entirely. The title stays for every kind — and is
+  // labelled, not only placeholdered — because on the note chip it is
+  // the only text field left, and an unlabeled box between the chips and
+  // the Column picker reads as the form having no title at all.
   import { untrack } from "svelte";
   import { get } from "svelte/store";
   import { pickPath } from "$lib/workspace/picker";
@@ -438,15 +441,18 @@
     {/each}
   </div>
 
-  <textarea
-    class="compose-title"
-    rows="2"
-    placeholder="Card title…"
-    bind:value={title}
-    bind:this={titleEl}
-    onfocus={() => (focusField = "title")}
-    onkeydown={(e) => handleKeydown("title", e)}
-  ></textarea>
+  <label class="compose-title-field">
+    <span class="compose-field-label">Title</span>
+    <textarea
+      class="compose-title"
+      rows="2"
+      placeholder={kind === "note" ? "Note title…" : "Card title…"}
+      bind:value={title}
+      bind:this={titleEl}
+      onfocus={() => (focusField = "title")}
+      onkeydown={(e) => handleKeydown("title", e)}
+    ></textarea>
+  </label>
 
   {#if kind !== "note"}
     <textarea
@@ -665,6 +671,20 @@
     gap: 4px;
     margin-bottom: 8px;
   }
+  /* The title is the one field every kind keeps. On note it is the only
+     text box, so the label has to say Title out loud — a placeholder
+     alone is what made Note mode look title-less. */
+  .compose-title-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .compose-field-label {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.75em;
+  }
   .attachments {
     display: flex;
     align-items: center;
@@ -743,6 +763,11 @@
     resize: none;
     width: 100%;
     box-sizing: border-box;
+  }
+  /* Margin lives on the field wrapper for the title (label + box), and
+     on the body alone — putting it on both textareas double-spaced the
+     title once it gained a label. */
+  .compose-body {
     margin-bottom: 8px;
   }
   .fields {
