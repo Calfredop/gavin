@@ -405,12 +405,12 @@ export function profileRecipeReason(profileId: string, customApiFamily: ApiFamil
       return "Cursor sends everything through Cursor's servers — Headroom can't reach it.";
     case "gemini":
       return "Gemini is compressed only when its CLI uses an API key. Login with Google isn't routed: Google's endpoint for it is documented for testing only, and Headroom can't undo lossy compression on streamed Gemini replies.";
-    case "custom":
+    default:
+      // Named customs (migrated `custom-agent`, `local:…`, legacy `custom`,
+      // or any other non-stock id): the family is the recipe.
       return customApiFamily
         ? null
-        : "The custom agent isn't compressed until it names the API it speaks — set its API family in Settings → Custom agent.";
-    default:
-      return "gavin has no way to route this agent through Headroom.";
+        : "The custom agent isn't compressed until it names the API it speaks — set its API family in Settings → Agents → Customs.";
   }
 }
 

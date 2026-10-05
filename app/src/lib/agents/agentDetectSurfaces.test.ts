@@ -35,4 +35,8 @@ describe("init wizard agent PATH sweep", () => {
     expect(logic).toContain("commandAlreadySet");
     expect(logic).toContain("missingFromAppFallback");
   });
+
+  it("points at Settings → Agents for named customs beyond this step", () => {
+    expect(source("AgentStep.svelte")).toContain("Settings → Agents");
+  });
 });

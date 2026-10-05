@@ -14,6 +14,18 @@
 
 import type { AgentConfig } from "$lib/core/gavin";
 
+/// One named custom agent, as config.json stores it. Mirrors
+/// `config::CustomProfile`.
+export interface CustomProfile {
+  id: string;
+  label: string;
+  command: string;
+  modelFlag: string;
+  effortFlag?: string;
+  apiFamily?: string;
+  resumeArgs?: string;
+}
+
 /// The five levels, ascending. Mirrors `protocol::Complexity` -- the
 /// written names ARE the wire format and the frontmatter value, so a
 /// spelling change here is a protocol change.
@@ -93,26 +105,22 @@ export type ComplexityTable = Partial<Record<Complexity, ComplexityAgent>>;
 /// The app-wide agent defaults, as config.json stores them. Mirrors
 /// `config::AgentDefaultsConfig`.
 export interface AgentDefaults {
-  /// The command the `custom` profile launches when a workspace on it
-  /// names none of its own.
-  customCommand: string;
-  /// The argv that carries a model into that command. Empty means gavin
-  /// has no verified way to put a model on it, and every model control
-  /// for `custom` stays hidden rather than guessing a flag.
-  customModelFlag: string;
-  /// The argv that carries an effort level into that command -- `--effort`,
-  /// or `--think=` for one that takes it attached. Absent or empty hides
-  /// every effort control for `custom`, exactly as `customModelFlag` does.
+  /// Named app-wide custom agent profiles. Empty is the shipped state.
+  customProfiles?: CustomProfile[];
+  /// Legacy single-custom fields — kept optional so older fixtures and
+  /// the Settings UI that still edits them compile during the transition.
+  /** @deprecated Prefer `customProfiles`. */
+  customCommand?: string;
+  /** @deprecated Prefer `customProfiles`. */
+  customModelFlag?: string;
+  /** @deprecated Prefer `customProfiles`. */
   customEffortFlag?: string;
   /// The app-wide default effort per profile id, beside the default model
   /// (`agentModelDefaultsStore`). Absent key means the agent's own default.
   /// Here rather than a Tauri command of its own, so it rides the same
   /// wholesale `setAgentDefaults` save as the complexity table.
   agentEfforts?: Record<string, string>;
-  /// The API that command speaks -- `anthropic`, `openai` -- which is
-  /// what lets Headroom compress it. Absent is None, the default: no
-  /// recipe, and the agent launches as it always did. See
-  /// `agents/apiFamily.ts`.
+  /** @deprecated Prefer `customProfiles[].apiFamily`. */
   customApiFamily?: string;
   complexity: ComplexityTable;
   /// App-wide fallback chain. Empty means pause-only when a launch's
@@ -130,8 +138,7 @@ export interface AgentDefaults {
 }
 
 export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
-  customCommand: "",
-  customModelFlag: "",
+  customProfiles: [],
   complexity: {},
   agentFallback: [],
   fallbackThresholds: {},

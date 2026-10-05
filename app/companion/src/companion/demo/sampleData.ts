@@ -149,6 +149,16 @@ function workspaces(): Workspace[] {
       mainSessionId: "s-atlas-main",
       activePageId: "p-atlas-auth",
       lastActiveAt: 1_790_000_300_000,
+      /// A workspace-local custom the phone's Agents → Customs tab can edit.
+      customProfiles: [
+        {
+          id: "local:atlas-helper",
+          label: "Atlas helper",
+          command: "atlas-helper",
+          modelFlag: "--llm",
+          apiFamily: "anthropic",
+        },
+      ],
       pages: [
         {
           id: "p-atlas-auth",
@@ -349,8 +359,16 @@ export function sampleSettings(): DemoSettings {
     customResumeArgs: null,
     agentModels: {},
     agentDefaults: {
-      customCommand: "",
-      customModelFlag: "",
+      customProfiles: [
+        {
+          id: "demo-cli",
+          label: "Demo CLI",
+          command: "demo-agent",
+          modelFlag: "--model",
+          effortFlag: "--effort",
+          apiFamily: "openai",
+        },
+      ],
       complexity: {},
       agentFallback: [],
       fallbackThresholds: {},

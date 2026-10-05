@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { AGENTS_SECTION } from "$lib/agents/agentsHub";
 import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
 import { source } from "$lib/sources";
 
@@ -72,7 +73,14 @@ function shippedSections(file: string): SettingsSection[] {
   const text = source(file);
   const body = text.match(/const SECTIONS: SettingsSection\[\] = \[([\s\S]*?)\n {2}\];/);
   if (!body) throw new Error(`${file}: SECTIONS not found in the shape this test expects`);
-  return body[1]
+  // Both panels compose Agents as the shared `AGENTS_SECTION` export —
+  // expand it to a literal before the string scrape, so keyword drift in
+  // agentsHub.ts is what these synonyms actually exercise.
+  const expanded = body[1].replace(
+    /\bAGENTS_SECTION\b,?/g,
+    `{ id: ${JSON.stringify(AGENTS_SECTION.id)}, keywords: ${JSON.stringify([...AGENTS_SECTION.keywords])} },`
+  );
+  return expanded
     .split(/\{\s*id:/)
     .slice(1)
     .map((raw) => {
@@ -83,10 +91,8 @@ function shippedSections(file: string): SettingsSection[] {
     });
 }
 
-/// query -> the section(s) it must reach. Several where the word is
-/// honestly ambiguous: "quota" is both the fallback chain's trigger and
-/// the pause cycle's, and hiding either would send the human to the
-/// wrong one.
+/// query -> the section(s) it must reach. Fallback and pause both live
+/// under the one Agents section now, so "quota" / "rate limit" land there.
 const GLOBAL_SYNONYMS: [string, string[]][] = [
   ["text size", ["terminal"]],
   ["zoom", ["terminal"]],
@@ -97,8 +103,10 @@ const GLOBAL_SYNONYMS: [string, string[]][] = [
   ["dark mode", ["appearance"]],
   ["colour scheme", ["appearance"]],
   ["color scheme", ["appearance"]],
-  ["quota", ["fallback-agent", "agent-pause"]],
-  ["rate limit", ["fallback-agent", "agent-pause"]],
+  ["quota", ["agents"]],
+  ["rate limit", ["agents"]],
+  ["API family", ["agents"]],
+  ["Agent defaults", ["agents"]],
   ["upgrade", ["updates"]],
   ["new version", ["updates"]],
   ["beta", ["updates"]],
@@ -112,8 +120,10 @@ const HUB_SYNONYMS: [string, string[]][] = [
   ["text size", ["terminal"]],
   ["zoom", ["terminal"]],
   ["auto-commit", ["cards"]],
-  ["quota", ["fallback-agent", "agent-pause"]],
-  ["rate limit", ["fallback-agent", "agent-pause"]],
+  ["quota", ["agents"]],
+  ["rate limit", ["agents"]],
+  ["This agent", ["agents"]],
+  ["Superpowers", ["agents"]],
 ];
 
 describe.each([

@@ -887,6 +887,7 @@ mod workspaces_data_tests {
             },
         );
         let defaults = crate::config::AgentDefaultsConfig {
+            custom_profiles: Vec::new(),
             custom_command: "my-agent --yolo".to_string(),
             custom_model_flag: "--llm".to_string(),
             custom_effort_flag: "--think".to_string(),
@@ -1190,6 +1191,7 @@ mod workspaces_data_tests {
             require_review_asked: false,
             headroom_asked: false,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
@@ -1439,6 +1441,7 @@ mod workspace_migration_tests {
             require_review_asked: false,
             headroom_asked: false,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
@@ -4392,6 +4395,7 @@ mod resolve_workspaces_tests {
             require_review_asked: false,
             headroom_asked: false,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
@@ -4904,20 +4908,21 @@ mod resolve_workspaces_tests {
     }
 
     #[test]
-    fn the_api_family_is_sent_only_with_the_custom_profile_to_a_daemon_that_reads_it() {
+    fn the_api_family_is_sent_with_non_stock_profiles_to_a_daemon_that_reads_it() {
         let at = protocol::CUSTOM_API_FAMILY_MIN_VERSION;
         assert_eq!(api_family_for_daemon(at, Some("custom"), Some("openai")).as_deref(), Some("openai"));
-        assert_eq!(api_family_for_daemon(at + 1, Some("custom"), Some(" anthropic ")).as_deref(), Some("anthropic"));
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), Some(" anthropic ")).as_deref(), Some("anthropic"));
+        assert_eq!(api_family_for_daemon(at, Some("my-bot"), Some("openai")).as_deref(), Some("openai"));
         // A v47 daemon would drop it; it reads profile_id and nothing more.
         assert_eq!(api_family_for_daemon(at - 1, Some("custom"), Some("openai")), None);
-        // Every other profile is a binary the daemon knows the API of.
+        // Stock built-ins are binaries the daemon knows the API of.
         assert_eq!(api_family_for_daemon(at, Some("claude-code"), Some("openai")), None);
         assert_eq!(api_family_for_daemon(at, Some("codex"), Some("anthropic")), None);
         // A shell names no profile, and so no family.
         assert_eq!(api_family_for_daemon(at, None, Some("openai")), None);
         // None, the default.
-        assert_eq!(api_family_for_daemon(at, Some("custom"), Some("")), None);
-        assert_eq!(api_family_for_daemon(at, Some("custom"), None), None);
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), Some("")), None);
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), None), None);
     }
 
     /// The fallback shell belongs to no workspace and runs no agent, so
@@ -5513,6 +5518,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 require_review_asked: false,
                 headroom_asked: false,
                 custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
@@ -5784,14 +5790,14 @@ pub(crate) fn profile_for_daemon(daemon_version: u32, profile_id: Option<&str>) 
     profile_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string)
 }
 
-/// The API family to name in a `CreateSession`: the custom agent's, on
-/// a launch of the custom profile, for a daemon that reads it -- and
-/// none otherwise.
+/// The API family to name in a `CreateSession`: a non-stock profile's,
+/// when the setting names one, for a daemon that reads it -- and none
+/// otherwise.
 ///
-/// Only the custom profile, because every other one is a binary the
-/// daemon already knows the API of, and a family sent with it would be
-/// a second answer to a question it has settled. None when the setting
-/// names none, which is the default and means no recipe. And none for a
+/// Not for stock built-ins: every one of those is a binary the daemon
+/// already knows the API of, and a family sent with it would be a second
+/// answer to a question it has settled. None when the setting names
+/// none, which is the default and means no recipe. And none for a
 /// daemon older than the widening, for the reason `profile_for_daemon`
 /// gives: it would parse the request and drop the field.
 pub(crate) fn api_family_for_daemon(
@@ -5802,7 +5808,8 @@ pub(crate) fn api_family_for_daemon(
     if daemon_version < protocol::CUSTOM_API_FAMILY_MIN_VERSION {
         return None;
     }
-    if profile_id.map(str::trim) != Some("custom") {
+    let id = profile_id.map(str::trim).filter(|s| !s.is_empty())?;
+    if crate::config::is_stock_profile_id(id) {
         return None;
     }
     api_family.map(str::trim).filter(|family| !family.is_empty()).map(str::to_string)
@@ -5973,7 +5980,10 @@ pub async fn create_session(
     compat: State<'_, DaemonCompatState>,
     agent_defaults: State<'_, AgentDefaults>,
 ) -> Result<String, String> {
-    let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();
+    let api_family = {
+        let defaults = agent_defaults.0.lock().unwrap();
+        crate::config::api_family_for_profile(&defaults, &[], profile_id.as_deref())
+    };
     let without_headroom = without_headroom.unwrap_or(false);
     if let crate::remote::Route::Remote(link) =
         crate::remote::route_for_root(&app_handle, workspace_root.as_deref())?
@@ -5984,7 +5994,7 @@ pub async fn create_session(
             workspace_root.as_deref(),
             command.as_deref(),
             profile_id.as_deref(),
-            Some(&api_family),
+            api_family.as_deref(),
             without_headroom,
             &link.home,
         )
@@ -6003,7 +6013,7 @@ pub async fn create_session(
         workspace_root.as_deref(),
         command.as_deref(),
         profile_id.as_deref(),
-        Some(&api_family),
+        api_family.as_deref(),
         without_headroom,
         &local_home(),
     )
@@ -7488,6 +7498,7 @@ mod main_session_tests {
             require_review_asked: false,
             headroom_asked: false,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
@@ -8232,6 +8243,7 @@ mod attach_target_tests {
             require_review_asked: false,
             headroom_asked: false,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),

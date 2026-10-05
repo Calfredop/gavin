@@ -58,10 +58,9 @@
   }
 
   function optionLabel(profile: AgentProfileInfo): string {
-    if (!foundIds || !sweptIds || !sweptIds.has(profile.id)) return profile.label;
-    return foundIds.has(profile.id)
-      ? `${profile.label} (found)`
-      : `${profile.label} (not found)`;
+    const base = profile.local ? `${profile.label} (local)` : profile.label;
+    if (!foundIds || !sweptIds || !sweptIds.has(profile.id)) return base;
+    return foundIds.has(profile.id) ? `${base} (found)` : `${base} (not found)`;
   }
 
   function chainHint(ids: string[]): string {

@@ -69,8 +69,9 @@ const CODEX_BASE_URL_KEY: &str = "openai_base_url";
 pub const OPENCODE_PLUGIN: [&str; 5] =
     ["headroom", "providers", "opencode", "_dist", "entry.opencode.js"];
 
-/// The profile id of the agent the human describes themselves.
-const CUSTOM: &str = "custom";
+fn is_stock_profile_id(id: &str) -> bool {
+    matches!(id, "claude-code" | "codex" | "gemini" | "cursor" | "opencode")
+}
 
 /// What is about to be launched, as far as the daemon can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,9 +79,9 @@ pub enum Launch<'a> {
     /// The app named the agent profile doing the launching
     /// (`CreateSession`'s `profile_id`).
     Profile(&'a str),
-    /// The `custom` profile, whose settings name the API it speaks
+    /// A non-stock profile whose settings name the API it speaks
     /// (`CreateSession`'s `api_family`). A custom agent that names none
-    /// is `Profile("custom")`: gavin knows nothing of the binary, and
+    /// is `Profile(id)`: gavin knows nothing of the binary, and
     /// has no recipe for it.
     Custom(ApiFamily),
     /// A command line another agent asked for over MCP
@@ -91,17 +92,21 @@ pub enum Launch<'a> {
 }
 
 impl<'a> Launch<'a> {
-    /// What a `CreateSession` names. No profile is a shell; the family
-    /// counts only on the `custom` profile, because every other one is
-    /// a binary gavin already knows the API of.
+    /// What a `CreateSession` names. No profile is a shell. A known
+    /// `api_family` on a non-stock profile is a custom recipe; stock
+    /// built-ins keep their own routes. The retired id `"custom"` still
+    /// counts as non-stock during the migration window.
     pub fn requested(profile_id: Option<&'a str>, api_family: Option<&str>) -> Launch<'a> {
         match profile_id {
             None => Launch::Shell,
-            Some(CUSTOM) => match api_family.and_then(ApiFamily::from_id) {
-                Some(family) => Launch::Custom(family),
-                None => Launch::Profile(CUSTOM),
-            },
-            Some(id) => Launch::Profile(id),
+            Some(id) => {
+                if !is_stock_profile_id(id) {
+                    if let Some(family) = api_family.and_then(ApiFamily::from_id) {
+                        return Launch::Custom(family);
+                    }
+                }
+                Launch::Profile(id)
+            }
         }
     }
 
@@ -1685,9 +1690,10 @@ mod tests {
     }
 
     #[test]
-    fn an_api_family_counts_only_on_the_custom_profile() {
+    fn an_api_family_counts_on_any_non_stock_profile() {
         assert_eq!(Launch::requested(Some("custom"), Some("anthropic")), Launch::Custom(ApiFamily::Anthropic));
-        assert_eq!(Launch::requested(Some("custom"), Some(" openai ")), Launch::Custom(ApiFamily::OpenAi));
+        assert_eq!(Launch::requested(Some("custom-agent"), Some(" openai ")), Launch::Custom(ApiFamily::OpenAi));
+        assert_eq!(Launch::requested(Some("my-bot"), Some("anthropic")), Launch::Custom(ApiFamily::Anthropic));
         assert_eq!(Launch::requested(Some("claude-code"), Some("openai")), Launch::Profile("claude-code"));
         assert_eq!(Launch::requested(None, Some("anthropic")), Launch::Shell);
     }

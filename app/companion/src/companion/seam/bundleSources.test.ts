@@ -69,6 +69,7 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "setWorkspaceAutoCommit",
     "setWorkspaceRequireReview",
     "setWorkspaceComplexityTable",
+    "setWorkspaceCustomProfiles",
     "setWorkspacePause",
     "setWorkspaceFallback",
     "setWorkspaceFlag",
@@ -290,6 +291,34 @@ describe("the Files surface", () => {
       expect(files()).not.toMatch(new RegExp(`\\b${action}\\b`));
     }
   );
+});
+
+describe("the Agents settings hub", () => {
+  const app = () => codeOf(companionSource("companion/surfaces/PhoneAppSettings.svelte"));
+  const workspace = () => codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte"));
+
+  it("reuses the desk's tab shell and Customs editor on both screens", () => {
+    for (const text of [app(), workspace()]) {
+      expect(text).toContain('import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte"');
+      expect(text).toContain('import CustomsEditor from "$lib/agents/CustomsEditor.svelte"');
+      expect(text).toContain("<AgentsHubTabs");
+      expect(text).toContain("<CustomsEditor");
+      expect(text).toContain('title="Agents"');
+    }
+  });
+
+  it("app screen uses app tabs and writes customProfiles through setAgentDefaults", () => {
+    expect(app()).toContain("APP_AGENTS_TABS");
+    expect(app()).toContain("customProfiles: next");
+    expect(app()).not.toContain("WORKSPACE_AGENTS_TABS");
+    expect(app()).not.toContain("customCommand");
+  });
+
+  it("workspace screen uses workspace tabs and writes locals through setWorkspaceCustomProfiles", () => {
+    expect(workspace()).toContain("WORKSPACE_AGENTS_TABS");
+    expect(workspace()).toContain("setWorkspaceCustomProfiles");
+    expect(workspace()).toContain("local");
+  });
 });
 
 describe("the page", () => {

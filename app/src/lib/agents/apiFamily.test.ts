@@ -2,48 +2,80 @@ import { describe, it, expect } from "vitest";
 import { API_FAMILIES, apiFamilyOf, withApiFamily } from "./apiFamily";
 import { EMPTY_AGENT_DEFAULTS } from "$lib/cards/complexity";
 
-describe("the custom agent's API family", () => {
-  it("defaults to None", () => {
+describe("apiFamilyOf", () => {
+  it("reads none from empty defaults", () => {
     expect(apiFamilyOf(EMPTY_AGENT_DEFAULTS)).toBe("");
-    expect(API_FAMILIES[0]).toEqual({ value: "", label: "None" });
   });
 
-  it("offers the two families the daemon has a recipe for, and None", () => {
-    expect(API_FAMILIES.map((row) => row.value)).toEqual(["", "anthropic", "openai"]);
-    expect(API_FAMILIES.map((row) => row.label)).toEqual(["None", "Anthropic", "OpenAI-compatible"]);
+  it("reads the family from a named custom profile", () => {
+    const defaults = {
+      ...EMPTY_AGENT_DEFAULTS,
+      customProfiles: [
+        {
+          id: "custom-agent",
+          label: "Custom",
+          command: "my-agent",
+          modelFlag: "--llm",
+          apiFamily: "anthropic",
+        },
+      ],
+    };
+    expect(apiFamilyOf(defaults, "custom-agent")).toBe("anthropic");
+    expect(apiFamilyOf(defaults)).toBe("anthropic");
   });
 
-  it("reads what was stored", () => {
-    expect(apiFamilyOf({ customApiFamily: "anthropic" })).toBe("anthropic");
+  it("falls back to the legacy customApiFamily field", () => {
     expect(apiFamilyOf({ customApiFamily: "openai" })).toBe("openai");
     expect(apiFamilyOf({ customApiFamily: " openai " })).toBe("openai");
   });
 
-  // A newer build sharing config.json may have written a family this one
-  // does not know. The daemon reads it as none, so the picker must too.
-  it("reads a word it does not know as None", () => {
+  it("treats an unknown word as none", () => {
     expect(apiFamilyOf({ customApiFamily: "gemini" })).toBe("");
     expect(apiFamilyOf({ customApiFamily: "" })).toBe("");
   });
+});
 
-  it("persists a choice through the defaults it is saved with", () => {
-    const defaults = { ...EMPTY_AGENT_DEFAULTS, customCommand: "my-agent", customModelFlag: "--llm" };
-
-    const chosen = withApiFamily(defaults, "openai");
-
-    expect(chosen).toEqual({ ...defaults, customApiFamily: "openai" });
-    expect(apiFamilyOf(chosen)).toBe("openai");
-    // Nothing else of the custom agent moves.
-    expect(chosen.customCommand).toBe("my-agent");
-    expect(chosen.customModelFlag).toBe("--llm");
+describe("withApiFamily", () => {
+  it("writes the family onto the named custom profile", () => {
+    const defaults = {
+      ...EMPTY_AGENT_DEFAULTS,
+      customProfiles: [
+        { id: "custom-agent", label: "Custom", command: "my-agent", modelFlag: "--llm" },
+      ],
+    };
+    const chosen = withApiFamily(defaults, "openai", "custom-agent");
+    expect(chosen.customProfiles?.[0].apiFamily).toBe("openai");
+    expect(apiFamilyOf(chosen, "custom-agent")).toBe("openai");
+    expect("customApiFamily" in chosen).toBe(false);
   });
 
-  // None is no key, the way the host stores it and hands it back: the
-  // defaults round-trip through `setAgentDefaults` unchanged.
-  it("writes None as no key at all", () => {
-    const chosen = withApiFamily({ ...EMPTY_AGENT_DEFAULTS, customApiFamily: "anthropic" }, "");
+  it("clears the family from the profile when set to none", () => {
+    const defaults = {
+      ...EMPTY_AGENT_DEFAULTS,
+      customProfiles: [
+        {
+          id: "custom-agent",
+          label: "Custom",
+          command: "my-agent",
+          modelFlag: "",
+          apiFamily: "anthropic",
+        },
+      ],
+    };
+    const chosen = withApiFamily(defaults, "", "custom-agent");
+    expect(chosen.customProfiles?.[0].apiFamily).toBeUndefined();
+  });
 
-    expect("customApiFamily" in chosen).toBe(false);
-    expect(chosen).toEqual(EMPTY_AGENT_DEFAULTS);
+  it("still writes the legacy field when there are no custom profiles", () => {
+    const defaults = { ...EMPTY_AGENT_DEFAULTS, customCommand: "my-agent", customModelFlag: "--llm" };
+    const chosen = withApiFamily(defaults, "openai");
+    expect(chosen).toEqual({ ...defaults, customApiFamily: "openai" });
+    expect(apiFamilyOf(chosen)).toBe("openai");
+  });
+});
+
+describe("API_FAMILIES", () => {
+  it("lists none first", () => {
+    expect(API_FAMILIES[0].value).toBe("");
   });
 });

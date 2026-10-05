@@ -68,6 +68,7 @@ export const WORKSPACE_SETTINGS_KEYS = [
   "headroom",
   "headroomAsked",
   "customResumeArgs",
+  "customProfiles",
   "actionPromptOverrides",
   // Runs in flight are not layout: a Generate or a Develop started from
   // the phone has to be able to claim its slot as well.

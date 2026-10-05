@@ -1240,34 +1240,6 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             ],
         }),
     },
-    AgentProfile {
-        id: "custom",
-        model_flag: "",
-        models: &[],
-        model_catalog: None,
-        // The user's own binary: its flag comes from config.json /
-        // config.toml (`custom_effort_flag`, `[agent] effort_flag`).
-        effort_flag: "",
-        efforts: &[],
-        label: "Custom…",
-        instructions_file: "",
-        command: "",
-        prompt_args: None,
-        headless_args: "",
-        failure_patterns: &[],
-        failure_causes: &[],
-        session_id_args: "",
-        // No table row to verify a discovery command against -- `custom`
-        // is whatever binary the human names, and this row describes no
-        // particular one. Its resume flag is `custom_resume_args`
-        // (config.json, app-default + workspace-override) instead.
-        session_id_discovery: "",
-        resume_args: "",
-        usage_probe: None,
-        token_log: None,
-        agent_file: None,
-        mcp: None,
-    },
 ];
 
 pub fn profile_by_id(id: &str) -> &'static AgentProfile {
@@ -2488,6 +2460,32 @@ pub struct AgentProfileDto {
     pub usage_probe: Option<String>,
 }
 
+/// Build the DTO shape the frontend merges for a named custom profile.
+/// Empty failure patterns, no MCP unless the workspace configures
+/// `mcp_file`, `prompt_args` null like the retired hard-coded row.
+pub fn agent_profile_dto_from_custom(profile: &crate::config::CustomProfile) -> AgentProfileDto {
+    AgentProfileDto {
+        id: profile.id.clone(),
+        label: profile.label.clone(),
+        instructions_file: String::new(),
+        command: profile.command.clone(),
+        mcp_supported: false,
+        mcp_config_file: String::new(),
+        prompt_args: None,
+        headless_args: String::new(),
+        model_flag: profile.model_flag.clone(),
+        models: Vec::new(),
+        effort_flag: profile.effort_flag.clone(),
+        efforts: Vec::new(),
+        failure_patterns: Vec::new(),
+        failure_causes: Vec::new(),
+        session_id_args: String::new(),
+        session_id_discovery: String::new(),
+        resume_args: profile.resume_args.clone().unwrap_or_default(),
+        usage_probe: None,
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureCauseDto {
@@ -2656,7 +2654,6 @@ mod tests {
         assert!(by("cursor").models.is_empty());
         assert_eq!(by("cursor").command, "agent --approve-mcps --trust");
         assert_eq!(by("cursor").headless_args, "-p --force --approve-mcps --trust --");
-        assert_eq!(by("custom").model_flag, "");
     }
 
     /// The two halves have to be exclusive. A row that ships an alias
@@ -2671,6 +2668,27 @@ mod tests {
                 profile.id
             );
         }
+    }
+
+    #[test]
+    fn custom_profile_dto_carries_command_flags_and_null_prompt() {
+        let dto = agent_profile_dto_from_custom(&crate::config::CustomProfile {
+            id: "custom-agent".to_string(),
+            label: "Custom".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: "--llm".to_string(),
+            effort_flag: "--think=".to_string(),
+            api_family: "openai".to_string(),
+            resume_args: Some("--resume".to_string()),
+        });
+        assert_eq!(dto.id, "custom-agent");
+        assert_eq!(dto.command, "my-agent");
+        assert_eq!(dto.model_flag, "--llm");
+        assert_eq!(dto.effort_flag, "--think=");
+        assert_eq!(dto.resume_args, "--resume");
+        assert!(dto.prompt_args.is_none());
+        assert!(!dto.mcp_supported);
+        assert!(dto.failure_patterns.is_empty());
     }
 
     #[test]
@@ -2698,7 +2716,7 @@ mod tests {
         assert_eq!(by("claude-code").effort_flag, "--effort");
         assert_eq!(by("codex").effort_flag, "-c model_reasoning_effort=");
         assert_eq!(by("codex").efforts, &["minimal", "low", "medium", "high", "xhigh"]);
-        for id in ["gemini", "cursor", "opencode", "custom"] {
+        for id in ["gemini", "cursor", "opencode"] {
             assert_eq!(by(id).effort_flag, "", "{id} ships an unverified effort flag");
         }
     }
@@ -2723,17 +2741,12 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count, "profile ids must be unique");
-        assert_eq!(count, 6, "claude-code, codex, gemini, cursor, opencode, custom");
+        assert_eq!(count, 5, "claude-code, codex, gemini, cursor, opencode");
 
         for p in AGENT_PROFILES {
             assert!(!p.label.is_empty(), "{} has no label", p.id);
-            if p.id == "custom" {
-                assert!(p.instructions_file.is_empty(), "custom is user-supplied");
-                assert!(p.command.is_empty(), "custom is user-supplied");
-            } else {
-                assert!(!p.instructions_file.is_empty(), "{} has no instructions file", p.id);
-                assert!(!p.command.is_empty(), "{} has no command", p.id);
-            }
+            assert!(!p.instructions_file.is_empty(), "{} has no instructions file", p.id);
+            assert!(!p.command.is_empty(), "{} has no command", p.id);
         }
     }
 
@@ -2781,7 +2794,6 @@ mod tests {
                 ("opencode", "opencode.json", McpFormat::JsonLocal),
             ]
         );
-        assert!(profile_by_id("custom").mcp.is_none(), "custom is user-supplied");
         for p in AGENT_PROFILES {
             if let Some(m) = p.mcp.as_ref() {
                 assert_eq!(m.server_key, "gavin", "{} names the server oddly", p.id);
@@ -2930,7 +2942,6 @@ mod tests {
                 ("gemini", false),
                 ("cursor", false),
                 ("opencode", true),
-                ("custom", false),
             ]
         );
     }
@@ -3877,7 +3888,6 @@ mod tests {
                 ("gemini", Some("")),
                 ("cursor", Some("")),
                 ("opencode", Some("--prompt=")),
-                ("custom", None),
             ]
         );
         // A prefix is concatenated with the quoted prompt, never joined

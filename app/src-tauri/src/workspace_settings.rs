@@ -77,6 +77,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "headroom",
     "headroomAsked",
     "customResumeArgs",
+    "customProfiles",
     "actionPromptOverrides",
     // Runs in flight are not layout: a Generate or a Develop started from
     // the phone has to be able to claim its slot as well.
@@ -404,6 +405,15 @@ mod tests {
             require_review_asked: flavour == "a",
             headroom_asked: flavour == "a",
             custom_resume_args: Some(s("--resume")),
+            custom_profiles: vec![crate::config::CustomProfile {
+                id: format!("local:{}", s("bot")),
+                label: s("Bot"),
+                command: s("agent"),
+                model_flag: s("--m"),
+                effort_flag: String::new(),
+                api_family: String::new(),
+                resume_args: None,
+            }],
             agent_fallback: Some(vec![s("fallback")]),
             armed_agents: vec![s("armed")],
             declined_agents: vec![s("declined")],
@@ -723,7 +733,13 @@ mod tests {
               "reviewedCards": { "/Users/me/gavin/.gavin-root/plans/x.md": "digest" },
               "requireReview": false,
               "requireReviewAsked": true,
-              "customResumeArgs": "--resume",
+              "customProfiles": [{
+                "id": "local:custom-agent",
+                "label": "Custom",
+                "command": "claude",
+                "modelFlag": "--model",
+                "resumeArgs": "--resume"
+              }],
               "agentFallback": ["codex"],
               "armedAgents": ["codex"],
               "declinedAgents": ["opencode"],
@@ -760,11 +776,18 @@ mod tests {
           "removed_workspaces": [{ "id": "ws-old", "name": "Old", "rootPath": "/Users/me/old", "removedAt": 1690000000000 }],
           "agent_pause": null,
           "superpowers": { "/Users/me/gavin": "installed" },
-          "agent_defaults": { "customCommand": "claude", "customModelFlag": "--model", "complexity": {} },
+          "agent_defaults": {
+            "customProfiles": [{
+              "id": "custom-agent",
+              "label": "Custom",
+              "command": "claude",
+              "modelFlag": "--model"
+            }],
+            "complexity": {}
+          },
           "git_tracking": null,
           "require_review": null,
-          "launch": null,
-          "custom_resume_args": null
+          "launch": null
         }"##;
         let original: Value = serde_json::from_str(old_shape).unwrap();
         let dir = tempfile::tempdir().unwrap();

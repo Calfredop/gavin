@@ -368,20 +368,22 @@ with `canOpenExternally={false}`. What the desk hands to another application
 trash yet.
 
 **Settings** (`PhoneWorkspaceSettings.svelte`), per workspace: its name,
-colour and folder; terminal size; auto commit and review; its agent's model
-and effort; complexity, pause, fallback, unattended recovery, notifications.
-Every write is ticket 04's `set_workspace_settings`, through the desktop's own
-setters — or, for the agent, its folder's config.toml, as the desk writes it —
-and never the layout (ADR 0006). **The Workstation's settings**
-(`PhoneAppSettings.svelte`): theme, terminal, cards, git tracking, each agent's
-default model and effort, the custom agent, complexity, fallback, pause, the
-memory wall. Both are the desk's stores, writers and option lists
-(`phoneSettings.ts` has what the phone decides differently); what the desk's
-two panels have beyond them is the desk's alone — Updates, the daemon, remote
-access, Devices, Headroom and TypeSafe; the sidebar and hub-tab rows, which
-are its layout; switching an agent, which moves files and re-runs setup; and
-picking a folder. A write that fails is said on the screen (`saveSetting`),
-not in the desk's whole-window overlay.
+colour and folder; terminal size; auto commit and review; one **Agents** hub
+(This agent | Customs | Complexity | Fallback | Pause) with the desk's tab
+shell and Customs editor — workspace locals are `local:` profiles; then
+unattended recovery and notifications. Every write is ticket 04's
+`set_workspace_settings`, through the desktop's own setters — or, for the
+agent, its folder's config.toml, as the desk writes it — and never the layout
+(ADR 0006). **The Workstation's settings** (`PhoneAppSettings.svelte`): theme,
+terminal, cards, git tracking, the same **Agents** hub (Defaults | Customs |
+Complexity | Fallback | Pause) over app-wide `customProfiles`, and the memory
+wall. Both are the desk's stores, writers and option lists (`phoneSettings.ts`
+has what the phone decides differently); what the desk's two panels have beyond
+them is the desk's alone — Updates, the daemon, remote access, Devices,
+Headroom and TypeSafe; the sidebar and hub-tab rows, which are its layout;
+switching an agent, which moves files and re-runs setup; and picking a folder.
+A write that fails is said on the screen (`saveSetting`), not in the desk's
+whole-window overlay.
 
 Every app-wide setter on the host announces `app-settings-synced`, and every
 desk window and every Device re-reads its settings on another writer's change

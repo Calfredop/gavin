@@ -19,6 +19,7 @@
   } from "$lib/cards/complexity";
   import type { AgentProfileInfo } from "$lib/core/settings";
   import { effortPresets } from "$lib/agents/agentModel";
+  import { profileOptionLabel } from "$lib/agents/agentsHub";
 
   interface Props {
     profiles: AgentProfileInfo[];
@@ -38,7 +39,10 @@
   /// is") only in the workspace panel -- see `pickProfile`.
   const SAME_AGENT = "";
 
-  const profileLabel = (id: string) => profiles.find((p) => p.id === id)?.label ?? id;
+  const profileLabel = (id: string) => {
+    const profile = profiles.find((p) => p.id === id);
+    return profile ? profileOptionLabel(profile) : id;
+  };
 
   function entryFor(level: Complexity): ComplexityAgent {
     return table[level] ?? { profile: "", model: "", effort: "" };
@@ -113,7 +117,7 @@
         <select value={entry.profile} onchange={(e) => pickProfile(level, e.currentTarget.value)}>
           <option value={SAME_AGENT}>{inheritLabel(level)}</option>
           {#each profiles as profile (profile.id)}
-            <option value={profile.id}>{profile.label}</option>
+            <option value={profile.id}>{profileOptionLabel(profile)}</option>
           {/each}
         </select>
         <input

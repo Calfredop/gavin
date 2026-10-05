@@ -146,11 +146,13 @@ describe("the settings panels", () => {
 });
 
 describe("the custom agent", () => {
-  it("offers both halves app-wide, since neither is any use alone", () => {
-    // A command with no flag is an agent gavin cannot vary the model of,
-    // and a flag with no command names nothing.
-    expect(source(APP_PANEL)).toContain("customCommand:");
-    expect(source(APP_PANEL)).toContain("customModelFlag:");
+  it("edits named customs through the shared Customs editor on both panels", () => {
+    // The old single customCommand/customModelFlag fields are gone; the
+    // Customs tab owns command + flags + API family per named profile.
+    expect(source(APP_PANEL)).toContain("CustomsEditor");
+    expect(source(WORKSPACE_PANEL)).toContain("CustomsEditor");
+    expect(source(APP_PANEL)).toContain("customProfiles:");
+    expect(source(WORKSPACE_PANEL)).toContain("setWorkspaceCustomProfiles");
   });
 
   it("gates the workspace's own flag on the daemon that has to store it", () => {

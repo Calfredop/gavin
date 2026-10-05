@@ -518,7 +518,7 @@ export const FEATURE_MIN_VERSION = {
   // custom profile, and withholds it from an older daemon besides
   // (`api_family_for_daemon` in session.rs). So its consumer is the one
   // surface that produces the value: the API family picker in Settings
-  // → Custom agent, disabled with this reason rather than offering a
+  // → Agents → Customs, disabled with this reason rather than offering a
   // choice the running daemon would drop.
   customApiFamily: 48,
   // Savings (v49): `HeadroomSavings`, every card run's snapshot since a

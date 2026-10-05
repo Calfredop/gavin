@@ -8,6 +8,7 @@ import {
   renameDecision,
   accentVar,
   resolveAgentConfig,
+  mergeAgentProfiles,
   DEFAULT_PRD_PATH,
   validatePrdPath,
   resolvePrdPath,
@@ -17,13 +18,27 @@ import {
   fieldCommit,
   deleteBlockedReason,
   type AgentProfileInfo,
+  type CustomProfile,
 } from "$lib/core/settings";
 
-const PROFILES: AgentProfileInfo[] = [
+const BUILT_INS: AgentProfileInfo[] = [
   { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], effortFlag: "--effort", efforts: ["low", "medium", "high", "xhigh", "max"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
   { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], effortFlag: "-c model_reasoning_effort=", efforts: ["minimal", "low", "medium", "high", "xhigh"], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: null },
 ];
+
+const CUSTOM_AGENT: CustomProfile = {
+  id: "custom-agent",
+  label: "Custom",
+  command: "my-agent",
+  modelFlag: "--llm",
+  effortFlag: "--think=",
+  resumeArgs: "--resume",
+};
+
+const PROFILES = mergeAgentProfiles(BUILT_INS, [CUSTOM_AGENT]);
+const BARE_CUSTOM = mergeAgentProfiles(BUILT_INS, [
+  { id: "custom-agent", label: "Custom", command: "", modelFlag: "", resumeArgs: "" },
+]);
 
 describe("normalizeColor", () => {
   it("accepts a six-digit hex in either case", () => {
@@ -284,14 +299,14 @@ describe("resolveAgentConfig", () => {
     expect(r.launchCommand).toBe("claude --model opus");
   });
 
-  it("adds no flag for a profile that has none", () => {
+  it("adds the model for a named custom that carries a flag", () => {
     const r = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent" },
+      { profile: "custom-agent", file: null, command: null },
       PROFILES,
-      { custom: "whatever" }
+      { "custom-agent": "whatever" }
     );
     expect(r.model).toBe("whatever");
-    expect(r.launchCommand).toBe("my-agent");
+    expect(r.launchCommand).toBe("my-agent --llm whatever");
   });
 
   it("treats a blank workspace model as unset", () => {
@@ -318,82 +333,78 @@ describe("resolveAgentConfig", () => {
   // A row that is THERE and says null keeps its null: the fallback is
   // for an absent table, never between two rows.
   it("never lends one profile's prompt convention to another", () => {
-    const r = resolveAgentConfig({ profile: "custom", file: null, command: "my-agent" }, PROFILES, {});
+    const r = resolveAgentConfig({ profile: "custom-agent", file: null, command: null }, PROFILES, {});
     expect(r.promptArgs).toBeNull();
   });
 
-  it("gives the custom profile the app-wide command and flag when it names none", () => {
-    const custom = { command: "my-agent --yolo", modelFlag: "--llm" };
+  it("reads command, flags and resume from a merged named custom profile", () => {
     const r = resolveAgentConfig(
-      { profile: "custom", file: "RULES.md", command: null, model: "big" },
+      { profile: "custom-agent", file: "RULES.md", command: null, model: "big" },
       PROFILES,
-      {},
-      custom
+      {}
     );
-    expect(r.command).toBe("my-agent --yolo");
+    expect(r.command).toBe("my-agent");
     expect(r.modelFlag).toBe("--llm");
-    // The whole point of the flag: without it there is no way to put a
-    // model on a hand-written command, so the model would be dropped.
-    expect(r.launchCommand).toBe("my-agent --yolo --llm big");
+    expect(r.resumeArgs).toBe("--resume");
+    expect(r.launchCommand).toBe("my-agent --llm big");
   });
 
-  it("lets the workspace's own command and flag beat the app-wide custom ones", () => {
-    const custom = { command: "my-agent", modelFlag: "--llm" };
+  it("lets the workspace's own command and flag beat the profile entry", () => {
     const r = resolveAgentConfig(
-      { profile: "custom", file: null, command: "other-agent", modelFlag: "-m", model: "big" },
+      { profile: "custom-agent", file: null, command: "other-agent", modelFlag: "-m", model: "big" },
       PROFILES,
-      {},
-      custom
+      {}
     );
     expect(r.command).toBe("other-agent");
     expect(r.launchCommand).toBe("other-agent -m big");
   });
 
-  it("gives the custom profile the app-wide resume flag when the workspace names none", () => {
-    const r = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent" },
-      PROFILES,
-      {},
-      undefined,
-      { app: "--resume-app" }
+  it("lets a workspace-local custom win over an app-wide one with the same id", () => {
+    const merged = mergeAgentProfiles(
+      BUILT_INS,
+      [{ id: "shared", label: "App", command: "app-agent", modelFlag: "--a" }],
+      [{ id: "shared", label: "Local", command: "local-agent", modelFlag: "--b", resumeArgs: "--r" }]
     );
-    expect(r.resumeArgs).toBe("--resume-app");
+    const local = merged.find((p) => p.id === "shared")!;
+    expect(local.local).toBe(true);
+    expect(local.command).toBe("local-agent");
+    expect(local.resumeArgs).toBe("--r");
+    const order = mergeAgentProfiles(
+      BUILT_INS,
+      [{ id: "a", label: "A", command: "a", modelFlag: "" }],
+      [{ id: "local:b", label: "B", command: "b", modelFlag: "" }]
+    ).map((p) => p.id);
+    expect(order).toEqual(["claude-code", "codex", "a", "local:b"]);
   });
 
-  it("lets the workspace's own custom resume flag beat the app-wide one", () => {
-    const r = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent" },
-      PROFILES,
-      {},
-      undefined,
-      { workspace: "--resume-ws", app: "--resume-app" }
-    );
-    expect(r.resumeArgs).toBe("--resume-ws");
-  });
-
-  it("leaves a stock profile's verified resume argv alone regardless of the custom config", () => {
+  it("leaves a stock profile's verified resume argv alone", () => {
     const r = resolveAgentConfig(
       { profile: "claude-code", file: null, command: null },
       PROFILES,
-      {},
-      undefined,
-      { workspace: "--resume-ws", app: "--resume-app" }
+      {}
     );
     expect(r.resumeArgs).toBe("--resume");
   });
 
-  it("resolves custom with no resume flag configured anywhere to empty", () => {
-    const r = resolveAgentConfig({ profile: "custom", file: null, command: "my-agent" }, PROFILES, {});
+  it("resolves a named custom with no resumeArgs to empty", () => {
+    const r = resolveAgentConfig(
+      { profile: "custom-agent", file: null, command: null },
+      BARE_CUSTOM,
+      {}
+    );
     expect(r.resumeArgs).toBe("");
   });
 
-  it("never lends the app-wide custom command to a stock profile", () => {
-    // The stock rows carry a verified command of their own and have no
-    // business inheriting somebody's hand-written one.
-    const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}, {
-      command: "my-agent",
-      modelFlag: "--llm",
-    });
+  it("treats the retired custom id like any unknown profile", () => {
+    // Migration rewrites refs to custom-agent; a leftover "custom" must
+    // not resolve as a working custom via the old special case.
+    const r = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    expect(r.profileId).toBe("claude-code");
+    expect(r.command).toBe("claude");
+  });
+
+  it("never lends a custom profile's command to a stock profile", () => {
+    const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
     expect(r.command).toBe("codex");
     expect(r.modelFlag).toBe("--model");
   });
@@ -431,27 +442,27 @@ describe("resolveAgentConfig", () => {
     expect(r.launchCommand).toBe("codex -c model_reasoning_effort=xhigh");
   });
 
-  it("gives custom an effort only through a flag somebody named", () => {
+  it("gives a named custom an effort only through a flag on the profile or workspace", () => {
+    const noFlag = mergeAgentProfiles(BUILT_INS, [
+      { id: "custom-agent", label: "Custom", command: "my-agent", modelFlag: "" },
+    ]);
     const none = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent", effort: "high" },
-      PROFILES,
+      { profile: "custom-agent", file: null, command: null, effort: "high" },
+      noFlag,
       {}
     );
     expect(none.effortFlag).toBe("");
     expect(none.launchCommand).toBe("my-agent");
-    const app = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent", effort: "high" },
+    const withFlag = resolveAgentConfig(
+      { profile: "custom-agent", file: null, command: null, effort: "high" },
       PROFILES,
-      {},
-      { command: "", modelFlag: "", effortFlag: "--think" }
+      {}
     );
-    expect(app.launchCommand).toBe("my-agent --think high");
-    // The workspace's own flag wins over the app-wide one.
+    expect(withFlag.launchCommand).toBe("my-agent --think=high");
     const own = resolveAgentConfig(
-      { profile: "custom", file: null, command: "my-agent", effort: "high", effortFlag: "--reason=" },
+      { profile: "custom-agent", file: null, command: null, effort: "high", effortFlag: "--reason=" },
       PROFILES,
-      {},
-      { command: "", modelFlag: "", effortFlag: "--think" }
+      {}
     );
     expect(own.launchCommand).toBe("my-agent --reason=high");
   });
@@ -465,24 +476,24 @@ describe("resolveAgentConfig", () => {
     expect(r.launchCommand).toBe("claude --pick opus");
   });
 
-  it("keeps custom usable only through its explicit values", () => {
-    const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES, {});
+  it("keeps a named custom usable through its profile entry", () => {
+    const r = resolveAgentConfig(
+      { profile: "custom-agent", file: "RULES.md", command: null },
+      mergeAgentProfiles(BUILT_INS, [
+        { id: "custom-agent", label: "Custom", command: "my-agent", modelFlag: "" },
+      ]),
+      {}
+    );
     expect(r).toEqual({
-      profileId: "custom",
-      label: "Custom…",
+      profileId: "custom-agent",
+      label: "Custom",
       file: "RULES.md",
       command: "my-agent",
       mcpSupported: false,
       mcpConfigFile: "",
       headlessArgs: "",
-      // Null, not "": an unfilled custom profile takes no prompt, which
-      // is a different answer from "its prompt is the bare positional".
       promptArgs: null,
       model: "",
-      // Empty, because `custom` has no flag in the table and neither
-      // this workspace nor the app-wide default named one: gavin has no
-      // verified way to put a model on this command, so every model
-      // control for it stays hidden rather than guessing a flag.
       modelFlag: "",
       effort: "",
       effortFlag: "",
@@ -493,14 +504,16 @@ describe("resolveAgentConfig", () => {
       sessionIdDiscovery: "",
       resumeArgs: "",
     });
-    // Custom with nothing filled in still resolves to something safe.
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    // Empty custom command still falls through to claude-code's command
+    // for openability, but keeps the custom profile's empty argv.
+    const bare = resolveAgentConfig({ profile: "custom-agent", file: null, command: null }, BARE_CUSTOM, {});
     expect(bare.file).toBe("CLAUDE.md");
     expect(bare.command).toBe("claude");
+    expect(bare.profileId).toBe("custom-agent");
   });
 
   // The headless argv describes the BINARY, so it never falls back the
-  // way file/command do: a bare `custom` borrows claude's command but
+  // way file/command do: a bare custom borrows claude's command but
   // must NOT borrow claude's flags, and an unfilled one offers no
   // headless run at all.
   it("takes the headless argv from the effective profile only, with no fallback", () => {
@@ -508,7 +521,7 @@ describe("resolveAgentConfig", () => {
     expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}).headlessArgs).toBe(
       "exec --sandbox workspace-write --ask-for-approval never --"
     );
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    const bare = resolveAgentConfig({ profile: "custom-agent", file: null, command: null }, BARE_CUSTOM, {});
     expect(bare.command).toBe("claude");
     expect(bare.headlessArgs).toBe("");
   });
@@ -525,8 +538,7 @@ describe("resolveAgentConfig", () => {
     const codex = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
     expect(codex.failurePatterns).toEqual([]);
     expect(codex.resumeArgs).toBe("");
-    // A bare `custom` borrows claude's COMMAND and none of its argv.
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    const bare = resolveAgentConfig({ profile: "custom-agent", file: null, command: null }, BARE_CUSTOM, {});
     expect(bare.command).toBe("claude");
     expect(bare.failurePatterns).toEqual([]);
     expect(bare.sessionIdArgs).toBe("");
@@ -547,14 +559,14 @@ describe("resolveAgentConfig", () => {
   });
 
   it("gives custom MCP support the moment a config file is named for it", () => {
-    // The one profile with no verified layout of its own: its support
+    // A named custom has no verified layout of its own: its support
     // follows from config, the same resolution order as every other field.
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    const bare = resolveAgentConfig({ profile: "custom-agent", file: null, command: null }, PROFILES, {});
     expect(bare.mcpSupported).toBe(false);
     expect(bare.mcpConfigFile).toBe("");
 
     const named = resolveAgentConfig(
-      { profile: "custom", file: null, command: null, mcpFile: ".myagent/mcp.json" },
+      { profile: "custom-agent", file: null, command: null, mcpFile: ".myagent/mcp.json" },
       PROFILES,
       {}
     );
@@ -563,7 +575,7 @@ describe("resolveAgentConfig", () => {
 
     // A cleared box is not an override, here as everywhere else.
     const cleared = resolveAgentConfig(
-      { profile: "custom", file: null, command: null, mcpFile: "  " },
+      { profile: "custom-agent", file: null, command: null, mcpFile: "  " },
       PROFILES,
       {}
     );
@@ -572,7 +584,7 @@ describe("resolveAgentConfig", () => {
     // Nor is a path Rust would refuse: a hand-edited config.toml must not
     // make the panel offer a write that cannot happen.
     const escaping = resolveAgentConfig(
-      { profile: "custom", file: null, command: null, mcpFile: "../outside.json" },
+      { profile: "custom-agent", file: null, command: null, mcpFile: "../outside.json" },
       PROFILES,
       {}
     );

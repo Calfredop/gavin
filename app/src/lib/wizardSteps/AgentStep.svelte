@@ -201,6 +201,7 @@
 <h3>Which agent?</h3>
 <p class="hint">
   gavin writes the integration files for the agent you pick, and starts it with this command.
+  Named customs and per-agent defaults live in Settings → Agents — add more there any time.
 </p>
 
 {#if detected}

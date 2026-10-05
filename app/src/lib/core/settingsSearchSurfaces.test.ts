@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { AGENTS_SECTION } from "$lib/agents/agentsHub";
 import { source } from "$lib/sources";
 
 // A static pre-flight over the two settings panels (SettingsHubView.svelte,
@@ -45,7 +46,12 @@ function unwiredSections(text: string): number {
 function declaredSections(text: string): { id: string; block: string }[] {
   const body = text.match(/const SECTIONS: SettingsSection\[\] = \[([\s\S]*?)\n {2}\];/);
   expect(body, "SECTIONS array not found in the shape this test expects").not.toBeNull();
-  const entries = (body as RegExpMatchArray)[1].split(/\{\s*id:/).slice(1);
+  // Expand the shared Agents entry the same way settingsSearch.test.ts does.
+  const expanded = (body as RegExpMatchArray)[1].replace(
+    /\bAGENTS_SECTION\b,?/g,
+    `{ id: ${JSON.stringify(AGENTS_SECTION.id)}, keywords: ${JSON.stringify([...AGENTS_SECTION.keywords])} },`
+  );
+  const entries = expanded.split(/\{\s*id:/).slice(1);
   return entries.map((raw) => {
     const id = raw.match(/^\s*"([a-z-]+)"/)?.[1] ?? "";
     return { id, block: raw };

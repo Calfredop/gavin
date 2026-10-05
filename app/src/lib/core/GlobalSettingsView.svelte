@@ -24,7 +24,16 @@
   import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
   import { effortOptions, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
-  import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
+  import {
+    AGENTS_SECTION,
+    APP_AGENTS_TABS,
+    agentsTabForQuery,
+    isCustomProfileId,
+    type AppAgentsTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
+  import { mergeAgentProfiles } from "$lib/core/settings";
   import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
   import { DEFAULT_HEADROOM } from "$lib/agents/compression";
   import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
@@ -148,9 +157,12 @@
     { pref: "dark", label: "Dark", icon: Moon },
   ];
 
-  /// Only profiles gavin knows how to put a model on. A row for `cursor`
-  /// or `custom` would be a control that cannot reach the agent.
-  const profiles = $derived($agentProfilesStore.filter((p) => p.modelFlag));
+  /// Built-ins ∪ app-wide customs. Defaults is where model/effort rows
+  /// for those customs live; the Rust table alone has no named customs.
+  const allProfiles = $derived(
+    mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
+  );
+  const profiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
 
   /// The app-wide cycle, or the shipped default while there is none --
   /// an editor needs fields on screen, and `saveAgentPause` is what turns
@@ -232,31 +244,12 @@
     void setAgentModelDefault(profileId, value);
   }
 
-  /// The custom agent's text fields, saved on blur rather than per
-  /// keystroke: a half-typed command written through would be launched
-  /// by anything that started an agent mid-edit.
-  function commitCustomAgent(patch: {
-    customCommand?: string;
-    customModelFlag?: string;
-    customEffortFlag?: string;
-  }): void {
-    const next = { ...$agentDefaultsStore, ...patch };
-    if (
-      next.customCommand === $agentDefaultsStore.customCommand &&
-      next.customModelFlag === $agentDefaultsStore.customModelFlag &&
-      (next.customEffortFlag ?? "") === ($agentDefaultsStore.customEffortFlag ?? "")
-    ) {
-      return;
-    }
-    void setAgentDefaults(next);
-  }
-
   // --- default effort, per profile ----------------------------------------
   //
   // The model rows' machinery again, over `agentDefaults.agentEfforts`:
   // a picker of the CLI's levels, and a box for a level it does not list.
-  /// Only profiles gavin knows how to put an effort on.
-  const effortProfiles = $derived($agentProfilesStore.filter((p) => p.effortFlag));
+  /// Built-ins with an effort flag, plus every named custom in scope.
+  const effortProfiles = $derived(allProfiles.filter((p) => p.effortFlag || isCustomProfileId(p.id)));
   let effortCustomOpen = $state<Record<string, boolean>>({});
   let effortDrafts = $state<Record<string, string>>({});
 
@@ -285,15 +278,8 @@
     void setAgentDefaults(withAgentEffort($agentDefaultsStore, profileId, value));
   }
 
-  /// The custom agent's API family: what lets Headroom compress it. A
-  /// select commits on change -- there is no half-chosen family to guard
-  /// against. Dark on a daemon that would drop the family it is sent.
+  /// Named customs' API family: dark on a daemon that would drop it.
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
-
-  function commitApiFamily(family: ApiFamily): void {
-    if (family === apiFamilyOf($agentDefaultsStore)) return;
-    void setAgentDefaults(withApiFamily($agentDefaultsStore, family));
-  }
 
   /// One complexity row. `null` clears it, which is what "no agent for
   /// this level" means -- the card then runs the workspace's own.
@@ -695,10 +681,15 @@
   /// One entry per section below, in the same order -- see
   /// SettingsHubView's own SECTIONS for why whole sections, not rows.
   ///
-  /// Agent defaults and Custom agent sit above Complexity (the table
-  /// names which agent runs each level). Updates / Daemon / Remote
-  /// access are app-wide infrastructure that used to live on each
-  /// workspace's Settings tab by mistake.
+  /// Agents is one section with inner tabs (Defaults / Customs /
+  /// Complexity / Fallback / Pause). Headroom, Tools and TypeSafe stay
+  /// top-level. Updates / Daemon / Remote access are app-wide
+  /// infrastructure that used to live on each workspace's Settings tab
+  /// by mistake.
+  ///
+  /// Agents is `AGENTS_SECTION` from agentsHub.ts — one keyword table for
+  /// both panels. The settingsSearch surface greps splice it in when they
+  /// see the bare reference (string literals alone cannot stay in lockstep).
   const SECTIONS: SettingsSection[] = [
     {
       id: "appearance",
@@ -715,22 +706,7 @@
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
     },
-    {
-      id: "agent-defaults",
-      keywords: ["Agent defaults", "model", "effort", "reasoning", "thinking", "Claude Code", "Codex"],
-    },
-    {
-      id: "custom-agent",
-      keywords: [
-        "Custom agent",
-        "Command",
-        "Model flag",
-        "Effort flag",
-        "API family",
-        "Headroom",
-        "compression",
-      ],
-    },
+    AGENTS_SECTION,
     {
       id: "headroom",
       keywords: [
@@ -757,15 +733,6 @@
         "critical review",
         "prompt overrides",
       ],
-    },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model", "effort"] },
-    {
-      id: "fallback-agent",
-      keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
-    },
-    {
-      id: "agent-pause",
-      keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage", "quota", "rate limit"],
     },
     {
       id: "typesafe",
@@ -872,6 +839,16 @@
   function sectionLabel(section: SettingsSection): string {
     return section.keywords[0] ?? section.id;
   }
+
+  // --- Agents hub --------------------------------------------------------
+  let agentsTab = $state<AppAgentsTab>("defaults");
+  let agentsQuerySeen = $state("");
+  $effect(() => {
+    const q = settingsQuery;
+    if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
+    agentsQuerySeen = q;
+    agentsTab = agentsTabForQuery("app", q) as AppAgentsTab;
+  });
 </script>
 
 <div class="global-settings">
@@ -1056,150 +1033,192 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-defaults") || selectedSection !== "agent-defaults"}>
-      <h3>Agent defaults</h3>
-      {#if profiles.length === 0}
-        <p class="hint">Waiting for the agent profile table…</p>
-      {:else}
-        {#each profiles as profile (profile.id)}
-          <div class="row">
-            <span>{profile.label}</span>
-            <select
-              value={selectValue(profile)}
-              onchange={(e) => pick(profile.id, e.currentTarget.value)}
-            >
-              {#each modelOptions(profile, "") as opt (opt.value)}
-                <option value={opt.value}>{opt.label}</option>
-              {/each}
-            </select>
-            {#if isCustom(profile)}
-              <input
-                class="custom"
-                spellcheck="false"
-                placeholder="model name"
-                value={drafts[profile.id] ?? stored(profile.id)}
-                oninput={(e) => (drafts = { ...drafts, [profile.id]: e.currentTarget.value })}
-                onblur={() => commitCustom(profile.id)}
-                onkeydown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-              />
-            {/if}
-          </div>
-        {/each}
-        <p class="hint">
-          Used by any workspace that sets no model of its own. Only Claude Code publishes stable
-          aliases — for the rest, type the model name your CLI expects.
-        </p>
-      {/if}
-      {#if effortProfiles.length > 0}
-        <h3 class="sub">Effort</h3>
-        {#each effortProfiles as profile (profile.id)}
-          <div class="row">
-            <span>{profile.label}</span>
-            <select
-              value={effortIsCustom(profile) ? CUSTOM_MODEL : storedEffort(profile.id)}
-              onchange={(e) => pickEffort(profile.id, e.currentTarget.value)}
-            >
-              {#each effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "") as opt (opt.value)}
-                <option value={opt.value}>{opt.label}</option>
-              {/each}
-            </select>
-            {#if effortIsCustom(profile)}
-              <input
-                class="custom"
-                spellcheck="false"
-                placeholder="effort"
-                value={effortDrafts[profile.id] ?? storedEffort(profile.id)}
-                oninput={(e) => (effortDrafts = { ...effortDrafts, [profile.id]: e.currentTarget.value })}
-                onblur={() => commitCustomEffort(profile.id)}
-                onkeydown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-              />
-            {/if}
-          </div>
-        {/each}
-        <p class="hint">
-          How hard each agent thinks, for any workspace that sets no effort of its own — the
-          fallback chain launches each agent at this too. Higher levels are slower and spend more of
-          the subscription. The levels are the ones each CLI documents; Custom… takes one it adds
-          later. Gemini, Cursor and opencode take no effort flag gavin can pass.
-        </p>
-      {/if}
-    </section>
+    <section hidden={!settingsFilter.visible("agents") || selectedSection !== "agents"}>
+      <h3>Agents</h3>
+      <AgentsHubTabs tabs={APP_AGENTS_TABS} tab={agentsTab} onTab={(t) => (agentsTab = t as AppAgentsTab)} />
 
-    <section hidden={!settingsFilter.visible("custom-agent") || selectedSection !== "custom-agent"}>
-      <h3>Custom agent</h3>
-      <div class="row">
-        <span>Command</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="my-agent --flags"
-          value={$agentDefaultsStore.customCommand}
-          onchange={(e) => commitCustomAgent({ customCommand: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      </div>
-      <div class="row">
-        <span>Model flag</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="--model"
-          value={$agentDefaultsStore.customModelFlag}
-          onchange={(e) => commitCustomAgent({ customModelFlag: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      </div>
-      <div class="row">
-        <span>Effort flag</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="--effort"
-          value={$agentDefaultsStore.customEffortFlag ?? ""}
-          onchange={(e) => commitCustomAgent({ customEffortFlag: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      </div>
-      <div class="row">
-        <label for="custom-api-family">API family</label>
-        <select
-          id="custom-api-family"
-          value={apiFamilyOf($agentDefaultsStore)}
-          disabled={apiFamilyBlocked !== null}
-          onchange={(e) => commitApiFamily(e.currentTarget.value as ApiFamily)}
-        >
-          {#each API_FAMILIES as family (family.value)}
-            <option value={family.value}>{family.label}</option>
+      {#if agentsTab === "defaults"}
+        {#if profiles.length === 0}
+          <p class="hint">Waiting for the agent profile table…</p>
+        {:else}
+          {#each profiles as profile (profile.id)}
+            <div class="row">
+              <span>{profile.label}</span>
+              <select
+                value={selectValue(profile)}
+                onchange={(e) => pick(profile.id, e.currentTarget.value)}
+              >
+                {#each modelOptions(profile, "") as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
+              {#if isCustom(profile)}
+                <input
+                  class="custom"
+                  spellcheck="false"
+                  placeholder="model name"
+                  value={drafts[profile.id] ?? stored(profile.id)}
+                  oninput={(e) => (drafts = { ...drafts, [profile.id]: e.currentTarget.value })}
+                  onblur={() => commitCustom(profile.id)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                />
+              {/if}
+            </div>
           {/each}
-        </select>
-      </div>
-      {#if apiFamilyBlocked}
-        <p class="hint warn">{apiFamilyBlocked}</p>
+          <p class="hint">
+            Used by any workspace that sets no model of its own. Only Claude Code publishes stable
+            aliases — for the rest, type the model name your CLI expects. Named customs from the
+            Customs tab appear here too once they exist.
+          </p>
+        {/if}
+        {#if effortProfiles.length > 0}
+          <h3 class="sub">Effort</h3>
+          {#each effortProfiles as profile (profile.id)}
+            <div class="row">
+              <span>{profile.label}</span>
+              <select
+                value={effortIsCustom(profile) ? CUSTOM_MODEL : storedEffort(profile.id)}
+                onchange={(e) => pickEffort(profile.id, e.currentTarget.value)}
+              >
+                {#each effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "") as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
+              {#if effortIsCustom(profile)}
+                <input
+                  class="custom"
+                  spellcheck="false"
+                  placeholder="effort"
+                  value={effortDrafts[profile.id] ?? storedEffort(profile.id)}
+                  oninput={(e) => (effortDrafts = { ...effortDrafts, [profile.id]: e.currentTarget.value })}
+                  onblur={() => commitCustomEffort(profile.id)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                />
+              {/if}
+            </div>
+          {/each}
+          <p class="hint">
+            How hard each agent thinks, for any workspace that sets no effort of its own — the
+            fallback chain launches each agent at this too. Higher levels are slower and spend more of
+            the subscription. The levels are the ones each CLI documents; Custom… takes one it adds
+            later. Gemini, Cursor and opencode take no effort flag gavin can pass.
+          </p>
+        {/if}
+      {:else if agentsTab === "customs"}
+        <CustomsEditor
+          profiles={$agentDefaultsStore.customProfiles ?? []}
+          apiFamilyBlocked={apiFamilyBlocked}
+          onChange={(next) => void setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next })}
+        />
+      {:else if agentsTab === "complexity"}
+        <p class="hint">
+          A card can say how hard its work is, and each level can run a different agent — so a rename
+          need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
+          workspace runs; a model or an effort on its own keeps that agent and changes only that.
+          Every workspace can override any level on its own Settings tab.
+        </p>
+        <ComplexityTable
+          profiles={allProfiles}
+          table={$agentDefaultsStore.complexity}
+          onChange={setComplexity}
+        />
+      {:else if agentsTab === "fallback"}
+        <p class="hint">
+          When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
+          workspace can override the chain; workspaces that inherit it are asked to set each agent up
+          on focus. Does not rewrite the workspace's active agent.
+        </p>
+        <FallbackChainEditor
+          profiles={allProfiles}
+          value={$agentDefaultsStore.agentFallback ?? []}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              agentFallback: chain ?? [],
+            })}
+          onThresholdChange={(profileId, percent) =>
+            void setAgentDefaults({
+              ...$agentDefaultsStore,
+              fallbackThresholds: {
+                ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                [profileId]: sanitizeFallbackThreshold(percent),
+              },
+            })}
+        />
+      {:else if agentsTab === "pause"}
+        <p class="hint">
+          Sit out part of every window so a rail does not spend a subscription limit
+          while nobody is watching. Nothing already running is interrupted — only
+          new starts wait.
+        </p>
+        <div class="row">
+          <span>Scheduled</span>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={cycle.enabled}
+              onchange={(e) => edit({ enabled: e.currentTarget.checked })}
+            />
+            <span>Pause on a cycle</span>
+          </label>
+        </div>
+        <div class="row">
+          <span>Pause for</span>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            disabled={!cycle.enabled}
+            value={cycle.pauseMinutes}
+            onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">minutes every</span>
+          <input
+            class="num"
+            type="number"
+            min={MIN_PERIOD_MINUTES}
+            disabled={!cycle.enabled}
+            value={cycle.periodMinutes}
+            onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">minutes</span>
+        </div>
+        <div class="row">
+          <span>At the limit</span>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={cycle.limitEnabled}
+              onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
+            />
+            <span>Hold when a window is</span>
+          </label>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            max="100"
+            disabled={!cycle.limitEnabled}
+            value={cycle.limitPercent}
+            onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">% used</span>
+        </div>
+        {#if cycleError}
+          <p class="hint error">{cycleError}</p>
+        {:else if !probed}
+          <p class="hint">
+            Holding at a limit needs an agent whose limits gavin can read — today
+            Claude Code and Codex. No workspace here runs one, so only the schedule
+            applies.
+          </p>
+        {/if}
       {/if}
-      <p class="hint">
-        The agent behind the <strong>Custom…</strong> profile — your own CLI, launched as written.
-        Any workspace on that profile that names no command of its own uses this one. The model flag
-        is how gavin puts a model on it: without one it has no way to, so every model control for a
-        custom agent stays dark rather than guessing a flag. The effort flag does the same for how
-        hard it thinks; end it with <code>=</code> when the level goes straight after it
-        (<code>--think=high</code>). A workspace can override all three on its own Settings tab.
-      </p>
-      <p class="hint">
-        The API family is the API your agent talks to, and it is how a workspace with compression
-        on can send it through Headroom: Anthropic points <code>ANTHROPIC_BASE_URL</code> at
-        Headroom, OpenAI-compatible points <code>OPENAI_BASE_URL</code>. None leaves the agent
-        uncompressed.
-      </p>
     </section>
 
     <section hidden={!settingsFilter.visible("headroom") || selectedSection !== "headroom"}>
@@ -1237,7 +1256,7 @@
       <p class="hint">
         Every workspace that sets nothing of its own follows this. It starts off, so installing
         Headroom never changes how a workspace already talks to its model; a workspace can switch it
-        either way on its own Settings tab, under Agent.
+        either way on its own Settings tab, under Headroom.
       </p>
       <p class="hint">{HEADROOM_RESIDUAL_NOTE}</p>
     </section>
@@ -1251,119 +1270,6 @@
       <div class="tools-explorer">
         <ToolsExplorerView scope="app" />
       </div>
-    </section>
-
-    <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
-      <h3>Complexity</h3>
-      <p class="hint">
-        A card can say how hard its work is, and each level can run a different agent — so a rename
-        need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
-        workspace runs; a model or an effort on its own keeps that agent and changes only that.
-        Every workspace can override any level on its own Settings tab.
-      </p>
-      <ComplexityTable
-        profiles={$agentProfilesStore}
-        table={$agentDefaultsStore.complexity}
-        onChange={setComplexity}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("fallback-agent") || selectedSection !== "fallback-agent"}>
-      <h3>Fallback agent</h3>
-      <p class="hint">
-        When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
-        workspace can override the chain; workspaces that inherit it are asked to set each agent up
-        on focus. Does not rewrite the workspace's active agent.
-      </p>
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={$agentDefaultsStore.agentFallback ?? []}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) =>
-          void setAgentDefaults({
-            ...$agentDefaultsStore,
-            agentFallback: chain ?? [],
-          })}
-        onThresholdChange={(profileId, percent) =>
-          void setAgentDefaults({
-            ...$agentDefaultsStore,
-            fallbackThresholds: {
-              ...($agentDefaultsStore.fallbackThresholds ?? {}),
-              [profileId]: sanitizeFallbackThreshold(percent),
-            },
-          })}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("agent-pause") || selectedSection !== "agent-pause"}>
-      <h3>Agent pause</h3>
-      <p class="hint">
-        Sit out part of every window so a rail does not spend a subscription limit
-        while nobody is watching. Nothing already running is interrupted — only
-        new starts wait.
-      </p>
-      <div class="row">
-        <span>Scheduled</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.enabled}
-            onchange={(e) => edit({ enabled: e.currentTarget.checked })}
-          />
-          <span>Pause on a cycle</span>
-        </label>
-      </div>
-      <div class="row">
-        <span>Pause for</span>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          disabled={!cycle.enabled}
-          value={cycle.pauseMinutes}
-          onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes every</span>
-        <input
-          class="num"
-          type="number"
-          min={MIN_PERIOD_MINUTES}
-          disabled={!cycle.enabled}
-          value={cycle.periodMinutes}
-          onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes</span>
-      </div>
-      <div class="row">
-        <span>At the limit</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.limitEnabled}
-            onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
-          />
-          <span>Hold when a window is</span>
-        </label>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          max="100"
-          disabled={!cycle.limitEnabled}
-          value={cycle.limitPercent}
-          onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">% used</span>
-      </div>
-      {#if cycleError}
-        <p class="hint error">{cycleError}</p>
-      {:else if !probed}
-        <p class="hint">
-          Holding at a limit needs an agent whose limits gavin can read — today
-          Claude Code and Codex. No workspace here runs one, so only the schedule
-          applies.
-        </p>
-      {/if}
     </section>
 
     <section hidden={!settingsFilter.visible("typesafe") || selectedSection !== "typesafe"}>

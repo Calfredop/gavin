@@ -36,6 +36,7 @@ import {
   setWorkspaceAutoCommit,
   setWorkspaceColor,
   setWorkspaceComplexityTable,
+  setWorkspaceCustomProfiles,
   setWorkspaceFallback,
   setWorkspaceFlag,
   setWorkspaceFontSize,
@@ -160,9 +161,24 @@ describe("changing an app-wide setting", () => {
     ],
     [
       "the agent defaults",
-      () => setAgentDefaults({ ...EMPTY_AGENT_DEFAULTS, customCommand: "my-agent", agentEfforts: { codex: "high" } }),
+      () =>
+        setAgentDefaults({
+          ...EMPTY_AGENT_DEFAULTS,
+          customProfiles: [
+            { id: "my-agent", label: "My agent", command: "my-agent", modelFlag: "--model" },
+          ],
+          agentEfforts: { codex: "high" },
+        }),
       "set_agent_defaults",
-      { agentDefaults: { ...EMPTY_AGENT_DEFAULTS, customCommand: "my-agent", agentEfforts: { codex: "high" } } },
+      {
+        agentDefaults: {
+          ...EMPTY_AGENT_DEFAULTS,
+          customProfiles: [
+            { id: "my-agent", label: "My agent", command: "my-agent", modelFlag: "--model" },
+          ],
+          agentEfforts: { codex: "high" },
+        },
+      },
     ],
     ["the pause cycle", () => saveAgentPause(CYCLE), "set_agent_pause", { agentPause: CYCLE }],
     [
@@ -287,6 +303,16 @@ describe("changing a workspace's settings", () => {
       "its complexity table",
       () => setWorkspaceComplexityTable(DEMO.atlas, { complex: { profile: "codex", model: "", effort: "high" } }),
       { complexityAgents: { complex: { profile: "codex", model: "", effort: "high" } } },
+    ],
+    [
+      "its local custom profiles",
+      () =>
+        setWorkspaceCustomProfiles(DEMO.atlas, [
+          { id: "local:helper", label: "Helper", command: "helper", modelFlag: "--m" },
+        ]),
+      {
+        customProfiles: [{ id: "local:helper", label: "Helper", command: "helper", modelFlag: "--m" }],
+      },
     ],
   ];
 

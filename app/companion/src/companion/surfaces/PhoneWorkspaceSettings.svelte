@@ -19,6 +19,7 @@
     setWorkspaceAutoCommit,
     setWorkspaceColor,
     setWorkspaceComplexityTable,
+    setWorkspaceCustomProfiles,
     setWorkspaceFallback,
     setWorkspaceFlag,
     setWorkspaceFontSize,
@@ -28,6 +29,13 @@
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
+  import {
+    WORKSPACE_AGENTS_TABS,
+    profileOptionLabel,
+    type WorkspaceAgentsTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
   import { effortOptions, modelOptions } from "$lib/agents/agentModel";
   import { MIN_PERIOD_MINUTES, validateCycle, type PauseCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle } from "$lib/agents/agentPauseState";
@@ -42,7 +50,7 @@
   import ColourPicker from "$lib/core/ColourPicker.svelte";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { DEFAULT_ACCENT, fieldCommit, resolveAgentConfig } from "$lib/core/settings";
+  import { DEFAULT_ACCENT, fieldCommit, mergeAgentProfiles, resolveAgentConfig } from "$lib/core/settings";
   import type { Workspace } from "$lib/core/workspace";
   import { autoCommitFromSelect, autoCommitOptions, autoCommitToSelect, resolveAutoCommit } from "$lib/git/autoCommit";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
@@ -90,16 +98,19 @@
 
   // --- agent --------------------------------------------------------------
   const rootContext = $derived($gavinTrees[id]?.contexts.find((c) => c.kind === "root"));
+  const profiles = $derived(
+    mergeAgentProfiles(
+      $agentProfilesStore,
+      $agentDefaultsStore.customProfiles ?? [],
+      ws.customProfiles ?? []
+    )
+  );
   const resolved = $derived(
     resolveAgentConfig(
       $trustedAgentConfigs(id),
-      $agentProfilesStore,
+      profiles,
       $agentModelDefaultsStore,
-      {
-        command: $agentDefaultsStore.customCommand,
-        modelFlag: $agentDefaultsStore.customModelFlag,
-        effortFlag: $agentDefaultsStore.customEffortFlag,
-      },
+      {},
       {},
       $agentDefaultsStore.agentEfforts
     )
@@ -108,7 +119,7 @@
     workspaceAgentView({
       resolved,
       own: rootContext?.agent,
-      profiles: $agentProfilesStore,
+      profiles,
       modelDefaults: $agentModelDefaultsStore,
       effortDefaults: $agentDefaultsStore.agentEfforts,
     })
@@ -116,6 +127,9 @@
   const modelBlocked = $derived(featureBlockedReason($daemonCompat, "agentModel"));
   const effortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
   const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
+  const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
+
+  let agentsTab = $state<WorkspaceAgentsTab>("this-agent");
 
   // --- complexity ---------------------------------------------------------
   function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
@@ -222,137 +236,158 @@
     </PhoneSetting>
   </PhoneSettingsGroup>
 
-  <PhoneSettingsGroup title="Agent">
-    {#if !ws.rootPath}
-      <p class="note">This workspace is bound to no folder, so it has no agent to configure.</p>
-    {:else if rootContext?.configWarning}
-      <p class="warn">This folder's config.toml can't be read. Fix it at the desk to change the agent here.</p>
-    {:else}
-      <PhoneSetting label="Profile" hint="Changing the agent sets it up again, which is done at the desk.">
-        <span class="value">{agent.profileLabel}</span>
-      </PhoneSetting>
-      {#if agent.modelFlag}
-        <PhoneSetting label="Model" control="ws-model" warn={modelBlocked}>
-          <PhoneModelPicker
-            id="ws-model"
-            options={modelOptions({ modelFlag: agent.modelFlag, models: agent.models }, agent.inheritedModel)}
-            own={agent.ownModel}
-            presets={agent.models}
-            placeholder="model name"
-            disabled={modelBlocked !== null}
-            onPick={(model) => void saveSetting(() => setAgentField(id, "model", model))}
-          />
-        </PhoneSetting>
-      {:else}
-        <p class="note">gavin has no model flag for {agent.profileLabel}, so it cannot put a model on it.</p>
-      {/if}
-      {#if agent.effortFlag}
-        <PhoneSetting label="Effort" control="ws-effort" warn={effortBlocked}>
-          <PhoneModelPicker
-            id="ws-effort"
-            options={effortOptions({ effortFlag: agent.effortFlag, efforts: agent.efforts }, agent.inheritedEffort)}
-            own={agent.ownEffort}
-            presets={agent.efforts}
-            placeholder="effort"
-            disabled={effortBlocked !== null}
-            onPick={(effort) => void saveSetting(() => setAgentField(id, "effort", effort))}
-          />
-        </PhoneSetting>
-      {/if}
-    {/if}
-  </PhoneSettingsGroup>
-
   <PhoneSettingsGroup
-    title="Complexity"
-    intro="Which agent runs a card of each difficulty, here only. A level left on its default follows the Workstation's table."
+    title="Agents"
+    intro="This workspace's agent, its local customs, complexity, fallback and pause — the same Agents hub as at the desk."
   >
-    <div class="desk-part">
-      <ComplexityTable
-        profiles={$agentProfilesStore}
-        table={ws.complexityAgents ?? {}}
-        inherited={$agentDefaultsStore.complexity}
-        onChange={setComplexity}
-      />
-    </div>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup title="Agent pause">
-    <PhoneToggle
-      label="Give this workspace its own pause settings"
-      checked={ws.agentPause != null}
-      hint={ws.agentPause == null ? inheritedPauseLine($agentPauseStore) : null}
-      onChange={(own) => void saveSetting(() => setWorkspacePause(id, own ? { ...editableCycle(null) } : null))}
+    <AgentsHubTabs
+      tabs={WORKSPACE_AGENTS_TABS}
+      tab={agentsTab}
+      onTab={(t) => (agentsTab = t as WorkspaceAgentsTab)}
     />
-    {#if ws.agentPause != null}
-      {@const own = ws.agentPause}
-      <PhoneToggle label="Pause on a cycle" checked={own.enabled} onChange={(on) => editPause(own, { enabled: on })} />
-      <PhoneSetting label="Pause for">
-        <input
-          type="number"
-          inputmode="numeric"
-          min="1"
-          aria-label="Minutes paused"
-          disabled={!own.enabled}
-          value={own.pauseMinutes}
-          onchange={(e) => editPause(own, { pauseMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes every</span>
-        <input
-          type="number"
-          inputmode="numeric"
-          min={MIN_PERIOD_MINUTES}
-          aria-label="Minutes in a cycle"
-          disabled={!own.enabled}
-          value={own.periodMinutes}
-          onchange={(e) => editPause(own, { periodMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes</span>
-      </PhoneSetting>
-      <PhoneToggle
-        label="Hold when a usage window is nearly spent"
-        checked={own.limitEnabled}
-        onChange={(on) => editPause(own, { limitEnabled: on })}
-      />
-      <PhoneSetting label="Hold at" warn={own.enabled ? validateCycle(own) : null}>
-        <input
-          type="number"
-          inputmode="numeric"
-          min="1"
-          max="100"
-          aria-label="Percent of the window used"
-          disabled={!own.limitEnabled}
-          value={own.limitPercent}
-          onchange={(e) => editPause(own, { limitPercent: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">% used</span>
-      </PhoneSetting>
-    {/if}
-  </PhoneSettingsGroup>
 
-  <PhoneSettingsGroup
-    title="Fallback agent"
-    intro="When this workspace's agent is over its usage threshold, new launches walk this chain instead of pausing."
-  >
-    <div class="desk-part">
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={ws.agentFallback ?? []}
-        inherited={$agentDefaultsStore.agentFallback ?? []}
-        inheriting={ws.agentFallback == null}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) => void saveSetting(() => setWorkspaceFallback(id, chain))}
-        onThresholdChange={(profileId, percent) =>
-          void saveSetting(() =>
-            setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })
-          )}
+    {#if agentsTab === "this-agent"}
+      {#if !ws.rootPath}
+        <p class="note">This workspace is bound to no folder, so it has no agent to configure.</p>
+      {:else if rootContext?.configWarning}
+        <p class="warn">This folder's config.toml can't be read. Fix it at the desk to change the agent here.</p>
+      {:else}
+        <PhoneSetting label="Profile" hint="Changing the agent sets it up again, which is done at the desk.">
+          <span class="value"
+            >{profileOptionLabel({
+              label: agent.profileLabel,
+              local: profiles.find((p) => p.id === resolved.profileId)?.local,
+            })}</span
+          >
+        </PhoneSetting>
+        {#if agent.modelFlag}
+          <PhoneSetting label="Model" control="ws-model" warn={modelBlocked}>
+            <PhoneModelPicker
+              id="ws-model"
+              options={modelOptions({ modelFlag: agent.modelFlag, models: agent.models }, agent.inheritedModel)}
+              own={agent.ownModel}
+              presets={agent.models}
+              placeholder="model name"
+              disabled={modelBlocked !== null}
+              onPick={(model) => void saveSetting(() => setAgentField(id, "model", model))}
+            />
+          </PhoneSetting>
+        {:else}
+          <p class="note">gavin has no model flag for {agent.profileLabel}, so it cannot put a model on it.</p>
+        {/if}
+        {#if agent.effortFlag}
+          <PhoneSetting label="Effort" control="ws-effort" warn={effortBlocked}>
+            <PhoneModelPicker
+              id="ws-effort"
+              options={effortOptions({ effortFlag: agent.effortFlag, efforts: agent.efforts }, agent.inheritedEffort)}
+              own={agent.ownEffort}
+              presets={agent.efforts}
+              placeholder="effort"
+              disabled={effortBlocked !== null}
+              onPick={(effort) => void saveSetting(() => setAgentField(id, "effort", effort))}
+            />
+          </PhoneSetting>
+        {/if}
+      {/if}
+    {:else if agentsTab === "customs"}
+      <div class="desk-part">
+        <CustomsEditor
+          local
+          profiles={ws.customProfiles ?? []}
+          apiFamilyBlocked={apiFamilyBlocked}
+          onChange={(next) => void saveSetting(() => setWorkspaceCustomProfiles(id, next))}
+        />
+      </div>
+    {:else if agentsTab === "complexity"}
+      <p class="note">
+        Which agent runs a card of each difficulty, here only. A level left on its default follows the
+        Workstation's table.
+      </p>
+      <div class="desk-part">
+        <ComplexityTable
+          profiles={profiles}
+          table={ws.complexityAgents ?? {}}
+          inherited={$agentDefaultsStore.complexity}
+          onChange={setComplexity}
+        />
+      </div>
+    {:else if agentsTab === "fallback"}
+      <p class="note">
+        When this workspace's agent is over its usage threshold, new launches walk this chain instead of
+        pausing.
+      </p>
+      <div class="desk-part">
+        <FallbackChainEditor
+          profiles={profiles}
+          value={ws.agentFallback ?? []}
+          inherited={$agentDefaultsStore.agentFallback ?? []}
+          inheriting={ws.agentFallback == null}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) => void saveSetting(() => setWorkspaceFallback(id, chain))}
+          onThresholdChange={(profileId, percent) =>
+            void saveSetting(() =>
+              setAgentDefaults({
+                ...$agentDefaultsStore,
+                fallbackThresholds: {
+                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                  [profileId]: sanitizeFallbackThreshold(percent),
+                },
+              })
+            )}
+        />
+      </div>
+    {:else if agentsTab === "pause"}
+      <PhoneToggle
+        label="Give this workspace its own pause settings"
+        checked={ws.agentPause != null}
+        hint={ws.agentPause == null ? inheritedPauseLine($agentPauseStore) : null}
+        onChange={(own) => void saveSetting(() => setWorkspacePause(id, own ? { ...editableCycle(null) } : null))}
       />
-    </div>
+      {#if ws.agentPause != null}
+        {@const own = ws.agentPause}
+        <PhoneToggle label="Pause on a cycle" checked={own.enabled} onChange={(on) => editPause(own, { enabled: on })} />
+        <PhoneSetting label="Pause for">
+          <input
+            type="number"
+            inputmode="numeric"
+            min="1"
+            aria-label="Minutes paused"
+            disabled={!own.enabled}
+            value={own.pauseMinutes}
+            onchange={(e) => editPause(own, { pauseMinutes: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">minutes every</span>
+          <input
+            type="number"
+            inputmode="numeric"
+            min={MIN_PERIOD_MINUTES}
+            aria-label="Minutes in a cycle"
+            disabled={!own.enabled}
+            value={own.periodMinutes}
+            onchange={(e) => editPause(own, { periodMinutes: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">minutes</span>
+        </PhoneSetting>
+        <PhoneToggle
+          label="Hold when a usage window is nearly spent"
+          checked={own.limitEnabled}
+          onChange={(on) => editPause(own, { limitEnabled: on })}
+        />
+        <PhoneSetting label="Hold at" warn={own.enabled ? validateCycle(own) : null}>
+          <input
+            type="number"
+            inputmode="numeric"
+            min="1"
+            max="100"
+            aria-label="Percent of the window used"
+            disabled={!own.limitEnabled}
+            value={own.limitPercent}
+            onchange={(e) => editPause(own, { limitPercent: Number(e.currentTarget.value) })}
+          />
+          <span class="unit">% used</span>
+        </PhoneSetting>
+      {/if}
+    {/if}
   </PhoneSettingsGroup>
 
   <PhoneSettingsGroup title="Unattended recovery">

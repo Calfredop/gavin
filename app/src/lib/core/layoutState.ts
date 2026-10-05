@@ -42,6 +42,7 @@ import { retargetPath } from "$lib/files/fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,
+  mergeAgentProfiles,
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "$lib/core/settings";
@@ -69,6 +70,7 @@ import {
   EMPTY_AGENT_DEFAULTS,
   type AgentDefaults,
   type ComplexityTable,
+  type CustomProfile,
 } from "$lib/cards/complexity";
 import { cardAgentEntry, type CardAgentFields } from "$lib/cards/cardAgent";
 import {
@@ -2196,14 +2198,14 @@ function createDaemonSession(
     : backend.createSession(cwd, command, workspaceRoot, profileId);
 }
 
-/// The app-wide custom agent, in the shape `resolveAgentConfig` takes.
-/// One spelling so a launcher, a settings panel and a derived store
-/// cannot each unpack the struct slightly differently.
+/// Legacy shape for Settings UI that still edits a single custom agent.
+/// Prefer `defaults.customProfiles` once that UI lands.
 function customAgentDefault(defaults: AgentDefaults) {
+  const first = defaults.customProfiles?.[0];
   return {
-    command: defaults.customCommand,
-    modelFlag: defaults.customModelFlag,
-    effortFlag: defaults.customEffortFlag ?? "",
+    command: first?.command ?? defaults.customCommand ?? "",
+    modelFlag: first?.modelFlag ?? defaults.customModelFlag ?? "",
+    effortFlag: first?.effortFlag ?? defaults.customEffortFlag ?? "",
   };
 }
 
@@ -2378,15 +2380,26 @@ export async function recordMcpForeignChoice(workspaceId: string, choice: McpFor
 }
 
 
+/// Profiles a workspace may resolve against: built-ins ∪ app customs ∪
+/// that workspace's locals. Locals win on id collision.
+function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return mergeAgentProfiles(
+    get(agentProfilesStore),
+    get(agentDefaultsStore).customProfiles ?? [],
+    ws?.customProfiles ?? []
+  );
+}
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
-/// block on the root context plus the profile table.
+/// block on the root context plus the (merged) profile table.
 export function resolvedAgentFor(workspaceId: string) {
   return resolveAgentConfig(
     trustedAgentConfigFor(workspaceId),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
+    undefined,
+    undefined,
     get(agentDefaultsStore).agentEfforts
   );
 }
@@ -2427,10 +2440,10 @@ export function agentForCard(
   if (!entry) return resolvedAgentFor(workspaceId);
   return resolveAgentConfig(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
+    undefined,
+    undefined,
     get(agentDefaultsStore).agentEfforts
   );
 }
@@ -2445,10 +2458,10 @@ export function agentForProfile(workspaceId: string, profileId: string) {
       model: "",
       effort: "",
     }),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
+    undefined,
+    undefined,
     get(agentDefaultsStore).agentEfforts
   );
 }
@@ -2475,10 +2488,10 @@ export function workspaceAgentConfig(workspaceId: string) {
 export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
   return resolveAgentConfig(
     candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
+    undefined,
+    undefined,
     get(agentDefaultsStore).agentEfforts
   );
 }
@@ -2497,20 +2510,19 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
-  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
-    (workspaceId: string) =>
-      resolveAgentConfig(
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $layout, $profiles, $models, $defaults]) =>
+    (workspaceId: string) => {
+      const ws = $layout.workspaces.find((w) => w.id === workspaceId);
+      return resolveAgentConfig(
         $configs(workspaceId),
-        $profiles,
+        mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []),
         $models,
-        customAgentDefault($defaults),
-        {
-          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
-          app: $customResumeArgs ?? undefined,
-        },
+        undefined,
+        undefined,
         $defaults.agentEfforts
-      )
+      );
+    }
 );
 
 /// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
@@ -2524,24 +2536,18 @@ export const resolvedAgents = derived(
 /// model flag for a card the human pointed at codex, and would go on
 /// showing it for the life of the modal.
 export const cardAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
-  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $layout, $profiles, $models, $defaults]) =>
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
       const base = $configs(workspaceId);
-      const entry = cardAgentEntry(
-        card,
-        $defaults.complexity,
-        $layout.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
-      );
+      const ws = $layout.workspaces.find((w) => w.id === workspaceId);
+      const entry = cardAgentEntry(card, $defaults.complexity, ws?.complexityAgents ?? {});
       return resolveAgentConfig(
         agentConfigWithAttribution(base, entry),
-        $profiles,
+        mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []),
         $models,
-        customAgentDefault($defaults),
-        {
-          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
-          app: $customResumeArgs ?? undefined,
-        },
+        undefined,
+        undefined,
         $defaults.agentEfforts
       );
     }
@@ -2934,6 +2940,17 @@ export async function setWorkspaceComplexityTable(
 ): Promise<void> {
   await saveWorkspaceSettings(workspaceId, {
     complexityAgents: Object.keys(table).length > 0 ? table : null,
+  });
+}
+
+/// This workspace's local custom profiles (`local:` ids). Empty clears
+/// the key so the workspace inherits app-wide customs only.
+export async function setWorkspaceCustomProfiles(
+  workspaceId: string,
+  profiles: CustomProfile[]
+): Promise<void> {
+  await saveWorkspaceSettings(workspaceId, {
+    customProfiles: profiles.length > 0 ? profiles : null,
   });
 }
 

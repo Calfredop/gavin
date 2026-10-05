@@ -68,6 +68,14 @@ function everyKey(id: string, flavour: string): Workspace {
     headroom: flavour === "a",
     headroomAsked: flavour === "a",
     customResumeArgs: `--resume-${flavour}`,
+    customProfiles: [
+      {
+        id: `local:bot-${flavour}`,
+        label: `Bot ${flavour}`,
+        command: `agent-${flavour}`,
+        modelFlag: `--m-${flavour}`,
+      },
+    ],
     actionPromptOverrides: { "action:run-task": `prompt-${flavour}` },
   };
 }

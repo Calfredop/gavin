@@ -1,5 +1,5 @@
 import type { PauseCycle } from "$lib/agents/agentPause";
-import type { ComplexityTable } from "$lib/cards/complexity";
+import type { ComplexityTable, CustomProfile } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/panes/layout";
 import { allSessionIds, findLeafPath } from "$lib/panes/layout";
 
@@ -281,12 +281,13 @@ export interface Workspace {
   /// leaving compression on the app-wide default is indistinguishable on
   /// disk from nobody having decided yet.
   headroomAsked?: boolean;
-  /// This workspace's own resume flag for the `custom` agent profile
-  /// (v38), e.g. `--resume`. Absent means inherit the app-wide default
-  /// (`getCustomResumeArgs`), and failing that no resume at all for
-  /// `custom`. Machine-local like `terminalFontSize`: a resume flag is a
-  /// fact about the binary on THIS machine, not the repository.
+  /// This workspace's own resume flag for the retired hard-coded `custom`
+  /// profile. Cleared by migration onto `customProfiles[].resumeArgs`.
   customResumeArgs?: string;
+  /// Workspace-local named custom profiles (ids prefixed `local:`). Lives
+  /// on Workspace in config.json, not config.toml — same D35 reason as
+  /// the other machine-local agent settings.
+  customProfiles?: CustomProfile[];
   /// Overrides of shipped agent action prompts for this workspace, keyed
   /// by catalog id. Absent or empty inherits the app-wide map (and then
   /// the shipped default). Machine-local like `autoCommit`: which wording

@@ -23,10 +23,17 @@
     terminalFontSizeDefault,
   } from "$lib/core/layoutState";
   import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
+  import {
+    APP_AGENTS_TABS,
+    isCustomProfileId,
+    type AppAgentsTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
   import { effortOptions, modelOptions } from "$lib/agents/agentModel";
+  import { mergeAgentProfiles } from "$lib/core/settings";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, validateCycle, type PauseCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, saveAgentPause } from "$lib/agents/agentPauseState";
-  import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
@@ -65,11 +72,15 @@
     { pref: "dark", label: "Dark", icon: Moon },
   ];
 
-  /// Only the profiles gavin can put a model, or an effort, on: a row for
-  /// one it cannot reach would be a control that changes nothing.
-  const modelProfiles = $derived($agentProfilesStore.filter((p) => p.modelFlag));
-  const effortProfiles = $derived($agentProfilesStore.filter((p) => p.effortFlag));
+  /// Built-ins ∪ app-wide customs (the Rust table alone has no named customs).
+  const allProfiles = $derived(
+    mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
+  );
+  const modelProfiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
+  const effortProfiles = $derived(allProfiles.filter((p) => p.effortFlag || isCustomProfileId(p.id)));
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
+
+  let agentsTab = $state<AppAgentsTab>("defaults");
 
   /// The app-wide cycle, or the shipped default while there is none: the
   /// fields need values, and saving is what turns the default into one.
@@ -90,22 +101,6 @@
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveSetting(() => saveLaunchConfig({ ...launch, ...patch }));
-  }
-
-  /// The custom agent's text fields, written when the field is left: a
-  /// half-typed command written through would be launched by anything
-  /// that started an agent mid-edit.
-  function editCustomAgent(patch: { customCommand?: string; customModelFlag?: string; customEffortFlag?: string }): void {
-    const now = $agentDefaultsStore;
-    const next = { ...now, ...patch };
-    if (
-      next.customCommand === now.customCommand &&
-      next.customModelFlag === now.customModelFlag &&
-      (next.customEffortFlag ?? "") === (now.customEffortFlag ?? "")
-    ) {
-      return;
-    }
-    void saveSetting(() => setAgentDefaults(next));
   }
 
   function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
@@ -213,179 +208,131 @@
   </PhoneSettingsGroup>
 
   <PhoneSettingsGroup
-    title="Agent defaults"
-    intro="The model and effort each agent runs at in every workspace that sets none of its own."
+    title="Agents"
+    intro="Defaults, named customs, complexity, fallback and pause — the same Agents hub as at the desk."
   >
-    {#if modelProfiles.length === 0}
-      <p class="note">Waiting for the agent profile table…</p>
+    <AgentsHubTabs tabs={APP_AGENTS_TABS} tab={agentsTab} onTab={(t) => (agentsTab = t as AppAgentsTab)} />
+
+    {#if agentsTab === "defaults"}
+      {#if modelProfiles.length === 0}
+        <p class="note">Waiting for the agent profile table…</p>
+      {/if}
+      {#each modelProfiles as profile (profile.id)}
+        <PhoneSetting label="{profile.label} model" control="model-{profile.id}">
+          <PhoneModelPicker
+            id="model-{profile.id}"
+            options={modelOptions(profile, "")}
+            own={$agentModelDefaultsStore[profile.id] ?? ""}
+            presets={profile.models}
+            placeholder="model name"
+            onPick={(model) => void saveSetting(() => setAgentModelDefault(profile.id, model))}
+          />
+        </PhoneSetting>
+      {/each}
+      {#each effortProfiles as profile (profile.id)}
+        <PhoneSetting label="{profile.label} effort" control="effort-{profile.id}">
+          <PhoneModelPicker
+            id="effort-{profile.id}"
+            options={effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "")}
+            own={$agentDefaultsStore.agentEfforts?.[profile.id] ?? ""}
+            presets={profile.efforts ?? []}
+            placeholder="effort"
+            onPick={(effort) =>
+              void saveSetting(() => setAgentDefaults(withAgentEffort($agentDefaultsStore, profile.id, effort)))}
+          />
+        </PhoneSetting>
+      {/each}
+    {:else if agentsTab === "customs"}
+      <div class="desk-part">
+        <CustomsEditor
+          profiles={$agentDefaultsStore.customProfiles ?? []}
+          apiFamilyBlocked={apiFamilyBlocked}
+          onChange={(next) =>
+            void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next }))}
+        />
+      </div>
+    {:else if agentsTab === "complexity"}
+      <p class="note">
+        Which agent, model and effort runs a card of each difficulty. A level left alone runs the
+        workspace's own agent.
+      </p>
+      <div class="desk-part">
+        <ComplexityTable
+          profiles={allProfiles}
+          table={$agentDefaultsStore.complexity}
+          onChange={setComplexity}
+        />
+      </div>
+    {:else if agentsTab === "fallback"}
+      <p class="note">
+        When a launch's agent is over its usage threshold, walk this chain instead of pausing.
+      </p>
+      <div class="desk-part">
+        <FallbackChainEditor
+          profiles={allProfiles}
+          value={$agentDefaultsStore.agentFallback ?? []}
+          thresholds={$agentDefaultsStore.fallbackThresholds}
+          onChange={(chain) =>
+            void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, agentFallback: chain ?? [] }))}
+          onThresholdChange={(profileId, percent) =>
+            void saveSetting(() =>
+              setAgentDefaults({
+                ...$agentDefaultsStore,
+                fallbackThresholds: {
+                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                  [profileId]: sanitizeFallbackThreshold(percent),
+                },
+              })
+            )}
+        />
+      </div>
+    {:else if agentsTab === "pause"}
+      <p class="note">
+        Sit out part of every window so a rail does not spend a subscription's limit while nobody is
+        watching. Nothing already running is interrupted.
+      </p>
+      <PhoneToggle label="Pause on a cycle" checked={cycle.enabled} onChange={(on) => editCycle({ enabled: on })} />
+      <PhoneSetting label="Pause for">
+        <input
+          type="number"
+          inputmode="numeric"
+          min="1"
+          aria-label="Minutes paused"
+          disabled={!cycle.enabled}
+          value={cycle.pauseMinutes}
+          onchange={(e) => editCycle({ pauseMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes every</span>
+        <input
+          type="number"
+          inputmode="numeric"
+          min={MIN_PERIOD_MINUTES}
+          aria-label="Minutes in a cycle"
+          disabled={!cycle.enabled}
+          value={cycle.periodMinutes}
+          onchange={(e) => editCycle({ periodMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes</span>
+      </PhoneSetting>
+      <PhoneToggle
+        label="Hold when a usage window is nearly spent"
+        checked={cycle.limitEnabled}
+        onChange={(on) => editCycle({ limitEnabled: on })}
+      />
+      <PhoneSetting label="Hold at" warn={cycleError}>
+        <input
+          type="number"
+          inputmode="numeric"
+          min="1"
+          max="100"
+          aria-label="Percent of the window used"
+          disabled={!cycle.limitEnabled}
+          value={cycle.limitPercent}
+          onchange={(e) => editCycle({ limitPercent: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">% used</span>
+      </PhoneSetting>
     {/if}
-    {#each modelProfiles as profile (profile.id)}
-      <PhoneSetting label="{profile.label} model" control="model-{profile.id}">
-        <PhoneModelPicker
-          id="model-{profile.id}"
-          options={modelOptions(profile, "")}
-          own={$agentModelDefaultsStore[profile.id] ?? ""}
-          presets={profile.models}
-          placeholder="model name"
-          onPick={(model) => void saveSetting(() => setAgentModelDefault(profile.id, model))}
-        />
-      </PhoneSetting>
-    {/each}
-    {#each effortProfiles as profile (profile.id)}
-      <PhoneSetting label="{profile.label} effort" control="effort-{profile.id}">
-        <PhoneModelPicker
-          id="effort-{profile.id}"
-          options={effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "")}
-          own={$agentDefaultsStore.agentEfforts?.[profile.id] ?? ""}
-          presets={profile.efforts ?? []}
-          placeholder="effort"
-          onPick={(effort) =>
-            void saveSetting(() => setAgentDefaults(withAgentEffort($agentDefaultsStore, profile.id, effort)))}
-        />
-      </PhoneSetting>
-    {/each}
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Custom agent"
-    intro="The agent behind the Custom profile: your own CLI, launched as written."
-  >
-    <PhoneSetting label="Command" control="custom-command">
-      <input
-        id="custom-command"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="my-agent --flags"
-        value={$agentDefaultsStore.customCommand}
-        onchange={(e) => editCustomAgent({ customCommand: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting label="Model flag" control="custom-model-flag">
-      <input
-        id="custom-model-flag"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="--model"
-        value={$agentDefaultsStore.customModelFlag}
-        onchange={(e) => editCustomAgent({ customModelFlag: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting label="Effort flag" control="custom-effort-flag">
-      <input
-        id="custom-effort-flag"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="--effort"
-        value={$agentDefaultsStore.customEffortFlag ?? ""}
-        onchange={(e) => editCustomAgent({ customEffortFlag: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting
-      label="API family"
-      control="custom-api-family"
-      warn={apiFamilyBlocked}
-      hint="The API your agent talks to, which is how a workspace with compression on sends it through Headroom."
-    >
-      <select
-        id="custom-api-family"
-        value={apiFamilyOf($agentDefaultsStore)}
-        disabled={apiFamilyBlocked !== null}
-        onchange={(e) => {
-          const family = e.currentTarget.value as ApiFamily;
-          if (family !== apiFamilyOf($agentDefaultsStore)) {
-            void saveSetting(() => setAgentDefaults(withApiFamily($agentDefaultsStore, family)));
-          }
-        }}
-      >
-        {#each API_FAMILIES as family (family.value)}
-          <option value={family.value}>{family.label}</option>
-        {/each}
-      </select>
-    </PhoneSetting>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Complexity"
-    intro="Which agent, model and effort runs a card of each difficulty. A level left alone runs the workspace's own agent."
-  >
-    <div class="desk-part">
-      <ComplexityTable profiles={$agentProfilesStore} table={$agentDefaultsStore.complexity} onChange={setComplexity} />
-    </div>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Fallback agent"
-    intro="When a launch's agent is over its usage threshold, walk this chain instead of pausing."
-  >
-    <div class="desk-part">
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={$agentDefaultsStore.agentFallback ?? []}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) =>
-          void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, agentFallback: chain ?? [] }))}
-        onThresholdChange={(profileId, percent) =>
-          void saveSetting(() =>
-            setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })
-          )}
-      />
-    </div>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Agent pause"
-    intro="Sit out part of every window so a rail does not spend a subscription's limit while nobody is watching. Nothing already running is interrupted."
-  >
-    <PhoneToggle label="Pause on a cycle" checked={cycle.enabled} onChange={(on) => editCycle({ enabled: on })} />
-    <PhoneSetting label="Pause for">
-      <input
-        type="number"
-        inputmode="numeric"
-        min="1"
-        aria-label="Minutes paused"
-        disabled={!cycle.enabled}
-        value={cycle.pauseMinutes}
-        onchange={(e) => editCycle({ pauseMinutes: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">minutes every</span>
-      <input
-        type="number"
-        inputmode="numeric"
-        min={MIN_PERIOD_MINUTES}
-        aria-label="Minutes in a cycle"
-        disabled={!cycle.enabled}
-        value={cycle.periodMinutes}
-        onchange={(e) => editCycle({ periodMinutes: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">minutes</span>
-    </PhoneSetting>
-    <PhoneToggle
-      label="Hold when a usage window is nearly spent"
-      checked={cycle.limitEnabled}
-      onChange={(on) => editCycle({ limitEnabled: on })}
-    />
-    <PhoneSetting label="Hold at" warn={cycleError}>
-      <input
-        type="number"
-        inputmode="numeric"
-        min="1"
-        max="100"
-        aria-label="Percent of the window used"
-        disabled={!cycle.limitEnabled}
-        value={cycle.limitPercent}
-        onchange={(e) => editCycle({ limitPercent: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">% used</span>
-    </PhoneSetting>
   </PhoneSettingsGroup>
 
   <PhoneSettingsGroup
