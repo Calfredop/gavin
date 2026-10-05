@@ -6451,15 +6451,29 @@ pub async fn set_orchestration(
     rails: Vec<Rail>,
     conflict_notes: Vec<ConflictNote>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
+    let origin = crate::forwarding::origin(&window, &request);
     let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
     let resp = lanes_for(route, &state, &compat)
-        .request(Request::SetOrchestration { workspace_id, rails, conflict_notes })
+        .request(Request::SetOrchestration { workspace_id: workspace_id.clone(), rails, conflict_notes })
         .await
         .map_err(|e| e.to_string())?;
-    expect_ok(resp)
+    expect_ok(resp)?;
+    crate::forwarding::announce_orchestration_written(&app_handle, &origin, &workspace_id);
+    Ok(())
+}
+
+/// A run-state write taken, announced for the workspace the caller named.
+/// One that named none predates ssh workspaces and every Device, and the
+/// desk's windows told each other of it already.
+fn announce_run_written(app_handle: &AppHandle, origin: &str, workspace_id: Option<&str>) {
+    if let Some(id) = workspace_id {
+        crate::forwarding::announce_orchestration_written(app_handle, origin, id);
+    }
 }
 
 /// The rail-, step-, tool- and template-id writes carry no workspace on
@@ -6484,15 +6498,20 @@ pub async fn set_rail_run(
     current_stage_id: Option<String>,
     workspace_id: Option<String>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
+    let origin = crate::forwarding::origin(&window, &request);
     let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
     let resp = lanes_for(route, &state, &compat)
         .request(Request::SetRailRun { rail_id, state: state_value, current_stage_id })
         .await
         .map_err(|e| e.to_string())?;
-    expect_ok(resp)
+    expect_ok(resp)?;
+    announce_run_written(&app_handle, &origin, workspace_id.as_deref());
+    Ok(())
 }
 
 #[tauri::command]
@@ -6506,9 +6525,12 @@ pub async fn set_step_run(
     resume_attempts: Option<u32>,
     workspace_id: Option<String>,
     app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
+    let origin = crate::forwarding::origin(&window, &request);
     let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
     let resp = lanes_for(route, &state, &compat)
         .request(Request::SetStepRun {
@@ -6522,7 +6544,9 @@ pub async fn set_step_run(
         })
         .await
         .map_err(|e| e.to_string())?;
-    expect_ok(resp)
+    expect_ok(resp)?;
+    announce_run_written(&app_handle, &origin, workspace_id.as_deref());
+    Ok(())
 }
 
 // --- The tool library -------------------------------------------------------

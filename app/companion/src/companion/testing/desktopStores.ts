@@ -2,14 +2,19 @@
 // them. They are module-level on purpose (they belong to the app, not to
 // a component), which in a suite means one test's Workstation is still
 // in them when the next one connects.
+import { __resetForTesting as resetTurnVerdict } from "$lib/agents/turnVerdictDriver";
 import { kanbanState } from "$lib/board/kanbanState";
 import { __resetForTesting as resetGavinState } from "$lib/core/gavinState";
-import { layoutState } from "$lib/core/layoutState";
+import { resetDialogs } from "$lib/core/dialog";
+import { layoutState, requireReviewDefault } from "$lib/core/layoutState";
 import { __resetForTesting as resetOrchestration } from "$lib/orchestration/orchestrationState";
 
 export function resetDesktopStores(): void {
+  resetTurnVerdict();
   resetOrchestration();
   resetGavinState();
+  resetDialogs();
+  requireReviewDefault.set(null);
   kanbanState.set({});
   layoutState.set({
     status: "connecting",

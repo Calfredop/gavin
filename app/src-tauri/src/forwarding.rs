@@ -43,6 +43,28 @@ const DISPATCH_BUDGET: Duration = Duration::from_secs(60);
 /// previous daemon cannot register itself over the live one.
 static FORWARDING_EPOCH: AtomicU64 = AtomicU64::new(0);
 
+/// The header `dispatch` puts on every forwarded call, so a command can
+/// tell a Device's call from its own window's.
+const FORWARDED_HEADER: &str = "gavin-forwarded";
+
+/// The origin a Device's write is announced under. A forwarded call runs
+/// through a desk window's webview (`dispatch`), so the window a command
+/// is handed is that desk window -- and announcing the write under its
+/// label would make it ignore the write as its own echo, and never show
+/// what the phone did. No desk window has this label; the bundle's
+/// window shim reports it (`app/companion/src/companion/remote/window.ts`).
+pub const FORWARDED_ORIGIN: &str = "companion";
+
+/// Who made a write, for the `*-synced` events every window adopts from:
+/// the window's label, or `FORWARDED_ORIGIN` for a Device's call.
+pub fn origin<R: Runtime>(window: &tauri::Window<R>, request: &tauri::ipc::Request<'_>) -> String {
+    if request.headers().contains_key(FORWARDED_HEADER) {
+        FORWARDED_ORIGIN.to_string()
+    } else {
+        window.label().to_string()
+    }
+}
+
 /// Managed state: the live forwarding writer, the channel that offers
 /// events to its owning thread, and the attention snapshot a Device's
 /// GetAttention reads (ADR 0005).
@@ -138,6 +160,43 @@ pub fn offer<R: Runtime>(app: &AppHandle<R>, event: &str, payload: serde_json::V
     }
 }
 
+/// What the desk's windows tell each other after writing a workspace's
+/// orchestration (`orchestrationState.ts`), and the shape they tell it in.
+pub const ORCHESTRATION_WRITTEN: &str = "orchestration-written";
+
+#[derive(Clone, Serialize)]
+struct OrchestrationWritten<'a> {
+    origin: &'a str,
+    payload: &'a str,
+}
+
+/// A workspace's orchestration was written -- its plan, a rail's run or a
+/// step's -- by `origin`.
+///
+/// The daemon pushes a plan only when an agent writes it over MCP; a write
+/// through these commands is announced by the window that made it, to the
+/// other windows, from the webview. Neither reaches anybody else, so this
+/// fills the two gaps a Device leaves:
+///
+/// - A Device's write reaches the desk's windows, which re-read -- and the
+///   one that runs the workspace's rails ticks. A Device never runs a
+///   rail (ADR 0003): Start from a phone only arms one, and without this
+///   the desk would not learn it was armed until something unrelated
+///   ticked it.
+/// - Every write reaches the Devices, whoever made it, so a phone watching
+///   a rail sees the desk's scheduler move it.
+///
+/// A desk window's own write is not emitted to the webviews again: they
+/// have already told each other.
+pub fn announce_orchestration_written<R: Runtime>(app: &AppHandle<R>, origin: &str, workspace_id: &str) {
+    let written = OrchestrationWritten { origin, payload: workspace_id };
+    if origin == FORWARDED_ORIGIN {
+        let _ = emit(app, ORCHESTRATION_WRITTEN, written);
+    } else {
+        offer(app, ORCHESTRATION_WRITTEN, serde_json::to_value(written).unwrap_or(serde_json::Value::Null));
+    }
+}
+
 /// Dispatch `command` with JSON `args` through the same invoke handler
 /// the webview reaches. Public so tests can drive it without a live
 /// forwarding socket.
@@ -161,13 +220,15 @@ pub fn dispatch<R: Runtime>(
     .expect("static invoke URL");
 
     let (tx, rx) = mpsc::sync_channel(1);
+    let mut headers = tauri::http::HeaderMap::new();
+    headers.insert(FORWARDED_HEADER, tauri::http::HeaderValue::from_static("1"));
     let request = InvokeRequest {
         cmd: command.to_string(),
         callback: CallbackFn(0),
         error: CallbackFn(1),
         url,
         body: InvokeBody::Json(args),
-        headers: Default::default(),
+        headers,
         invoke_key: app.invoke_key().to_string(),
     };
     webview.as_ref().clone().on_message(
@@ -366,11 +427,16 @@ mod tests {
         hits.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    #[tauri::command]
+    fn ping_origin(window: tauri::Window<tauri::test::MockRuntime>, request: tauri::ipc::Request<'_>) -> String {
+        origin(&window, &request)
+    }
+
     fn mock_app_with(hits: Arc<AtomicUsize>) -> (tauri::App<tauri::test::MockRuntime>, tauri::WebviewWindow<tauri::test::MockRuntime>) {
         let app = mock_builder()
             .manage(hits)
             .manage(Forwarding::default())
-            .invoke_handler(tauri::generate_handler![ping_forward, ping_counter])
+            .invoke_handler(tauri::generate_handler![ping_forward, ping_counter, ping_origin])
             .build(mock_context(noop_assets()))
             .expect("mock app");
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -426,6 +492,96 @@ mod tests {
         let echoed = dispatch(&handle, "ping_forward", serde_json::json!({"value": "desk"}))
             .expect("ping_forward");
         assert_eq!(echoed, serde_json::json!("pong:desk"));
+    }
+
+    /// A Device's write is announced under an origin no desk window has.
+    /// Under the dispatching window's own label, that window would drop
+    /// the announcement as its own echo and never show what the phone did.
+    #[test]
+    fn a_forwarded_call_has_an_origin_no_desk_window_has() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (app, webview) = mock_app_with(hits);
+        let handle = app.handle().clone();
+
+        let from_the_desk = get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "ping_origin".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: invoke_url(),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("webview invoke")
+        .deserialize::<String>()
+        .unwrap();
+        assert_eq!(from_the_desk, "main");
+
+        let from_a_device = dispatch(&handle, "ping_origin", serde_json::json!({})).expect("forward dispatch");
+        assert_eq!(from_a_device, serde_json::json!(FORWARDED_ORIGIN));
+        assert_ne!(FORWARDED_ORIGIN, "main");
+    }
+
+    /// Stands in for `set_rail_run` and the other orchestration writes.
+    #[tauri::command]
+    fn write_orchestration(
+        workspace_id: String,
+        app_handle: tauri::AppHandle<tauri::test::MockRuntime>,
+        window: tauri::Window<tauri::test::MockRuntime>,
+        request: tauri::ipc::Request<'_>,
+    ) {
+        announce_orchestration_written(&app_handle, &origin(&window, &request), &workspace_id);
+    }
+
+    /// A Device's orchestration write reaches the desk's windows, whose
+    /// scheduler runs the rail it armed; every write reaches the Devices.
+    #[test]
+    fn an_orchestration_write_reaches_the_desk_only_when_a_device_made_it() {
+        use tauri::Listener;
+        let app = mock_builder()
+            .manage(Forwarding::default())
+            .invoke_handler(tauri::generate_handler![write_orchestration])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview");
+        let handle = app.handle().clone();
+        let (offers_tx, offers) = mpsc::channel();
+        *handle.state::<Forwarding>().offer.lock().unwrap() = Some(offers_tx);
+        let (heard_tx, heard) = mpsc::channel::<String>();
+        handle.listen_any(ORCHESTRATION_WRITTEN, move |event| {
+            let _ = heard_tx.send(event.payload().to_string());
+        });
+
+        get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "write_orchestration".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: invoke_url(),
+                body: InvokeBody::Json(serde_json::json!({"workspaceId": "ws-desk"})),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("webview invoke");
+        let (event, payload) = offers.recv_timeout(Duration::from_secs(1)).expect("offered to Devices");
+        assert_eq!(event, ORCHESTRATION_WRITTEN);
+        assert_eq!(payload, serde_json::json!({"origin": "main", "payload": "ws-desk"}));
+        assert!(heard.try_recv().is_err(), "the desk's windows told each other already");
+
+        dispatch(&handle, "write_orchestration", serde_json::json!({"workspaceId": "ws-phone"}))
+            .expect("forward dispatch");
+        let told = heard.recv_timeout(Duration::from_secs(1)).expect("the desk hears a Device's write");
+        let told: serde_json::Value = serde_json::from_str(&told).unwrap();
+        assert_eq!(told, serde_json::json!({"origin": FORWARDED_ORIGIN, "payload": "ws-phone"}));
+        let (_, payload) = offers.recv_timeout(Duration::from_secs(1)).expect("offered to Devices");
+        assert_eq!(payload, told);
     }
 
     /// `emit` offers the event on the forwarding channel, which the

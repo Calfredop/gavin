@@ -79,17 +79,34 @@ describe("the demo's activity", () => {
 });
 
 describe("the activity, as the Companion sees it", () => {
-  it("answers the agent that was waiting on the human", async () => {
+  it("answers the agent that was waiting on the human, part-way round", async () => {
     const demo = createDemoWorkstation();
     const stop = await connectWorkstation(loopback(demo), deviceStorage());
     await settle();
-    expect(get(layoutState).sessionStatusById["s-atlas-store"]).toBe("waiting_for_input");
+    const store = () => get(layoutState).sessionStatusById["s-atlas-store"];
+    expect(store()).toBe("waiting_for_input");
 
-    demo.advance();
-    await settle();
+    const seen: string[] = [];
+    for (let i = 0; i < ACTIVITY.length; i++) {
+      demo.advance();
+      await settle();
+      seen.push(store());
+    }
 
-    expect(get(layoutState).sessionStatusById["s-atlas-store"]).toBe("working");
+    expect(seen).toContain("working");
+    // ...and it is asking again when the loop comes round.
+    expect(seen.at(-1)).toBe("waiting_for_input");
     stop();
+  });
+
+  it("keeps an agent waiting on a menu for most of the loop", () => {
+    const demo = createDemoWorkstation();
+    let waitingSteps = 0;
+    for (let i = 0; i < ACTIVITY.length; i++) {
+      if (demo.state.sessions.some((s) => s.status === "waiting_for_input")) waitingSteps += 1;
+      demo.advance();
+    }
+    expect(waitingSteps).toBeGreaterThanOrEqual(ACTIVITY.length - 1);
   });
 
   it("moves a plan's checklist along", async () => {

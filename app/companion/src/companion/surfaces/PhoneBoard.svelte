@@ -1,7 +1,10 @@
 <script lang="ts">
-  // One workspace's board, to read. A thin template over phoneBoard.ts;
-  // the cards are the desktop's own component.
+  // One workspace's board: its columns a swipe apart, a card a tap away,
+  // and a new card or the PRD from the bar above them. A thin template
+  // over phoneBoard.ts; the cards are the desktop's own component, and
+  // everything done to one is done on its own page (PhoneCard.svelte).
   import { untrack } from "svelte";
+  import { BookOpen, Plus } from "@lucide/svelte";
   import BoardCard from "$lib/board/BoardCard.svelte";
   import { boardError, kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -9,6 +12,9 @@
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import type { Landing } from "$companion/channel/messages";
+  import { openCard, openPrd, returnedFrom } from "$companion/state/workstation";
+  import PhoneCompose from "$companion/surfaces/PhoneCompose.svelte";
+  import { waitingCount } from "$companion/surfaces/phoneCard";
   import {
     cardAgent,
     columnAt,
@@ -50,14 +56,15 @@
   let heading: string | null = null;
 
   // The column the board opens on, once, when its columns first arrive:
-  // the landed card's, else the one work is in flight on. Not again
-  // afterwards: every push redraws the board, and a column the human
-  // swiped to must not be taken from under their thumb.
+  // the landed card's, else that of the card the human has just come back
+  // from, else the one work is in flight on. Not again afterwards: every
+  // push redraws the board, and a column the human swiped to must not be
+  // taken from under their thumb.
   $effect(() => {
     if (!pager || columns.length === 0) return;
     untrack(() => {
       if (shown !== null && columns.some((c) => c.key === shown)) return;
-      const opening = columnOf(columns, landed) ?? openingColumn(columns);
+      const opening = columnOf(columns, landed) ?? columnOf(columns, $returnedFrom) ?? openingColumn(columns);
       shown = opening;
       const index = columns.findIndex((c) => c.key === opening);
       if (pager && index > 0) pager.scrollLeft = index * pager.clientWidth;
@@ -108,14 +115,33 @@
     heading = null;
   }
 
-  // The desktop's card asks for this. Nothing opens yet: reading a card
-  // and acting on it arrive together, with the card surface.
-  function stay(): void {}
+  // A tap on a card opens it -- or opens the nested task it landed on,
+  // which the desk's card draws inside its plan under a mark of its own.
+  // A tap on a control inside the card (a plan's chevron) is that
+  // control's. The card itself is the keyboard's way in: it is a button,
+  // and Enter opens it through `onOpen`.
+  function tapped(event: MouseEvent, cardId: string): void {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("button, a, input, select, textarea")) return;
+    openCard(target?.closest("[data-kb-plan]")?.getAttribute("data-kb-plan") ?? cardId);
+  }
+
+  // ---- a new card -----------------------------------------------------------
+  const columnNames = $derived(($kanbanState[workspace.id]?.columns ?? []).map((c) => c.name));
+  let composing = $state(false);
+
+  /// Back from the composer: to the column the card was filed in, where
+  /// it now sits last.
+  function composed(filed: { path: string; status: string } | null): void {
+    composing = false;
+    const column = filed ? columns.find((c) => !c.unmatched && c.name === filed.status) : undefined;
+    if (column) show(column.key);
+  }
 </script>
 
 {#if !workspace.rootPath}
   <p class="note">
-    This workspace is bound to no folder, so it has no cards. Its terminals are at the desk.
+    This workspace is bound to no folder, so it has no cards. Its terminals are under Sessions.
   </p>
 {:else if loadError}
   <p class="note problem">The board could not be read: {loadError}</p>
@@ -125,6 +151,16 @@
   <p class="note">This board has no columns.</p>
 {:else}
   <div class="board">
+    <div class="tools">
+      <button type="button" class="tool" onclick={() => (composing = true)}>
+        <Plus size={16} />
+        <span>New card</span>
+      </button>
+      <button type="button" class="tool" onclick={openPrd}>
+        <BookOpen size={16} />
+        <span>PRD</span>
+      </button>
+    </div>
     <div class="strip" role="tablist" aria-label="Columns">
       {#each columns as column (column.key)}
         <button
@@ -157,18 +193,28 @@
           {/if}
           {#each column.cards as card (card.id)}
             {@const badge = cardAgent(agents, card.id)}
+            {@const asks = waitingCount($gavinTrees[workspace.id], card.id)}
             {#snippet agent()}
               {#if badge}
                 <span class="agent"><StatusBadge indicator={badge} size={13} text={badge.tip} tip={null} /></span>
               {/if}
+              {#if asks > 0}
+                <span class="asks">{asks === 1 ? "1 waiting on you" : `${asks} waiting on you`}</span>
+              {/if}
             {/snippet}
-            <div class="slot" class:landed={card.id === landed} use:reveal={card.id === landed}>
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -- the card inside is the keyboard's way in (see `tapped`) -->
+            <div
+              class="slot"
+              class:landed={card.id === landed}
+              use:reveal={card.id === landed || card.id === $returnedFrom}
+              onclick={(e) => tapped(e, card.id)}
+            >
               <BoardCard
                 {card}
                 labelDefs={board.labels}
-                onOpen={stay}
+                onOpen={openCard}
                 workspaceId={null}
-                adornment={badge ? agent : undefined}
+                adornment={badge || asks > 0 ? agent : undefined}
               />
             </div>
           {:else}
@@ -178,6 +224,9 @@
       {/each}
     </div>
   </div>
+  {#if composing}
+    <PhoneCompose {workspace} columns={columnNames} initialStatus={columns.find((c) => c.key === shown && !c.unmatched)?.name ?? null} onClose={composed} />
+  {/if}
 {/if}
 
 <style>
@@ -286,5 +335,48 @@
   .agent {
     display: inline-flex;
     font-size: 0.75rem;
+  }
+  /* The desk's own vocabulary for a card with a question on it
+     (the Decisions tab's), as a line a thumb can read. */
+  .asks {
+    display: inline-flex;
+    padding: 1px 6px;
+    border: 1px solid var(--border-warning);
+    border-radius: 4px;
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    font-size: 0.6875rem;
+  }
+  .slot {
+    cursor: pointer;
+  }
+
+  /* What the board can do, above what is on it. */
+  .tools {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+    padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-sunken);
+  }
+  .tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 0.8125rem;
+  }
+  .tool:active {
+    background: var(--surface-hover);
+  }
+  .tool:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
   }
 </style>

@@ -8,12 +8,19 @@
 // Two real projects and a Scratchpad, chosen so the first surfaces have
 // every case to draw: a plan with nested tasks, a card an agent is
 // waiting on a human about, a status no column matches, a second context,
-// a rail in mid-run, and a workspace with no root at all.
+// a rail in mid-run and one waiting to be started, and a workspace with
+// no root at all. The cards are files (sampleCards.ts), and the trees
+// are what a scan of them reads.
+import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { SessionBaseline } from "$lib/core/backend";
 import type { Board } from "$lib/board/kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
+import type { GavinContext, GavinTree } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
+import { scanPlans } from "$companion/demo/cardFiles";
+import { sampleCardFiles } from "$companion/demo/sampleCards";
+import type { DemoTerminal } from "$companion/demo/sessions";
+import { sampleTerminals } from "$companion/demo/transcripts";
 
 export const DEMO = {
   workstation: { id: "demo", name: "Demo Workstation", demo: true },
@@ -26,8 +33,8 @@ export const DEMO = {
 } as const;
 
 /// Everything a Demo Workstation can be asked about, and the only thing
-/// its commands read. Mutable: the demo's activity script and, later, its
-/// write commands change it in place, and every answer is a copy.
+/// its commands read. Mutable: the demo's activity script and its write
+/// commands change it in place, and every answer is a copy.
 export interface DemoState {
   workspaces: WorkspacesData;
   trees: Record<string, GavinTree>;
@@ -35,53 +42,39 @@ export interface DemoState {
   orchestrations: Record<string, Orchestration>;
   sessions: SessionBaseline[];
   sessionNames: Record<string, string>;
-  /// Card bodies by path, for the viewer.
+  /// The machine's disk, by absolute path: every card file the trees are
+  /// scanned from (cardFiles.ts), each project's PRD, and what a card
+  /// points an agent at.
   files: Record<string, string>;
+  /// The files something is watching, and how many times over: a desk
+  /// says a file changed only while it is watched.
+  watchedFiles: Record<string, number>;
+  /// Follow-ups waiting for an agent that was busy when they came.
+  queuedInputs: QueuedInput[];
+  /// Every live session's terminal: what it has written, and what it
+  /// does with what is typed into it (sessions.ts).
+  terminals: Record<string, DemoTerminal>;
+  /// How many sessions have been opened on the demo, which is what
+  /// names the next one.
+  launched: number;
 }
 
 function session(id: string, cwd: string, status: string): SessionBaseline {
   return { id, cwd, status, restored: false, interrupted: false, orphan: null, failureReason: null };
 }
 
-function card(
-  folder: string,
-  marker: ".gavin-root" | ".gavin",
-  fileName: string,
-  fields: Partial<PlanFileInfo> & Pick<PlanFileInfo, "title" | "kind">
-): PlanFileInfo {
-  const dir = fields.status === "Done" ? "plans/done" : "plans";
-  return {
-    path: `${folder}/${marker}/${dir}/${fileName}`,
-    fileName,
-    status: null,
-    priority: null,
-    order: null,
-    parent: null,
-    labels: [],
-    checklistDone: 0,
-    checklistTotal: 0,
-    parseWarning: false,
-    modifiedAt: 1_790_000_000,
-    attachments: [],
-    complexity: null,
-    agent: null,
-    model: null,
-    humanItems: [],
-    ...fields,
-  };
-}
-
+/// A context as the daemon reports it, its cards read off `files`.
 function context(
   folderPath: string,
   kind: GavinContext["kind"],
   name: string,
-  plans: PlanFileInfo[]
+  files: Record<string, string>
 ): GavinContext {
   return {
     folderPath,
     kind,
     name,
-    plans,
+    plans: scanPlans({ folderPath, kind }, files),
     docs: [],
     specs: [],
     hasPrd: kind === "root",
@@ -91,172 +84,23 @@ function context(
   };
 }
 
-function atlasTree(): GavinTree {
+function atlasTree(files: Record<string, string>): GavinTree {
   const root = DEMO.atlasRoot;
-  const billing = `${root}/services/billing`;
   return {
     rootPath: root,
     rootMissing: false,
     contexts: [
-      context(root, "root", "atlas-api", [
-        card(root, ".gavin-root", "token-refresh.md", {
-          title: "Token refresh rework",
-          kind: "plan",
-          status: "In Progress",
-          priority: "high",
-          order: 1,
-          labels: ["backend"],
-          checklistDone: 3,
-          checklistTotal: 7,
-          complexity: "complex",
-        }),
-        card(root, ".gavin-root", "rotate-on-use.md", {
-          title: "Rotate refresh tokens on use",
-          kind: "task",
-          parent: "token-refresh.md",
-          order: 1,
-        }),
-        card(root, ".gavin-root", "revoke-family.md", {
-          title: "Revoke the token family on reuse",
-          kind: "task",
-          parent: "token-refresh.md",
-          order: 2,
-        }),
-        card(root, ".gavin-root", "migrate-sessions.md", {
-          title: "Migrate stored sessions",
-          kind: "task",
-          parent: "token-refresh.md",
-          order: 3,
-        }),
-        card(root, ".gavin-root", "session-store.md", {
-          title: "Pick the session store",
-          kind: "task",
-          status: "In Progress",
-          priority: "medium",
-          order: 2,
-          labels: ["backend"],
-          checklistDone: 0,
-          checklistTotal: 1,
-          humanItems: [
-            {
-              kind: "decision",
-              text: "Redis or Postgres for the session store?",
-              done: false,
-              options: ["Redis", "Postgres"],
-              latest: null,
-              state: "open",
-              lineText: "Decision: Redis or Postgres for the session store?",
-              lineIndex: 12,
-            },
-          ],
-        }),
-        card(root, ".gavin-root", "flaky-expiry-test.md", {
-          title: "Fix the flaky session-expiry test",
-          kind: "task",
-          status: "To Do",
-          priority: "urgent",
-          order: 1,
-          labels: ["bug"],
-          complexity: "simple",
-        }),
-        card(root, ".gavin-root", "login-rate-limit.md", {
-          title: "Rate-limit the login endpoint",
-          kind: "task",
-          status: "To Do",
-          priority: "medium",
-          order: 2,
-          labels: ["backend", "security"],
-          complexity: "moderate",
-          attachments: ["docs/rate-limits.md"],
-        }),
-        card(root, ".gavin-root", "empty-state.md", {
-          title: "Ask design about the empty state",
-          kind: "note",
-          status: "To Do",
-          order: 3,
-        }),
-        card(root, ".gavin-root", "oauth-upgrade.md", {
-          title: "Upgrade the OAuth library",
-          kind: "task",
-          status: "Blocked",
-          priority: "low",
-          labels: ["backend"],
-        }),
-        card(root, ".gavin-root", "openapi-accounts.md", {
-          title: "OpenAPI spec for /v2/accounts",
-          kind: "task",
-          status: "Review",
-          labels: ["docs"],
-          checklistDone: 4,
-          checklistTotal: 4,
-        }),
-        card(root, ".gavin-root", "audit-log-export.md", {
-          title: "Audit log export",
-          kind: "plan",
-          status: "Done",
-          labels: ["backend"],
-          checklistDone: 6,
-          checklistTotal: 6,
-        }),
-      ]),
-      context(billing, "context", "billing", [
-        card(billing, ".gavin", "invoice-pdf.md", {
-          title: "Invoice PDF rendering",
-          kind: "task",
-          status: "In Progress",
-          priority: "medium",
-          labels: ["billing"],
-          checklistDone: 1,
-          checklistTotal: 3,
-        }),
-        card(billing, ".gavin", "proration.md", {
-          title: "Proration on plan change",
-          kind: "task",
-          status: "To Do",
-          labels: ["billing"],
-        }),
-      ]),
+      context(root, "root", "atlas-api", files),
+      context(`${root}/services/billing`, "context", "billing", files),
     ],
   };
 }
 
-function notesTree(): GavinTree {
-  const root = DEMO.notesRoot;
+function notesTree(files: Record<string, string>): GavinTree {
   return {
-    rootPath: root,
+    rootPath: DEMO.notesRoot,
     rootMissing: false,
-    contexts: [
-      context(root, "root", "field-notes", [
-        card(root, ".gavin-root", "offline-sync.md", {
-          title: "Offline sync",
-          kind: "plan",
-          status: "In Progress",
-          priority: "high",
-          checklistDone: 2,
-          checklistTotal: 5,
-          complexity: "intricate",
-        }),
-        card(root, ".gavin-root", "conflict-merge.md", {
-          title: "Merge conflicting edits by paragraph",
-          kind: "task",
-          parent: "offline-sync.md",
-          order: 1,
-        }),
-        card(root, ".gavin-root", "photo-attachments.md", {
-          title: "Photo attachments",
-          kind: "task",
-          status: "To Do",
-          labels: ["ui"],
-        }),
-        card(root, ".gavin-root", "markdown-export.md", {
-          title: "Export a notebook to Markdown",
-          kind: "task",
-          status: "Done",
-          checklistDone: 2,
-          checklistTotal: 2,
-        }),
-      ]),
-    ],
+    contexts: [context(DEMO.notesRoot, "root", "field-notes", files)],
   };
 }
 
@@ -319,8 +163,7 @@ function workspaces(): Workspace[] {
   ];
 }
 
-function boards(): Record<string, Board> {
-  const atlas = atlasTree();
+function boards(atlas: GavinTree): Record<string, Board> {
   const find = (fileName: string): string => {
     for (const ctx of atlas.contexts) {
       const plan = ctx.plans.find((p) => p.fileName === fileName);
@@ -407,6 +250,33 @@ function orchestrations(): Record<string, Orchestration> {
             },
           ],
         },
+        {
+          // Idle, with work on it: the rail a phone is picked up to start.
+          id: "rail-fixes",
+          name: "fixes",
+          position: 1,
+          worktreePath: null,
+          branch: null,
+          pageId: null,
+          stages: [
+            {
+              id: "stage-fixes-1",
+              position: 0,
+              steps: [{ id: "step-flaky-expiry", position: 0, cardPath: `${plans}/flaky-expiry-test.md` }],
+            },
+            {
+              id: "stage-fixes-2",
+              position: 1,
+              steps: [
+                {
+                  id: "step-proration",
+                  position: 0,
+                  cardPath: `${DEMO.atlasRoot}/services/billing/.gavin/plans/proration.md`,
+                },
+              ],
+            },
+          ],
+        },
       ],
       conflictNotes: [],
       railRuns: [{ railId: "rail-auth", state: "running", currentStageId: "stage-auth-1" }],
@@ -420,10 +290,12 @@ function orchestrations(): Record<string, Orchestration> {
 }
 
 export function sampleState(): DemoState {
+  const files = sampleCardFiles({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot });
+  const trees = { [DEMO.atlas]: atlasTree(files), [DEMO.notes]: notesTree(files) };
   return {
     workspaces: { workspaces: workspaces(), activeWorkspaceId: DEMO.atlas, removedWorkspaces: [] },
-    trees: { [DEMO.atlas]: atlasTree(), [DEMO.notes]: notesTree() },
-    boards: boards(),
+    trees,
+    boards: boards(trees[DEMO.atlas]),
     orchestrations: orchestrations(),
     sessions: [
       session("s-atlas-main", DEMO.atlasRoot, "idle"),
@@ -440,6 +312,10 @@ export function sampleState(): DemoState {
       "s-atlas-billing": "invoice pdf",
       "s-notes-sync": "offline sync",
     },
-    files: {},
+    files,
+    watchedFiles: {},
+    queuedInputs: [],
+    terminals: sampleTerminals(DEMO.home),
+    launched: 0,
   };
 }
