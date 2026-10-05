@@ -139,6 +139,7 @@ pub fn run() {
             session::set_workspaces_state,
             workspace_settings::get_workspace_settings,
             workspace_settings::set_workspace_settings,
+            workspace_settings::add_workspace,
             session::get_theme_pref,
             session::set_theme_pref,
             session::get_terminal_font_size,
@@ -346,7 +347,8 @@ pub fn run() {
             updater::set_update_endpoint,
             updater::check_for_update,
             updater::install_update,
-            fileviewer::temp_dir
+            fileviewer::temp_dir,
+            fileviewer::home_dir
         ])
         .build(context)
         .expect("error while building tauri application")

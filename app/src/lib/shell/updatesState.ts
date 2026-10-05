@@ -11,10 +11,16 @@
 // the human chose a quiet check and an explicit install, and a poll that
 // repeated all day would be a different thing wearing the same name.
 // Everything else here is driven by the button in Settings.
+//
+// Only the duty window makes the launch check (`whileHoldingAppDuties`);
+// a follower takes that window's `availableUpdate` so the sidebar badge
+// is the same in every window. A Check again pressed in any window still
+// asks, and tells the others what it found.
 
 import { writable, get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { shouldSurfaceCheckError, updateBlockedReason, type AvailableUpdate, type UpdateSettings } from "$lib/shell/updates";
+import { holdsAppDutiesNow, listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
 
 /// What the build says about its own channel. Null before the first read
 /// -- which is "not asked yet", not "no channel", and the surface has to
@@ -70,9 +76,7 @@ export async function runUpdateCheck(trigger: "launch" | "manual"): Promise<void
   try {
     const found = await backend.checkForUpdate();
     if (token !== checkToken) return;
-    availableUpdate.set(found);
-    lastCheckedAt.set(new Date());
-    lastCheckError.set(null);
+    landUpdate(found, new Date());
   } catch (e) {
     if (token !== checkToken) return;
     if (shouldSurfaceCheckError(trigger)) {
@@ -83,6 +87,51 @@ export async function runUpdateCheck(trigger: "launch" | "manual"): Promise<void
   }
 }
 
+const UPDATE_READING = "update-reading";
+const UPDATE_WANTED = "update-wanted";
+
+interface UpdateReading {
+  available: AvailableUpdate | null;
+  /// ISO string so the wire stays JSON-safe; Date does not.
+  checkedAt: string | null;
+}
+
+function landUpdate(found: AvailableUpdate | null, checkedAt: Date, tell = true): void {
+  availableUpdate.set(found);
+  lastCheckedAt.set(checkedAt);
+  lastCheckError.set(null);
+  if (tell) {
+    tellOtherWindows<UpdateReading>(UPDATE_READING, {
+      available: found,
+      checkedAt: checkedAt.toISOString(),
+    });
+  }
+}
+
+/// Takes the answer the duty window (or a Check again in any window)
+/// found, and asks the holder for its current one when this window has
+/// just opened. Returns its teardown, for bootstrap's list.
+export async function initUpdateSharing(): Promise<() => void> {
+  const unlistenReadings = await listenToOtherWindows<UpdateReading>(UPDATE_READING, (reading) => {
+    if (!reading) return;
+    availableUpdate.set(reading.available);
+    lastCheckedAt.set(reading.checkedAt ? new Date(reading.checkedAt) : null);
+  });
+  const unlistenWanted = await listenToOtherWindows<null>(UPDATE_WANTED, () => {
+    if (!holdsAppDutiesNow()) return;
+    const checked = get(lastCheckedAt);
+    tellOtherWindows<UpdateReading>(UPDATE_READING, {
+      available: get(availableUpdate),
+      checkedAt: checked ? checked.toISOString() : null,
+    });
+  });
+  if (!holdsAppDutiesNow()) tellOtherWindows<null>(UPDATE_WANTED, null);
+  return () => {
+    unlistenReadings();
+    unlistenWanted();
+  };
+}
+
 /// Reads the channel and makes the single launch check.
 ///
 /// Returns a teardown so it can join `bootstrap`'s unlisteners like the
@@ -90,7 +139,9 @@ export async function runUpdateCheck(trigger: "launch" | "manual"): Promise<void
 /// the shape is the contract, and a later periodic check would otherwise
 /// have nowhere to be stopped from. It also bumps the token, so a check
 /// still in flight from a previous bootstrap (a frontend reload) cannot
-/// write into the new one's stores.
+/// write into the new one's stores. Bootstrap starts it through
+/// `whileHoldingAppDuties`, so a second window takes the first one's
+/// answer instead of asking the endpoint again.
 export function startUpdateWatch(): () => void {
   void runUpdateCheck("launch");
   return () => {

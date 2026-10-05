@@ -226,8 +226,10 @@
   /// every rated card would say nothing about which of them is unusual.
   const agentOverride = $derived(cardOverrideNote(card));
 
+  // Deduped by name: frontmatter may list the same label twice, and a
+  // keyed each on name would then throw each_key_duplicate.
   const labelChips = $derived(
-    card.labels.map((name) => ({
+    [...new Set(card.labels)].map((name) => ({
       name,
       color: labelDefs.find((l) => slugStatus(l.name) === slugStatus(name))?.color ?? null,
     }))

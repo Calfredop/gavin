@@ -8,6 +8,11 @@ bundles"). Read the spec's "The Companion shell" section and ADR 0005's
 "Store compliance" first; `CONTEXT.md` has the words. The bundle it runs
 is `app/companion/` (its README has the channel's message set).
 
+**Operator guides:** compile and store builds in
+[`docs/companion-mobile.md`](../../docs/companion-mobile.md)
+(`scripts/compile.sh`); Relay deploy in
+[`docs/relay.md`](../../docs/relay.md).
+
 Two webviews, and the line between them is the point:
 
 - **The shell's own webview** is a Capacitor webview. It shows only the hub,
@@ -39,6 +44,12 @@ Once, and after the lockfile changes:
 
 ```
 cd app/companion-shell && npm ci
+```
+
+One-shot sync + native compile (debug or `--release`):
+
+```
+scripts/compile.sh ios|android|both [--release] [--install <udid-or-serial>] …
 ```
 
 From `app/`:

@@ -453,11 +453,22 @@
              offer the retry -- `reset()` re-renders the children, which
              is the whole recovery when the cause was a hot reload that
              left one module half-applied. -->
-        <svelte:boundary onerror={(error) => console.error("view render failed", error)}>
+        <svelte:boundary
+          onerror={(error) =>
+            console.error("view render failed", {
+              view: $appHubOpen ? "app-hub" : $appSettingsOpen ? "app-settings" : activeView,
+              workspaceId: activeWorkspace?.id ?? null,
+              error,
+            })}
+        >
           {#snippet failed(error, reset)}
             <div class="overlay">
               <p>This view couldn&rsquo;t be drawn.</p>
-              <p class="detail">{error instanceof Error ? error.message : String(error)}</p>
+              <p class="detail">
+                {#if !$appHubOpen && !$appSettingsOpen && activeWorkspace}
+                  {activeView}:{" "}
+                {/if}{error instanceof Error ? error.message : String(error)}
+              </p>
               <button onclick={reset}>Try again</button>
             </div>
           {/snippet}

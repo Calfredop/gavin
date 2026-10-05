@@ -17,8 +17,12 @@ import { viewKey } from "$companion/state/viewState";
 import {
   connection,
   connectWorkstation,
+  land,
+  landing,
   openWorkspace,
+  placeFiles,
   returnToHub,
+  showSurface,
   showWorkspaces,
   view,
 } from "$companion/state/workstation";
@@ -184,6 +188,27 @@ describe("what it keeps current", () => {
     expect(get(layoutState).activeWorkspaceId).toBe(DEMO.notes);
   });
 
+  it("hears a session named, moved or broken, in memory only", async () => {
+    const demo = createDemoWorkstation();
+    await connect(demo);
+    demo.emit("session-named", ["s-scratch", "scratch shell"]);
+    demo.emit("cwd-changed", ["s-scratch", DEMO.notesRoot]);
+    demo.emit("session-failed", ["s-atlas-auth", "API Error: Connection dropped"]);
+    await settle();
+
+    const layout = get(layoutState);
+    expect(layout.sessionNames["s-scratch"]).toBe("scratch shell");
+    expect(layout.cwdBySessionId["s-scratch"]).toBe(DEMO.notesRoot);
+    expect(layout.failureReasonById["s-atlas-auth"]).toBe("API Error: Connection dropped");
+    // The desk's own handler for a name saves it; the phone's does not.
+    expect(demo.commands()).not.toContain("set_session_name");
+  });
+
+  it("knows where each session is from the moment it connects", async () => {
+    await connect(createDemoWorkstation());
+    expect(get(layoutState).cwdBySessionId["s-atlas-billing"]).toBe(`${DEMO.atlasRoot}/services/billing`);
+  });
+
   it("stops listening when it disconnects", async () => {
     const demo = createDemoWorkstation();
     await connect(demo);
@@ -191,7 +216,15 @@ describe("what it keeps current", () => {
     disconnect!();
     disconnect = null;
     await settle();
-    for (const event of ["session-status-changed", "gavin-tree-changed", "workspaces-synced"]) {
+    for (const event of [
+      "session-status-changed",
+      "gavin-tree-changed",
+      "workspaces-synced",
+      "session-exited",
+      "cwd-changed",
+      "session-named",
+      "session-failed",
+    ]) {
       expect(demo.listening(event)).toBe(0);
     }
   });
@@ -201,7 +234,7 @@ describe("the Companion's view", () => {
   it("opens a workspace, and shows the list again", async () => {
     await connect(createDemoWorkstation());
     openWorkspace(DEMO.atlas);
-    expect(get(view)).toEqual({ workspaceId: DEMO.atlas, surface: "board" });
+    expect(get(view)).toEqual({ workspaceId: DEMO.atlas, surface: "board", sessionId: null });
     showWorkspaces();
     expect(get(view).workspaceId).toBeNull();
   });
@@ -224,7 +257,11 @@ describe("the Companion's view", () => {
   it("is remembered on the Device, under the Workstation it belongs to", async () => {
     const storage = await connect(createDemoWorkstation());
     openWorkspace(DEMO.notes);
-    expect(JSON.parse(storage.items[viewKey("demo")])).toEqual({ workspaceId: DEMO.notes, surface: "board" });
+    expect(JSON.parse(storage.items[viewKey("demo")])).toEqual({
+      workspaceId: DEMO.notes,
+      surface: "board",
+      sessionId: null,
+    });
   });
 
   it("comes back where it was", async () => {
@@ -244,6 +281,53 @@ describe("the Companion's view", () => {
     });
     await connect(createDemoWorkstation(), storage);
     expect(get(view).workspaceId).toBeNull();
+  });
+
+  it("switches the open workspace's surface, and remembers it on the Device", async () => {
+    const storage = await connect(createDemoWorkstation());
+    openWorkspace(DEMO.atlas);
+    showSurface("git");
+    expect(get(view)).toEqual({ workspaceId: DEMO.atlas, surface: "git", sessionId: null });
+    showSurface("files");
+    placeFiles({ dir: `${DEMO.atlasRoot}/src`, file: `${DEMO.atlasRoot}/src/server.ts` });
+    expect(JSON.parse(storage.items[viewKey("demo")])).toEqual({
+      workspaceId: DEMO.atlas,
+      surface: "files",
+      sessionId: null,
+      files: { dir: `${DEMO.atlasRoot}/src`, file: `${DEMO.atlasRoot}/src/server.ts` },
+    });
+  });
+
+  it("comes back to the surface, and the place in Files, it was at", async () => {
+    const storage = await connect(createDemoWorkstation());
+    openWorkspace(DEMO.atlas);
+    showSurface("files");
+    placeFiles({ dir: `${DEMO.atlasRoot}/docs`, file: null });
+    disconnect!();
+    resetDesktopStores();
+
+    await connect(createDemoWorkstation(), storage);
+    expect(get(view)).toEqual({
+      workspaceId: DEMO.atlas,
+      surface: "files",
+      sessionId: null,
+      files: { dir: `${DEMO.atlasRoot}/docs`, file: null },
+    });
+  });
+
+  it("leaves a landing behind when the human goes to another surface", async () => {
+    const demo = createDemoWorkstation();
+    await connect(demo);
+    land({ workspace: DEMO.atlas, target: { kind: "card", path: "/x.md" } });
+    expect(get(landing)).not.toBeNull();
+    showSurface("git");
+    expect(get(landing)).toBeNull();
+  });
+
+  it("has no surface to switch at the workspace list", async () => {
+    await connect(createDemoWorkstation());
+    showSurface("git");
+    expect(get(view)).toEqual({ workspaceId: null, surface: "board", sessionId: null });
   });
 
   it("returns to the hub through the shell", async () => {

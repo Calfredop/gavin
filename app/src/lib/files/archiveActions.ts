@@ -81,9 +81,15 @@ export const ARCHIVE_CANCELLED = "";
 /// running agents and open tabs with it. The human is asked first, once
 /// for the whole batch, but only when a LIVE session would end -- a file
 /// tab ends no process, and a dialog for closing one would be noise.
+///
+/// `end` is how a card's closables are ended, `closeFor` by default: at
+/// the desk, through the desk's own close, which also takes the tabs out
+/// of its layout. A Device archiving from away hands in its own, which
+/// ends the sessions and leaves the desk's tabs to the desk.
 export async function executeArchive(
   workspaceId: string,
-  cards: CardView[]
+  cards: CardView[],
+  end: (closing: ArchiveClosables) => Promise<void> = closeFor
 ): Promise<string | null> {
   // Computed while the cards still sit where every binding and file tab
   // says they do; the move rewrites those paths underneath us.
@@ -107,7 +113,7 @@ export async function executeArchive(
       await moveOne(workspaceId, card, backend.archiveCard);
       // Per card, after its own move landed -- a failure half-way
       // through leaves the untouched cards' sessions running.
-      await closeFor(closables[i]);
+      await end(closables[i]);
     }
     return null;
   } catch (e) {

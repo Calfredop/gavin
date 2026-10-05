@@ -75,4 +75,20 @@
     height: 3px;
     border-radius: 2px;
   }
+  /* A fingertip, on the Companion (companion-30): an 18px dot is a miss
+     more often than a hit. A window with a mouse never matches. */
+  @media (pointer: coarse) {
+    .swatches {
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .swatch {
+      width: 32px;
+      height: 32px;
+    }
+    .custom input {
+      width: 44px;
+      height: 32px;
+    }
+  }
 </style>

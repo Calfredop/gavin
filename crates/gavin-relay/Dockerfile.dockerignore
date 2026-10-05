@@ -1,0 +1,8 @@
+# An allowlist: the build context is the repository root, and everything
+# but the Rust workspace's sources and manifests stays out of it.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!app/src-tauri/Cargo.toml
+**/target

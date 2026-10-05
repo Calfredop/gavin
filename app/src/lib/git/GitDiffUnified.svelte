@@ -198,4 +198,18 @@
     color: var(--warning-text);
     margin-left: 4px;
   }
+
+  /* A phone's width (the Companion). Clipped at the edge, a line of code
+     on a phone shows forty characters and hides the change that made it
+     a line worth reading, so long lines wrap instead, under narrower
+     line-number gutters. Desk windows are wider than this. */
+  @media (max-width: 600px) {
+    .line {
+      grid-template-columns: 2.6em 2.6em 1em minmax(0, 1fr);
+      white-space: pre-wrap;
+    }
+    .text {
+      overflow-wrap: anywhere;
+    }
+  }
 </style>

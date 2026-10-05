@@ -21,15 +21,17 @@ pub enum McpFormat {
     /// (`.mcp.json`) and Gemini CLI (`.gemini/settings.json`).
     JsonServers,
     /// The same, plus the `type: "stdio"` Cursor's docs list as required
-    /// for a local server, and an `env` block that re-forwards the three
-    /// `GAVIN_SESSION_*` values the daemon put on the PTY. Cursor's Agent
-    /// CLI strips almost every inherited variable when it spawns an MCP
-    /// server (PATH/cwd only), so without `${env:…}` interpolation
-    /// `gavin_name_session` sees no tab id even though the agent itself
-    /// has one. Its own variant rather than a key written unconditionally:
-    /// Gemini's documented server fields do not include `type`, Claude
-    /// inherits the full PTY env so it needs no passthrough, and gavin
-    /// does not put keys it has not verified into someone else's config.
+    /// for a local server, and an `env` block that re-forwards the
+    /// `GAVIN_SESSION_*` values and `GAVIN_MCP` the daemon put on the
+    /// PTY. Cursor's Agent CLI strips almost every inherited variable
+    /// when it spawns an MCP server (PATH/cwd only), so without
+    /// `${env:…}` interpolation `gavin_name_session` sees no tab id even
+    /// though the agent itself has one, and the launcher never sees
+    /// which gavin-mcp this build pinned. Its own variant rather than a
+    /// key written unconditionally: Gemini's documented server fields do
+    /// not include `type`, Claude inherits the full PTY env so it needs
+    /// no passthrough, and gavin does not put keys it has not verified
+    /// into someone else's config.
     JsonServersStdio,
     /// JSON `mcp.<key>` = `{ type: "local", command: [...], enabled }` —
     /// opencode (`opencode.json`). The command is an array here, not a
@@ -1528,6 +1530,7 @@ impl McpFormat {
                     "command": command,
                     "args": [],
                     "env": {
+                        "GAVIN_MCP": "${env:GAVIN_MCP}",
                         "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
                         "GAVIN_SESSION_TOKEN": "${env:GAVIN_SESSION_TOKEN}",
                         "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
@@ -4385,6 +4388,10 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&c).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/gavin/type").unwrap(), "stdio");
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/env/GAVIN_MCP").unwrap(),
+            "${env:GAVIN_MCP}"
+        );
         assert_eq!(
             v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_ID").unwrap(),
             "${env:GAVIN_SESSION_ID}"

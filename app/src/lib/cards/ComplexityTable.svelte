@@ -252,4 +252,42 @@
   .warn {
     color: var(--warning-text);
   }
+  /* A phone's width, on the Companion (companion-30): four controls do
+     not fit one row beside a label, so the level heads its row and the
+     agent's select takes the full width under it, with model and effort
+     side by side below that. */
+  @media (max-width: 600px) {
+    .row {
+      flex-wrap: wrap;
+    }
+    .level {
+      width: 100%;
+    }
+    select {
+      flex: 1 1 100%;
+    }
+    input.model {
+      flex: 1 1 0;
+    }
+    input.effort {
+      flex: 0 1 110px;
+    }
+    .row-hint {
+      margin-left: 0;
+    }
+  }
+  /* A fingertip: thumb-sized controls, and 16px text so iOS does not zoom
+     into a field. A window with a mouse never matches. */
+  @media (pointer: coarse) {
+    select,
+    input {
+      min-height: 44px;
+      font-size: 16px;
+    }
+    .clear {
+      min-width: 44px;
+      min-height: 44px;
+      justify-content: center;
+    }
+  }
 </style>

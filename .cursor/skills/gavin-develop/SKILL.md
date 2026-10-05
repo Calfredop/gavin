@@ -78,6 +78,30 @@ cards. A piece a different agent could pick up cold, tomorrow, is a card.
 Name the shape you chose and why, so the human can overrule it in one
 word.
 
+### Items only a person can close
+
+Two checklist items are not an agent's to tick, and they carry a marker
+that says so. Both surface in the workspace's **Decisions** tab under
+this card, and the human's reply is written back under the item —
+`Answer (date): …`, `Result (date): passed`, `Result (date): failed —
+<what went wrong>`.
+
+- `- [ ] Decision: <question>` — a choice the work cannot invent. Add an
+  indented `Options: A) … B) …` line when there is a shortlist.
+- `- [ ] Human test: <what to check>` — a check no suite can reach:
+  another machine, a real install, whether the rendered surface looks
+  right.
+
+Write one only for what a person genuinely has to do. A question you
+could have asked in the interview is not a `Decision:` item — ask it, and
+write the answer into the plan as settled. A check the suites already
+cover is not a `Human test:` — running it is the agent's job, and a card
+padded with them is a backlog nobody asked for.
+
+The agent executing this card can file more of them as it goes, with
+`gavin_request_human(card, kind, text, options?)`; what you write here is
+the set the interview already knows about.
+
 ### The shape is the `kind:`
 
 "Is this big enough to be a plan?" has a mechanical answer: it is a plan

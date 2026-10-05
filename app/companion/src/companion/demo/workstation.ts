@@ -19,6 +19,7 @@ import {
 import type { ChannelEndpoint } from "$companion/channel/port";
 import { ACTIVITY } from "$companion/demo/activity";
 import { COMMANDS, DemoFailure, type DemoContext } from "$companion/demo/commands";
+import { runAllRails } from "$companion/demo/railCommands";
 import { DEMO, sampleState, type DemoState } from "$companion/demo/sampleData";
 import { refusedToRemoteRole } from "$companion/remote/remoteRole";
 
@@ -108,6 +109,9 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
     advance() {
       ACTIVITY[step % ACTIVITY.length](demo);
       step += 1;
+      // The desk's scheduler, as time passes at the desk: a card the
+      // human moved to Done from the phone moves its rail on.
+      runAllRails(demo);
     },
 
     emit(event, payload) {

@@ -3,7 +3,7 @@ order: 14336
 kind: plan
 title: "[perf] Commands that freeze the UI: audit of every Tauri command"
 labels: bug
-status: To Do
+status: In Progress
 ---
 Every host command was audited on 2026-09-26 for what it can block on, how
 long, and how often the frontend calls it. Line numbers are as of main
@@ -70,17 +70,17 @@ program, ssh).
 - [x] [Worktree add and remove run on the main thread](./done/perf-git-worktree-add-remove-off-main-thread.md) — HANGS
 - [x] [The worktree switcher re-reads every worktree on every refresh](./done/perf-worktree-switcher-refacts-every-refresh.md) — HANGS while open
 - [x] [Conflict resolution runs ~15 git processes per click](./done/perf-git-conflict-family-off-main-thread.md) — HANGS
-- [ ] [get_gavin_tree waits on a rescan that sleeps under the lock](./perf-gavin-tree-rescan-sleeps-under-lock.md) — MIGHT-HANG
+- [x] [get_gavin_tree waits on a rescan that sleeps under the lock](./done/perf-gavin-tree-rescan-sleeps-under-lock.md) — MIGHT-HANG
 - [x] [Moving a plan card re-reads every card](./done/perf-plan-relocation-rereads-every-card.md) — MIGHT-HANG
 - [x] [File viewer reads whole files and lists folders uncapped](./done/perf-file-viewer-unbounded-reads.md) — MIGHT-HANG
 - [x] [card_run_tokens parses whole transcripts on the main thread](./done/perf-card-run-tokens-off-main-thread.md) — MIGHT-HANG
 - [x] [agent_model_catalog runs `opencode models` at startup](./done/perf-agent-model-catalog-off-main-thread.md) — HANGS once per launch
-- [ ] [Every window runs its own pollers](./perf-pollers-run-once-per-app.md) — amplifier
+- [x] [Every window runs its own pollers](./done/perf-pollers-run-once-per-app.md) — amplifier
 - [x] [The delete wizard walks the whole workspace on the main thread](./done/perf-workspace-delete-scan-off-main-thread.md) — HANGS on large roots
 - [x] [end_orphan waits 2 s per orphan on the main thread](./done/perf-end-orphan-off-main-thread.md) — MIGHT-HANG
 - [x] [Restart daemon runs the whole reconnect on the main thread](./done/perf-restart-daemon-off-main-thread.md) — MIGHT-HANG
 - [x] [On an ssh workspace every routed command is a main-thread network wait](./done/perf-ssh-routes-off-main-thread.md) — MIGHT-HANG
-- [ ] [open_workspace_window deadlocks on Windows as a sync command](./fix-open-workspace-window-windows-deadlock.md) — MIGHT-HANG (Windows)
+- [x] [open_workspace_window deadlocks on Windows as a sync command](./done/fix-open-workspace-window-windows-deadlock.md) — MIGHT-HANG (Windows)
 
 ## Audited FINE
 

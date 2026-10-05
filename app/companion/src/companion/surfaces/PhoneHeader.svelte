@@ -1,6 +1,7 @@
 <script lang="ts">
   // The bar above every surface: where you are, and the way back.
-  import { ChevronLeft } from "@lucide/svelte";
+  import type { Snippet } from "svelte";
+  import { ChevronLeft, Settings } from "@lucide/svelte";
 
   interface Props {
     title: string;
@@ -10,8 +11,14 @@
     onBack?: (() => void) | null;
     /// A short word beside the title: "demo".
     tag?: string | null;
+    /// What this screen can do, at the bar's end.
+    actions?: Snippet;
+    /// A badge before the title: what the thing titled is doing.
+    status?: Snippet;
+    /// Opens the Workstation's settings, where the header offers them.
+    onSettings?: (() => void) | null;
   }
-  let { title, back = null, onBack = null, tag = null }: Props = $props();
+  let { title, back = null, onBack = null, tag = null, actions, status, onSettings = null }: Props = $props();
 </script>
 
 <header class="bar">
@@ -21,9 +28,16 @@
       <span>{back}</span>
     </button>
   {/if}
+  {@render status?.()}
   <h1 class="title">{title}</h1>
   {#if tag}
     <span class="tag">{tag}</span>
+  {/if}
+  {@render actions?.()}
+  {#if onSettings}
+    <button type="button" class="settings" aria-label="Workstation settings" onclick={onSettings}>
+      <Settings size={20} />
+    </button>
   {/if}
 </header>
 
@@ -68,6 +82,26 @@
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .settings {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    margin-right: -10px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+  }
+  .settings:active {
+    background: var(--surface-hover);
+  }
+  .settings:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: -2px;
   }
   .tag {
     flex: 0 0 auto;

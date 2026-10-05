@@ -29,9 +29,9 @@
 //! these lists to the `Workspace` struct.
 
 use crate::config::Workspace;
-use crate::session::{WorkspacesData, WorkspacesState};
+use crate::session::{WorkspacesData, WorkspacesState, WorkspacesSync};
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Where things are on the desk's screen: what a Companion never writes.
 /// The keys are config.json's (camelCase), which are also the wire's.
@@ -209,13 +209,15 @@ pub fn set_workspace_settings(
     patch: Map<String, Value>,
     app_handle: AppHandle,
     window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
-    write_workspace_settings(&app_handle, window.label(), &workspace_id, &patch)
+    let origin = crate::forwarding::origin(&window, &request);
+    write_workspace_settings(&app_handle, &origin, &workspace_id, &patch)
 }
 
 /// The body of `set_workspace_settings`, apart from the window that asked:
-/// a caller with no window of its own -- a forwarded Companion call --
-/// names its origin instead.
+/// a Device's forwarded call is announced under
+/// `forwarding::FORWARDED_ORIGIN`, so every desk window adopts it.
 ///
 /// A workspace the host does not hold is a no-op, not an error. The one
 /// way the desk gets here is a window that has not yet adopted another
@@ -239,11 +241,78 @@ pub(crate) fn write_workspace_settings(
         (guard.clone(), record)
     };
     crate::session::persist_current(app, &data).map_err(|e| e.to_string())?;
-    let _ = app.emit(
+    // Offered to Devices as well: a phone showing this workspace's
+    // settings has to see a change made at the desk.
+    let _ = crate::forwarding::emit(
+        app,
         "workspace-settings-synced",
         WorkspaceSettingsSync { origin: origin.to_string(), record },
     );
     Ok(())
+}
+
+/// A new workspace made of its settings alone: the Workstation data, and
+/// no layout at all. A workspace with no pages is already a valid one at
+/// the desk -- it is what the sidebar's + makes before anything is opened
+/// in it -- so there is nothing of the desk's here to invent.
+///
+/// The settings go through `apply_settings_patch`, the one gate every
+/// settings write takes: a layout key is refused whole, and a value of the
+/// wrong shape fails the deserialization config.json's load goes through.
+/// A name is required, and trimmed: a workspace nobody can tell apart in
+/// the sidebar is not one to add.
+pub fn new_workspace(id: &str, settings: &Map<String, Value>) -> Result<Workspace, String> {
+    let blank: Workspace = serde_json::from_value(serde_json::json!({ "id": id, "name": "", "pages": [] }))
+        .map_err(|e| format!("a blank workspace failed to build: {e}"))?;
+    let workspace = apply_settings_patch(&blank, settings)?;
+    let name = workspace.name.trim().to_string();
+    if name.is_empty() {
+        return Err("a new workspace needs a name".to_string());
+    }
+    Ok(Workspace { name, ..workspace })
+}
+
+/// A fresh workspace id, in the shape the desk mints with
+/// `crypto.randomUUID()`: a version 4 UUID.
+fn new_workspace_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| format!("no randomness for a workspace id: {e}"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]))
+}
+
+/// Adds a workspace to the Workstation (ADR 0006): the one way a Device
+/// adds one, since adding through the desk's layout save is refused to it.
+/// Appended last, as the desk's own + appends; minted an id here, so a
+/// caller cannot name one another workspace -- or a removed one's
+/// tombstone -- already holds.
+///
+/// Announced as `workspaces-synced`, the event every desk window already
+/// adopts another writer's workspaces from, so the new workspace appears
+/// in each sidebar -- and each one arms the watch on its folder, as it does
+/// for a root bound in another window. Answers with the new workspace's
+/// settings record, id included.
+#[tauri::command]
+pub fn add_workspace(
+    settings: Map<String, Value>,
+    app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Map<String, Value>, String> {
+    let workspace = new_workspace(&new_workspace_id()?, &settings)?;
+    let record = settings_record(&workspace);
+    let state = app_handle.state::<WorkspacesState>();
+    let data: WorkspacesData = {
+        let mut guard = state.0.lock().unwrap();
+        guard.workspaces.push(workspace);
+        guard.clone()
+    };
+    crate::session::persist_current(&app_handle, &data).map_err(|e| e.to_string())?;
+    let origin = crate::forwarding::origin(&window, &request);
+    let _ = crate::forwarding::emit(&app_handle, "workspaces-synced", WorkspacesSync::new(origin, data));
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -479,6 +548,58 @@ mod tests {
             .unwrap_err();
             assert!(err.contains(key), "{key}: {err}");
         }
+    }
+
+    /// ADR 0006: a Device adds a workspace as settings alone. What it
+    /// makes is what the desk's own + makes -- no pages, nothing showing --
+    /// with the settings it was given.
+    #[test]
+    fn a_new_workspace_is_its_settings_and_no_layout() {
+        let added = new_workspace(
+            "ws-new",
+            &patch(serde_json::json!({ "name": "  weather-station ", "rootPath": "/Users/me/code/weather" })),
+        )
+        .unwrap();
+        assert_eq!(added.id, "ws-new");
+        assert_eq!(added.name, "weather-station", "the name is trimmed");
+        assert_eq!(added.root_path.as_deref(), Some("/Users/me/code/weather"));
+        assert!(added.pages.is_empty());
+        assert_eq!(added.active_page_id, None);
+        assert_eq!(added.active_view, None);
+        assert!(added.notify_needs_input, "every other setting is its default");
+        let written = json(&added);
+        for key in LAYOUT_KEYS {
+            let value = written.get(*key).unwrap_or(&Value::Null);
+            let empty = value.is_null() || value.as_array().is_some_and(|a| a.is_empty());
+            assert!(empty, "layout key {key} is {value}");
+        }
+    }
+
+    #[test]
+    fn a_new_workspace_needs_a_name_and_takes_no_layout() {
+        for settings in [
+            serde_json::json!({ "rootPath": "/x" }),
+            serde_json::json!({ "name": "   ", "rootPath": "/x" }),
+        ] {
+            assert!(new_workspace("ws-new", &patch(settings)).is_err());
+        }
+        let err = new_workspace(
+            "ws-new",
+            &patch(serde_json::json!({ "name": "x", "pages": [], "activePageId": "p" })),
+        )
+        .unwrap_err();
+        assert!(err.contains("is not a workspace setting"), "{err}");
+        assert!(new_workspace("ws-new", &patch(serde_json::json!({ "name": "x", "id": "other" }))).is_err());
+    }
+
+    #[test]
+    fn a_new_workspace_id_is_a_version_4_uuid() {
+        let id = new_workspace_id().unwrap();
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert!(parts[2].starts_with('4'));
+        assert!(matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')));
+        assert_ne!(id, new_workspace_id().unwrap());
     }
 
     #[test]

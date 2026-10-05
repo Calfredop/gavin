@@ -57,6 +57,18 @@ class ThemeStore {
     }
   }
 
+  /// Reads the stored preference again and applies it: another writer --
+  /// another window, or a Companion -- changed it. Not `init`, which would
+  /// add a second listener for the OS theme on every call.
+  async reload(): Promise<void> {
+    try {
+      this.pref = parseThemePref(await backend.getThemePref());
+    } catch {
+      return;
+    }
+    this.#apply(await this.#systemTheme());
+  }
+
   async setPref(pref: ThemePref): Promise<void> {
     this.pref = pref;
     this.#apply(await this.#systemTheme());

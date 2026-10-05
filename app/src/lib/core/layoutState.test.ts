@@ -147,6 +147,7 @@ vi.mock("$lib/core/backend", () => ({
 vi.mock("$lib/terminal/terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
   setCwdForLinks: vi.fn(),
+  restoreScreen: vi.fn().mockResolvedValue(undefined),
   // themeState.init() runs at the top of bootstrap() and pushes the
   // resolved theme into the terminal registry.
   applyTerminalTheme: vi.fn(),
@@ -191,6 +192,7 @@ import { appDuty } from "$lib/shell/appDuty";
 import { __resetMemoryForTesting } from "$lib/agents/memoryState";
 import {
   layoutState,
+  agentModelDefaultsStore,
   splitPane,
   setTabPinned,
   addTab,
@@ -1284,12 +1286,15 @@ describe("handleSessionExited", () => {
       "ws-1",
       "a"
     );
+    vi.mocked(backend.killSession).mockClear();
 
     handleSessionExited("c");
 
     const state = get(layoutState);
     expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["b"]));
-    expect(backend.killSession).not.toHaveBeenCalled();
+    // Non-retained exits free the daemon's kept screen; KillSession is
+    // that free (the pump already forgot the row).
+    expect(backend.killSession).toHaveBeenCalledWith("c");
   });
 
   it("takes the session's follow-up queue pane with it", async () => {
@@ -1343,6 +1348,8 @@ describe("handleSessionExited", () => {
   it("keeps a retained tab and its terminal when the session exits", () => {
     setState([ws("ws-1", [page("page-1", leaf(["tool-1"]))])], "ws-1", "tool-1");
     retainTabOnExit("tool-1");
+    vi.mocked(terminalRegistry.restoreScreen).mockClear();
+    vi.mocked(backend.killSession).mockClear();
 
     handleSessionExited("tool-1");
 
@@ -1351,6 +1358,10 @@ describe("handleSessionExited", () => {
     expect(state.focusedSessionId).toBe("tool-1");
     expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalled();
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    // Do not free the screen: the tab still needs Snapshot. Force a
+    // restore so a sub-second run that beat the listener still paints.
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(terminalRegistry.restoreScreen).toHaveBeenCalledWith("tool-1", { force: true });
   });
 
   it("still removes a retained tab when the human closes it", async () => {
@@ -3566,6 +3577,56 @@ describe("adopting another writer's workspace settings", () => {
     });
 
     expect(get(layoutState).workspaces[0].autoCommit).toBe(true);
+  });
+
+  // A workspace a Companion added (`add_workspace`, ADR 0006): the host
+  // announces the new list under the Device's origin, which no desk window
+  // has, so every window takes it -- and arms the watch on its folder.
+  it("shows a workspace a Companion added, and watches its folder", async () => {
+    const pages = [page("p-1", leaf(["s-1"]))];
+    const handlers = await bootstrapWith([ws("ws-1", pages)]);
+    vi.mocked(backend.watchGavinRoot).mockClear();
+    const added = { id: "ws-phone", name: "weather-station", rootPath: "/tmp/weather", pages: [], activePageId: null };
+
+    handlers.get("workspaces-synced")!({
+      payload: {
+        origin: "companion",
+        data: { workspaces: [ws("ws-1", pages), added], activeWorkspaceId: "ws-1", removedWorkspaces: [] },
+      },
+    });
+
+    expect(get(layoutState).workspaces.map((w) => w.id)).toEqual(["ws-1", "ws-phone"]);
+    // Adopting is not moving: the window stays where it was.
+    expect(get(layoutState).activeWorkspaceId).toBe("ws-1");
+    await vi.waitFor(() => expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-phone", "/tmp/weather"));
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  // An app-wide setting another writer changed -- a Companion's default
+  // model, say. Without the re-read the desk would go on launching the
+  // model it read at startup, and its next wholesale save would put that
+  // stale copy back over the phone's.
+  it("reads the app-wide settings again when another writer changed one", async () => {
+    const handlers = await bootstrapWith([ws("ws-1", [])]);
+    await vi.waitFor(() => expect(backend.getAgentModelDefaults).toHaveBeenCalled());
+    vi.mocked(backend.getAgentModelDefaults).mockResolvedValue({ "claude-code": "opus" });
+    vi.mocked(backend.getAutoCommit).mockResolvedValue(true);
+
+    handlers.get("app-settings-synced")!({ payload: { origin: "companion" } });
+
+    await vi.waitFor(() => expect(get(agentModelDefaultsStore)).toEqual({ "claude-code": "opus" }));
+    await vi.waitFor(() => expect(get(autoCommitDefault)).toBe(true));
+  });
+
+  it("leaves its own app-settings echo alone", async () => {
+    const handlers = await bootstrapWith([ws("ws-1", [])]);
+    await vi.waitFor(() => expect(backend.getAgentModelDefaults).toHaveBeenCalled());
+    vi.mocked(backend.getAgentModelDefaults).mockClear();
+
+    handlers.get("app-settings-synced")!({ payload: { origin: "main" } });
+    await Promise.resolve();
+
+    expect(backend.getAgentModelDefaults).not.toHaveBeenCalled();
   });
 });
 

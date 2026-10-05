@@ -48,6 +48,15 @@ function rule(componentSource: string, selector: string): Record<string, string>
 const home = source("HomeHubView.svelte");
 
 describe("the home tab's board recap", () => {
+  // Keys must be the column id. Names are not unique (add/rename never
+  // refuse a duplicate), and a keyed each on name throws
+  // each_key_duplicate — which is exactly the "This view couldn't be
+  // drawn" boundary on the Windows report for this card.
+  it("keys its column chips by column id, not by name", () => {
+    expect(home).toContain("{#each boards.columns as column (column.id)}");
+    expect(home).not.toContain("{#each boards.columns as column (column.name)}");
+  });
+
   it("is sized to its chips, not to a share of the column", () => {
     // `1 1 0` is what the other panels take, and what this one used to:
     // a third of the side column for one wrapped row of counts.

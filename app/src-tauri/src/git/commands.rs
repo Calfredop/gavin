@@ -504,7 +504,7 @@ pub fn diff_at(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untr
         return Err(out.stderr.trim().to_string());
     }
     let mut result = FileDiff { path: path.to_string(), old_path: old_path.map(str::to_string), binary: false, too_large: false, hunks: vec![] };
-    if out.stdout.len() > MAX_DIFF_BYTES {
+    if out.stdout.len() > MAX_DIFF_BYTES || out.wire_truncated {
         result.too_large = true;
         return Ok(result);
     }

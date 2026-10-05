@@ -61,6 +61,10 @@ export function computeGraph(commits: CommitInfo[]): GraphRow[] {
       active[lane] = null;
     } else {
       active[lane] = commit.parents[0];
+      // A commit can list the same parent SHA more than once (odd, but
+      // legal in git). Pushing the same lane twice makes GitGraphRow's
+      // `{#each row.outgoing as lane (lane)}` throw each_key_duplicate.
+      const seenOutgoing = new Set<number>();
       for (const parent of commit.parents.slice(1)) {
         let slot = active.indexOf(parent);
         if (slot < 0) {
@@ -72,7 +76,10 @@ export function computeGraph(commits: CommitInfo[]): GraphRow[] {
             active[slot] = parent;
           }
         }
-        outgoing.push(slot);
+        if (!seenOutgoing.has(slot)) {
+          seenOutgoing.add(slot);
+          outgoing.push(slot);
+        }
       }
     }
     while (active.length > 0 && active[active.length - 1] === null) active.pop();

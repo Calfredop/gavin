@@ -63,10 +63,15 @@ function nextTreeEpoch(workspaceId: string): number {
   return epoch;
 }
 
-// Guards watchRootedWorkspaces against double-registration: bootstrap has
-// two "workspaces are ready" paths (the workspaces-ready event and
-// pollForStartupState), and whichever runs second must be a no-op.
-let watchedOnce = false;
+// The folder each workspace's watch was armed on, by this window. Guards
+// watchRootedWorkspaces against double-registration -- bootstrap has two
+// "workspaces are ready" paths (the workspaces-ready event and
+// pollForStartupState), and whichever runs second must be a no-op -- while
+// still arming the watch a workspace that arrives LATER is owed: one added
+// by a Companion (`add_workspace`) or another window, or a root bound in
+// another window. Nothing on the desk watches those otherwise, and their
+// boards would stay empty until the next launch.
+const watchedRoots = new Map<string, string>();
 
 // Must be registered BEFORE the first watchGavinRoot call -- Tauri events
 // emitted with no listener are lost, not buffered (the Milestone B race
@@ -94,19 +99,21 @@ export async function initGavinListeners(): Promise<UnlistenFn> {
 }
 
 export function watchRootedWorkspaces(workspaces: Workspace[]): void {
-  if (watchedOnce) return;
-  watchedOnce = true;
   for (const ws of workspaces) {
     // An ssh workspace's root is watched by the host that links it
     // (remote.rs), on the daemon that can see it; and its worktree setup
     // is a file on that machine, not this one.
     if (ws.ssh?.host) continue;
+    // Unbound: a later bind, even to the same folder, is a watch owed again.
+    if (!ws.rootPath) watchedRoots.delete(ws.id);
+    if (!ws.rootPath || watchedRoots.get(ws.id) === ws.rootPath) continue;
+    watchedRoots.set(ws.id, ws.rootPath);
     // Best-effort: a failed watch shows as a missing tree, never blocks
     // startup.
-    if (ws.rootPath) void backend.watchGavinRoot(ws.id, ws.rootPath).catch(() => {});
+    void backend.watchGavinRoot(ws.id, ws.rootPath).catch(() => {});
     // Ahead of the first push, so a workspace whose watcher is slow to
     // arm does not spend that window reading as unapproved.
-    if (ws.rootPath) void refreshWorktreeSetup(ws.id, ws.rootPath);
+    void refreshWorktreeSetup(ws.id, ws.rootPath);
   }
 }
 
@@ -240,7 +247,7 @@ export function patchPlanField(
 
 /** @internal test-only reset for module-level state */
 export function __resetForTesting(): void {
-  watchedOnce = false;
+  watchedRoots.clear();
   treeEpochs.clear();
   gavinTrees.set({});
   worktreeSetups.set({});

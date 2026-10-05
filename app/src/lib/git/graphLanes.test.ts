@@ -44,4 +44,10 @@ describe("computeGraph", () => {
     expect(rows[2].color).toBe(1 % LANE_COLORS);
     expect(Math.max(...rows.map((r) => r.lanes))).toBe(2);
   });
+
+  it("dedupes a repeated parent SHA so outgoing lanes stay unique keys", () => {
+    const rows = computeGraph([c("M", ["a", "b", "b"]), c("a", []), c("b", [])]);
+    expect(rows[0].outgoing).toEqual([1]);
+    expect(new Set(rows[0].outgoing).size).toBe(rows[0].outgoing.length);
+  });
 });

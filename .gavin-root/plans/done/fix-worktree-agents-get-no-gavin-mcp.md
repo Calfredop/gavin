@@ -3,7 +3,7 @@ order: 15360
 kind: task
 title: "[fix] Agents in a fresh gavin worktree get no gavin_* tools"
 labels: bug
-status: To Do
+status: Done
 ---
 Have the daemon tell every session it spawns WHICH `gavin-mcp` to run, by
 exporting `GAVIN_MCP` beside the `GAVIN_SESSION_*` variables it already sets.
@@ -73,3 +73,5 @@ build explicitly. The launcher comment should say so.
   terminal tab in it and run `scripts/gavin-mcp` with an `initialize`
   request on stdin. It should answer, and an agent launched there should
   list the gavin_* tools.
+
+- [ ] Human test: After rebuilding/restarting the daemon: cut a fresh worktree with no target/, open a terminal tab in it, confirm echo $GAVIN_MCP names an existing gavin-mcp beside the daemon, run scripts/gavin-mcp with an initialize request on stdin and confirm it answers, then launch an agent there and confirm it lists the gavin_* tools.

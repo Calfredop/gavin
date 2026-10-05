@@ -9,6 +9,7 @@ import { isViewableInApp } from "$lib/files/fileTypes";
 import { hotState } from "$lib/core/hotState";
 import { xtermTheme } from "$lib/ui/terminalTheme";
 import { osc52Text } from "$lib/terminal/osc52";
+import { pathCandidatesIn } from "$lib/terminal/pathCandidate";
 import type { EffectiveTheme } from "$lib/ui/theme";
 
 interface RegistryEntry {
@@ -43,7 +44,15 @@ interface LiveState {
   // in the registry -- not just ones created afterwards. Held beside them so
   // newly created terminals start in the right theme too.
   theme: EffectiveTheme;
+  // See setInputTransform. Held here rather than in a module `let` because
+  // each terminal's onData closure is built once and outlives a hot reload
+  // of this module; a transform set on the reloaded module has to be the
+  // one those closures read.
+  inputTransform?: InputTransform | null;
 }
+
+/// Rewrites what a terminal's own keyboard typed, before it is sent.
+export type InputTransform = (sessionId: string, data: string) => string;
 
 /// Every live terminal in the window, held where a hot reload cannot reach it.
 ///
@@ -87,13 +96,6 @@ export function setCwdForLinks(sessionId: string, cwd: string): void {
   cwdBySessionId.set(sessionId, cwd);
 }
 
-// Matches path-shaped runs of text in a rendered line: absolute (/...),
-// home-relative (~/...), or relative containing a slash. Deliberately
-// stricter than "any word" -- every candidate costs a resolve round-trip
-// on hover, and a false positive that resolves to nothing just never
-// becomes clickable anyway.
-const PATH_CANDIDATE = /(~\/|\.{0,2}\/)[^\s'"()[\]{}:,]+/g;
-
 async function activatePath(resolvedPath: string, sessionId: string): Promise<void> {
   if (await isViewableInApp(resolvedPath)) {
     const { openFileInSplit } = await import("$lib/core/layoutState");
@@ -119,17 +121,17 @@ function registerPathLinks(term: Terminal, sessionId: string): void {
       }
       const text = line.translateToString(true);
       const cwd = cwdForSession(sessionId);
-      const matches = [...text.matchAll(PATH_CANDIDATE)];
+      const matches = pathCandidatesIn(text);
       if (matches.length === 0) {
         callback(undefined);
         return;
       }
       void Promise.all(
         matches.map(async (m) => {
-          const candidate = m[0];
+          const candidate = m.text;
           const resolved = await backend.resolvePathUnderCursor(candidate, cwd).catch(() => null);
           if (!resolved) return null;
-          const start = (m.index ?? 0) + 1;
+          const start = m.index + 1;
           return {
             range: {
               start: { x: start, y: lineNumber },
@@ -199,7 +201,8 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
   term.open(container);
 
   term.onData((data) => {
-    backend.writeInput(sessionId, data).catch(() => {});
+    const bytes = live.inputTransform ? live.inputTransform(sessionId, data) : data;
+    backend.writeInput(sessionId, bytes).catch(() => {});
   });
 
   let unlisten: UnlistenFn | undefined;
@@ -237,6 +240,25 @@ export function setTerminalFontSize(sessionId: string, fontSize: number): boolea
   return true;
 }
 
+/// Sets what every terminal's typing passes through on its way to the
+/// session, and hands back its release.
+///
+/// The desk never sets one: a keyboard at the desk has every key, and
+/// xterm turns each into its bytes. The Companion does (companion-26): a
+/// phone's soft keyboard has no Ctrl, so its dock offers a latched one,
+/// and the character typed after it has to become a control code before
+/// it leaves -- here, in the one place a terminal's typing is sent, rather
+/// than in a second path that would have to keep up with this one.
+///
+/// The release clears only its own transform, so a surface torn down
+/// after its successor mounted cannot take the successor's away.
+export function setInputTransform(transform: InputTransform): () => void {
+  live.inputTransform = transform;
+  return () => {
+    if (live.inputTransform === transform) live.inputTransform = null;
+  };
+}
+
 export function applyTerminalTheme(theme: EffectiveTheme): void {
   live.theme = theme;
   const next = xtermTheme(theme);
@@ -250,7 +272,7 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 }
 
 /// Repaints a terminal from the daemon's screen model, once per session per
-/// frontend load.
+/// frontend load -- or again when `force` is set.
 ///
 /// A `Terminal` holds its contents in the webview and nothing else does, so a
 /// frontend reload -- a window reload, or relaunching the app -- comes up with
@@ -264,11 +286,25 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 /// carries the terminals across the module's re-execution, so the entry this
 /// runs beside is already painted and `restored` already holds the id.
 ///
+/// `force` is for a kept-open shell tool tab whose process has just exited.
+/// A sub-second run can finish before the `pty-output` listener lands, so the
+/// first restore (or the live stream) paints nothing; asking again after
+/// `session-exited` is what picks up the screen the daemon still holds.
+///
 /// Awaits the listener before asking, or the push it triggers would be emitted
 /// to nobody. Best-effort otherwise: a daemon too old to have a screen model
 /// refuses the request and the terminal is left exactly as it was found.
-export async function restoreScreen(sessionId: string): Promise<void> {
-  if (restored.has(sessionId)) return;
+export async function restoreScreen(
+  sessionId: string,
+  opts: { force?: boolean } = {}
+): Promise<void> {
+  if (!opts.force && restored.has(sessionId)) return;
+  // No terminal yet -- typically a retained tool tab whose page is not
+  // the active one. Snapshotting now would push Output to nobody, and
+  // marking restored would make the later mount's restore a no-op, so
+  // the kept screen would never reach a pane. Leave restored alone and
+  // let TerminalPane's first mount ask.
+  if (!registry.has(sessionId)) return;
   restored.add(sessionId);
   await pendingListen.get(sessionId);
   await backend.snapshotSession(sessionId).catch(() => {});

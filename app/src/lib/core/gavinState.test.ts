@@ -93,6 +93,26 @@ describe("gavinState", () => {
     expect(backend.watchGavinRoot).toHaveBeenCalledTimes(1);
   });
 
+  // A workspace a Companion added, or one another window bound to a
+  // folder: adopted after startup, and owed a watch like the rest.
+  it("watches a workspace that arrives later, and a root moved to another folder, once each", () => {
+    watchRootedWorkspaces([ws("ws-1", "/tmp/a")]);
+    watchRootedWorkspaces([ws("ws-1", "/tmp/a"), ws("ws-phone", "/tmp/weather")]);
+    watchRootedWorkspaces([ws("ws-1", "/tmp/b"), ws("ws-phone", "/tmp/weather")]);
+    expect(vi.mocked(backend.watchGavinRoot).mock.calls).toEqual([
+      ["ws-1", "/tmp/a"],
+      ["ws-phone", "/tmp/weather"],
+      ["ws-1", "/tmp/b"],
+    ]);
+  });
+
+  it("watches a workspace bound again after it was unbound, even to the same folder", () => {
+    watchRootedWorkspaces([ws("ws-1", "/tmp/a")]);
+    watchRootedWorkspaces([ws("ws-1")]);
+    watchRootedWorkspaces([ws("ws-1", "/tmp/a")]);
+    expect(backend.watchGavinRoot).toHaveBeenCalledTimes(2);
+  });
+
   it("patchPlanField updates only the targeted plan", async () => {
     await initGavinListeners();
     const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;

@@ -9,9 +9,32 @@ const host = vi.hoisted(() => ({
 
 vi.mock("$lib/core/backend", () => host);
 
+const eventMock = vi.hoisted(() => {
+  const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  return {
+    handlers,
+    listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {
+        handlers.set(
+          name,
+          (handlers.get(name) ?? []).filter((h) => h !== handler)
+        );
+      };
+    }),
+    emit: vi.fn(async (_name: string, _message: unknown) => {}),
+    fire(name: string, payload: unknown): void {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventMock.emit }));
+
 import {
   availableUpdate,
   checkingForUpdate,
+  initUpdateSharing,
   lastCheckError,
   lastCheckedAt,
   refreshUpdateChannel,
@@ -19,6 +42,7 @@ import {
   startUpdateWatch,
   updateChannel,
 } from "$lib/shell/updatesState";
+import { appDuty } from "$lib/shell/appDuty";
 
 const ENDPOINT = "https://example.test/latest.json";
 
@@ -43,11 +67,13 @@ const UPDATE: AvailableUpdate = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  eventMock.handlers.clear();
   updateChannel.set(null);
   availableUpdate.set(null);
   lastCheckedAt.set(null);
   lastCheckError.set(null);
   checkingForUpdate.set(false);
+  appDuty.set({ holder: "main", windows: ["main"] });
 });
 
 describe("refreshUpdateChannel", () => {
@@ -164,5 +190,43 @@ describe("startUpdateWatch", () => {
     releaseSlow(UPDATE);
     await new Promise((r) => setTimeout(r, 0));
     expect(get(availableUpdate)).toBeNull();
+  });
+});
+
+describe("one launch check per app", () => {
+  // Bootstrap starts the watch only in the duty window. A follower that
+  // only shares must not hit the endpoint again.
+  it("takes the holder's answer without asking the host", async () => {
+    await initUpdateSharing();
+    eventMock.fire("update-reading", {
+      origin: "ws-2",
+      payload: { available: UPDATE, checkedAt: "2026-09-26T12:00:00.000Z" },
+    });
+    expect(get(availableUpdate)).toEqual(UPDATE);
+    expect(get(lastCheckedAt)?.toISOString()).toBe("2026-09-26T12:00:00.000Z");
+    expect(host.checkForUpdate).not.toHaveBeenCalled();
+  });
+
+  it("tells the other windows what a check found", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    host.updateSettings.mockResolvedValue(settings());
+    host.checkForUpdate.mockResolvedValue(UPDATE);
+    await runUpdateCheck("launch");
+    expect(eventMock.emit).toHaveBeenCalledWith(
+      "update-reading",
+      expect.objectContaining({
+        origin: "main",
+        payload: expect.objectContaining({ available: UPDATE }),
+      })
+    );
+  });
+
+  it("a new window asks the holder for its current answer", async () => {
+    appDuty.set({ holder: "ws-2", windows: ["main", "ws-2"] });
+    await initUpdateSharing();
+    expect(eventMock.emit).toHaveBeenCalledWith("update-wanted", {
+      origin: "main",
+      payload: null,
+    });
   });
 });

@@ -439,6 +439,11 @@ function takeDecoyReading(found: DecoyReading): void {
 // workspace from the daemon rather than trusting a payload: the daemon's
 // copy is the one every window agrees on, and re-reading is what the
 // push handler already does when a push disagrees with it.
+//
+// A Companion is the one writer that is not a window. The host announces
+// its writes to the windows under the same event, and every window's
+// writes to it (`forwarding::announce_orchestration_written`): a rail a
+// phone starts is only armed, and the window that runs it has to hear so.
 
 const ORCHESTRATION_WRITTEN = "orchestration-written";
 
@@ -448,7 +453,10 @@ const REREAD_DELAY_MS = 250;
 
 const rereads = new Map<string, ReturnType<typeof setTimeout>>();
 
-function rereadAfterOtherWindowWrote(workspaceId: string): void {
+/// Exported for the Companion, which hears a desk's writes -- and its
+/// own, as the desk announces them -- as this event, and must re-read
+/// the same way: after the burst, and never over a save still in flight.
+export function rereadAfterOtherWindowWrote(workspaceId: string): void {
   // A workspace this window never loaded has nothing stale to correct;
   // the first fetch will read the daemon anyway.
   if (!workspaceId || !(workspaceId in get(orchestrations))) return;
@@ -2505,7 +2513,8 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // Dynamically imported to keep the dependency one-way: autoResumeState
   // reads this module (for resumeStep and orchestrations), so a static
   // import here would close a cycle.
-  const { startAutoResume } = await import("$lib/agents/autoResumeState");
+  const { startAutoResume, initResumeTrailSharing } = await import("$lib/agents/autoResumeState");
+  const stopResumeTrailShare = await initResumeTrailSharing();
   const stopAutoResume = startAutoResume();
   // The turn verdict's driver, on the same terms and by the same route:
   // it reads this module's `orchestrations` to tell a rail step's
@@ -2514,7 +2523,13 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // all -- so it starts here, once both exist, and is never imported
   // statically. (The map it WRITES lives in turnVerdictState.ts, which
   // this module does import statically; that file imports nothing back.)
-  const { startTurnVerdict } = await import("$lib/agents/turnVerdictDriver");
+  //
+  // Sharing first: a follower that never asks still draws the inbox
+  // chip from the window that does (appDuty.ts).
+  const { startTurnVerdict, initTurnVerdictSharing } = await import(
+    "$lib/agents/turnVerdictDriver"
+  );
+  const stopTurnVerdictShare = await initTurnVerdictSharing();
   const stopTurnVerdict = startTurnVerdict();
   // The "not reaching Headroom" check, on the same terms: it tells a run
   // from a terminal the human opened by this module's bindings, so it is
@@ -2529,7 +2544,9 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     unlistenDecoys();
     stopAgents();
     stopAutoResume();
+    stopResumeTrailShare();
     stopTurnVerdict();
+    stopTurnVerdictShare();
     stopHeadroomReach();
     setRailNotificationVoice(null);
     unlisten();

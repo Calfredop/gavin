@@ -270,9 +270,13 @@ describe("the done-session reclaim", () => {
   // its parent -- the trap that once made rails re-run finished work.
   it("starts from bootstrap, after the queue it makes room for", () => {
     const layout = source("layoutState.ts");
-    expect(layout).toContain('await import("$lib/sessions/doneSessionReclaimState")');
-    expect(layout).toContain("unlisteners.push(startDoneSessionReclaim());");
-    expect(layout.indexOf("startDoneSessionReclaim()")).toBeGreaterThan(
+    expect(layout).toContain('"$lib/sessions/doneSessionReclaimState"');
+    // Through the app's duty, so a second window does not close the same
+    // sessions again (appDuty.ts). Sharing carries each window's queued
+    // count and the holder's reclaim log.
+    expect(layout).toContain("unlisteners.push(whileHoldingAppDuties(startDoneSessionReclaim));");
+    expect(layout).toContain("unlisteners.push(await initReclaimSharing());");
+    expect(layout.indexOf("whileHoldingAppDuties(startDoneSessionReclaim)")).toBeGreaterThan(
       layout.indexOf("startLaunchQueue()")
     );
   });

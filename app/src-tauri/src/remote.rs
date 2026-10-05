@@ -365,9 +365,16 @@ impl RemoteLink {
         }
     }
 
-    /// `RunGit` (v40): a git subcommand in `cwd` on the host, its stdout,
-    /// stderr and exit code -- the three the desktop's local `run_git`
-    /// returns, so the Git tab's parsing is unchanged.
+    /// `RunGit` / `RunGitCapped` (v40 / v58): a git subcommand in `cwd`
+    /// on the host, its stdout, stderr and exit code -- the three the
+    /// desktop's local `run_git` returns, so the Git tab's parsing is
+    /// unchanged.
+    ///
+    /// `stdout_cap` is what the host keeps at most (+1); when the host
+    /// is v58+ this rides `RunGitCapped` so a large git never answers a
+    /// reply past `MAX_LINE_BYTES`. Against an older host the uncapped
+    /// `RunGit` is sent and the lane's oversize-line drain is what keeps
+    /// the connection alive if the reply still blows the cap.
     ///
     /// `deadline` is the caller's, because the request's type cannot say
     /// which git this is: a `status` and a commit running a pre-commit
@@ -379,13 +386,25 @@ impl RemoteLink {
         cwd: &str,
         args: &[String],
         stdin: Option<&str>,
+        stdout_cap: usize,
         deadline: std::time::Duration,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        let req = Request::RunGit {
-            root_path: root.to_string(),
-            cwd: cwd.to_string(),
-            args: args.to_vec(),
-            stdin: stdin.map(str::to_string),
+        let cap = stdout_cap.min(protocol::MAX_GIT_STDOUT_WIRE_BYTES) as u64;
+        let req = if self.compat.daemon_version >= protocol::RUN_GIT_CAPPED_MIN_VERSION {
+            Request::RunGitCapped {
+                root_path: root.to_string(),
+                cwd: cwd.to_string(),
+                args: args.to_vec(),
+                stdin: stdin.map(str::to_string),
+                stdout_cap: cap,
+            }
+        } else {
+            Request::RunGit {
+                root_path: root.to_string(),
+                cwd: cwd.to_string(),
+                args: args.to_vec(),
+                stdin: stdin.map(str::to_string),
+            }
         };
         match self.ask_within(req, deadline)? {
             Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
@@ -590,15 +609,28 @@ pub fn run_git_over_link(
     cwd: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
+    stdout_cap: Option<usize>,
     deadline: std::time::Duration,
-) -> Option<Result<(Vec<u8>, String, i32), String>> {
+) -> Option<Result<(Vec<u8>, String, bool, i32), String>> {
     let (link, root) = git_link_for_cwd(cwd)?;
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     // git's stdin here is a commit message or a patch -- text; a non-UTF-8
     // patch is a case gavin does not produce.
     let stdin = stdin.map(|b| String::from_utf8_lossy(b).into_owned());
+    // Always ask the host to cap: even an "uncapped" local call has a
+    // wire ceiling, or a big `git show` drops the command connection.
+    let wire = protocol::MAX_GIT_STDOUT_WIRE_BYTES;
+    let host_cap = stdout_cap.unwrap_or(wire).min(wire);
     Some(
-        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref(), deadline)
+        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref(), host_cap, deadline)
+            .map(|(stdout, stderr, code)| {
+                // Host kept at most host_cap+1. When the caller's cap is
+                // above the wire ceiling and the host hit that ceiling,
+                // the answer is "too large" for the caller -- same as
+                // `len() > caller_cap` locally.
+                let wire_truncated = stdout_cap.is_some_and(|cap| cap > wire && stdout.len() > wire);
+                (stdout, stderr, wire_truncated, code)
+            })
             .map_err(|e| e.to_string()),
     )
 }

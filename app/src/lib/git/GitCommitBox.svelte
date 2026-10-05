@@ -150,4 +150,27 @@
   .warn {
     color: var(--warning-text);
   }
+
+  /* A touch screen (the Companion). iOS zooms the whole page into any
+     field set below 16px the moment it takes focus, and the box's 0.78em
+     is well under that; the button and the tick-box are a fingertip's
+     size. A window with a mouse matches none of this. */
+  @media (pointer: coarse) {
+    .summary,
+    .description {
+      font-size: max(16px, 1em);
+      padding: 8px 10px;
+    }
+    .amend {
+      min-height: 44px;
+    }
+    .amend input {
+      width: 20px;
+      height: 20px;
+    }
+    .commit {
+      min-height: 44px;
+      padding: 0 18px;
+    }
+  }
 </style>

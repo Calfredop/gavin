@@ -4,14 +4,17 @@
   import { kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { attentionStatusById, layoutState } from "$lib/core/layoutState";
+  import { FolderPlus } from "@lucide/svelte";
   import { agentIndicatorByState } from "$lib/ui/indicators";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { workspaceRows } from "$companion/surfaces/workspaceList";
 
   interface Props {
     onOpen: (workspaceId: string) => void;
+    /// Starts adding a workspace from a folder on the Workstation.
+    onAdd: () => void;
   }
-  let { onOpen }: Props = $props();
+  let { onOpen, onAdd }: Props = $props();
 
   // Derived here, in the component, and not as a store beside the
   // module: a module-level derived over a layoutState export is built at
@@ -35,7 +38,7 @@
 </script>
 
 {#if rows.length === 0}
-  <p class="empty">This Workstation has no workspaces yet. Add one at the desk and it appears here.</p>
+  <p class="empty">This Workstation has no workspaces yet.</p>
 {:else}
   <ul class="list">
     {#each rows as row (row.id)}
@@ -73,8 +76,33 @@
     {/each}
   </ul>
 {/if}
+<button type="button" class="add" onclick={onAdd}>
+  <FolderPlus size={18} />
+  <span>Add a workspace…</span>
+</button>
 
 <style>
+  .add {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 52px;
+    padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: none;
+    color: var(--accent-text);
+    font-size: 0.9375rem;
+    text-align: left;
+  }
+  .add:active {
+    background: var(--surface-hover);
+  }
+  .add:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: -2px;
+  }
   .empty {
     margin: 0;
     padding: 24px 16px;

@@ -1,7 +1,7 @@
 ---
-order: 34816
+order: 5120
 title: The Companion: Gavin on a phone
-status: To Do
+status: In Progress
 priority: medium
 labels: ready-for-agent
 attachments: docs/superpowers/specs/2026-09-27-companion-design.md,CONTEXT.md,docs/adr/0001-device-key-is-two-keys.md,docs/adr/0002-companion-is-capacitor.md,docs/adr/0003-companion-drives-the-desktop-app.md,docs/adr/0004-one-unlock-gives-full-control.md,docs/adr/0005-workstation-serves-the-companion-ui.md,docs/research/2026-09-27-app-store-downloaded-code.md

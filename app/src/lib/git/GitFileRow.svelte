@@ -142,4 +142,25 @@
     opacity: 0.4;
     cursor: default;
   }
+
+  /* A touch screen (the Companion). Nothing hovers there, so the actions
+     a pointer finds on hover are always shown, and a row and its buttons
+     are a fingertip high rather than a cursor's. A window with a mouse
+     matches neither query, so the desk draws the row as above. */
+  @media (hover: none) {
+    .row .actions {
+      display: flex;
+    }
+  }
+  @media (pointer: coarse) {
+    .row {
+      min-height: 44px;
+      box-sizing: border-box;
+    }
+    .actions button {
+      width: 40px;
+      height: 32px;
+      font-size: 1.1em;
+    }
+  }
 </style>

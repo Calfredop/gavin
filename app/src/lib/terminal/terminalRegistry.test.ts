@@ -8,6 +8,8 @@ const written: string[] = [];
 let resolveListen: (() => void) | undefined;
 // The OSC handlers the last terminal built registered, by identifier.
 const oscHandlers = new Map<number, (payload: string) => boolean>();
+// What the last terminal built does with its own typing.
+let typed: ((data: string) => void) | undefined;
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -27,7 +29,9 @@ vi.mock("@xterm/xterm", () => ({
     };
     loadAddon() {}
     open() {}
-    onData() {}
+    onData(handler: (data: string) => void) {
+      typed = handler;
+    }
     registerLinkProvider() {}
     focus() {}
     dispose() {}
@@ -58,6 +62,7 @@ import {
   getOrCreateTerminal,
   restoreScreen,
   destroyTerminal,
+  setInputTransform,
   setTerminalFontSize,
 } from "$lib/terminal/terminalRegistry";
 
@@ -96,6 +101,33 @@ describe("restoring a terminal's screen", () => {
     await restoreScreen("s2");
     expect(backend.snapshotSession).toHaveBeenCalledTimes(1);
     destroyTerminal("s2");
+  });
+
+  it("force-repaints after a fast exit even when the first restore already ran", async () => {
+    getOrCreateTerminal("s-fast", 13);
+    resolveListen?.();
+    await restoreScreen("s-fast");
+    expect(backend.snapshotSession).toHaveBeenCalledTimes(1);
+
+    resolveListen?.();
+    await restoreScreen("s-fast", { force: true });
+    expect(backend.snapshotSession).toHaveBeenCalledTimes(2);
+    destroyTerminal("s-fast");
+  });
+
+  it("does not mark restored when no terminal exists yet", async () => {
+    // A retained tool tab whose page is not on screen: exit asks for a
+    // force restore before any pane has mounted. Snapshotting then would
+    // push to nobody, and marking restored would make the later mount
+    // skip the real restore against the daemon's kept screen.
+    await restoreScreen("s-absent", { force: true });
+    expect(backend.snapshotSession).not.toHaveBeenCalled();
+
+    getOrCreateTerminal("s-absent", 13);
+    resolveListen?.();
+    await restoreScreen("s-absent");
+    expect(backend.snapshotSession).toHaveBeenCalledWith("s-absent");
+    destroyTerminal("s-absent");
   });
 
   it("leaves the terminal alone when the daemon refuses the request", async () => {
@@ -188,5 +220,62 @@ describe("a program copying through the terminal (OSC 52)", () => {
     expect(oscHandlers.get(52)?.(`c;${b64("x")}`)).toBe(true);
     await flush();
     destroyTerminal("o3");
+  });
+});
+
+describe("what a terminal's typing sends", () => {
+  let release: (() => void) | null = null;
+  beforeEach(() => {
+    vi.mocked(backend.writeInput).mockClear();
+    vi.stubGlobal("document", { createElement: () => ({ style: {} }) });
+  });
+  afterEach(() => {
+    release?.();
+    release = null;
+    vi.unstubAllGlobals();
+  });
+
+  it("is what was typed, where nothing has asked to see it first", () => {
+    getOrCreateTerminal("t1", 13);
+    typed?.("ls\r");
+    expect(backend.writeInput).toHaveBeenCalledWith("t1", "ls\r");
+    destroyTerminal("t1");
+  });
+
+  it("goes through a transform where one is set, told whose terminal it is", () => {
+    // The Companion's latched Ctrl: the next character becomes its
+    // control code before it leaves.
+    const transform = vi.fn((_id: string, data: string) => (data === "c" ? "\x03" : data));
+    release = setInputTransform(transform);
+    getOrCreateTerminal("t2", 13);
+    typed?.("c");
+    expect(transform).toHaveBeenCalledWith("t2", "c");
+    expect(backend.writeInput).toHaveBeenCalledWith("t2", "\x03");
+    destroyTerminal("t2");
+  });
+
+  it("reaches a terminal built before the transform was set", () => {
+    getOrCreateTerminal("t3", 13);
+    const sendKeysOf = typed;
+    release = setInputTransform(() => "rewritten");
+    sendKeysOf?.("x");
+    expect(backend.writeInput).toHaveBeenCalledWith("t3", "rewritten");
+    destroyTerminal("t3");
+  });
+
+  it("goes back to what was typed once released, and a stale release takes nothing away", () => {
+    getOrCreateTerminal("t4", 13);
+    const first = setInputTransform(() => "first");
+    release = setInputTransform(() => "second");
+    // The surface that set the first is torn down after the second
+    // mounted: the second stays.
+    first();
+    typed?.("x");
+    expect(backend.writeInput).toHaveBeenLastCalledWith("t4", "second");
+    release();
+    release = null;
+    typed?.("x");
+    expect(backend.writeInput).toHaveBeenLastCalledWith("t4", "x");
+    destroyTerminal("t4");
   });
 });

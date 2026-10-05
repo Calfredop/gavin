@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as backend from "$lib/core/backend";
 import { gavinTrees } from "$lib/core/gavinState";
 import { layoutState } from "$lib/core/layoutState";
+import { createChannelClient } from "$companion/channel/client";
 import { loopback } from "$companion/channel/port";
 import { ACTIVITY } from "$companion/demo/activity";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
@@ -35,6 +36,34 @@ describe("the demo's activity", () => {
     first.advance();
     for (let i = 0; i < ACTIVITY.length + 1; i++) demo.advance();
     expect(demo.state).toEqual(first.state);
+  });
+
+  // A reviewer who renames a workspace, saves a file or adds a workspace
+  // must still see it a lap later: the loop puts back what IT moved.
+  it("leaves alone what a visitor changed, lap after lap", async () => {
+    const demo = createDemoWorkstation();
+    const client = createChannelClient(loopback(demo));
+    await client.invoke("set_workspace_settings", { workspaceId: DEMO.atlas, patch: { name: "atlas" } });
+    await client.invoke("set_auto_commit", { enabled: true });
+    await client.invoke("write_file_for_editor", { path: `${DEMO.atlasRoot}/README.md`, content: "edited\n" });
+    await client.invoke("add_workspace", { settings: { name: "weather-station", rootPath: DEMO.weatherRoot } });
+    await client.invoke("set_root_config_field", { rootPath: DEMO.atlasRoot, key: "model", value: "sonnet" });
+
+    for (let i = 0; i < ACTIVITY.length * 2; i++) demo.advance();
+
+    expect(demo.state.workspaces.workspaces.map((w) => w.name)).toEqual([
+      "atlas",
+      "field-notes",
+      "Scratchpad",
+      "weather-station",
+    ]);
+    expect(demo.state.settings.autoCommit).toBe(true);
+    expect(demo.state.files[`${DEMO.atlasRoot}/README.md`]).toBe("edited\n");
+    expect(demo.state.trees[DEMO.atlas].contexts[0].agent?.model).toBe("sonnet");
+    // ...while its own cards are back where they started.
+    expect(demo.state.trees[DEMO.atlas].contexts.map((c) => c.plans)).toEqual(
+      sampleState().trees[DEMO.atlas].contexts.map((c) => c.plans)
+    );
   });
 
   it("changes something at every step", () => {
@@ -79,17 +108,34 @@ describe("the demo's activity", () => {
 });
 
 describe("the activity, as the Companion sees it", () => {
-  it("answers the agent that was waiting on the human", async () => {
+  it("answers the agent that was waiting on the human, part-way round", async () => {
     const demo = createDemoWorkstation();
     const stop = await connectWorkstation(loopback(demo), deviceStorage());
     await settle();
-    expect(get(layoutState).sessionStatusById["s-atlas-store"]).toBe("waiting_for_input");
+    const store = () => get(layoutState).sessionStatusById["s-atlas-store"];
+    expect(store()).toBe("waiting_for_input");
 
-    demo.advance();
-    await settle();
+    const seen: string[] = [];
+    for (let i = 0; i < ACTIVITY.length; i++) {
+      demo.advance();
+      await settle();
+      seen.push(store());
+    }
 
-    expect(get(layoutState).sessionStatusById["s-atlas-store"]).toBe("working");
+    expect(seen).toContain("working");
+    // ...and it is asking again when the loop comes round.
+    expect(seen.at(-1)).toBe("waiting_for_input");
     stop();
+  });
+
+  it("keeps an agent waiting on a menu for most of the loop", () => {
+    const demo = createDemoWorkstation();
+    let waitingSteps = 0;
+    for (let i = 0; i < ACTIVITY.length; i++) {
+      if (demo.state.sessions.some((s) => s.status === "waiting_for_input")) waitingSteps += 1;
+      demo.advance();
+    }
+    expect(waitingSteps).toBeGreaterThanOrEqual(ACTIVITY.length - 1);
   });
 
   it("moves a plan's checklist along", async () => {

@@ -56,6 +56,30 @@ vi.mock("$lib/orchestration/orchestrationState", async () => {
   return { orchestrations: w({} as Record<string, unknown>) };
 });
 
+// The other windows, as the host would carry them: `emit` is recorded,
+// and `fire` plays a message another window sent.
+const eventMock = vi.hoisted(() => {
+  const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  return {
+    handlers,
+    listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {
+        handlers.set(
+          name,
+          (handlers.get(name) ?? []).filter((h) => h !== handler)
+        );
+      };
+    }),
+    emit: vi.fn(async (_name: string, _message: unknown) => {}),
+    fire(name: string, payload: unknown): void {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventMock.emit }));
+
 import * as backend from "$lib/core/backend";
 import { daemonCompat, setSessionStatusHook } from "$lib/core/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
@@ -65,10 +89,13 @@ import { PENDING_BACKSTOP_MS, turnVerdictById, typesafeSettings } from "$lib/age
 import {
   __resetForTesting,
   clearTurnVerdict,
+  initTurnVerdictSharing,
   noteQuietTransition,
   startTurnVerdict,
   turnVerdictSkip,
 } from "$lib/agents/turnVerdictDriver";
+import { appDuty } from "$lib/shell/appDuty";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 
 const CARD = "/ws/.gavin-root/plans/a.md";
 
@@ -198,10 +225,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   __resetForTesting();
   captured.hook = null;
+  eventMock.handlers.clear();
+  eventMock.emit.mockClear();
   kanbanState.set({} as never);
   orchestrations.set({} as never);
   gavinTrees.set({} as never);
   daemonCompat.set({ daemonVersion: 39, appVersion: 39, degraded: false } as never);
+  // Lone main window: this window runs every workspace's rails, which is
+  // what the existing suite assumes.
+  appDuty.set({ holder: "main", windows: ["main"] });
+  workspaceWindows.set({});
   vi.mocked(backend.sessionScreen).mockResolvedValue(SCREEN);
   vi.mocked(backend.typesafeAsk).mockResolvedValue(body());
   vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true, changeAttribution: false });
@@ -452,5 +485,55 @@ describe("the status hook", () => {
     expect(get(turnVerdictById)).toEqual({});
     // Re-armed for the afterEach, which stops again harmlessly.
     stop = startTurnVerdict();
+  });
+});
+
+describe("one ask per workspace window", () => {
+  // Every window holds every board, so `ownerOf` finds the binding in
+  // all of them. Without the gate, N windows would mean N paid requests
+  // per quiet turn.
+  it("asks nothing when another open window runs the workspace's rails", async () => {
+    armed();
+    cardSession();
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    workspaceWindows.set({ "ws-1": "ws-2" });
+    noteQuietTransition("s1");
+    await flush();
+    expect(backend.sessionScreen).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
+    expect(get(turnVerdictById)).toEqual({});
+  });
+
+  it("tells the other windows each map write", async () => {
+    armed();
+    cardSession();
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    noteQuietTransition("s1");
+    expect(eventMock.emit).toHaveBeenCalledWith("turn-verdict", {
+      origin: "main",
+      payload: { sessionId: "s1", entry: { state: "pending" } },
+    });
+    await flush();
+    expect(eventMock.emit).toHaveBeenCalledWith("turn-verdict", {
+      origin: "main",
+      payload: {
+        sessionId: "s1",
+        entry: { state: "read", reading: { kind: "asking" } },
+      },
+    });
+  });
+
+  it("takes another window's verdict without asking the host", async () => {
+    await initTurnVerdictSharing();
+    eventMock.fire("turn-verdict", {
+      origin: "ws-2",
+      payload: {
+        sessionId: "s1",
+        entry: { state: "read", reading: { kind: "asking" } },
+      },
+    });
+    expect(get(turnVerdictById).s1).toEqual({ state: "read", reading: { kind: "asking" } });
+    expect(backend.sessionScreen).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
   });
 });

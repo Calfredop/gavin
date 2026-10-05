@@ -25,6 +25,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "set_workspaces_state",
     "get_workspace_settings",
     "set_workspace_settings",
+    "add_workspace",
     "get_theme_pref",
     "set_theme_pref",
     "get_terminal_font_size",
@@ -233,6 +234,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "check_for_update",
     "install_update",
     "temp_dir",
+    "home_dir",
 ];
 
 #[cfg(test)]

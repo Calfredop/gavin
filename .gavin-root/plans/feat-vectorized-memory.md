@@ -1,7 +1,7 @@
 ---
-order: 10240
+order: 40960
 kind: task
-title: [ui] orchestration’s node rework
+title: [feat] vectorized memory
 status: To Do
 ---
 <!-- gavin:auto-commit -->

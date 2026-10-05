@@ -52,6 +52,10 @@ pub struct GitOutput {
     pub stdout: Vec<u8>,
     pub stderr: String,
     pub code: i32,
+    /// True when an ssh host cut stdout at the wire ceiling below the
+    /// caller's cap: the same "too large" a `len() > cap` check means
+    /// for a local run (`fix-link-gitrun-line-cap.md`).
+    pub wire_truncated: bool,
 }
 
 impl GitOutput {
@@ -91,13 +95,13 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
     // `commands.rs` never learns which machine ran it.
     // The network ops the desktop keeps use `run_git_streaming`, which does
     // not route.
-    if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin, GIT_LINK_TIMEOUT) {
-        // The host read all of it; the cap still holds for the caller.
-        return result.map(|(mut stdout, stderr, code)| {
+    if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin, stdout_cap, GIT_LINK_TIMEOUT)
+    {
+        return result.map(|(mut stdout, stderr, wire_truncated, code)| {
             if let Some(cap) = stdout_cap {
                 stdout.truncate(cap.saturating_add(1));
             }
-            GitOutput { stdout, stderr, code }
+            GitOutput { stdout, stderr, code, wire_truncated }
         });
     }
     run_local(cwd, args, &[], stdin, stdout_cap, GIT_TIMEOUT, &OpControl::default())
@@ -147,13 +151,22 @@ fn run_git_action_within(
     // puts no ceiling on the git: `timeout` bounds the wait for its answer,
     // as it bounds the process here.
     debug_assert!(env.is_empty() || stdin.is_none(), "RunGitEnv carries no stdin");
-    let routed = if env.is_empty() {
-        crate::remote::run_git_over_link(cwd, args, stdin, timeout)
-    } else {
-        crate::remote::run_git_env_over_link(cwd, args, env, timeout)
-    };
-    if let Some(result) = routed {
-        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
+    if env.is_empty() {
+        if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin, None, timeout) {
+            return result.map(|(stdout, stderr, wire_truncated, code)| GitOutput {
+                stdout,
+                stderr,
+                code,
+                wire_truncated,
+            });
+        }
+    } else if let Some(result) = crate::remote::run_git_env_over_link(cwd, args, env, timeout) {
+        return result.map(|(stdout, stderr, code)| GitOutput {
+            stdout,
+            stderr,
+            code,
+            wire_truncated: false,
+        });
     }
     run_local(cwd, args, env, stdin, None, timeout, control)
 }
@@ -343,7 +356,12 @@ fn run_local(
 
     let stdout = out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let stderr = err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-    Ok(GitOutput { stdout, stderr, code: status.code().unwrap_or(-1) })
+    Ok(GitOutput {
+        stdout,
+        stderr,
+        code: status.code().unwrap_or(-1),
+        wire_truncated: false,
+    })
 }
 
 #[cfg(test)]

@@ -69,15 +69,45 @@ vi.mock("$lib/agents/autoResumeNotify", () => ({
   sendAutoResumeNotice: vi.fn().mockResolvedValue(undefined),
 }));
 
+const eventMock = vi.hoisted(() => {
+  const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  return {
+    handlers,
+    listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {
+        handlers.set(
+          name,
+          (handlers.get(name) ?? []).filter((h) => h !== handler)
+        );
+      };
+    }),
+    emit: vi.fn(async (_name: string, _message: unknown) => {}),
+    fire(name: string, payload: unknown): void {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventMock.emit }));
+
 import { layoutState, daemonCompat } from "$lib/core/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/agents/autoResumeNotify";
-import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/agents/autoResumeState";
+import {
+  __resetAutoResume,
+  __setAutoResumeClock,
+  initResumeTrailSharing,
+  resumeTrail,
+  startAutoResume,
+} from "$lib/agents/autoResumeState";
 import { PENDING_BACKSTOP_MS, turnVerdictById } from "$lib/agents/turnVerdictState";
 import { HEADROOM_REASON_PREFIX, STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/agents/autoResume";
+import { appDuty } from "$lib/shell/appDuty";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 
 const NETWORK = "API Error: Connection dropped (ECONNRESET)";
 const AUTH = "Please run /login · API Error: 401 OAuth token has expired";
@@ -211,12 +241,15 @@ let stop: () => void;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  eventMock.handlers.clear();
   __resetAutoResume();
   turnVerdictById.set({});
   orchestrations.set({} as never);
   kanbanState.set({} as never);
   gavinTrees.set({} as never);
   daemonCompat.set({ daemonVersion: 22, appVersion: 22, degraded: false } as never);
+  appDuty.set({ holder: "main", windows: ["main"] });
+  workspaceWindows.set({});
   // No jitter, so a stagger's slots are exact and a test can name them.
   __setAutoResumeClock({ random: () => 0, online: () => true });
   stop = startAutoResume();
@@ -717,5 +750,49 @@ describe("the guards", () => {
     await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
     expect(resumeCard).not.toHaveBeenCalled();
     expect(sendAutoResumeNotice).not.toHaveBeenCalled();
+  });
+});
+
+describe("one resume per workspace window", () => {
+  // `resumeClaims` is per window, so without the gate both windows that
+  // hear `session-failed` would relaunch the same session.
+  it("arms nothing when another open window runs the workspace's rails", async () => {
+    cardRun();
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    workspaceWindows.set({ "ws-1": "ws-2" });
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).not.toHaveBeenCalled();
+    expect(sendAutoResumeNotice).not.toHaveBeenCalled();
+  });
+
+  it("tells the other windows each trail write", async () => {
+    cardRun();
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalled();
+    const told = eventMock.emit.mock.calls.find((c) => c[0] === "resume-trail");
+    expect(told).toBeTruthy();
+    expect(told![1]).toMatchObject({
+      origin: "main",
+      payload: { key: "/ws/.gavin-root/plans/a.md", record: { cause: "network" } },
+    });
+  });
+
+  it("takes another window's trail without resuming", async () => {
+    await initResumeTrailSharing();
+    const record = {
+      cause: "network" as const,
+      reason: NETWORK,
+      failedAt: 1,
+      resumedAt: 2,
+    };
+    eventMock.fire("resume-trail", {
+      origin: "ws-2",
+      payload: { key: "/ws/.gavin-root/plans/a.md", record },
+    });
+    expect(get(resumeTrail)["/ws/.gavin-root/plans/a.md"]).toEqual(record);
+    expect(resumeCard).not.toHaveBeenCalled();
   });
 });

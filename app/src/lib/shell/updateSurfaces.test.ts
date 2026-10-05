@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "$lib/sources";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // The update channel is expressed on two surfaces that nothing links: a
 // badge on the sidebar's Settings row, and the Updates section of the
@@ -14,6 +14,7 @@ import { svelteSources } from "$lib/sources";
 // handler was called" tests the harness.
 
 const SOURCES = svelteSources();
+const TS = tsSources();
 
 function source(name: string): string {
   const text = SOURCES[name];
@@ -21,8 +22,22 @@ function source(name: string): string {
   return text;
 }
 
+function ts(name: string): string {
+  const text = TS[name];
+  if (!text) throw new Error(`no source for ${name}`);
+  return text;
+}
+
 const SIDEBAR = "Sidebar.svelte";
 const PANEL = "GlobalSettingsView.svelte";
+
+describe("the launch check", () => {
+  it("runs in the duty window only, and followers take its answer", () => {
+    const layout = ts("layoutState.ts");
+    expect(layout).toContain("unlisteners.push(whileHoldingAppDuties(startUpdateWatch));");
+    expect(layout).toContain("unlisteners.push(await initUpdateSharing());");
+  });
+});
 
 describe("the sidebar badge", () => {
   it("reads the store the launch check writes", () => {

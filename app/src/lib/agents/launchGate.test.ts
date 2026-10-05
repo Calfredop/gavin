@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ceilingFrom,
   DEFAULT_LAUNCH,
   DRAIN_SPACING_MS,
   HYSTERESIS_MS,
@@ -79,6 +80,17 @@ describe("the ceiling", () => {
   it("holds before it looks at memory, so a full fleet is not reported as pressure", () => {
     const verdict = launchVerdict(input({ inFlight: 4, pressure: "critical" }));
     expect(verdict.reason).toBe("ceiling");
+  });
+});
+
+describe("ceilingFrom", () => {
+  it("reads a count, rounded down", () => {
+    expect(ceilingFrom("6")).toBe(6);
+    expect(ceilingFrom(" 3.7 ")).toBe(3);
+  });
+
+  it("reads blank, zero and anything that is not a count as no ceiling", () => {
+    for (const raw of ["", "   ", "0", "-2", "many", "Infinity"]) expect(ceilingFrom(raw)).toBeNull();
   });
 });
 
