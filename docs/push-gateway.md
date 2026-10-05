@@ -7,6 +7,7 @@ never logs a payload, and a copy of its database authenticates as nobody.
 
 Source: `crates/push-gateway`. Design: the spec's "The Push gateway" and
 "Notifications" sections (`docs/superpowers/specs/2026-09-27-companion-design.md`).
+The Relay (byte-copy rendezvous, separate service) is [`relay.md`](relay.md).
 
 ## How a notification travels
 
