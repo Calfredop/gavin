@@ -17,6 +17,17 @@
 // swapping. Started once by bootstrap, after the queue whose drain this
 // is making room for.
 //
+// ## Why only the duty window closes
+//
+// Every window used to run this pass on the same shared memory readings,
+// and each could `closeSession` inside one spacing interval -- the burst
+// the pacing exists to prevent. Bootstrap starts the watcher through
+// `whileHoldingAppDuties`. The launch queue is still per window, so each
+// window tells the others its queued count (`initReclaimSharing`) and
+// the reclaimer sums them; gating the actor without that would miss work
+// waiting in a follower's queue. Each close is told to the others too,
+// so a follower's reclaim log still draws.
+//
 // ## Why `closeSession` and not the daemon's kill
 //
 // `closeSession` is the app's one close path: it kills through the
@@ -48,6 +59,8 @@ import { agentSessions, memoryPressure, systemMemory } from "$lib/agents/memoryS
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { closeTabsNow } from "$lib/panes/tabActions";
 import { findSessionLocation } from "$lib/core/workspace";
+import { appDuty, listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
+import { currentWindowLabel } from "$lib/shell/appWindowState";
 
 /// Every close the wall has made by itself this app run, oldest first.
 ///
@@ -79,6 +92,36 @@ let reclaiming = false;
 let recheck: ReturnType<typeof setTimeout> | null = null;
 let unsubscribe: (() => void) | null = null;
 
+/// Queued counts other windows have told this one, by their label. The
+/// launch queue is per window; the reclaimer needs every window's. A
+/// store so a fresh tell re-runs the pass the same way a local enqueue
+/// does.
+const otherQueuedByLabel = writable<Record<string, number>>({});
+
+const QUEUED_COUNT = "launch-queued-count";
+const RECLAIM_LOG = "reclaim-log";
+
+interface QueuedCountShare {
+  /// The sending window's label: `listenToOtherWindows` drops origin, so
+  /// the map is keyed from the payload.
+  label: string;
+  count: number;
+}
+
+/// Own queue plus every other open window's, pruning labels that have
+/// closed (they cannot tell us zero).
+function totalQueued(): number {
+  const live = new Set(get(appDuty).windows);
+  const me = currentWindowLabel();
+  const others = get(otherQueuedByLabel);
+  let sum = get(launchQueue).length;
+  for (const [label, count] of Object.entries(others)) {
+    if (!live.has(label) || label === me) continue;
+    sum += count;
+  }
+  return sum;
+}
+
 /// Whether the fleet has shrunk since the last close -- the poll has
 /// seen it go. Counted rather than identified, like the drain's
 /// `lastLaunchObserved`: "the fleet is smaller" is the fact the next
@@ -109,7 +152,7 @@ async function pass(): Promise<void> {
   const reason = reclaimTrigger({
     config: get(launchConfigStore),
     pressure: get(memoryPressure),
-    queued: get(launchQueue).length,
+    queued: totalQueued(),
     railsHeld: heldRailCount(get(orchestrations), verdict.allowed),
   });
   if (!reason) return;
@@ -146,16 +189,28 @@ async function pass(): Promise<void> {
 }
 
 /// Starts the watcher. Module-level, like `startLaunchQueue`, and for
-/// the reason the header gives. Returns its own teardown.
+/// the reason the header gives -- and, like the memory poll, the app's
+/// rather than the window's: bootstrap starts it through
+/// `whileHoldingAppDuties`. Returns its own teardown.
 ///
 /// Subscribed to every store the trigger reads, and to `systemMemory`
 /// as well: it is the CLOCK, replaced by the poller every two to five
 /// seconds, which is what makes the grace period and the spacing tick
-/// without a timer of their own.
+/// without a timer of their own. `appDuty` is an input too: a window
+/// closing drops its queued count from the sum.
 export function startDoneSessionReclaim(): () => void {
   stopDoneSessionReclaim();
   const inputs = derived(
-    [launchConfigStore, memoryPressure, systemMemory, launchQueue, orchestrations, launchGateVerdict],
+    [
+      launchConfigStore,
+      memoryPressure,
+      systemMemory,
+      launchQueue,
+      otherQueuedByLabel,
+      orchestrations,
+      launchGateVerdict,
+      appDuty,
+    ],
     (values) => values
   );
   unsubscribe = inputs.subscribe(() => void pass());
@@ -193,6 +248,7 @@ function record(candidate: ReclaimCandidate, reason: ReclaimReason): void {
     reason,
   };
   reclaimLog.update((log) => [...log, entry]);
+  tellOtherWindows<ReclaimRecord>(RECLAIM_LOG, entry);
   unannounced.push(entry);
   if (noticeTimer) clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => {
@@ -201,6 +257,31 @@ function record(candidate: ReclaimCandidate, reason: ReclaimReason): void {
     unannounced = [];
     void sendReclaimNotice(reclaimNoticeBody(batch));
   }, NOTICE_DELAY_MS);
+}
+
+/// Tells the other windows this window's queued count, and takes theirs
+/// plus each reclaim the duty window made. Returns its teardown, for
+/// bootstrap's list -- every window runs this, including the reclaimer.
+export async function initReclaimSharing(): Promise<() => void> {
+  const unlistenCounts = await listenToOtherWindows<QueuedCountShare>(QUEUED_COUNT, (share) => {
+    if (!share?.label) return;
+    otherQueuedByLabel.update((all) => ({ ...all, [share.label]: share.count }));
+  });
+  const unlistenLog = await listenToOtherWindows<ReclaimRecord>(RECLAIM_LOG, (entry) => {
+    if (!entry?.sessionId) return;
+    reclaimLog.update((log) => [...log, entry]);
+  });
+  const stopTell = launchQueue.subscribe((queue) => {
+    tellOtherWindows<QueuedCountShare>(QUEUED_COUNT, {
+      label: currentWindowLabel(),
+      count: queue.length,
+    });
+  });
+  return () => {
+    unlistenCounts();
+    unlistenLog();
+    stopTell();
+  };
 }
 
 let permissionRequested = false;
@@ -249,6 +330,7 @@ export function __resetDoneSessionReclaimForTesting(): void {
   reclaiming = false;
   lastReclaimMs = null;
   lastReclaimSessions = 0;
+  otherQueuedByLabel.set({});
   if (noticeTimer) clearTimeout(noticeTimer);
   noticeTimer = null;
   unannounced = [];

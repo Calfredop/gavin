@@ -7,6 +7,15 @@
 // gate, and the resume itself -- shaped after orchestrationState's
 // scheduler: registered once at startup, owned by the module that owns
 // the effect, not by whichever component happens to be mounted.
+//
+// Every window starts the failure hook, but only the window that runs
+// the session's workspace's rails (`runsRailsFor`) arms a resume --
+// `resumeClaims` is an in-memory Map per window, so it cannot stop a
+// second window from launching the same session again. A resume is a
+// relaunch (`resumeStep` / `resumeCard`), not a keystroke into the PTY.
+// The window that acts tells the others each trail write
+// (`initResumeTrailSharing`), so a follower's UI still shows what
+// happened.
 
 import { get, writable } from "svelte/store";
 import { pauseFor } from "$lib/agents/agentPauseState";
@@ -41,6 +50,7 @@ import { cardViewForPath, slugStatus } from "$lib/core/planBoard";
 import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration/orchestration";
 import type { Rail, Step } from "$lib/orchestration/orchestration";
 import type { SessionStatus } from "$lib/core/notifications";
+import { listenToOtherWindows, runsRailsFor, tellOtherWindows } from "$lib/shell/appDuty";
 
 /// What gavin has done about a run without being asked, by the thing it
 /// belongs to: a rail step id, or a card's file path.
@@ -368,7 +378,7 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
     resumedAt: clock.now(),
   };
   const trailKey = owner.kind === "step" ? owner.step.id : owner.path;
-  resumeTrail.update((t) => ({ ...t, [trailKey]: record }));
+  publishResumeTrail(trailKey, record);
   // The NEW session, so an immediate second failure is recognised as one.
   const replacement =
     owner.kind === "step"
@@ -378,6 +388,28 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
           ?.sessionId;
   if (replacement) resumedAt.set(replacement, record.resumedAt);
   void notify(resumeNotificationBody(label, record));
+}
+
+const RESUME_TRAIL = "resume-trail";
+
+interface ResumeTrailShare {
+  key: string;
+  record: ResumeRecord;
+}
+
+/// Puts a trail write in this window's store and tells the others.
+function publishResumeTrail(key: string, record: ResumeRecord): void {
+  resumeTrail.update((t) => ({ ...t, [key]: record }));
+  tellOtherWindows<ResumeTrailShare>(RESUME_TRAIL, { key, record });
+}
+
+/// Takes the trail writes the window that resumed tells. Returns its
+/// teardown, for the orchestration listeners' list.
+export async function initResumeTrailSharing(): Promise<() => void> {
+  return listenToOtherWindows<ResumeTrailShare>(RESUME_TRAIL, (share) => {
+    if (!share?.key || !share.record) return;
+    resumeTrail.update((t) => ({ ...t, [share.key]: share.record }));
+  });
 }
 
 async function resumeCardByPath(
@@ -445,6 +477,10 @@ function onSessionFailed(
 
   const owner = ownerOf(sessionId);
   if (!owner) return;
+  // Another window runs this workspace's rails: it will arm the resume.
+  // Acting here too is a second relaunch -- `resumeClaims` is per window
+  // and cannot stop it.
+  if (!runsRailsFor(owner.workspaceId)) return;
   // A failure the profile's own table cannot name is the one case the
   // turn verdict changes here (`verdictCause` in autoResume.ts) -- and
   // this hook fires straight after the `failed` status that asked for

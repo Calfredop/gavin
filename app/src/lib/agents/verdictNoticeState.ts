@@ -63,17 +63,30 @@ export const VERDICT_NOTICE_WAIT_MS = PENDING_BACKSTOP_MS + 1_000;
 /// proxies `$state`, so identity guards silently never fire.
 const tokens = new Map<string, number>();
 
+/// Which window asks about a session, handed in by the driver.
+///
+/// `null` -- not gavin's work; the tray notifies inline as it always did.
+/// `true` -- this window asks, and may hold the tray line for the answer.
+/// `false` -- another window asks; swallow the line here so N open
+/// windows do not send N notifications for one quiet turn.
+type TurnVerdictRole = (sessionId: string) => boolean | null;
+
+let roleOf: TurnVerdictRole = () => true;
+
 /// The slot layoutState asks at every transition. True means this file
 /// has taken the notification.
 ///
 /// False for everything `verdictHoldsNotification` does not recognise,
 /// which is the overwhelming majority of transitions, and layoutState
-/// then notifies inline exactly as it always did.
+/// then notifies inline exactly as it always did. A session another
+/// window judges is taken too -- and then announced nowhere here -- so
+/// N open windows do not send N tray lines for one quiet turn.
 function hold(
   sessionId: string,
   previousStatus: SessionStatus | undefined,
   status: SessionStatus
 ): boolean {
+  if (roleOf(sessionId) === false) return true;
   if (!verdictHoldsNotification(previousStatus, status, get(turnVerdictById)[sessionId])) {
     return false;
   }
@@ -133,13 +146,21 @@ async function announceWhenSettled(sessionId: string, token: number): Promise<vo
 /// Starts holding. Returns its own teardown, the shape `startTurnVerdict`
 /// and `startAutoResume` both use.
 ///
+/// `role` is what the driver uses to decide who asks (`turnVerdictRole`):
+/// a follower swallows the tray line for a session it does not judge, so
+/// the window that asked is the only one that announces. Defaults to
+/// "this window judges everything" for the notice suite, which never
+/// loads the bindings.
+///
 /// The teardown bumps every token, so a hold still waiting announces
 /// nothing: the window is going away, and the verdict it was waiting for
 /// was cleared by the driver's teardown on the same tick.
-export function startVerdictNotices(): () => void {
+export function startVerdictNotices(role: TurnVerdictRole = () => true): () => void {
+  roleOf = role;
   setStatusNoticeHold(hold);
   return () => {
     setStatusNoticeHold(null);
+    roleOf = () => true;
     for (const [id, token] of tokens) tokens.set(id, token + 1);
   };
 }
@@ -147,4 +168,5 @@ export function startVerdictNotices(): () => void {
 /// Test seam, matching `turnVerdictDriver.__resetForTesting`.
 export function __resetForTesting(): void {
   tokens.clear();
+  roleOf = () => true;
 }

@@ -1527,8 +1527,15 @@ export async function bootstrap(): Promise<void> {
   // reason of all -- the day it matters is the day the human is on
   // another workspace and the machine is swapping. Dynamically imported
   // for the cycle reason above (it closes through this module).
-  const { startDoneSessionReclaim } = await import("$lib/sessions/doneSessionReclaimState");
-  unlisteners.push(startDoneSessionReclaim());
+  // Closed by the window holding the app's duties, like the memory
+  // poll: two reclaimers on the same readings would burst closes the
+  // pacing exists to prevent. Every window still shares its queued
+  // count (the queue is per window) and takes the holder's reclaim log.
+  const { startDoneSessionReclaim, initReclaimSharing } = await import(
+    "$lib/sessions/doneSessionReclaimState"
+  );
+  unlisteners.push(await initReclaimSharing());
+  unlisteners.push(whileHoldingAppDuties(startDoneSessionReclaim));
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give
   // the card back, and this watch's first pass is also what ADOPTS a run
@@ -1549,9 +1556,12 @@ export async function bootstrap(): Promise<void> {
   // mounted, and an update that only announced itself to somebody
   // already looking at Settings would be announcing itself to the one
   // person who did not need telling. It holds no timer -- one check per
-  // bootstrap, and everything else is the button in Settings.
-  const { startUpdateWatch } = await import("$lib/shell/updatesState");
-  unlisteners.push(startUpdateWatch());
+  // bootstrap, and everything else is the button in Settings. Duty
+  // window only; a follower takes that window's availableUpdate so the
+  // sidebar badge matches.
+  const { startUpdateWatch, initUpdateSharing } = await import("$lib/shell/updatesState");
+  unlisteners.push(await initUpdateSharing());
+  unlisteners.push(whileHoldingAppDuties(startUpdateWatch));
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);

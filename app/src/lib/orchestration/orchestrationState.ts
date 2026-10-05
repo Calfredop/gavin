@@ -2513,7 +2513,8 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // Dynamically imported to keep the dependency one-way: autoResumeState
   // reads this module (for resumeStep and orchestrations), so a static
   // import here would close a cycle.
-  const { startAutoResume } = await import("$lib/agents/autoResumeState");
+  const { startAutoResume, initResumeTrailSharing } = await import("$lib/agents/autoResumeState");
+  const stopResumeTrailShare = await initResumeTrailSharing();
   const stopAutoResume = startAutoResume();
   // The turn verdict's driver, on the same terms and by the same route:
   // it reads this module's `orchestrations` to tell a rail step's
@@ -2522,7 +2523,13 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // all -- so it starts here, once both exist, and is never imported
   // statically. (The map it WRITES lives in turnVerdictState.ts, which
   // this module does import statically; that file imports nothing back.)
-  const { startTurnVerdict } = await import("$lib/agents/turnVerdictDriver");
+  //
+  // Sharing first: a follower that never asks still draws the inbox
+  // chip from the window that does (appDuty.ts).
+  const { startTurnVerdict, initTurnVerdictSharing } = await import(
+    "$lib/agents/turnVerdictDriver"
+  );
+  const stopTurnVerdictShare = await initTurnVerdictSharing();
   const stopTurnVerdict = startTurnVerdict();
   // The "not reaching Headroom" check, on the same terms: it tells a run
   // from a terminal the human opened by this module's bindings, so it is
@@ -2537,7 +2544,9 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     unlistenDecoys();
     stopAgents();
     stopAutoResume();
+    stopResumeTrailShare();
     stopTurnVerdict();
+    stopTurnVerdictShare();
     stopHeadroomReach();
     setRailNotificationVoice(null);
     unlisten();

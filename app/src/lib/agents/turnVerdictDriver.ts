@@ -27,10 +27,15 @@
 // `orchestrations` and `kanbanState`, both of which read layoutState, so
 // a static import from layoutState would close a cycle -- and it must
 // not be imported statically by orchestrationState either, which is why
-// the map it writes lives in a file of its own. Started once per window;
-// a session is only ever asked about by the window whose workspace it
-// belongs to, because the bindings gate 4 reads are the ones that window
-// loaded.
+// the map it writes lives in a file of its own.
+//
+// Every window starts the hook, but only the window that runs the
+// session's workspace's rails (`runsRailsFor`) asks the host or the
+// paid API -- otherwise N open windows would mean N verdict requests per
+// quiet turn, because every window holds every board and `ownerOf`
+// finds the binding in all of them. That window tells the others each
+// map write (`initTurnVerdictSharing`), so the inbox and the tray in a
+// follower still see the answer.
 //
 // Everything else is the supersession discipline this codebase already
 // insists on: an answer that arrives for a turn that is over is dropped,
@@ -52,7 +57,13 @@ import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { cardIndex, findStep } from "$lib/orchestration/orchestration";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
-import { parseVerdictAnswers, readTurn, screenTail, verdictRequest } from "$lib/agents/turnVerdict";
+import {
+  parseVerdictAnswers,
+  readTurn,
+  screenTail,
+  verdictRequest,
+  type TurnVerdictEntry,
+} from "$lib/agents/turnVerdict";
 import { startVerdictNotices } from "$lib/agents/verdictNoticeState";
 import {
   PENDING_BACKSTOP_MS,
@@ -61,6 +72,7 @@ import {
   typesafeSettings,
   __resetForTesting as resetStores,
 } from "$lib/agents/turnVerdictState";
+import { listenToOtherWindows, runsRailsFor, tellOtherWindows } from "$lib/shell/appDuty";
 
 /// The supersession token per session. Bumped on every new request and on
 /// every clear; an answer whose token is stale is dropped.
@@ -128,6 +140,42 @@ function agentCliFor(owner: Owner): string {
     .profileId;
 }
 
+/// Whether THIS window is the one that asks about this session.
+///
+/// Null when the session is not gavin's work (a bare terminal): every
+/// window leaves it alone and the tray notifies inline as it always did.
+/// True when this window runs that workspace's rails; false when another
+/// open window does -- that window asks, and this one only draws what it
+/// is told.
+export function turnVerdictRole(sessionId: string): boolean | null {
+  const owner = ownerOf(sessionId);
+  if (!owner) return null;
+  return runsRailsFor(owner.workspaceId);
+}
+
+const TURN_VERDICT = "turn-verdict";
+
+interface TurnVerdictShare {
+  sessionId: string;
+  /// Null clears the entry, the way `clearTurnVerdict` does locally.
+  entry: TurnVerdictEntry | null;
+}
+
+/// Puts a write in this window's map and tells the others, so a follower
+/// that never asked still draws the inbox chip and the tray hold.
+function publishVerdict(sessionId: string, entry: TurnVerdictEntry | null): void {
+  turnVerdictById.update((m) => {
+    if (entry === null) {
+      if (!(sessionId in m)) return m;
+      const next = { ...m };
+      delete next[sessionId];
+      return next;
+    }
+    return { ...m, [sessionId]: entry };
+  });
+  tellOtherWindows<TurnVerdictShare>(TURN_VERDICT, { sessionId, entry });
+}
+
 /// A session has gone quiet. Take a second opinion, or do not.
 ///
 /// Fire-and-forget by contract: the caller is a status hook that must
@@ -135,6 +183,10 @@ function agentCliFor(owner: Owner): string {
 /// already treats as "today's answer". Nothing here ever throws at its
 /// caller.
 export function noteQuietTransition(sessionId: string): void {
+  // Another window owns this workspace's rails: it will ask and share.
+  // Asking here too is the N-requests-per-turn the duty split exists to
+  // stop.
+  if (turnVerdictRole(sessionId) === false) return;
   if (turnVerdictSkip(sessionId) !== null) {
     // Not even a `read` entry: a session nobody asked about must look
     // exactly like one from a build without this feature, so that every
@@ -149,7 +201,7 @@ export function noteQuietTransition(sessionId: string): void {
   // handleSessionStatusChanged), and the scheduler reads this map
   // synchronously on that emission. A step that completed while the
   // request was in flight is a step the answer can never reach.
-  turnVerdictById.update((m) => ({ ...m, [sessionId]: { state: "pending" } }));
+  publishVerdict(sessionId, { state: "pending" });
 
   const backstop = setTimeout(() => settle(sessionId, token, null), PENDING_BACKSTOP_MS);
   void (async () => {
@@ -176,7 +228,7 @@ export function noteQuietTransition(sessionId: string): void {
 
 function settle(sessionId: string, token: number, reading: ReturnType<typeof readTurn>): void {
   if (tokens.get(sessionId) !== token) return;
-  turnVerdictById.update((m) => ({ ...m, [sessionId]: { state: "read", reading } }));
+  publishVerdict(sessionId, { state: "read", reading });
 }
 
 /// Forgets this session's verdict.
@@ -187,13 +239,9 @@ function settle(sessionId: string, token: number, reading: ReturnType<typeof rea
 /// answer still in flight for the turn just ended is dropped rather than
 /// landing on the next one.
 export function clearTurnVerdict(sessionId: string): void {
+  if (turnVerdictRole(sessionId) === false) return;
   tokens.set(sessionId, (tokens.get(sessionId) ?? 0) + 1);
-  turnVerdictById.update((m) => {
-    if (!(sessionId in m)) return m;
-    const next = { ...m };
-    delete next[sessionId];
-    return next;
-  });
+  publishVerdict(sessionId, null);
 }
 
 /// The status hook. The second opinion is taken at exactly the
@@ -225,6 +273,24 @@ function onSessionStatus(
   }
 }
 
+/// Takes the map writes the window that asked tells. Returns its
+/// teardown, for the orchestration listeners' list -- every window
+/// listens, including the one that asks (its own echo is dropped).
+export async function initTurnVerdictSharing(): Promise<() => void> {
+  return listenToOtherWindows<TurnVerdictShare>(TURN_VERDICT, (share) => {
+    if (!share?.sessionId) return;
+    turnVerdictById.update((m) => {
+      if (share.entry === null) {
+        if (!(share.sessionId in m)) return m;
+        const next = { ...m };
+        delete next[share.sessionId];
+        return next;
+      }
+      return { ...m, [share.sessionId]: share.entry };
+    });
+  });
+}
+
 /// Starts listening. Returns its own teardown, the way `startAutoResume`
 /// does, so the orchestration listeners register it and their teardown
 /// unwinds it. Also the moment the toggle and key state are first read
@@ -237,7 +303,11 @@ export function startTurnVerdict(): () => void {
   // meaningless without this driver marking sessions pending: with the
   // gates above closed there is never an entry to wait for, and every
   // transition notifies inline exactly as it does today.
-  const stopNotices = startVerdictNotices();
+  //
+  // `turnVerdictRole` is what keeps a follower from both asking and
+  // announcing: another window's session is swallowed here so the tray
+  // line is sent once, by the window that asked.
+  const stopNotices = startVerdictNotices(turnVerdictRole);
   return () => {
     stopNotices();
     setSessionStatusHook(null);

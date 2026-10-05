@@ -69,14 +69,38 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: probe.requestPermission,
 }));
 
+const eventMock = vi.hoisted(() => {
+  const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  return {
+    handlers,
+    listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {
+        handlers.set(
+          name,
+          (handlers.get(name) ?? []).filter((h) => h !== handler)
+        );
+      };
+    }),
+    emit: vi.fn(async (_name: string, _message: unknown) => {}),
+    fire(name: string, payload: unknown): void {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventMock.emit }));
+
 import { IDLE_GRACE_MS, RECLAIM_SPACING_MS } from "$lib/sessions/doneSessionReclaim";
 import {
   __resetDoneSessionReclaimForTesting,
+  initReclaimSharing,
   reclaimDoneSessionsNow,
   reclaimLog,
   reclaimableNow,
   startDoneSessionReclaim,
 } from "$lib/sessions/doneSessionReclaimState";
+import { appDuty } from "$lib/shell/appDuty";
 
 const GB = 1024 ** 3;
 const NOW = 1_800_000_000_000;
@@ -205,7 +229,10 @@ let stop: (() => void) | null = null;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
+  eventMock.handlers.clear();
+  eventMock.emit.mockClear();
   __resetDoneSessionReclaimForTesting();
+  appDuty.set({ holder: "main", windows: ["main"] });
   probe.closeSession.mockReset();
   probe.closeTabsNow.mockReset().mockResolvedValue(undefined);
   probe.askConfirm.mockReset();
@@ -371,5 +398,68 @@ describe("the manual close", () => {
     probe.askConfirm.mockReset();
     expect(await reclaimDoneSessionsNow()).toBe(0);
     expect(probe.askConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("one reclaimer per app", () => {
+  // Bootstrap starts the watcher only in the duty window. A follower that
+  // only shares still must not close — that is the burst the pacing
+  // exists to prevent.
+  it("closes nothing when the watcher was never started", async () => {
+    await initReclaimSharing();
+    tick("critical");
+    await settle();
+    expect(probe.closeSession).not.toHaveBeenCalled();
+  });
+
+  it("counts another window's queued work toward the warn trigger", async () => {
+    stop = startDoneSessionReclaim();
+    await initReclaimSharing();
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    probe.launchGateVerdict.set({
+      allowed: false,
+      reason: "pressure",
+      why: "Held: memory pressure",
+    });
+    tick("warn");
+    await settle();
+    expect(probe.closeSession).not.toHaveBeenCalled();
+
+    eventMock.fire("launch-queued-count", {
+      origin: "ws-2",
+      payload: { label: "ws-2", count: 1 },
+    });
+    await settle();
+    expect(probe.closeSession).toHaveBeenCalledTimes(1);
+    expect(get(reclaimLog)[0].reason).toBe("blocking");
+  });
+
+  it("tells the other windows each reclaim and takes theirs", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    stop = startDoneSessionReclaim();
+    await initReclaimSharing();
+    tick("critical");
+    await settle();
+    expect(probe.closeSession).toHaveBeenCalledTimes(1);
+    expect(eventMock.emit).toHaveBeenCalledWith(
+      "reclaim-log",
+      expect.objectContaining({
+        origin: "main",
+        payload: expect.objectContaining({ sessionId: "s-big", reason: "critical" }),
+      })
+    );
+
+    eventMock.fire("reclaim-log", {
+      origin: "ws-2",
+      payload: {
+        sessionId: "s-other",
+        label: "other",
+        cardTitle: "b",
+        rssBytes: 1,
+        atMs: NOW,
+        reason: "critical",
+      },
+    });
+    expect(get(reclaimLog).map((r) => r.sessionId)).toEqual(["s-big", "s-other"]);
   });
 });
