@@ -9,6 +9,7 @@ import { isViewableInApp } from "$lib/files/fileTypes";
 import { hotState } from "$lib/core/hotState";
 import { xtermTheme } from "$lib/ui/terminalTheme";
 import { osc52Text } from "$lib/terminal/osc52";
+import { pathCandidatesIn } from "$lib/terminal/pathCandidate";
 import type { EffectiveTheme } from "$lib/ui/theme";
 
 interface RegistryEntry {
@@ -95,13 +96,6 @@ export function setCwdForLinks(sessionId: string, cwd: string): void {
   cwdBySessionId.set(sessionId, cwd);
 }
 
-// Matches path-shaped runs of text in a rendered line: absolute (/...),
-// home-relative (~/...), or relative containing a slash. Deliberately
-// stricter than "any word" -- every candidate costs a resolve round-trip
-// on hover, and a false positive that resolves to nothing just never
-// becomes clickable anyway.
-const PATH_CANDIDATE = /(~\/|\.{0,2}\/)[^\s'"()[\]{}:,]+/g;
-
 async function activatePath(resolvedPath: string, sessionId: string): Promise<void> {
   if (await isViewableInApp(resolvedPath)) {
     const { openFileInSplit } = await import("$lib/core/layoutState");
@@ -127,17 +121,17 @@ function registerPathLinks(term: Terminal, sessionId: string): void {
       }
       const text = line.translateToString(true);
       const cwd = cwdForSession(sessionId);
-      const matches = [...text.matchAll(PATH_CANDIDATE)];
+      const matches = pathCandidatesIn(text);
       if (matches.length === 0) {
         callback(undefined);
         return;
       }
       void Promise.all(
         matches.map(async (m) => {
-          const candidate = m[0];
+          const candidate = m.text;
           const resolved = await backend.resolvePathUnderCursor(candidate, cwd).catch(() => null);
           if (!resolved) return null;
-          const start = (m.index ?? 0) + 1;
+          const start = m.index + 1;
           return {
             range: {
               start: { x: start, y: lineNumber },

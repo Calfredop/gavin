@@ -2,7 +2,7 @@
 order: 16384
 kind: task
 title: "[fix] terminal path links never match a Windows-spelled path"
-status: To Do
+status: Done
 priority: high
 complexity: simple
 ---
@@ -63,3 +63,5 @@ says "worth hovering a path with a SPACE in it and one on a UNC share, which
 is where the two arms differ" — the two arms it means are
 `strip_verbatim_prefix`'s, and neither a space nor a UNC path ever reaches
 them.
+
+- [ ] Human test: On Windows, hover a backslash path (C:\…), a UNC share path, and a forward-slash drive path (C:/…) in a terminal — each should underline; a dir listing date like 09/24/2026 should not.
