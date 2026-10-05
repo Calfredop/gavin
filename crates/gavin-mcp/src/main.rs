@@ -3,6 +3,25 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// How long the version probe may sit in a read before the daemon is
+/// treated as unreachable. Matches the Windows named-pipe connect budget:
+/// Cursor's MCP loader times out listing tools when this blocks, and a
+/// hung pipe read used to do exactly that.
+const DAEMON_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Names the endpoint a failed connect tried, including the Win32 pipe
+/// the path maps to — without it a Windows agent sees only "daemon isn't
+/// running" while the real fault is a path/pipe mismatch.
+fn endpoint_label(path: &Path) -> String {
+    let pipe = protocol::transport::win32_pipe_name(path);
+    if pipe == path.to_string_lossy() {
+        path.display().to_string()
+    } else {
+        format!("{} (pipe {pipe})", path.display())
+    }
+}
 
 // ---------- daemon transport ----------
 
@@ -212,15 +231,31 @@ impl SocketTransport {
             Ok(path) => path.clone(),
             Err(why) => anyhow::bail!("{why}"),
         };
-        let stream = Stream::connect(&socket_path)
-            .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
+        let where_ = endpoint_label(&socket_path);
+        let stream = Stream::connect(&socket_path).map_err(|e| {
+            anyhow::anyhow!("gavin daemon isn't running — open the gavin app ({where_}: {e})")
+        })?;
+        // Cap the probe read: a connected pipe whose peer never answers
+        // used to block the MCP stdio loop forever, which Cursor reports
+        // as "unable to list tools" even though tools/list itself never
+        // touches the daemon — the hang was on a later tools/call's
+        // prepare, or on a reconnect that stole the process.
+        stream
+            .set_read_timeout(Some(DAEMON_PROBE_TIMEOUT))
+            .map_err(|e| anyhow::anyhow!("gavin daemon isn't running — open the gavin app ({where_}: {e})"))?;
         let mut reader = BufReader::new(stream);
-        write_message(reader.get_mut(), &Request::GetProtocolVersion)
-            .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
+        write_message(reader.get_mut(), &Request::GetProtocolVersion).map_err(|e| {
+            anyhow::anyhow!("gavin daemon isn't running — open the gavin app ({where_}: {e})")
+        })?;
         let version = match read_message::<_, Response>(&mut reader) {
             Ok(Some(Response::ProtocolVersion { version })) => version,
-            _ => anyhow::bail!(UNREACHABLE),
+            Ok(None) => anyhow::bail!("{UNREACHABLE} ({where_})"),
+            Err(e) => anyhow::bail!("{UNREACHABLE} ({where_}: {e})"),
+            Ok(Some(_)) => anyhow::bail!("{UNREACHABLE} ({where_})"),
         };
+        // Probe answered; drop the short timeout so a slow tool call is
+        // not killed by the connect budget.
+        let _ = reader.get_ref().set_read_timeout(None);
         match protocol::version_band(version, PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION) {
             // Not a hard error any more (spec §3). Whatever moved the
             // daemon ahead -- a rebuild, an update -- replaced the binary
@@ -1840,6 +1875,20 @@ mod tests {
     fn no_injection_falls_back_to_this_builds_own_endpoint() {
         assert_eq!(resolve_socket_path(None), None);
         assert_eq!(resolve_socket_path(Some(std::ffi::OsString::new())), None);
+    }
+
+    #[test]
+    fn a_windows_sock_path_error_names_the_pipe_it_maps_to() {
+        let sock = Path::new(r"C:\Users\Ada\AppData\Local\gavin\daemon.sock");
+        let label = endpoint_label(sock);
+        assert!(label.contains(r"daemon.sock"), "{label}");
+        assert!(label.contains(r"\\.\pipe\gavin-daemon-sock-"), "{label}");
+    }
+
+    #[test]
+    fn an_already_pipe_path_error_does_not_invent_a_second_name() {
+        let pipe = Path::new(r"\\.\pipe\gavin-daemon-sock-1ea8c76cbf57866f");
+        assert_eq!(endpoint_label(pipe), pipe.to_string_lossy());
     }
 
     struct MockTransport {

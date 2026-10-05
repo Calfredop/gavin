@@ -125,6 +125,30 @@ pub fn pipe_name_for_path(path: &Path) -> String {
     }
 }
 
+/// The Win32 pipe name a client or server opens for an endpoint path.
+///
+/// The public contract is still a filesystem path (`…\daemon.sock`):
+/// every process derives the same pipe from it via `pipe_name_for_path`.
+/// A value that is ALREADY a `\\.\pipe\…` (or `\\?\pipe\…`) name is
+/// returned as-is instead — re-hashing that string would open a different
+/// pipe nobody is listening on, which is exactly the trap a Windows
+/// probe hits when it pastes the live pipe into `GAVIN_SESSION_SOCKET`.
+///
+/// Compiled on every platform so the rule can be tested where the suite
+/// runs; only the Windows transport calls it.
+pub fn win32_pipe_name(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    // Accept both separator spellings: PathBuf on unix keeps the
+    // backslashes a Windows probe typed, but a forward-slash paste from
+    // a doc or a shell that normalised the string must still pass through.
+    let normalized = raw.replace('/', "\\");
+    let lower = normalized.to_ascii_lowercase();
+    if lower.starts_with(r"\\.\pipe\") || lower.starts_with(r"\\?\pipe\") {
+        return normalized;
+    }
+    pipe_name_for_path(path)
+}
+
 #[cfg(unix)]
 mod imp {
     use super::*;
@@ -319,6 +343,18 @@ mod imp {
     /// error code. Short enough that "not running" is still answered
     /// promptly; long enough to cover a scheduling hiccup in the gap.
     const CONNECT_GAP_GRACE: Duration = Duration::from_millis(50);
+
+    /// Hard ceiling on `connect_at`, including `ERROR_PIPE_BUSY` waits.
+    ///
+    /// `WaitNamedPipeW` is capped per call, but a pipe that stays busy
+    /// (every instance held by a hung client, or a daemon that never
+    /// recycles) used to loop forever — which is how Cursor's MCP
+    /// `tools/list` timed out with "unable to list tools" while the
+    /// process sat in connect. Two seconds matches the fail-fast budget
+    /// the Windows MCP hang card asks for: long enough for a busy
+    /// daemon to free an instance, short enough that a dead endpoint
+    /// never blocks an agent session.
+    const CONNECT_BUDGET: Duration = Duration::from_secs(2);
 
     /// The granularity of every wait in here: the gap grace above, and
     /// the read-timeout poll.
@@ -522,10 +558,22 @@ mod imp {
         }
 
         pub fn connect_at(endpoint: &Endpoint) -> io::Result<Stream> {
-            let name = pipe_name_for_path(endpoint.path());
+            let name = win32_pipe_name(endpoint.path());
             let wide_name = wide(&name);
-            let deadline = Instant::now() + CONNECT_GAP_GRACE;
+            let started = Instant::now();
+            let gap_deadline = started + CONNECT_GAP_GRACE;
+            let budget_deadline = started + CONNECT_BUDGET;
             loop {
+                if Instant::now() >= budget_deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out connecting to {} (pipe {name}) after {}ms",
+                            endpoint.path().display(),
+                            CONNECT_BUDGET.as_millis()
+                        ),
+                    ));
+                }
                 let handle = unsafe {
                     CreateFileW(
                         PCWSTR(wide_name.as_ptr()),
@@ -544,19 +592,33 @@ mod imp {
                     Err(_) => {
                         let err = last_error();
                         if err == ERROR_PIPE_BUSY {
-                            // Every instance is serving someone. This is
-                            // the ordinary busy case and the OS has a
-                            // primitive for it.
+                            // Every instance is serving someone. Wait for
+                            // one, but never past the connect budget — a
+                            // pipe that stays busy is a hang, not a retry.
+                            let remaining = budget_deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis()
+                                .min(2000) as u32;
+                            if remaining == 0 {
+                                continue;
+                            }
                             unsafe {
-                                let _ = WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), 2000);
+                                let _ = WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), remaining);
                             }
                             continue;
                         }
-                        if err == ERROR_FILE_NOT_FOUND && Instant::now() < deadline {
+                        if err == ERROR_FILE_NOT_FOUND && Instant::now() < gap_deadline {
                             std::thread::sleep(POLL_INTERVAL);
                             continue;
                         }
-                        return Err(io::Error::from_raw_os_error(err.0 as i32));
+                        let raw = io::Error::from_raw_os_error(err.0 as i32);
+                        return Err(io::Error::new(
+                            raw.kind(),
+                            format!(
+                                "connect to {} (pipe {name}) failed: {raw}",
+                                endpoint.path().display(),
+                            ),
+                        ));
                     }
                 }
             }
@@ -889,7 +951,7 @@ mod imp {
 
     impl Listener {
         pub fn bind_at(endpoint: &Endpoint) -> io::Result<Listener> {
-            let wide_name = wide(&pipe_name_for_path(endpoint.path()));
+            let wide_name = wide(&win32_pipe_name(endpoint.path()));
             let sd = SecurityDescriptor::current_user_only()?;
             let first = create_instance(&wide_name, &sd)?;
             Ok(Listener { wide_name, sd, waiting: Mutex::new(Some(first)) })
@@ -1072,6 +1134,28 @@ mod tests {
         let c = pipe_name_for_path(Path::new("C:/Users/Ada/AppData/Local/gavin/daemon.sock"));
         assert_eq!(a, b, "Windows paths differ only in case, so the pipes must not");
         assert_eq!(a, c, "a forward-slash spelling of one path is that path");
+    }
+
+    #[test]
+    fn an_already_pipe_path_is_not_rehashed() {
+        let live = r"\\.\pipe\gavin-daemon-sock-1ea8c76cbf57866f";
+        assert_eq!(win32_pipe_name(Path::new(live)), live);
+        // A forward-slash paste still names the same pipe.
+        assert_eq!(
+            win32_pipe_name(Path::new("//./pipe/gavin-daemon-sock-1ea8c76cbf57866f")),
+            live
+        );
+        // Re-hashing would have produced a different name — that is the
+        // bug a Windows MCP probe hit when it set GAVIN_SESSION_SOCKET to
+        // the live pipe and the client hashed it again.
+        assert_ne!(pipe_name_for_path(Path::new(live)), live);
+    }
+
+    #[test]
+    fn a_sock_path_still_maps_through_the_hash() {
+        let sock = Path::new(r"C:\Users\Ada\AppData\Local\gavin\daemon.sock");
+        assert_eq!(win32_pipe_name(sock), pipe_name_for_path(sock));
+        assert!(win32_pipe_name(sock).starts_with(r"\\.\pipe\gavin-daemon-sock-"));
     }
 
     #[test]
