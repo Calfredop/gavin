@@ -37,8 +37,8 @@
   import {
     GENERAL_TAB,
     addCustomProfile,
+    agentDefaultsWithoutCustom,
     agentsHubTabs,
-    deleteCustomProfile,
     isCustomProfileId,
     renameCustomProfile,
     updateCustomProfile,
@@ -179,10 +179,7 @@
     });
     if (!ok) return;
     await saveSetting(() =>
-      setAgentDefaults({
-        ...$agentDefaultsStore,
-        customProfiles: deleteCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id),
-      })
+      setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, activeCustom.id))
     );
     agentsTab = GENERAL_TAB;
   }

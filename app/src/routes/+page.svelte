@@ -30,6 +30,7 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
     wizardWorkspaceId,
@@ -158,7 +159,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(activeWorkspace?.id ?? ""),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));

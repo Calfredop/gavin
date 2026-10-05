@@ -2,6 +2,7 @@
   import {
     layoutState,
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     setAgentField,
     trustedAgentConfigs,
@@ -23,7 +24,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const path = $derived(root ? `${root}/${agent.file}` : null);

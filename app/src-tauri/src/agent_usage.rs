@@ -38,7 +38,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
-use crate::agent_setup::{profile_by_id, UsageProbe};
+use crate::agent_setup::{stock_profile_by_id, UsageProbe};
 
 /// Anthropic's own usage endpoint, which every Claude Code client reads.
 const ANTHROPIC_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -263,7 +263,7 @@ pub async fn agent_usage(
     profile_id: String,
     force: bool,
 ) -> Result<UsageReport, String> {
-    let Some(probe) = profile_by_id(&profile_id).usage_probe else {
+    let Some(probe) = usage_probe_for(&profile_id) else {
         return Ok(UsageReport::Unsupported);
     };
     tauri::async_runtime::spawn_blocking(move || {
@@ -271,6 +271,14 @@ pub async fn agent_usage(
     })
     .await
     .map_err(|e| format!("the usage probe did not run: {e}"))
+}
+
+/// The probe a profile id may be asked through. Named customs answer
+/// None here even though `profile_by_id` would fall back to claude-code:
+/// a custom is not claude, and the Anthropic probe's answer cached under
+/// the custom's id would read it as spent whenever claude is.
+fn usage_probe_for(profile_id: &str) -> Option<UsageProbe> {
+    stock_profile_by_id(profile_id).and_then(|p| p.usage_probe)
 }
 
 fn run_probe(probe: UsageProbe, now: i64) -> (UsageReport, Option<i64>) {
@@ -2001,16 +2009,22 @@ mod tests {
         assert!(matches!(codex_usage(&dir), UsageReport::Unavailable { .. }));
     }
 
-    /// The profile table decides who can be asked; a profile with no
-    /// route must answer `Unsupported` without any probe running.
-    /// Custom is the only remaining `None`: every stock CLI now has a
+    /// The profile table decides who can be asked: every stock CLI has a
     /// verified route, even if that route often answers Unavailable
-    /// (Gemini consumer OAuth, OpenCode without Go).
+    /// (Gemini consumer OAuth, OpenCode without Go). A named custom --
+    /// the migrated `custom-agent`, a user slug, a workspace `local:` id
+    /// -- carries no probe at all: the command answers Unsupported
+    /// through `usage_probe_for` (`stock_profile_by_id`), never
+    /// `profile_by_id`'s claude-code fallback, which would cache
+    /// claude's usage under the custom's id and read it as spent
+    /// whenever claude is.
     #[test]
     fn profiles_without_a_route_are_unsupported() {
-        assert!(profile_by_id("custom").usage_probe.is_none());
         for id in ["claude-code", "codex", "gemini", "cursor", "opencode"] {
-            assert!(profile_by_id(id).usage_probe.is_some(), "{id} has no probe");
+            assert!(usage_probe_for(id).is_some(), "{id} has no probe");
+        }
+        for id in ["custom", "custom-agent", "my-bot", "local:desk"] {
+            assert!(usage_probe_for(id).is_none(), "{id} took claude's probe");
         }
     }
 

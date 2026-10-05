@@ -95,7 +95,9 @@ describe("the host side", () => {
       ["DeviceDisconnected", "device-disconnected"],
     ]) {
       expect(session).toContain(`Response::${variant}`);
-      expect(session).toContain(`emit("${event}"`);
+      // Forwarded through forwarding::emit; the formatting of the call is
+      // the rustfmt's, the event name is the contract.
+      expect(session).toContain(`"${event}"`);
     }
   });
 });

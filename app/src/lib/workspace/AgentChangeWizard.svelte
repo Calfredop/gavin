@@ -84,11 +84,7 @@
         model: "",
       }),
       $agentProfilesStore,
-      $agentModelDefaultsStore,
-      {
-        command: $agentDefaultsStore.customCommand,
-        modelFlag: $agentDefaultsStore.customModelFlag,
-      }
+      $agentModelDefaultsStore
     )
   );
 

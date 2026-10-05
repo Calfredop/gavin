@@ -697,7 +697,9 @@ mod workspaces_data_tests {
     }
 
     /// The twelfth carry-through field (v38): the app-wide `custom`
-    /// resume flag.
+    /// resume flag. A legacy field since named customs: the value has to
+    /// survive the save so migration can still fold it onto the migrated
+    /// profile, which is where the answer reads back from.
     #[test]
     fn persist_workspaces_carries_the_custom_resume_args_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -723,9 +725,11 @@ mod workspaces_data_tests {
             Some("--resume".to_string()),
         )
         .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap();
+        assert_eq!(loaded.custom_resume_args, None);
         assert_eq!(
-            crate::config::load(dir.path()).unwrap().custom_resume_args,
-            Some("--resume".to_string())
+            loaded.agent_defaults.custom_profiles[0].resume_args.as_deref(),
+            Some("--resume")
         );
     }
 
@@ -887,12 +891,20 @@ mod workspaces_data_tests {
             },
         );
         let defaults = crate::config::AgentDefaultsConfig {
-            custom_profiles: Vec::new(),
-            custom_command: "my-agent --yolo".to_string(),
-            custom_model_flag: "--llm".to_string(),
-            custom_effort_flag: "--think".to_string(),
+            custom_profiles: vec![crate::config::CustomProfile {
+                id: "custom-agent".to_string(),
+                label: "Custom".to_string(),
+                command: "my-agent --yolo".to_string(),
+                model_flag: "--llm".to_string(),
+                effort_flag: "--think".to_string(),
+                api_family: "openai".to_string(),
+                resume_args: None,
+            }],
+            custom_command: String::new(),
+            custom_model_flag: String::new(),
+            custom_effort_flag: String::new(),
             agent_efforts: HashMap::from([("claude-code".to_string(), "high".to_string())]),
-            custom_api_family: "openai".to_string(),
+            custom_api_family: String::new(),
             complexity,
             default_agent: Some("codex".to_string()),
             agent_fallback: Vec::new(),

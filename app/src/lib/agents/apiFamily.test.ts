@@ -40,7 +40,7 @@ describe("withApiFamily", () => {
     const defaults = {
       ...EMPTY_AGENT_DEFAULTS,
       customProfiles: [
-        { id: "custom-agent", label: "Custom", command: "my-agent", modelFlag: "--llm" },
+        { id: "custom-agent", label: "Custom", command: "my-agent", modelFlag: "--llm", apiFamily: "" },
       ],
     };
     const chosen = withApiFamily(defaults, "openai", "custom-agent");

@@ -25,6 +25,7 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     layoutState,
     trustedAgentConfigs,
@@ -73,7 +74,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const agentPhase = $derived(agentCommitPhase(view));

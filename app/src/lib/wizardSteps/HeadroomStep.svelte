@@ -38,7 +38,15 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const agent = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+    resolveAgentConfig(
+      $trustedAgentConfigs(workspaceId),
+      $agentProfilesStore,
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
+    )
   );
   const offers = $derived(headroomStepOffers(reading));
   const inherited = $derived(resolveHeadroom(undefined, $headroomDefault));

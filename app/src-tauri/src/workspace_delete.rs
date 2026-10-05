@@ -248,10 +248,19 @@ fn outside_contexts(root: &Path) -> Vec<PathBuf> {
 /// here, because a screen asking permission to remove nothing is a step
 /// that can only be answered wrong.
 pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
+    scan_with_default(root, None)
+}
+
+/// `scan` with the app-wide default agent (config.json's
+/// `agentDefaults.defaultAgent`): a root with no `[agent] profile` of
+/// its own is read as the agent its launches -- and therefore its
+/// integrations -- resolve to, so the footprint names the files the
+/// write path actually wrote.
+pub fn scan_with_default(root: &Path, default_agent: Option<&str>) -> Result<GavinFootprint, String> {
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
     }
-    let install = agent_setup::gavin_install(root);
+    let install = agent_setup::gavin_install(root, default_agent);
 
     let gavin_root_path = root.join(GAVIN_ROOT_DIR);
     let gavin_root = gavin_root_path.is_dir().then(|| {
@@ -292,7 +301,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         .map(|p| protocol::wire_path(&p));
 
     let mcp = install.mcp.and_then(|(path, server_key)| {
-        agent_setup::mcp_entry_present(root)
+        agent_setup::mcp_entry_present(root, default_agent)
             .then(|| McpFootprint { path: protocol::wire_path(&path), server_key })
     });
 
@@ -348,7 +357,13 @@ fn removable_paths(footprint: &GavinFootprint) -> Vec<String> {
 /// Executes an approved plan. Never fails as a whole: every item is
 /// attempted, and the report says which ones did not land and why.
 pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> {
-    let footprint = scan(root)?;
+    remove_with_default(root, plan, None)
+}
+
+/// `remove` with the app-wide default agent, so the scan it re-runs and
+/// the MCP edit resolve the profile the write path used (`scan_with_default`).
+pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Option<&str>) -> Result<RemovalReport, String> {
+    let footprint = scan_with_default(root, default_agent)?;
     let allowed = removable_paths(&footprint);
     let mut report = RemovalReport::default();
 
@@ -371,7 +386,7 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
     // knows how to take it out without reformatting everything else.
     for mcp in &plan.strip_mcp_key {
         match footprint.mcp.as_ref() {
-            Some(found) if found == mcp => match agent_setup::remove_mcp_entry(root) {
+            Some(found) if found == mcp => match agent_setup::remove_mcp_entry(root, default_agent) {
                 Ok(true) => report.done.push(format!(
                     "Removed the \"{}\" server from {}",
                     mcp.server_key, mcp.path
@@ -408,8 +423,12 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
 /// 150k entries and 2-7 s on a large repo's first walk, and as a plain
 /// `fn` all of it was main-thread time with the window frozen.
 #[tauri::command]
-pub async fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
-    tauri::async_runtime::spawn_blocking(move || scan(Path::new(&root_path)))
+pub async fn scan_gavin_footprint(
+    root_path: String,
+    agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
+) -> Result<GavinFootprint, String> {
+    let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
+    tauri::async_runtime::spawn_blocking(move || scan_with_default(Path::new(&root_path), default_agent.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -433,11 +452,15 @@ pub async fn remove_gavin_footprint(
     plan: RemovalPlan,
     token: String,
     gate: tauri::State<'_, crate::confirm_gate::ConfirmGate>,
+    agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
 ) -> Result<RemovalReport, String> {
     crate::confirm_gate::spend(&gate, &token, "remove_gavin_footprint", &root_path)?;
-    tauri::async_runtime::spawn_blocking(move || remove(Path::new(&root_path), &plan))
-        .await
-        .map_err(|e| e.to_string())?
+    let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_with_default(Path::new(&root_path), &plan, default_agent.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

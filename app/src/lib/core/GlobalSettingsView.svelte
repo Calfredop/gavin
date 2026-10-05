@@ -41,7 +41,7 @@
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import {
-    deleteCustomProfile,
+    agentDefaultsWithoutCustom,
     renameCustomProfile,
     updateCustomProfile,
   } from "$lib/agents/agentsHub";
@@ -119,7 +119,6 @@
   } from "$lib/shell/updates";
   import { onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { askConfirm } from "$lib/core/dialog";
   import {
     ADMISSION_CLEAR,
     ADMISSION_NOTE,
@@ -912,10 +911,7 @@
       danger: true,
     });
     if (!ok) return;
-    await setAgentDefaults({
-      ...$agentDefaultsStore,
-      customProfiles: deleteCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id),
-    });
+    await setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, activeCustom.id));
     agentsTab = GENERAL_TAB;
   }
 </script>
@@ -1114,7 +1110,7 @@
             onchange={(e) =>
               void setAgentDefaults({
                 ...$agentDefaultsStore,
-                defaultAgent: e.currentTarget.value === "claude-code" ? null : e.currentTarget.value,
+                defaultAgent: e.currentTarget.value,
               })}
           >
             {#each allProfiles as profile (profile.id)}

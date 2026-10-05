@@ -265,20 +265,23 @@ describe("the gate", () => {
     const session = Object.values(RUST)[0];
     expect(FEATURE_MIN_VERSION.customApiFamily).toBe(48);
     expect(session).toContain("if daemon_version < protocol::CUSTOM_API_FAMILY_MIN_VERSION {");
-    expect(session).toContain('if profile_id.map(str::trim) != Some("custom") {');
+    // Named customs made the guard "any non-stock profile", not the one
+    // retired `custom` id.
+    expect(session).toContain("if crate::config::is_stock_profile_id(id) {");
     expect(session).toContain(
       "let api_family = api_family_for_daemon(daemon_version, profile_id, api_family);"
     );
+    // Resolved from the named custom profiles the settings hold.
     expect(session).toContain(
-      "let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();"
+      "crate::config::api_family_for_profile(&defaults, &[], profile_id.as_deref())"
     );
     // Both routes a launch takes, the local daemon and an ssh host's.
-    expect(session.match(/profile_id\.as_deref\(\),\n\s+Some\(&api_family\),/g)).toHaveLength(2);
+    expect(session.match(/profile_id\.as_deref\(\),\n\s+api_family\.as_deref\(\),/g)).toHaveLength(2);
     // Its one consumer in the app: the picker that sets it.
     expect(source("GlobalSettingsView.svelte")).toContain(
       'const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));'
     );
-    expect(source("GlobalSettingsView.svelte")).toContain("disabled={apiFamilyBlocked !== null}");
+    expect(source("GlobalSettingsView.svelte")).toContain("disabled={Boolean(apiFamilyBlocked)}");
   });
 
   // A launch is never refused over it. Every other widened payload

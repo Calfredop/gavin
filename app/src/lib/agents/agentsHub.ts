@@ -8,7 +8,7 @@
 // opens is a local choice; when search just revealed the section,
 // `agentsTabForQuery` picks General or the best agent tab.
 
-import type { CustomProfile } from "$lib/cards/complexity";
+import type { AgentDefaults, CustomProfile } from "$lib/cards/complexity";
 import type { AgentProfileInfo } from "$lib/core/settings";
 import type { SettingsSection } from "$lib/core/settingsSearch";
 
@@ -230,6 +230,38 @@ export function deleteCustomProfile(list: CustomProfile[], id: string): CustomPr
   return list.filter((p) => p.id !== id);
 }
 
+/// A chains map with one profile's references removed: its own key, and
+/// any chain still naming it as a fallback. Deleting the custom's row
+/// alone would leave both dangling — a launch walking the chain would
+/// ask to set up an agent that no longer exists.
+export function fallbackChainsWithoutProfile(
+  map: Record<string, string[]> | null | undefined,
+  id: string
+): Record<string, string[]> {
+  const next: Record<string, string[]> = {};
+  for (const [primary, chain] of Object.entries(map ?? {})) {
+    if (primary === id) continue;
+    next[primary] = chain.filter((c) => c !== id);
+  }
+  return next;
+}
+
+/// The app-wide defaults with one custom profile and every reference to
+/// it removed: its fallback chain (and any chain naming it), its walk-at
+/// threshold, and a default agent that pointed at it — which goes back
+/// to claude-code, the fallback an absent setting already means.
+export function agentDefaultsWithoutCustom(defaults: AgentDefaults, id: string): AgentDefaults {
+  const fallbackThresholds = { ...(defaults.fallbackThresholds ?? {}) };
+  delete fallbackThresholds[id];
+  return {
+    ...defaults,
+    customProfiles: deleteCustomProfile(defaults.customProfiles ?? [], id),
+    fallbackChains: fallbackChainsWithoutProfile(defaults.fallbackChains, id),
+    fallbackThresholds,
+    defaultAgent: (defaults.defaultAgent ?? "").trim() === id ? "claude-code" : defaults.defaultAgent,
+  };
+}
+
 /// Profiles the model/effort rows cover: built-ins plus every custom in
 /// scope (merged list already carries locals).
 export function profilesForDefaults(profiles: AgentProfileInfo[]): AgentProfileInfo[] {
@@ -239,8 +271,3 @@ export function profilesForDefaults(profiles: AgentProfileInfo[]): AgentProfileI
 export function effortCapableProfiles(profiles: AgentProfileInfo[]): AgentProfileInfo[] {
   return profiles.filter((p) => Boolean(p.effortFlag?.trim()) || !isStockProfileId(p.id));
 }
-
-/// @deprecated Static tab lists — tabs are now `agentsHubTabs(profiles)`.
-export const APP_AGENTS_TABS: readonly AgentsHubTabDef[] = [GENERAL_TAB_DEF];
-/// @deprecated Static tab lists — tabs are now `agentsHubTabs(profiles)`.
-export const WORKSPACE_AGENTS_TABS: readonly AgentsHubTabDef[] = [GENERAL_TAB_DEF];

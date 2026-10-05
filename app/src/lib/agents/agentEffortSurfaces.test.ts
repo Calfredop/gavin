@@ -44,7 +44,8 @@ describe("the settings surfaces", () => {
     const view = source("GlobalSettingsView.svelte");
     expect(view).toContain("effortOptions(");
     expect(view).toContain("setAgentDefaults(withAgentEffort($agentDefaultsStore, profileId, value))");
-    expect(view).toContain("commitCustomAgent({ customEffortFlag:");
+    // A named custom's own effort flag is edited on its per-agent tab.
+    expect(view).toContain("patchActiveCustom({ effortFlag:");
   });
 
   it("writes the workspace's own effort and flag to config.toml", () => {
@@ -61,11 +62,13 @@ describe("the settings surfaces", () => {
 describe("resolution", () => {
   // Every one-shot and reactive resolution in layoutState hands the
   // app-wide efforts in: a path that forgot would launch at the agent's
-  // default with the setting still showing in the panel.
+  // default with the setting still showing in the panel. `defaultAgent`
+  // trails `agentEfforts` in the argument list, so a call ending in it
+  // passed both.
   it("passes the app-wide efforts to every resolveAgentConfig in layoutState", () => {
     const layout = source("layoutState.ts");
     const calls = layout.split("resolveAgentConfig(").length - 1;
-    const withEfforts = (layout.match(/\.agentEfforts\n\s*\)/g) ?? []).length;
+    const withEfforts = (layout.match(/\.defaultAgent\n\s*\)/g) ?? []).length;
     expect(calls).toBeGreaterThan(0);
     expect(withEfforts).toBe(calls);
   });

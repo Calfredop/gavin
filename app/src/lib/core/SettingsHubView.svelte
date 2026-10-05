@@ -164,8 +164,8 @@
       $trustedAgentConfigs(workspaceId),
       profiles,
       $agentModelDefaultsStore,
-      {},
-      {},
+      undefined,
+      undefined,
       $agentDefaultsStore.agentEfforts,
       $agentDefaultsStore.defaultAgent
     )
@@ -1478,8 +1478,24 @@
             profiles={(ws.customProfiles ?? []).filter((p) => p.id === agentsTab)}
             apiFamilyBlocked={apiFamilyBlocked}
             onChange={(next) => {
+              const before = (ws.customProfiles ?? []).filter((p) => p.id === agentsTab);
               const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
               void setWorkspaceCustomProfiles(workspaceId, [...others, ...next]);
+              // A deleted local leaves its fallback chain, any chain
+              // naming it, and its walk-at threshold dangling — clean
+              // all three, exactly as the app-wide delete does.
+              for (const p of before.filter((p) => !next.some((n) => n.id === p.id))) {
+                for (const [primary, chain] of Object.entries(ws.fallbackChains ?? {})) {
+                  if (primary === p.id) void setWorkspaceFallback(workspaceId, primary, null);
+                  else if (chain.includes(p.id))
+                    void setWorkspaceFallback(workspaceId, primary, chain.filter((c) => c !== p.id));
+                }
+                if (($agentDefaultsStore.fallbackThresholds ?? {})[p.id] != null) {
+                  const fallbackThresholds = { ...$agentDefaultsStore.fallbackThresholds };
+                  delete fallbackThresholds[p.id];
+                  void setAgentDefaults({ ...$agentDefaultsStore, fallbackThresholds });
+                }
+              }
             }}
           />
         {/if}

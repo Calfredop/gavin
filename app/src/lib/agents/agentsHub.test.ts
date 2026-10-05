@@ -3,9 +3,11 @@ import {
   AGENTS_SECTION,
   GENERAL_TAB,
   addCustomProfile,
+  agentDefaultsWithoutCustom,
   agentsHubTabs,
   agentsTabForQuery,
   deleteCustomProfile,
+  fallbackChainsWithoutProfile,
   isCustomProfileId,
   localCustomId,
   renameCustomProfile,
@@ -33,14 +35,14 @@ function profile(
     sessionIdArgs: "",
     sessionIdDiscovery: "",
     resumeArgs: "",
-    usageProbe: false,
+    usageProbe: null,
     ...over,
   };
 }
 
 const PROFILES: AgentProfileInfo[] = [
-  profile({ id: "claude-code", label: "Claude Code", usageProbe: true }),
-  profile({ id: "codex", label: "Codex", usageProbe: true }),
+  profile({ id: "claude-code", label: "Claude Code", usageProbe: "anthropic-oauth" }),
+  profile({ id: "codex", label: "Codex", usageProbe: "codex-rollout" }),
   profile({ id: "work-agent", label: "Work", modelFlag: "--model" }),
   profile({ id: "local:desk", label: "Desk", local: true }),
 ];
@@ -127,5 +129,50 @@ describe("customProfiles CRUD helpers", () => {
 
     list = deleteCustomProfile(list, "local:desk");
     expect(list.map((p) => p.id)).toEqual(["work-agent"]);
+  });
+});
+
+describe("deleting a custom cleans its references", () => {
+  it("drops its chain key, its mentions in other chains, its threshold, and a default agent naming it", () => {
+    const defaults = agentDefaultsWithoutCustom(
+      {
+        customProfiles: [{ id: "my-bot", label: "Bot", command: "bot", modelFlag: "" }],
+        defaultAgent: "my-bot",
+        complexity: {},
+        fallbackChains: { "my-bot": ["codex"], "claude-code": ["my-bot", "codex"] },
+        fallbackThresholds: { "my-bot": 80, codex: 95 },
+        actionPromptOverrides: {},
+      },
+      "my-bot"
+    );
+    expect(defaults.customProfiles).toEqual([]);
+    expect(defaults.fallbackChains).toEqual({ "claude-code": ["codex"] });
+    expect(defaults.fallbackThresholds).toEqual({ codex: 95 });
+    // Back to the fallback an absent setting already means.
+    expect(defaults.defaultAgent).toBe("claude-code");
+  });
+
+  it("keeps the default agent when it names another profile", () => {
+    const defaults = agentDefaultsWithoutCustom(
+      {
+        customProfiles: [{ id: "my-bot", label: "Bot", command: "bot", modelFlag: "" }],
+        defaultAgent: "codex",
+        complexity: {},
+        fallbackChains: {},
+        fallbackThresholds: {},
+        actionPromptOverrides: {},
+      },
+      "my-bot"
+    );
+    expect(defaults.defaultAgent).toBe("codex");
+  });
+
+  it("strips a profile from a workspace chains map the same way", () => {
+    expect(
+      fallbackChainsWithoutProfile(
+        { "local:bot": ["codex"], "claude-code": ["local:bot", "gemini"] },
+        "local:bot"
+      )
+    ).toEqual({ "claude-code": ["gemini"] });
   });
 });

@@ -3465,7 +3465,17 @@ export async function closeSession(sessionId: string): Promise<void> {
   // force: a shell tool run opts into retainTabOnExit so its scrollback
   // survives the PTY dying; the human closing the tab is the moment that
   // retention ends.
-  handleSessionExited(sessionId, { force: true });
+  //
+  // freeScreen only for an id that was a session: a file, board or card
+  // tab has no PTY and no kept screen, so there is nothing for
+  // KillSession to free -- sending one would ask the daemon to kill an id
+  // it has never heard of, which is the mistake endTabs exists not to
+  // make.
+  const isSession =
+    !closed.fileTabIds.includes(sessionId) &&
+    !closed.boardTabIds.includes(sessionId) &&
+    !closed.cardTabIds.includes(sessionId);
+  handleSessionExited(sessionId, { force: true, freeScreen: isSession });
   await pruneClosedTabs(closed);
 }
 
@@ -3546,7 +3556,7 @@ function settleExitedStatus(sessionId: string): void {
 
 export function handleSessionExited(
   sessionId: string,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; freeScreen?: boolean } = {}
 ): void {
   // Cleared here rather than left standing like cwd and status, and the
   // difference is what the entry IS. Those are facts about a session
@@ -3626,8 +3636,10 @@ export function handleSessionExited(
   // retained tool tab can still Snapshot it. A non-retained exit never
   // needed that, and without this call the screen would leak for the
   // daemon's lifetime -- KillSession is the free, and forget_session
-  // already ran in the pump so this is screen cleanup only.
-  void backend.killSession(sessionId).catch(() => {});
+  // already ran in the pump so this is screen cleanup only. closeSession
+  // passes freeScreen:false for a file/board/card tab: those have no
+  // screen to free, and the daemon has never heard of their id.
+  if (opts.freeScreen ?? true) void backend.killSession(sessionId).catch(() => {});
   void persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 

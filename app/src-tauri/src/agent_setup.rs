@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use tauri::Manager as _;
 
 /// One gavin-authored file dropped verbatim into a workspace --
 /// a skill under the profile's skill root, or the agent definition a
@@ -1246,6 +1247,57 @@ pub fn profile_by_id(id: &str) -> &'static AgentProfile {
     AGENT_PROFILES.iter().find(|p| p.id == id).unwrap_or(&AGENT_PROFILES[0])
 }
 
+/// The stock row for an id, or None for anything else. Read paths that
+/// attribute machine state BY profile (the usage probe, the token log)
+/// take this rather than `profile_by_id`: the claude-code fallback there
+/// serves reads of shipped defaults, and a named custom is not claude --
+/// probing claude under a custom's id would cache claude's usage as the
+/// custom's, reading the custom as spent whenever claude is.
+pub fn stock_profile_by_id(id: &str) -> Option<&'static AgentProfile> {
+    AGENT_PROFILES.iter().find(|p| p.id == id)
+}
+
+/// What a named custom profile IS to a WRITE: no stock row, so no skill
+/// mechanism and no MCP layout of gavin's own -- `resolved_mcp` then
+/// falls through to the workspace's `[agent] mcp_file`, and the step
+/// guidance goes inline. This is the retired hard-coded `custom` row's
+/// shape, kept for exactly that purpose.
+static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
+    id: "custom",
+    model_flag: "",
+    models: &[],
+    model_catalog: None,
+    effort_flag: "",
+    efforts: &[],
+    label: "Custom…",
+    instructions_file: "",
+    command: "",
+    prompt_args: None,
+    headless_args: "",
+    failure_patterns: &[],
+    failure_causes: &[],
+    session_id_args: "",
+    session_id_discovery: "",
+    resume_args: "",
+    usage_probe: None,
+    token_log: None,
+    agent_file: None,
+    mcp: None,
+};
+
+/// The profile a WRITE through the workspace's files resolves to. Unlike
+/// `profile_by_id` -- whose claude-code fallback serves READS of shipped
+/// defaults -- a write must never put claude's skill file or MCP layout
+/// down for someone's own binary: a named custom (or a config still
+/// naming the retired `custom` id) gets the custom-like row above.
+fn profile_for_writes(id: &str) -> &'static AgentProfile {
+    if crate::config::is_stock_profile_id(id) {
+        profile_by_id(id)
+    } else {
+        &CUSTOM_WRITE_PROFILE
+    }
+}
+
 /// The profile id recorded in config.toml, defaulting to claude-code.
 /// Read directly rather than routed through the daemon: this is a
 /// one-shot read on a user-initiated action, and agent_setup already
@@ -1257,6 +1309,29 @@ pub fn read_profile_id(root: &Path) -> String {
 /// `read_profile_id`, on whichever disk the workspace is.
 pub fn read_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path) -> String {
     root_agent_key_in(fs, root, "profile").unwrap_or_else(|| "claude-code".to_string())
+}
+
+/// The profile id a profile-less workspace resolves to: config.toml's
+/// `[agent] profile` when it names one, else the app-wide default agent
+/// (config.json's `agentDefaults.defaultAgent`), else claude-code -- the
+/// same order the frontend's `resolveAgentConfig` answers with, so what
+/// an integration or a prompt composer writes FOR is the agent the
+/// launch will actually run.
+fn resolved_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path, default_agent: Option<&str>) -> String {
+    root_agent_key_in(fs, root, "profile")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            default_agent
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("claude-code")
+                .to_string()
+        })
+}
+
+/// `resolved_profile_id_in` on the local disk.
+fn resolved_profile_id(root: &Path, default_agent: Option<&str>) -> String {
+    resolved_profile_id_in(&LocalFiles, root, default_agent)
 }
 
 /// config.toml's explicit `file`, else the profile's default.
@@ -1985,6 +2060,13 @@ pub async fn setup_agent_integration(
     tauri::async_runtime::spawn_blocking(move || {
         let _one_at_a_time = INTEGRATION_RUNS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let choice = McpForeignChoice::from_str(mcp_foreign_choice.as_deref());
+        let default_agent = app_handle
+            .state::<crate::session::AgentDefaults>()
+            .0
+            .lock()
+            .unwrap()
+            .default_agent
+            .clone();
         if let crate::remote::Route::Remote(link) =
             crate::remote::route_for_root(&app_handle, Some(&root_path))?
         {
@@ -2004,6 +2086,7 @@ pub async fn setup_agent_integration(
                 instructions_file.as_deref(),
                 choice,
                 profile_id.as_deref(),
+                default_agent.as_deref(),
             );
         }
         run_integration(
@@ -2013,6 +2096,7 @@ pub async fn setup_agent_integration(
             instructions_file.as_deref(),
             choice,
             profile_id.as_deref(),
+            default_agent.as_deref(),
         )
     })
     .await
@@ -2027,6 +2111,11 @@ static INTEGRATION_RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// which is never true under `cargo test` -- and it stays a closure rather
 /// than a parameter so that a profile with no MCP config still succeeds
 /// without one having to exist.
+///
+/// `default_agent` is config.json's `agentDefaults.defaultAgent`: the
+/// profile a root with no `[agent] profile` of its own integrates, so a
+/// profile-less workspace gets the files of the agent its launches
+/// actually resolve to.
 fn run_integration(
     fs: &dyn WorkspaceFiles,
     root: &Path,
@@ -2034,6 +2123,7 @@ fn run_integration(
     instructions_file: Option<&str>,
     mcp_choice: Option<McpForeignChoice>,
     profile_id: Option<&str>,
+    default_agent: Option<&str>,
 ) -> Result<IntegrationResult, String> {
     if !fs.is_dir(root) {
         return Err(format!("root does not exist: {}", root.display()));
@@ -2042,8 +2132,8 @@ fn run_integration(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| read_profile_id_in(fs, root));
-    let profile = profile_by_id(&profile_id);
+        .unwrap_or_else(|| resolved_profile_id_in(fs, root, default_agent));
+    let profile = profile_for_writes(&profile_id);
     let instructions_file = instructions_file
         .map(str::trim)
         .filter(|f| !f.is_empty())
@@ -2194,8 +2284,8 @@ pub struct GavinInstall {
     pub agent_file: Option<PathBuf>,
 }
 
-pub fn gavin_install(root: &Path) -> GavinInstall {
-    let profile = profile_by_id(&read_profile_id(root));
+pub fn gavin_install(root: &Path, default_agent: Option<&str>) -> GavinInstall {
+    let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let instructions = root.join(resolved_instructions_file(&LocalFiles, root, profile));
     let mcp = resolved_mcp(&LocalFiles, root, profile);
     let skills = mcp
@@ -2217,8 +2307,8 @@ pub fn gavin_install(root: &Path) -> GavinInstall {
 /// business, and neither is one that does not parse -- refusing to
 /// report an unreadable file is what keeps the remover from being handed
 /// a file it would have to clobber to edit.
-pub fn mcp_entry_present(root: &Path) -> bool {
-    let profile = profile_by_id(&read_profile_id(root));
+pub fn mcp_entry_present(root: &Path, default_agent: Option<&str>) -> bool {
+    let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return false };
     let path = root.join(&layout.config_file);
     let Ok(content) = std::fs::read_to_string(&path) else { return false };
@@ -2247,8 +2337,8 @@ pub fn mcp_entry_present(root: &Path) -> bool {
 ///
 /// Returns whether anything changed. A file that does not parse errors
 /// out rather than being rewritten, the same promise the writer makes.
-pub fn remove_mcp_entry(root: &Path) -> anyhow::Result<bool> {
-    let profile = profile_by_id(&read_profile_id(root));
+pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Result<bool> {
+    let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return Ok(false) };
     let path = root.join(&layout.config_file);
     if !path.exists() {
@@ -2356,16 +2446,28 @@ fn step_skill(flow: &str) -> Option<StepSkill> {
 /// returns the prompt that starts the agent on it. The caller wraps this
 /// with buildRunCommand; only profiles with prompt_args get that far.
 #[tauri::command]
-pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, String> {
-    let root = Path::new(&root_path);
+pub fn compose_agent_prompt(
+    root_path: String,
+    flow: String,
+    agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
+) -> Result<String, String> {
+    let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
+    compose_agent_prompt_for(&root_path, &flow, default_agent.as_deref())
+}
+
+/// The command's body, with the app-wide default agent injected: a root
+/// with no `[agent] profile` composes for the agent its launches resolve
+/// to, exactly as `run_integration` writes for it.
+fn compose_agent_prompt_for(root_path: &str, flow: &str, default_agent: Option<&str>) -> Result<String, String> {
+    let root = Path::new(root_path);
     if !root.is_dir() {
         return Err(format!("root does not exist: {root_path}"));
     }
-    let skill = step_skill(&flow).ok_or_else(|| format!("unknown flow: {flow}"))?;
-    let profile = profile_by_id(&read_profile_id(root));
+    let skill = step_skill(flow).ok_or_else(|| format!("unknown flow: {flow}"))?;
+    let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let instructions_file = resolved_instructions_file(&LocalFiles, root, profile);
     let prd = prd_relative_path(root);
-    let target = match flow.as_str() {
+    let target = match flow {
         "prd" => prd.clone(),
         _ => instructions_file,
     };
@@ -3252,7 +3354,7 @@ mod tests {
         // Through `run_integration` rather than the command, which now
         // takes the app handle it routes an ssh root by; the refusal is
         // the run's, on whichever disk it is asked about.
-        let err = run_integration(&LocalFiles, Path::new("/no/such/root"), fake_binary(), None, None, None)
+        let err = run_integration(&LocalFiles, Path::new("/no/such/root"), fake_binary(), None, None, None, None)
             .unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
@@ -3323,6 +3425,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3356,7 +3459,7 @@ mod tests {
         fs.write_bytes(&root.join("crates/gavin-mcp/Cargo.toml"), b"[package]\n").unwrap();
         fs.write_bytes(&root.join("scripts").join("gavin-mcp"), b"#!/bin/sh\n").unwrap();
 
-        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None)
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
             .unwrap();
 
         let files = fs.files.lock().unwrap();
@@ -3383,7 +3486,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         assert!(result.written.iter().any(|w| w.ends_with("RULES.md")));
@@ -3402,7 +3505,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, Some("codex")).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, Some("codex"), None).unwrap();
 
         assert!(dir.path().join("AGENTS.md").is_file());
         assert!(dir.path().join(".codex/config.toml").is_file());
@@ -3423,7 +3526,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         assert!(dir.path().join(".mcp.json").is_file());
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
@@ -3445,7 +3548,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -3473,7 +3576,7 @@ mod tests {
 
         // No decision yet -> the write is held back and the foreign
         // entry is reported, verbatim.
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let foreign = result.mcp_foreign.expect("a foreign server was present");
         assert!(foreign.file.ends_with(".mcp.json"));
@@ -3498,7 +3601,7 @@ mod tests {
 
         // "keep": merges beside it, same as every run before this fix.
         let result =
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None).unwrap();
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
         assert!(result.mcp_foreign.is_none());
         let v: serde_json::Value =
@@ -3514,7 +3617,7 @@ mod tests {
             r#"{ "mcpServers": { "evil": { "command": "/bin/sh" } } }"#,
         )
         .unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None)
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None, None)
             .unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let reason = result
@@ -3548,7 +3651,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), Some("CLAUDE.md"), None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), Some("CLAUDE.md"), None, None, None).unwrap();
 
         assert!(dir.path().join("CLAUDE.md").is_file());
         assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
@@ -3563,7 +3666,7 @@ mod tests {
             "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
         )
         .unwrap();
-        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, None).unwrap();
         assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
     }
 
@@ -3578,7 +3681,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -3593,7 +3696,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("RULES.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -3628,7 +3731,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -3647,7 +3750,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -3662,7 +3765,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -3681,7 +3784,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -3704,7 +3807,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap_err();
+            let err = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -3766,7 +3869,7 @@ mod tests {
         assert!(workflow.contains("read `docs/PRD.md`"), "{workflow}");
 
         // And the flow document, whether it lands as a file or a prompt.
-        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
         let skill =
             std::fs::read_to_string(dir.path().join(".claude/skills/gavin-write-prd/SKILL.md"))
                 .unwrap();
@@ -3788,10 +3891,7 @@ mod tests {
         // Custom has no skill slot, so the target and the document both
         // arrive in the prompt text -- the one place a stale path would
         // send the agent to write a second PRD beside the real one.
-        let prompt = compose_agent_prompt(
-            dir.path().to_string_lossy().to_string(),
-            "prd".to_string(),
-        )
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None)
         .unwrap();
         assert!(prompt.contains("Write PRD.md for this repo"), "{prompt}");
         assert!(!prompt.contains(".gavin-root/PRD.md"), "{prompt}");
@@ -3818,7 +3918,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "claude-code");
 
-        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
 
         assert!(prompt.contains("gavin-write-prd"), "invokes the skill by name");
         assert!(prompt.len() < 400, "a skill-capable profile gets a short prompt, not the doc");
@@ -3830,10 +3930,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "");
 
-        let prompt = compose_agent_prompt(
-            dir.path().to_string_lossy().to_string(),
-            "prd".to_string(),
-        )
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None)
         .unwrap();
 
         assert!(prompt.contains("## Vision"), "the guidance itself is in the prompt");
@@ -3852,10 +3949,7 @@ mod tests {
         )
         .unwrap();
 
-        let prompt = compose_agent_prompt(
-            dir.path().to_string_lossy().to_string(),
-            "agent-file".to_string(),
-        )
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "agent-file", None)
         .unwrap();
 
         assert!(prompt.contains("NOTES.md"), "the prompt names the configured file");
@@ -3865,7 +3959,7 @@ mod tests {
     fn compose_prompt_rejects_an_unknown_flow() {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "claude-code");
-        assert!(compose_agent_prompt(root, "not-a-flow".to_string()).is_err());
+        assert!(compose_agent_prompt_for(&root, "not-a-flow", None).is_err());
     }
 
     /// The whole column, not just which rows have one: `Some("")` and
@@ -3909,16 +4003,16 @@ mod tests {
     fn a_run_that_displaces_an_edited_skill_keeps_it_and_reports_it() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         // A re-run that changes nothing must say nothing, or the report
         // cries wolf on every setup the human runs twice.
-        let quiet = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let quiet = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
         assert!(quiet.replaced.is_empty(), "{:?}", quiet.replaced);
 
         let skill = dir.path().join(".claude/skills/gavin-develop/SKILL.md");
         std::fs::write(&skill, "### Rate it: `complexity:`\nmy own words\n").unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let (reported, backup) = result
             .replaced
@@ -3949,7 +4043,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -3984,7 +4078,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "cursor");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -4020,7 +4114,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -4057,7 +4151,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "gemini");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -4094,7 +4188,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();
@@ -4118,7 +4212,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "opencode");
 
-        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
 
         assert!(dir.path().join(".opencode/skills/gavin-write-prd/SKILL.md").is_file());
         assert!(!dir.path().join(".claude").exists());
@@ -4132,12 +4226,12 @@ mod tests {
     fn gavin_install_reports_the_agent_file_only_where_the_profile_has_one() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        let install = gavin_install(dir.path());
+        let install = gavin_install(dir.path(), None);
         assert_eq!(install.agent_file.unwrap(), dir.path().join(".opencode/agent/gavin-commit.md"));
         assert_eq!(install.skill_root.unwrap(), dir.path().join(".opencode/skills"));
 
         rooted_with_profile(dir.path(), "claude-code");
-        assert!(gavin_install(dir.path()).agent_file.is_none());
+        assert!(gavin_install(dir.path(), None).agent_file.is_none());
     }
 
     #[test]
@@ -4297,7 +4391,7 @@ mod tests {
         rooted_with_profile(dir.path(), "claude-code");
         with_launcher(dir.path());
 
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -4365,10 +4459,67 @@ mod tests {
         with_launcher(dir.path());
         write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
 
-        assert!(mcp_entry_present(dir.path()), "a launcher entry is still gavin's");
-        assert!(remove_mcp_entry(dir.path()).unwrap(), "it reports having removed one");
-        assert!(!mcp_entry_present(dir.path()), "and it is gone");
+        assert!(mcp_entry_present(dir.path(), None), "a launcher entry is still gavin's");
+        assert!(remove_mcp_entry(dir.path(), None).unwrap(), "it reports having removed one");
+        assert!(!mcp_entry_present(dir.path(), None), "and it is gone");
     }
+
+    /// The delete flow resolves the profile the write path used: a
+    /// custom-profile root's entry lives in its `[agent] mcp_file`, and
+    /// removing it must edit THAT file -- resolving claude-code here
+    /// (the `profile_by_id` fallback) would leave the real entry behind
+    /// while poking at a `.mcp.json` nobody wrote.
+    #[test]
+    fn entry_present_and_remove_follow_the_custom_roots_own_config() {
+        let dir = tempfile::tempdir().unwrap();
+        custom_rooted(dir.path(), "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n");
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        assert!(dir.path().join("agent.json").is_file());
+
+        assert!(mcp_entry_present(dir.path(), None), "the custom config's entry is gavin's");
+        assert!(remove_mcp_entry(dir.path(), None).unwrap(), "it reports having removed one");
+        assert!(!mcp_entry_present(dir.path(), None), "and it is gone");
+        let left: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("agent.json")).unwrap()).unwrap();
+        assert!(left.pointer("/mcpServers/gavin").is_none(), "the entry left the custom file");
+        assert!(!dir.path().join(".mcp.json").exists(), "claude's file was never touched");
+    }
+
+    /// A root with no `[agent] profile` integrates the app-wide default
+    /// agent, so what setup writes is what the launch resolves to.
+    #[test]
+    fn a_profile_less_root_integrates_the_app_default_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, Some("codex")).unwrap();
+        assert!(dir.path().join("AGENTS.md").is_file(), "the default agent's file, not claude's");
+        assert!(!dir.path().join("CLAUDE.md").exists());
+        assert!(result.written.iter().any(|w| w.contains(".codex/config.toml")), "{:?}", result.written);
+
+        // An explicit overlay still wins over the default, and no default
+        // configured is claude-code, as before the setting existed.
+        let other = tempfile::tempdir().unwrap();
+        rooted_with_profile(other.path(), "claude-code");
+        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, Some("codex")).unwrap();
+        assert!(other.path().join("CLAUDE.md").is_file(), "config.toml's profile wins");
+        let plain = tempfile::tempdir().unwrap();
+        run_integration(&LocalFiles, plain.path(), fake_binary(), None, None, None, None).unwrap();
+        assert!(plain.path().join("CLAUDE.md").is_file(), "no default configured is claude-code");
+    }
+
+    /// The composer resolves the same way: a profile-less root's step
+    /// skill lands under the default agent's skill parent.
+    #[test]
+    fn a_profile_less_root_composes_for_the_app_default_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", Some("codex")).unwrap();
+        assert!(prompt.contains("gavin-write-prd"), "{prompt}");
+        // Codex's skill root, not claude's `.claude/skills`.
+        assert!(dir.path().join(".agents/skills/gavin-write-prd/SKILL.md").is_file());
+        assert!(!dir.path().join(".claude").exists());
+    }
+
 
     fn layout(id: &str) -> ResolvedMcp {
         profile_by_id(id).mcp.as_ref().unwrap().into()

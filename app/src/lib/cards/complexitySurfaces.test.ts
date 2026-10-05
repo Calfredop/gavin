@@ -146,12 +146,14 @@ describe("the settings panels", () => {
 });
 
 describe("the custom agent", () => {
-  it("edits named customs through the shared Customs editor on both panels", () => {
-    // The old single customCommand/customModelFlag fields are gone; the
-    // Customs tab owns command + flags + API family per named profile.
-    expect(source(APP_PANEL)).toContain("CustomsEditor");
+  it("edits named customs on both panels", () => {
+    // The old single customCommand/customModelFlag fields are gone. The
+    // app panel gives each custom its own per-agent tab (command + flags +
+    // API family through updateCustomProfile); the workspace panel edits
+    // its locals through the shared Customs editor.
+    expect(source(APP_PANEL)).toContain("updateCustomProfile(");
+    expect(source(APP_PANEL)).toContain("customProfiles: updateCustomProfile");
     expect(source(WORKSPACE_PANEL)).toContain("CustomsEditor");
-    expect(source(APP_PANEL)).toContain("customProfiles:");
     expect(source(WORKSPACE_PANEL)).toContain("setWorkspaceCustomProfiles");
   });
 

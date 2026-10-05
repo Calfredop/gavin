@@ -31,7 +31,16 @@ use std::time::SystemTime;
 
 use tauri::Manager;
 
-use crate::agent_setup::{profile_by_id, TokenLog};
+use crate::agent_setup::{stock_profile_by_id, TokenLog};
+
+/// The transcript layout a profile id's conversations are read through.
+/// Named customs answer None even though `profile_by_id` would fall back
+/// to claude-code: a custom is not claude, and reading under claude's
+/// log root would attribute claude's conversations (and their token
+/// costs) to it.
+fn token_log_for(profile_id: &str) -> Option<TokenLog> {
+    stock_profile_by_id(profile_id).and_then(|p| p.token_log)
+}
 
 /// How deep the codex rollout walk goes. Its sessions are filed
 /// `sessions/<year>/<month>/<day>/rollout-*.jsonl`; the same bound
@@ -160,7 +169,7 @@ fn conversation_log_blocking(profile_id: &str, conversation_id: Option<String>) 
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
         return ConversationLog::Unknown;
     };
-    let Some(log) = profile_by_id(profile_id).token_log else {
+    let Some(log) = token_log_for(profile_id) else {
         return ConversationLog::Unknown;
     };
     conversation_log_under(log, log_root(log).as_deref(), conversation_id.trim())
@@ -229,7 +238,7 @@ fn card_run_tokens_blocking(cache: &TokenCache, profile_id: &str, conversation_i
             reason: "gavin did not record a conversation id for this run".to_string(),
         };
     };
-    let Some(log) = profile_by_id(profile_id).token_log else {
+    let Some(log) = token_log_for(profile_id) else {
         return TokenReport::Unsupported {
             reason: format!("gavin cannot read {profile_id}'s token counts"),
         };
@@ -494,6 +503,33 @@ pub fn codex_totals(text: &str) -> TokenReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A named custom -- the migrated `custom-agent`, a user slug, a
+    /// workspace `local:` id -- has no transcript layout of gavin's own:
+    /// the read paths answer Unknown/Unsupported through `token_log_for`
+    /// (`stock_profile_by_id`), never `profile_by_id`'s claude-code
+    /// fallback, which would read claude's conversations and token costs
+    /// as the custom's.
+    #[test]
+    fn a_named_custom_has_no_token_log_and_is_not_read_under_claudes_root() {
+        for id in ["custom", "custom-agent", "my-bot", "local:desk"] {
+            assert!(token_log_for(id).is_none(), "{id} took claude's token log");
+            assert_eq!(
+                conversation_log_blocking(id, Some("conv-1".to_string())),
+                ConversationLog::Unknown,
+                "{id} read a conversation"
+            );
+            assert!(matches!(
+                card_run_tokens_blocking(&TokenCache::new(), id, Some("conv-1".to_string())),
+                TokenReport::Unsupported { .. }
+            ));
+        }
+        // And the stock rows still resolve, so the guard is the custom
+        // shape and not the lookup itself.
+        for id in ["claude-code", "codex"] {
+            assert!(token_log_for(id).is_some(), "{id} lost its token log");
+        }
+    }
 
     fn totals(report: &TokenReport) -> &TokenTotals {
         match report {

@@ -10,13 +10,17 @@
 // existing conversation never walks: a Claude transcript cannot continue
 // on Codex.
 //
-// Inheritance matches `agent_pause`: a workspace's absent chain means
-// inherit the app-wide one; an empty array is an explicit "no fallback"
-// override. "Armed" is a set the workspace records after setup-only
-// Integration/Superpowers for that profile — the workspace's own active
-// profile is treated as armed by the init/switch wizard, not this list.
-// "Declined" is the set the human answered "Don't ask again" for: it is
-// never offered for arming in that workspace, so the chain walks past it.
+// Chains are per PRIMARY: the map is keyed by the launch's resolved
+// profile id, and a chain lists only fallbacks — the primary is never an
+// element of its own chain. Inheritance matches `agent_pause`, per key:
+// a workspace map with no key for the primary inherits the app-wide
+// chain for it; an empty array under the key is an explicit "no
+// fallback" override for that primary. "Armed" is a set the workspace
+// records after setup-only Integration/Superpowers for that profile —
+// the workspace's own active profile is treated as armed by the
+// init/switch wizard, not this list. "Declined" is the set the human
+// answered "Don't ask again" for: it is never offered for arming in
+// that workspace, so the chain walks past it.
 
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import { usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";

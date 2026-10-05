@@ -359,6 +359,7 @@ export function sampleSettings(): DemoSettings {
     customResumeArgs: null,
     agentModels: {},
     agentDefaults: {
+      defaultAgent: "claude-code",
       customProfiles: [
         {
           id: "demo-cli",

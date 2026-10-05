@@ -5,6 +5,7 @@
     switchWorkspaceView,
     agentProfilesStore,
     openWizard,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     setHomeAgentShare,
     trustedAgentConfigs,
@@ -56,7 +57,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   // The excerpt has to come from the file the workspace actually points

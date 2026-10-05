@@ -3,6 +3,7 @@
     layoutState,
     closeWizard,
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
@@ -45,7 +46,15 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agentCfg = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+    resolveAgentConfig(
+      $trustedAgentConfigs(workspaceId),
+      $agentProfilesStore,
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
+    )
   );
   const prdPath = $derived(resolvePrdPath(rootContext));
 

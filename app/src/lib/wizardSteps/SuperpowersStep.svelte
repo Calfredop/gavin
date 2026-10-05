@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { agentDefaultsStore, agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
   import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
@@ -29,8 +29,15 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const agentCommand = $derived(
     agentCommandOverride ??
-      resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
-        .command
+      resolveAgentConfig(
+        $trustedAgentConfigs(workspaceId),
+        $agentProfilesStore,
+        $agentModelDefaultsStore,
+        undefined,
+        undefined,
+        undefined,
+        $agentDefaultsStore.defaultAgent
+      ).command
   );
 
   let error = $state<string | null>(null);

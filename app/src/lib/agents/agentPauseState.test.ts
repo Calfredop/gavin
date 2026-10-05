@@ -105,6 +105,7 @@ beforeEach(() => {
   agentDefaultsStore.set({
     customCommand: "",
     customModelFlag: "",
+    defaultAgent: "claude-code",
     complexity: {},
     fallbackChains: {},
     fallbackThresholds: {},
@@ -498,6 +499,7 @@ describe("the gate", () => {
     agentDefaultsStore.set({
       customCommand: "",
       customModelFlag: "",
+      defaultAgent: "claude-code",
       complexity: {},
       fallbackChains: {},
       fallbackThresholds: { "claude-code": 80 },
