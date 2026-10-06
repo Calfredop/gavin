@@ -110,7 +110,6 @@ vi.mock("$lib/core/backend", () => ({
   // duty. Resolved by default so a poll lands quietly rather than
   // failing into its catch.
   agentUsage: vi.fn().mockResolvedValue({ state: "unsupported" }),
-  getAgentPause: vi.fn().mockResolvedValue(null),
   systemMemory: vi.fn().mockResolvedValue(null),
   listDevices: vi.fn().mockResolvedValue({ devices: [], remoteAccessEnabled: false, relayUrl: null }),
   setSleepHold: vi.fn().mockResolvedValue(undefined),
@@ -258,6 +257,7 @@ import {
   agentProfilesStore,
   agentDefaultsStore,
   agentForCard,
+  dropProfileRefsFromWorkspaces,
   dropWorkspaceProfileRefs,
   promptExtrasFor,
   resolvedAgentFor,
@@ -4198,6 +4198,32 @@ describe("per-agent settings in a workspace", () => {
     vi.mocked(backend.setWorkspaceSettings).mockClear();
     await dropWorkspaceProfileRefs("w1", "local:other");
     expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  /// An app-wide custom is deleted everywhere: every workspace's own keys
+  /// for its slug go too, or they come back with the next custom of that name.
+  it("sweeps a deleted app-wide custom out of every workspace", async () => {
+    const cycle = { enabled: true, periodMinutes: 300, pauseMinutes: 10, anchorMs: 1, limitPercent: 95, limitEnabled: true };
+    setState([ws("w1", []), ws("w2", []), ws("w3", [])], "w1", null);
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "w1"
+          ? { ...w, pauseCycles: { "my-bot": cycle } }
+          : w.id === "w2"
+            ? { ...w, complexityTables: { "claude-code": { intricate: { profile: "my-bot", model: "" } } } }
+            : w
+      ),
+    }));
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
+
+    await dropProfileRefsFromWorkspaces("my-bot");
+
+    const calls = vi.mocked(backend.setWorkspaceSettings).mock.calls;
+    expect(calls).toEqual([
+      ["w1", { pauseCycles: null }],
+      ["w2", { complexityTables: { "claude-code": {} } }],
+    ]);
   });
 });
 

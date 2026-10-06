@@ -118,7 +118,9 @@ export function complexityTableForPrimary(
   primaryId: string
 ): ComplexityTable {
   const id = (primaryId ?? "").trim();
-  return (id && map?.[id]) || {};
+  // Own keys only: a custom whose slug is `constructor` must not find
+  // Object.prototype's.
+  return id && map && Object.prototype.hasOwnProperty.call(map, id) ? (map[id] ?? {}) : {};
 }
 
 /// The table that governs a launch on `primaryId` in this workspace: the
@@ -370,12 +372,13 @@ export type ComplexityRealignAction = "keep" | "remap" | "clear";
 
 /// Apply one realign choice. Never mutates `table`.
 ///
-/// - `keep` — leave every override alone (app pins still fall through
-///   for unset levels).
+/// - `keep` — leave the table as it is.
 /// - `remap` — rows whose profile names `oldProfile` are retargeted to
-///   `newProfile`; models and other rows stay.
-/// - `clear` — drop every workspace override so unset levels mean the
-///   new workspace agent (still falling through to app pins).
+///   `newProfile`; models and other rows stay. (Written into the workspace
+///   as a table of its own for the new agent.)
+/// - `clear` — empty the table. The caller turns that into "this
+///   workspace keeps no table of its own for the new agent", which hands
+///   it back to the app-wide one.
 export function realignComplexityTable(
   table: ComplexityTable,
   action: ComplexityRealignAction,
@@ -398,17 +401,19 @@ export function realignComplexityTable(
   return next;
 }
 
-/// Default choice for the wizard: remap when any workspace row already
-/// names the profile being left, otherwise clear so "this workspace's
-/// agent" stops lying after the switch.
+/// Default choice for the wizard: always `keep`.
+///
+/// Complexity tables are per agent now, so a level left alone in the new
+/// agent's table runs THAT agent -- "this workspace's agent" can no longer
+/// go stale across a switch, which is what recommending `clear` used to
+/// guard against. And a row in the new agent's table that names the agent
+/// being left is as likely a deliberate cross-agent route ("on codex, send
+/// the hard ones to claude") as a leftover, so rewriting it, or dropping
+/// the whole table, is a choice for the human to make, not a default. The
+/// arguments stay so the wizard's call site reads the same either way.
 export function recommendedComplexityAction(
-  table: ComplexityTable,
-  oldProfile: string
+  _table: ComplexityTable,
+  _oldProfile: string
 ): ComplexityRealignAction {
-  const old = oldProfile.trim();
-  for (const level of COMPLEXITY_LEVELS) {
-    const entry = table[level];
-    if (entry && entry.profile.trim() === old) return "remap";
-  }
-  return "clear";
+  return "keep";
 }

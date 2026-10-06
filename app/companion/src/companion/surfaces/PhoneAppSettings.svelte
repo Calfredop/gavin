@@ -12,6 +12,7 @@
     agentProfilesStore,
     autoCommitDefault,
     daemonCompat,
+    dropProfileRefsFromWorkspaces,
     gitTrackingDefault,
     requireReviewDefault,
     setAgentDefaults,
@@ -148,9 +149,10 @@
       danger: true,
     });
     if (!ok) return;
-    await saveSetting(() =>
-      setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, activeCustom.id))
-    );
+    const id = activeCustom.id;
+    await saveSetting(() => setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, id)));
+    // And every workspace's own per-agent keys for it.
+    await saveSetting(() => dropProfileRefsFromWorkspaces(id));
     agentsTab = GENERAL_TAB;
   }
 </script>

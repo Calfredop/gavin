@@ -237,6 +237,38 @@ describe("agentPauseStore", () => {
   });
 });
 
+describe("a fallback hop answers to the candidate's own cycle", () => {
+  it("does not hop a spent primary onto an agent that is inside its own pause window", () => {
+    setAppCycle(cycle({ enabled: false, limitPercent: 90, pauseMinutes: 10 }), "claude-code");
+    // codex keeps a schedule too, and the clock is inside ITS pause.
+    setAppCycle(cycle({ pauseMinutes: 10 }), "codex");
+    layoutState.set({
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, armedAgents: ["codex", "gemini"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    const spent = {
+      state: "ready" as const,
+      windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+      plan: null,
+      observedAt: 1,
+      cached: false,
+    };
+    agentUsageStore.set({ "claude-code": spent });
+    const inCodexPause = ANCHOR + 295 * MIN;
+    expect(launchDecision("w1", "claude-code", false, inCodexPause)).toEqual({
+      kind: "use",
+      profileId: "gemini",
+      viaFallback: true,
+    });
+    // Outside codex's window it is the first hop again.
+    expect(launchDecision("w1", "claude-code", false, ANCHOR + 100 * MIN)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+  });
+});
+
 describe("launchDecision keys the cycle by the launch's resolved primary", () => {
   it("holds a launch resolved to the agent whose cycle is paused, not one resolved elsewhere", () => {
     setAppCycle(cycle({ pauseMinutes: 10 }), "claude-code");
@@ -489,6 +521,31 @@ describe("profilesInUse", () => {
       activeWorkspaceId: "w1",
     } as never);
     expect(profilesInUse()).toEqual(["claude-code", "codex", "opencode"]);
+  });
+
+  /// A rated card can launch on whichever agent the workspace agent's
+  /// complexity table names, and that launch is gated on THAT agent's
+  /// usage -- so it has to be read even when no chain mentions it.
+  it("includes the agents the workspace agent's complexity table routes to", () => {
+    agentDefaultsStore.update(
+      (d) =>
+        ({
+          ...d,
+          complexityTables: {
+            "claude-code": { intricate: { profile: "codex", model: "" } },
+            // Another primary's table is not this workspace's.
+            gemini: { trivial: { profile: "opencode", model: "" } },
+          },
+        }) as never
+    );
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "codex"]);
+    // A workspace's own table replaces the app's for that agent.
+    layoutState.set({
+      workspaces: [{ id: "w1", complexityTables: { "claude-code": { trivial: { profile: "gemini", model: "" } } } }],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "gemini"]);
   });
 });
 
@@ -870,6 +927,33 @@ describe("pausedWorkspaces", () => {
       stop();
       expect(seen.at(0)).toBe("w1 w2");
       expect(seen.at(-1)).toBe("w2");
+    });
+
+    // A card routed to codex launches on codex, gated on codex's own
+    // cycle -- which the held-workspace set (read off the workspace's own
+    // agent) cannot see. Without this a step skipped for codex's pause
+    // would never hear that the pause lifted.
+    it("emits when an agent a workspace can route to enters or leaves its own pause window", () => {
+      agentDefaultsStore.update(
+        (d) =>
+          ({
+            ...d,
+            complexityTables: { "claude-code": { intricate: { profile: "codex", model: "" } } },
+          }) as never
+      );
+      setAppCycle(cycle({ pauseMinutes: 10 }), "codex");
+      layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
+      nowStore.set(ANCHOR + 100 * MIN);
+
+      const seen: string[] = [];
+      const stop = pausedWorkspaceKey.subscribe((k) => seen.push(k));
+      // The workspace's own agent keeps no cycle, so it is never "held",
+      // yet codex enters its window...
+      nowStore.set(ANCHOR + 295 * MIN);
+      // ...and leaves it again.
+      nowStore.set(ANCHOR + 310 * MIN);
+      stop();
+      expect(seen).toEqual(["", " | w1:codex", ""]);
     });
   });
 });

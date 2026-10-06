@@ -175,6 +175,12 @@ export interface LaunchDecisionInput {
   limitPercent: number;
   fallbackThresholds?: FallbackThresholds | null;
   cyclePaused: boolean;
+  /// Whether a candidate the walk could hop to is inside its OWN pause
+  /// window. Cycles are per agent: hopping a spent primary onto an agent
+  /// whose schedule says "sit out now" would spend exactly what that
+  /// schedule is there to keep. Omitted, nothing is held by a cycle (the
+  /// primary's own is `cyclePaused`).
+  cyclePausedFor?: (profileId: string) => boolean;
   /// Reopening the same conversation. The chain does not apply.
   resume: boolean;
 }
@@ -211,6 +217,7 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
   for (const id of sanitizeChain([workspace, ...input.chain])) {
     if (id === primary) continue;
     if (spent(id)) continue;
+    if (input.cyclePausedFor?.(id)) continue;
     // The workspace's own agent is armed by init / agent-change, not by
     // the fallback-arming list. Asking to set it up again would block the
     // one hop this field exists to make.

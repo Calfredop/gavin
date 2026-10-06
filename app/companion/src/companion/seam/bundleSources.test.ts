@@ -73,6 +73,7 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "setWorkspacePause",
     "setWorkspacePromptParams",
     "dropWorkspaceProfileRefs",
+    "dropProfileRefsFromWorkspaces",
     "setWorkspaceFallback",
     "setWorkspaceFlag",
     "setAgentField",

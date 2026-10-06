@@ -187,13 +187,15 @@ pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 /// describes.
 pub struct AgentModels(pub Mutex<HashMap<String, String>>);
 
-/// The app-wide agent pause cycle, `None` for no cycle at all.
-/// Tauri-managed and persisted into the same `AppConfig` as the rest --
-/// the seventh field a save site can silently wipe, and carried through
-/// `persist_workspaces` for exactly that reason.
+/// LEGACY: the app-wide single agent pause cycle, from before cycles were
+/// per primary agent (`AgentDefaultsConfig::pause_cycles`, which rides the
+/// wholesale agent-defaults save). `config::load` folds an old value onto
+/// every known primary and clears it, so this is always `None` once a
+/// config has loaded; it stays only because `persist_workspaces` still
+/// takes it positionally.
 pub struct AgentPause(pub Mutex<Option<crate::config::AgentPauseConfig>>);
 
-// The app-wide launch wall, `None` until somebody edits it (the shipped
+/// The app-wide launch wall, `None` until somebody edits it (the shipped
 /// `LaunchConfig::default()` then applies). Tauri-managed and persisted
 /// into the same `AppConfig` as the rest -- the TENTH field a save site
 /// can silently wipe, and carried through `persist_workspaces` for

@@ -1623,12 +1623,17 @@ fn known_primaries(config: &AppConfig) -> Vec<String> {
 pub fn migrate_complexity_tables(config: &mut AppConfig) -> bool {
     let mut changed = false;
 
+    // The legacy app-wide table, kept whole: a workspace's fold below
+    // starts from it, and a workspace-local custom (which the app-level
+    // fold cannot know) is seeded from it.
+    let mut legacy_app: HashMap<String, ComplexityAgent> = HashMap::new();
     if !config.agent_defaults.complexity.is_empty() {
         if config.agent_defaults.complexity_tables.is_empty() {
             let table = std::mem::take(&mut config.agent_defaults.complexity);
             for id in known_primaries(config) {
                 config.agent_defaults.complexity_tables.insert(id, table.clone());
             }
+            legacy_app = table;
         } else {
             config.agent_defaults.complexity.clear();
         }
@@ -1641,22 +1646,43 @@ pub fn migrate_complexity_tables(config: &mut AppConfig) -> bool {
         .iter()
         .map(|p| p.id.clone())
         .collect();
+    let app_tables = config.agent_defaults.complexity_tables.clone();
     for ws in &mut config.workspaces {
-        if ws.complexity_agents.is_empty() {
+        let own_rows = std::mem::take(&mut ws.complexity_agents);
+        let has_own = !own_rows.is_empty();
+        let has_locals_to_seed = !legacy_app.is_empty() && !ws.custom_profiles.is_empty();
+        if !has_own && !has_locals_to_seed {
             continue;
         }
         if ws.complexity_tables.is_empty() {
-            let table = std::mem::take(&mut ws.complexity_agents);
             let ids = STOCK_PROFILE_IDS
                 .iter()
                 .map(|s| s.to_string())
                 .chain(app_custom_ids.iter().cloned())
                 .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
             for id in ids {
-                ws.complexity_tables.insert(id, table.clone());
+                let is_local = ws.custom_profiles.iter().any(|p| p.id == id);
+                if !has_own && !is_local {
+                    // Nothing of its own and not a local: it inherits the
+                    // app's table for this agent, exactly as before.
+                    continue;
+                }
+                // The old rule was per LEVEL: a workspace row won, and a
+                // level it did not name fell through to the app's row.
+                // The new key replaces the table WHOLE, so the fold
+                // writes that overlay out. A local custom has no app
+                // table under its id (the app fold never knew it), so it
+                // starts from the legacy app table.
+                let mut table = if is_local {
+                    legacy_app.clone()
+                } else {
+                    app_tables.get(&id).cloned().unwrap_or_default()
+                };
+                table.extend(own_rows.clone());
+                if !table.is_empty() {
+                    ws.complexity_tables.insert(id, table);
+                }
             }
-        } else {
-            ws.complexity_agents.clear();
         }
         changed = true;
     }
@@ -1668,12 +1694,16 @@ pub fn migrate_complexity_tables(config: &mut AppConfig) -> bool {
 /// the per-primary maps: the old cycle becomes EVERY known primary's
 /// cycle, because the old model applied it to any launch. A workspace
 /// legacy `None` means it never chose, which the new model already
-/// spells as an empty map (inherit). Idempotent: legacy fields are
-/// cleared as they are folded, so a second call returns false.
+/// spells as an empty map (inherit) — except for a workspace-local
+/// custom, which the app-wide fold cannot know: it is seeded from the
+/// legacy app cycle so it stays held exactly as it was. Idempotent:
+/// legacy fields are cleared as they are folded, so a second call
+/// returns false.
 pub fn migrate_pause_cycles(config: &mut AppConfig) -> bool {
     let mut changed = false;
 
-    if let Some(cycle) = config.agent_pause.take() {
+    let legacy_app = config.agent_pause.take();
+    if let Some(cycle) = &legacy_app {
         if config.agent_defaults.pause_cycles.is_empty() {
             for id in known_primaries(config) {
                 config.agent_defaults.pause_cycles.insert(id, cycle.clone());
@@ -1689,17 +1719,33 @@ pub fn migrate_pause_cycles(config: &mut AppConfig) -> bool {
         .map(|p| p.id.clone())
         .collect();
     for ws in &mut config.workspaces {
-        let Some(cycle) = ws.agent_pause.take() else {
+        let own = ws.agent_pause.take();
+        if own.is_none() && (legacy_app.is_none() || ws.custom_profiles.is_empty()) {
             continue;
-        };
+        }
         if ws.pause_cycles.is_empty() {
-            let ids = STOCK_PROFILE_IDS
-                .iter()
-                .map(|s| s.to_string())
-                .chain(app_custom_ids.iter().cloned())
-                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
-            for id in ids {
-                ws.pause_cycles.insert(id, cycle.clone());
+            match &own {
+                // The workspace chose a cycle of its own: it governed
+                // every agent, so it becomes every agent's.
+                Some(cycle) => {
+                    let ids = STOCK_PROFILE_IDS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .chain(app_custom_ids.iter().cloned())
+                        .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+                    for id in ids {
+                        ws.pause_cycles.insert(id, cycle.clone());
+                    }
+                }
+                // It never chose: it follows the app per agent, but a
+                // local custom has no app entry to follow.
+                None => {
+                    if let Some(cycle) = &legacy_app {
+                        for p in &ws.custom_profiles {
+                            ws.pause_cycles.insert(p.id.clone(), cycle.clone());
+                        }
+                    }
+                }
             }
         }
         changed = true;
@@ -2399,6 +2445,19 @@ mod tests {
     "agentPause": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 7, "limitPercent": 90.0, "limitEnabled": true },
     "complexityAgents": { "complex": { "profile": "codex", "model": "gpt" } },
     "customProfiles": [{"id": "local:bot", "label": "Bot", "command": "bot", "modelFlag": ""}]
+  }, {
+    "id": "follower",
+    "name": "Follower",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null,
+    "customProfiles": [{"id": "local:helper", "label": "Helper", "command": "h", "modelFlag": ""}]
+  }, {
+    "id": "plain",
+    "name": "Plain",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null
   }],
   "agent_pause": { "enabled": true, "periodMinutes": 240, "pauseMinutes": 5, "anchorMs": 3, "limitPercent": 95.0, "limitEnabled": false },
   "agent_defaults": {
@@ -2421,14 +2480,35 @@ mod tests {
         assert!(loaded.agent_defaults.complexity.is_empty());
         assert!(loaded.agent_pause.is_none());
 
+        // A workspace that chose its own rows: they win PER LEVEL over the
+        // app's, and a level it left alone still falls through to the app's
+        // row -- the old rule, which a whole-table key would lose if the
+        // fold copied only the workspace's own rows. The cycle it chose
+        // governed every agent, so it becomes every agent's.
         let ws = &loaded.workspaces[0];
         for id in STOCK_PROFILE_IDS.iter().chain(["my-bot", "local:bot"].iter()) {
-            assert_eq!(ws.complexity_tables[*id]["complex"].profile, "codex", "ws table for {id}");
+            let table = &ws.complexity_tables[*id];
+            assert_eq!(table["complex"].profile, "codex", "ws own row for {id}");
+            assert_eq!(table["intricate"].model, "opus", "ws falls through to the app's row for {id}");
             let cycle = &ws.pause_cycles[*id];
             assert_eq!((cycle.pause_minutes, cycle.limit_percent), (10, 90.0), "ws cycle for {id}");
         }
         assert!(ws.complexity_agents.is_empty());
         assert!(ws.agent_pause.is_none());
+
+        // A workspace that chose nothing follows the app per agent -- but a
+        // workspace-local custom has no app entry to follow, so it is
+        // seeded with what the old single table and cycle did to it.
+        let follower = &loaded.workspaces[1];
+        assert_eq!(follower.complexity_tables.keys().collect::<Vec<_>>(), ["local:helper"]);
+        assert_eq!(follower.complexity_tables["local:helper"]["intricate"].model, "opus");
+        assert_eq!(follower.pause_cycles.keys().collect::<Vec<_>>(), ["local:helper"]);
+        assert_eq!(follower.pause_cycles["local:helper"].period_minutes, 240);
+
+        // And one with nothing of its own and no locals stays fully inheriting.
+        let plain = &loaded.workspaces[2];
+        assert!(plain.complexity_tables.is_empty());
+        assert!(plain.pause_cycles.is_empty());
 
         let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
         assert!(!written.contains("complexityAgents"), "{written}");

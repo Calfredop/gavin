@@ -4,6 +4,7 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     agentDefaultsStore,
+    dropProfileRefsFromWorkspaces,
     setAgentModelDefault,
     setAgentDefaults,
     terminalFontSizeDefault,
@@ -883,7 +884,10 @@
       danger: true,
     });
     if (!ok) return;
-    await setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, activeCustom.id));
+    const id = activeCustom.id;
+    await setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, id));
+    // And every workspace's own per-agent keys for it.
+    await dropProfileRefsFromWorkspaces(id);
     agentsTab = GENERAL_TAB;
   }
 </script>

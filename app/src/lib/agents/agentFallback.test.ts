@@ -147,6 +147,41 @@ describe("decideLaunch", () => {
     ).toEqual({ kind: "pause", why: "cycle" });
   });
 
+  /// Cycles are per agent: a spent primary must not be walked onto an
+  /// agent whose own schedule says to sit out right now.
+  it("walks past a chain agent that is inside its own pause window", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        usageByProfile: { "claude-code": atLimit(99), codex: atLimit(10), gemini: atLimit(10) },
+        armed: new Set(["codex", "gemini"]),
+        cyclePausedFor: (id) => id === "codex",
+      })
+    ).toEqual({ kind: "use", profileId: "gemini", viaFallback: true });
+  });
+
+  it("pauses when every other agent is spent or in its own pause window", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        usageByProfile: { "claude-code": atLimit(99), codex: atLimit(10), gemini: atLimit(99) },
+        armed: new Set(["codex", "gemini"]),
+        cyclePausedFor: (id) => id === "codex",
+      })
+    ).toEqual({ kind: "pause", why: "usage-limit" });
+  });
+
+  it("does not consult a candidate's cycle when the primary itself is under its limit", () => {
+    expect(
+      decide({
+        chain: ["codex"],
+        usageByProfile: { "claude-code": atLimit(10) },
+        armed: new Set(["codex"]),
+        cyclePausedFor: () => true,
+      })
+    ).toEqual({ kind: "use", profileId: "claude-code", viaFallback: false });
+  });
+
   it("uses the resolved agent when it is not spent", () => {
     expect(decide({ usageByProfile: { "claude-code": atLimit(10) } })).toEqual({
       kind: "use",

@@ -71,6 +71,10 @@
   );
   const defaults = $derived($agentDefaultsStore);
   const view = $derived(primaryView(scope, primaryId, defaults, ws));
+  /// The list editors hold a half-typed row of their own; a new agent (or
+  /// workspace) must start them clean, or the other agent's draft shows up
+  /// -- and gets saved -- under this one.
+  const editorKey = $derived(`${scope}:${workspaceId}:${primaryId}`);
 
   // ---- fallback --------------------------------------------------------
 
@@ -298,8 +302,9 @@
 
 <h3 class="sub">Prompt lines</h3>
 <p class="hint">
-  Extra lines added to the end of every prompt gavin composes for {label} — a card run, a resume, a
-  review, the setup flows.
+  Extra lines added to the end of the prompts gavin composes when it starts a {label} session — a
+  card run, a review, a rail step, the setup flows. Not the hidden background runs, like a commit
+  through an agent.
 </p>
 {#if scope === "workspace"}
   <label class="check">
@@ -320,19 +325,22 @@
     {/if}
   </p>
 {:else}
-  <PromptParamsEditor
-    items={view.promptLines}
-    label="Prompt line"
-    placeholder="Answer in British English."
-    addLabel="Add prompt line"
-    onChange={(next) => void saveList(scope, workspaceId, primaryId, defaults, "promptExtras", next)}
-  />
+  {#key editorKey}
+    <PromptParamsEditor
+      items={view.promptLines}
+      label="Prompt line"
+      placeholder="Answer in British English."
+      addLabel="Add prompt line"
+      onChange={(next) => void saveList(scope, workspaceId, primaryId, defaults, "promptExtras", next)}
+    />
+  {/key}
 {/if}
 
 <h3 class="sub">CLI arguments</h3>
 <p class="hint">
-  Extra arguments added to the end of {label}'s launch command, after its model and effort flags.
-  Each line is one piece of the command, written exactly as you would type it.
+  Extra arguments added to the end of {label}'s launch command, after its model and effort flags,
+  for every session and background run. Each line is one piece of the command, written exactly as
+  you would type it.
 </p>
 {#if scope === "workspace"}
   <label class="check">
@@ -353,13 +361,15 @@
     {/if}
   </p>
 {:else}
-  <PromptParamsEditor
-    items={view.cliArgs}
-    label="CLI argument"
-    placeholder="--verbose"
-    addLabel="Add argument"
-    onChange={(next) => void saveList(scope, workspaceId, primaryId, defaults, "extraCliArgs", next)}
-  />
+  {#key editorKey}
+    <PromptParamsEditor
+      items={view.cliArgs}
+      label="CLI argument"
+      placeholder="--verbose"
+      addLabel="Add argument"
+      onChange={(next) => void saveList(scope, workspaceId, primaryId, defaults, "extraCliArgs", next)}
+    />
+  {/key}
 {/if}
 
 <style>

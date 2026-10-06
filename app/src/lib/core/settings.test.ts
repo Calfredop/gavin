@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { buildRunCommand } from "$lib/cards/cardRun";
 import {
   DEFAULT_ACCENT,
   PALETTE,
@@ -231,6 +232,32 @@ describe("withExtraCliArgs", () => {
     // Only the launch line changes; the bare command other code reads does not.
     expect(next.command).toBe(base.command);
     expect(base.launchCommand).toBe("claude --model opus");
+  });
+
+  /// `--add-dir <directories...>` is variadic: written last it would read
+  /// the prompt (the final bare word) as one more directory. `--` ends the
+  /// options, so a bare-positional agent gets it as its prompt prefix.
+  it("ends option parsing before a bare-positional prompt, only when there are extras", () => {
+    const base = agent();
+    expect(base.promptArgs).toBe("");
+    expect(withExtraCliArgs(base, []).promptArgs).toBe("");
+    const next = withExtraCliArgs(base, ["--add-dir ../lib"]);
+    expect(next.promptArgs).toBe("-- ");
+    expect(buildRunCommand(next.launchCommand, next.promptArgs, "Do it.")).toBe(
+      "claude --model opus --add-dir ../lib -- 'Do it.'"
+    );
+    // The conversation id still sits ahead of it, and an option parser
+    // never reads the prompt as the flag's value.
+    expect(buildRunCommand(next.launchCommand, next.promptArgs, "Do it.", "--session-id", "u-1")).toBe(
+      "claude --model opus --add-dir ../lib --session-id u-1 -- 'Do it.'"
+    );
+  });
+
+  it("leaves an agent that attaches its prompt to a flag, or takes none, as it was", () => {
+    const attached = { ...agent(), promptArgs: "--prompt=" };
+    expect(withExtraCliArgs(attached, ["--x"]).promptArgs).toBe("--prompt=");
+    const none = { ...agent(), promptArgs: null };
+    expect(withExtraCliArgs(none, ["--x"]).promptArgs).toBeNull();
   });
 });
 

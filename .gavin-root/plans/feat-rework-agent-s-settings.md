@@ -102,7 +102,7 @@ chain pattern).
 - [x] Per-primary complexity tables (storage, migration, attribution keying, UI binding, workspace inherit)
 - [x] Per-primary pause cycles (storage, migration, launchDecision/mayStartWork keying, UI binding, workspace inherit)
 - [x] Per-agent prompt lines + CLI args (storage, compose_agent_prompt + launch composition, list editor UI)
-- [ ] Code review of review-round-2 diff
+- [x] Code review of review-round-2 diff
 - [ ] Human test: App Settings → Agents — General tab (default agent; under it that agent's fallback chain, complexity, pause, prompt lines and CLI arguments, which re-point when the default changes); one tab per agent with its own; the trailing "+" tab (hover for its hint) adds a custom and opens its tab; restart and confirm migration from an old single-`custom` / single-chain / single-complexity / single-pause config
 - [ ] Human test: Workspace Settings → Agents — choose the workspace agent in General; every block follows the app-wide value until its "give this workspace its own …" box is ticked; per-agent tabs edit overrides; workspace-local custom appears (marked) with its own tab; This agent launches as shown, CLI arguments included
 - [ ] Human test: Companion — same General + per-agent tabs on app + workspace settings; CRUD and picks match the desk
@@ -132,11 +132,13 @@ chain pattern).
   gavin composes for a visible agent: card run/resume/review/develop, Best-of-N
   candidates, rail card and agent-tool steps, code/critical review launches,
   workspace agent tools, and the setup flows (host-side `append_prompt_extras`,
-  same format). Not to hidden headless runs. **CLI arguments** ride
-  `ResolvedAgent.launchCommand` (after model/effort flags, before the session
-  id and prompt), so they reach every launch and headless run built from it.
-  They are verbatim argv words: a variadic flag (`--add-dir <dirs...>`) written
-  last can swallow the prompt positional on a CLI with no session-id flag.
+  same format). Not to hidden headless runs (the commit-via-agent run).
+  **CLI arguments** ride `ResolvedAgent.launchCommand` (after model/effort
+  flags, before the session id and prompt), so they reach every launch and
+  headless run built from it. They are verbatim argv words, so a bare-positional
+  agent (claude, codex, a custom) also gets `-- ` as its prompt prefix whenever
+  there are extras (`withExtraCliArgs`): a variadic option in them
+  (`--add-dir <dirs...>`) would otherwise read the prompt as one more value.
 - **Gone:** `get_agent_pause` / `set_agent_pause` (cycles ride
   `set_agent_defaults` / the workspace settings patch), `loadAgentPause`,
   `complexityEntry`, the app-wide single `complexity` table. The Tauri
@@ -147,6 +149,36 @@ chain pattern).
   per agent, workspace toggles seed from the app value. The desk pages cannot
   be rendered outside Tauri, so they are covered by type-check, the shared
   panel's logic tests and static-source guards only — hence the human tests.
+
+### Review of the landed diff (2026-10-06) — what it found, what was done
+
+Fixed in the follow-up commit: the workspace migration lost the old PER-LEVEL
+fall-through (a workspace's rows now overlay the app table per level when
+folded); workspace-local customs were missed by the app-wide fold (seeded from
+the legacy table/cycle); extras could swallow the prompt (the `--` above); the
+list editor's draft leaked between agents (keyed by scope/workspace/agent); a
+fallback hop ignored the candidate's OWN pause window (`cyclePausedFor`);
+agents reachable only through a complexity table were never polled; a rail
+step skipped for a routed agent's pause was never told it lifted (the tick key
+now includes routed agents' own pauses); the agent-change wizard defaulted to
+remap/clear on a table that is now per agent (default is Keep, copy rewritten);
+deleting an app-wide custom now sweeps every workspace; own-key lookups for
+slugs like `constructor`.
+
+Known and left alone:
+- **Downgrade / mixed builds.** The legacy single-table and single-cycle keys
+  are read once and never written again. A release build older than this one
+  reads the shared `config.json` with no pause or complexity routing, and its
+  next save drops the new keys. The same is true of every widening of that
+  file; mirroring the legacy keys would make every load re-fold them.
+- **The scheduler's pre-filter reads the workspace agent's cycle.** A rail
+  whose card is routed to another agent is held while the WORKSPACE agent is in
+  its pause window even if the routed agent could run (conservative), and the
+  routed agent's own pause is enforced at launch by `launchDecision`. Auto-resume
+  of a run gates on the workspace agent's cycle too, and the sidebar badge shows
+  the workspace agent's verdict.
+- Prompt lines do not reach the hidden commit-via-agent run (CLI args do); the
+  panel copy says so.
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

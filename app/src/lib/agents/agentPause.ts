@@ -83,7 +83,9 @@ export function pauseCycleForPrimary(
   primaryId: string
 ): PauseCycle | null {
   const id = (primaryId ?? "").trim();
-  return (id && map?.[id]) || null;
+  // Own keys only: a custom whose slug is `constructor` must not find
+  // Object.prototype's.
+  return id && map && Object.prototype.hasOwnProperty.call(map, id) ? (map[id] ?? null) : null;
 }
 
 /// The cycle in force for `primaryId` in this workspace: the workspace's

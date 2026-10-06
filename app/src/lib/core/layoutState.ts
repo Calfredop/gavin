@@ -3241,6 +3241,16 @@ export async function dropWorkspaceProfileRefs(workspaceId: string, profileId: s
   await saveWorkspaceSettings(workspaceId, patch);
 }
 
+/// The same cleanup in EVERY workspace this window holds, for an app-wide
+/// custom that was just deleted: its workspaces' own tables, cycles, lines
+/// and chains would otherwise survive under its slug and come back to life
+/// the day another custom is given the same name.
+export async function dropProfileRefsFromWorkspaces(profileId: string): Promise<void> {
+  for (const workspace of get(layoutState).workspaces) {
+    await dropWorkspaceProfileRefs(workspace.id, profileId);
+  }
+}
+
 /// This workspace's own fallback chain FOR ONE PRIMARY profile. `null`
 /// REMOVES the key, so that primary inherits the app-wide chain again; an
 /// empty array is an explicit "no fallback" override for it — the same

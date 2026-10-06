@@ -27,7 +27,7 @@ import {
   pauseVerdict,
   cyclePhase,
 } from "$lib/agents/agentPause";
-import { effectiveDefaultAgent } from "$lib/cards/complexity";
+import { COMPLEXITY_LEVELS, effectiveComplexityTable, effectiveDefaultAgent } from "$lib/cards/complexity";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
   dropExpiredWindows,
@@ -45,6 +45,7 @@ import {
   type UsageProjection,
 } from "$lib/agents/usageProjection";
 import { layoutState, resolvedAgentFor, agentDefaultsStore, setAgentDefaults } from "$lib/core/layoutState";
+import type { Workspace } from "$lib/core/workspace";
 import { holdsAppDutiesNow, listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
 import {
   decideLaunch,
@@ -342,18 +343,40 @@ function recordSample(profileId: string, report: AgentUsageReport, persist: bool
 /// a call and a row that mean nothing.
 export function profilesInUse(): string[] {
   const ids = new Set<string>();
-  const appMap = get(agentDefaultsStore).fallbackChains ?? {};
   for (const workspace of get(layoutState).workspaces) {
-    const agent = resolvedAgentFor(workspace.id);
-    if (agent.profileId) ids.add(agent.profileId);
-    // Every primary's effective chain: usage is polled for any agent a
-    // launch in this workspace could walk to, whichever primary the card
-    // resolves to.
-    const wsMap = workspace.fallbackChains ?? {};
-    for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
-      for (const id of effectiveFallbackChain(wsMap, appMap, primary)) {
-        ids.add(id);
-      }
+    for (const id of profilesForWorkspace(workspace)) ids.add(id);
+  }
+  return [...ids];
+}
+
+/// Every agent a launch in this workspace can end up on: the one it runs,
+/// the ones its complexity table routes a rated card to, and every agent
+/// any fallback chain could walk to.
+function profilesForWorkspace(workspace: Workspace): string[] {
+  const ids = new Set<string>();
+  const defaults = get(agentDefaultsStore);
+  const appMap = defaults.fallbackChains ?? {};
+  const agent = resolvedAgentFor(workspace.id);
+  if (agent.profileId) ids.add(agent.profileId);
+  // Every agent a rated card can be routed to, by the table of the agent
+  // this workspace runs: a launch there is gated on THAT agent's usage
+  // and cycle, so its limits have to be read too.
+  const table = effectiveComplexityTable(
+    workspace.complexityTables,
+    defaults.complexityTables,
+    agent.profileId
+  );
+  for (const level of COMPLEXITY_LEVELS) {
+    const routed = table[level]?.profile?.trim();
+    if (routed) ids.add(routed);
+  }
+  // Every primary's effective chain: usage is polled for any agent a
+  // launch in this workspace could walk to, whichever primary the card
+  // resolves to.
+  const wsMap = workspace.fallbackChains ?? {};
+  for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
+    for (const id of effectiveFallbackChain(wsMap, appMap, primary)) {
+      ids.add(id);
     }
   }
   return [...ids];
@@ -467,11 +490,30 @@ export const pausedWorkspaces: Readable<PausedWorkspace[]> = derived(
 /// `derived` re-emits on every input change regardless of value.
 export const pausedWorkspaceKey: Readable<string> = readable("", (set) => {
   let last: string | null = null;
-  return pausedWorkspaces.subscribe((paused) => {
-    const key = paused
-      .map((w) => w.id)
-      .sort()
-      .join(" ");
+  // The ids of the held workspaces, then (only when there are any) the
+  // agents inside their OWN pause window that a launch there could land
+  // on. A routed card launches on its own agent, gated on that agent's
+  // cycle, which the held-workspace set above cannot see (it reads the
+  // workspace's own agent) -- so without this a step skipped for a routed
+  // agent's pause would never be told the pause lifted.
+  const keyOf = derived(
+    [pausedWorkspaces, nowStore, layoutState, agentDefaultsStore],
+    ([paused, now, state]) => {
+      const held = paused
+        .map((w) => w.id)
+        .sort()
+        .join(" ");
+      const routed: string[] = [];
+      for (const workspace of state.workspaces) {
+        for (const id of profilesForWorkspace(workspace)) {
+          const own = effectiveCycle(workspace.id, id);
+          if (own && cyclePhase(own, now).paused) routed.push(`${workspace.id}:${id}`);
+        }
+      }
+      return routed.length === 0 ? held : `${held} | ${routed.sort().join(" ")}`;
+    }
+  );
+  return keyOf.subscribe((key) => {
     if (key === last) return;
     last = key;
     set(key);
@@ -519,6 +561,11 @@ export function launchDecision(
     limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
     fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,
     cyclePaused,
+    // Each hop candidate answers to its own cycle, in this workspace.
+    cyclePausedFor: (id) => {
+      const own = effectiveCycle(workspaceId, id);
+      return own ? cyclePhase(own, nowMs).paused : false;
+    },
     resume,
   });
 }

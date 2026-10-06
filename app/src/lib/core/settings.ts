@@ -549,10 +549,22 @@ export function resolveAgentConfig(
 /// `command` and the flags already use. Every composer (`buildRunCommand`,
 /// `buildHeadlessCommand`) takes `launchCommand` as its base, so this is
 /// the single seam both interactive and headless launches read.
+///
+/// An agent that takes its prompt as the LAST bare word (`promptArgs: ""`:
+/// claude, codex, a custom) also gets `-- ` as its prompt prefix whenever
+/// there are extras. A variadic option in them (`--add-dir <dirs...>`,
+/// `--allowedTools <tools...>`) would otherwise read the prompt as one more
+/// value and start the run with no prompt; `--` ends option parsing so the
+/// prompt stays the prompt. An agent that attaches its prompt to a flag
+/// (`--prompt=`) needs nothing, and one that takes none stays refused.
 export function withExtraCliArgs(agent: ResolvedAgent, extras: readonly string[]): ResolvedAgent {
   const args = extras.map((s) => s.trim()).filter(Boolean);
   if (args.length === 0) return agent;
-  return { ...agent, launchCommand: `${agent.launchCommand} ${args.join(" ")}` };
+  return {
+    ...agent,
+    launchCommand: `${agent.launchCommand} ${args.join(" ")}`,
+    promptArgs: agent.promptArgs === "" ? "-- " : agent.promptArgs,
+  };
 }
 
 /// The CSS custom-property value for a workspace accent, or `undefined`

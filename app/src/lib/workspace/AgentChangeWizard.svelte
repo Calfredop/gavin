@@ -62,7 +62,9 @@
   /// workspace after the switch, workspace override else app-wide. Rows
   /// naming the agent being left are what the wizard offers to remap.
   const complexityTable = $derived(workspaceComplexityTable(workspaceId, toProfileId));
-  /// Re-run keeps pins by default; a real switch remaps or clears.
+  /// Keeping is the default both ways: a switch no longer strands a level
+  /// on a stale agent (tables are per agent), so rewriting is the human's
+  /// call.
   const defaultAction = $derived(
     rerun ? "keep" : recommendedComplexityAction(complexityTable, fromProfileId)
   );
@@ -228,11 +230,12 @@
         <h3>Complexity</h3>
         <p class="hint">
           {#if rerun}
-            Optional on a re-run. App-level pins still fall through for levels this workspace leaves
-            alone.
+            Optional on a re-run. Complexity is set per agent; {toLabel}'s table is the one that
+            rates cards here.
           {:else}
-            App-level pins still fall through for levels this workspace leaves alone. Choose what to
-            do with this workspace's own complexity rows before the profile is written.
+            Complexity is set per agent, so {toLabel}'s own table — the app-wide one unless this
+            workspace gave it one of its own — rates cards from now on. A row in it may still name
+            {fromLabel}; choose what to do about those before the profile is written.
           {/if}
         </p>
         <fieldset class="choices">
@@ -244,8 +247,9 @@
               onchange={() => (action = "remap")}
             />
             <span>
-              <strong>Remap</strong> — rows that named {fromLabel} now name {toLabel}. Other pins
-              stay.
+              <strong>Remap</strong> — rows in {toLabel}'s table that named {fromLabel} now name
+              {toLabel}. Other rows stay. This workspace then keeps a table of its own for
+              {toLabel}.
               {#if defaultAction === "remap"}
                 <em class="rec">Recommended</em>
               {/if}
@@ -259,8 +263,8 @@
               onchange={() => (action = "clear")}
             />
             <span>
-              <strong>Clear</strong> — drop every workspace override so unset levels mean this
-              workspace's new agent (app pins still apply).
+              <strong>Clear</strong> — this workspace keeps no table of its own for {toLabel}; it
+              follows the app-wide one.
               {#if defaultAction === "clear"}
                 <em class="rec">Recommended</em>
               {/if}
@@ -274,7 +278,10 @@
               onchange={() => (action = "keep")}
             />
             <span>
-              <strong>Keep</strong> — leave workspace complexity rows alone.
+              <strong>Keep</strong> — leave {toLabel}'s table as it is.
+              {#if defaultAction === "keep"}
+                <em class="rec">Recommended</em>
+              {/if}
             </span>
           </label>
         </fieldset>

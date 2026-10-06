@@ -288,22 +288,20 @@ describe("realignComplexityTable", () => {
 });
 
 describe("recommendedComplexityAction", () => {
-  it("recommends remap when any row names the old profile", () => {
+  /// Tables are per agent, so "this workspace's agent" cannot go stale
+  /// across a switch, and a row naming the agent being left may be a
+  /// deliberate cross-agent route. Rewriting or dropping is the human's
+  /// choice, never the default.
+  it("recommends keeping, whatever the table says", () => {
+    expect(recommendedComplexityAction({}, "claude-code")).toBe("keep");
     expect(
-      recommendedComplexityAction(
-        { trivial: { profile: "claude-code", model: "" } },
-        "claude-code"
-      )
-    ).toBe("remap");
-  });
-
-  it("recommends clear when nothing names the old profile", () => {
-    expect(recommendedComplexityAction({}, "claude-code")).toBe("clear");
+      recommendedComplexityAction({ trivial: { profile: "claude-code", model: "" } }, "claude-code")
+    ).toBe("keep");
     expect(
       recommendedComplexityAction(
         { simple: { profile: "", model: "sonnet" }, intricate: { profile: "codex", model: "" } },
         "claude-code"
       )
-    ).toBe("clear");
+    ).toBe("keep");
   });
 });
