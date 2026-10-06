@@ -14,6 +14,8 @@
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
+  import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
+  import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
   import * as backend from "$lib/core/backend";
   import Modal from "$lib/core/Modal.svelte";
   import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
@@ -21,6 +23,7 @@
   import PrdStep from "$lib/wizardSteps/PrdStep.svelte";
   import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
   import HeadroomStep from "$lib/wizardSteps/HeadroomStep.svelte";
+  import MemoryStep from "$lib/wizardSteps/MemoryStep.svelte";
   import GitStep from "$lib/wizardSteps/GitStep.svelte";
   import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
   import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
@@ -35,6 +38,7 @@
     { id: "integration", label: "Integration" },
     { id: "superpowers", label: "Superpowers" },
     { id: "headroom", label: "Headroom" },
+    { id: "memory", label: "Memory" },
     { id: "git", label: "Git" },
     { id: "review", label: "Review" },
     { id: "prd", label: "PRD" },
@@ -75,6 +79,19 @@
   // question in flight is not a Headroom that is missing.
   ensureHeadroomReading();
   const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
+  // The memory index is this ROOT's, asked once per root and shared with
+  // the Home tab; undefined until the daemon answers, the same rule. The
+  // "not now" mark is a synchronous read, re-read when the step changes it.
+  const memory = $derived(
+    workspaceMemoryReading(ws?.rootPath ? $memoryReadings[ws.rootPath] : undefined, ws)
+  );
+  let memorySkippedTick = $state(0);
+  const memorySkipped = $derived(
+    (void memorySkippedTick, ws?.rootPath ? loadMemorySkipped(ws.rootPath) : false)
+  );
+  $effect(() => {
+    if (ws?.rootPath && !ws.ssh) ensureMemoryReading(ws.rootPath);
+  });
 
   // The Superpowers check answers off the main thread, so a reread can
   // land after a newer one -- and this one lands as a whole, file bodies
@@ -124,6 +141,8 @@
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
       headroomReading: headroom,
       headroomAsked: Boolean(ws?.headroomAsked),
+      memoryReading: memory,
+      memorySkipped,
     })
   );
 
@@ -191,6 +210,13 @@
           />
         {:else if current === "headroom"}
           <HeadroomStep {workspaceId} reading={headroom} onDone={advance} />
+        {:else if current === "memory"}
+          <MemoryStep
+            {workspaceId}
+            reading={memory}
+            onChanged={() => (memorySkippedTick += 1)}
+            onDone={advance}
+          />
         {:else if current === "git"}
           <GitStep {workspaceId} onDone={advance} />
         {:else if current === "review"}

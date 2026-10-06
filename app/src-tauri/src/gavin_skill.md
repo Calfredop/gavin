@@ -145,26 +145,36 @@ workspace isn't open in gavin, ask the human to open it.)
 
 Learned something durable about this repo that no card records — a trap, a
 convention, a command that only works one particular way? File it as a
-**memory**: `kind: note`, `labels: memory`, and a body of one sentence-sized
-fact plus an optional `Why:` line. The body IS the fact; nothing else belongs
-in it.
+**memory**: `kind: note`, `labels: memory`, optional `topics:` (a few
+comma-separated words to find it by — not board labels), and a body of
+exactly one fact line plus an optional `Why:` line. The body IS the fact;
+nothing else belongs in it. Two facts are two cards.
 
 ```
 ---
 kind: note
 title: The daemon is shared
 labels: memory
+topics: daemon, pty
 ---
 Never pkill gavin-daemon.
-
 Why: every other session loses its PTYs with it.
 ```
 
+Adopt refuses a card with no fact, a second fact or a second `Why:`, or a
+fact longer than a sentence (300 characters; 500 for the Why), and says
+which.
+
 You are proposing, not deciding. The human adopts it from the card's detail
 modal — "Adopt into CLAUDE.md" (or whichever instructions file this workspace
-uses) — which appends the body under a `### Learned` heading inside that file,
-where every future agent reads it, and files the card done. Nothing is adopted
-automatically, so keep each memory to one fact worth carrying.
+uses) — which appends it under a `### Learned` heading inside that file, as
+`- <fact> (topics: …)` with the Why indented under it, where every future
+agent reads it, and files the card done. Nothing is adopted automatically, so
+keep each memory to one fact worth carrying.
+
+Looking for something a past session learned? `gavin_search_memories(query,
+topics?, limit?)` searches the adopted memories by meaning, not by words —
+ask in your own phrasing, and narrow by topic when you know one.
 
 ## Notes
 

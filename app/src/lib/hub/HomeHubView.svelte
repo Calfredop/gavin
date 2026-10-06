@@ -15,6 +15,8 @@
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
+  import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
+  import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
@@ -93,6 +95,14 @@
   // the two above are.
   ensureHeadroomReading();
   const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
+  // The Memory step's reading is this root's, shared with the wizard and
+  // asked once per root; unknown until then, for the reason the ones
+  // above are. "Not now" is a synchronous read off this machine.
+  const memory = $derived(workspaceMemoryReading(root ? $memoryReadings[root] : undefined, ws));
+  const memorySkipped = $derived(root ? loadMemorySkipped(root) : false);
+  $effect(() => {
+    if (root && !ws?.ssh) ensureMemoryReading(root);
+  });
 
   const setup = $derived(
     setupProgress({
@@ -111,6 +121,8 @@
       // Same shape, same reason -- see the git field above.
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
       headroomReading: headroom,
+      memoryReading: memory,
+      memorySkipped,
       headroomAsked: Boolean(ws?.headroomAsked),
     })
   );

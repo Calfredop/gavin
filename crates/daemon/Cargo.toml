@@ -46,6 +46,11 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # version and per-OS feature reasoning as app/src-tauri/Cargo.toml --
 # see the two target blocks below.
 trash = { version = "5", default-features = false }
+# Adopted-memory retrieval (`memory_index.rs`): BGE-small, quantized, run
+# locally through ONNX Runtime. rustls on both downloads for the reason
+# ureq above uses it -- no system OpenSSL to find on any of the three
+# OSes -- and no image models, which this never embeds.
+fastembed = { version = "7.1", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

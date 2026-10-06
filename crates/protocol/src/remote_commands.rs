@@ -79,6 +79,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // through `set_workspace_settings`.
     ("set_headroom_workspaces", RemoteAllowance::Refused), // meaningless away from the desk
     ("get_headroom_status", RemoteAllowance::Allowed),
+    // Adopted memories (v60). The status is a read; the ensure is what
+    // Adopt calls after writing `### Learned`, which a Device can press.
+    ("get_memory_index", RemoteAllowance::Allowed),
+    ("ensure_memory_index", RemoteAllowance::Allowed),
     ("headroom_savings", RemoteAllowance::Allowed),
     ("headroom_reach", RemoteAllowance::Allowed),
     ("detect_headroom", RemoteAllowance::Allowed),

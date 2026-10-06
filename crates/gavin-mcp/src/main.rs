@@ -442,6 +442,11 @@ fn tool_definitions() -> Value {
     json!([
         { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_search_memories", "description": "Search this workspace's ADOPTED memories — the durable facts the human has adopted into the instructions file's `### Learned` section — by meaning, not by words. Ask in your own phrasing (\"can I kill the daemon?\" finds \"Never pkill gavin-daemon.\"); narrow by topic when you know one. Returns the closest facts best first, with their topics, their Why and a similarity score; an empty answer means nothing adopted is about that. Proposing a NEW memory is a `kind: note` card labelled `memory`, not this tool.", "inputSchema": { "type": "object", "properties": {
+            "query": { "type": "string", "description": "What you want to know, in any words." },
+            "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Only memories tagged with at least one of these topics." },
+            "limit": { "type": "integer", "description": "Optional. How many to return (default 5, at most 50)." }
+        }, "required": ["query"] } },
         { "name": "gavin_create_plan", "description": "Create a card file (note, task, or plan) in a gavin context with canonical frontmatter. Never overwrites. Creating one In Progress claims it for your session, so the board stops offering to start a second agent on it.", "inputSchema": { "type": "object", "properties": {
             "context_folder": { "type": "string", "description": "Folder that is the root or contains .gavin (relative allowed)" },
             "file_name": { "type": "string", "description": "kebab-case-name.md" },
@@ -624,6 +629,18 @@ fn dispatch_tool(
                 .to_string(),
         },
         "gavin_get_board" => Request::GetBoardByRoot { root_path: root_str },
+        "gavin_search_memories" => Request::SearchMemories {
+            root_path: root_str,
+            query: require_arg(args, "query")?,
+            topics: match args.get("topics") {
+                Some(Value::Array(items)) => items.iter().filter_map(|t| t.as_str()).map(str::to_string).collect(),
+                // "daemon, pty" is the mistake an agent actually makes
+                // here, and it means what it says.
+                Some(Value::String(list)) => list.split(',').map(str::to_string).collect(),
+                _ => vec![],
+            },
+            limit: args.get("limit").and_then(Value::as_u64).map(|l| l.min(u32::MAX as u64) as u32),
+        },
         "gavin_promote_task" => Request::PromoteChecklistItem {
             plan_path: resolve_against_root(root, &require_arg(args, "plan_path")?)
                 .to_string_lossy()
@@ -712,6 +729,7 @@ fn dispatch_tool(
              depend on it."
                 .to_string()
         }),
+        Response::MemoryHits { hits } => Ok(memory_hits_text(&hits)),
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
@@ -729,6 +747,25 @@ fn dispatch_tool(
         Response::Error { message } => Err(anyhow::anyhow!(message)),
         other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
     }
+}
+
+/// Search results as an agent reads them: the fact first, everything
+/// about it after.
+fn memory_hits_text(hits: &[protocol::MemoryHit]) -> String {
+    if hits.is_empty() {
+        return "no adopted memory matches — nothing in this workspace's `### Learned` is about \
+                that (or nothing has been adopted yet)."
+            .to_string();
+    }
+    let mut out = String::new();
+    for (i, h) in hits.iter().enumerate() {
+        let topics = if h.topics.is_empty() { String::new() } else { format!("topics: {}; ", h.topics.join(", ")) };
+        out.push_str(&format!("{}. {}\n   ({}score {:.2}; {})\n", i + 1, h.fact, topics, h.score, h.source));
+        if let Some(why) = &h.why {
+            out.push_str(&format!("   Why: {why}\n"));
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// A tab label, not a sentence: one line, collapsed whitespace, and
@@ -3619,6 +3656,57 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// The search tool asks for this workspace's root, takes topics as
+    /// an array or the comma list an agent actually writes, and reads
+    /// the hits back best first with everything about each one.
+    #[test]
+    fn search_memories_maps_to_search_memories_and_reads_the_hits() {
+        let hit = protocol::MemoryHit {
+            fact: "Never pkill gavin-daemon.".into(),
+            topics: vec!["daemon".into(), "pty".into()],
+            why: Some("every other session loses its PTYs.".into()),
+            source: "CLAUDE.md".into(),
+            score: 0.8123,
+        };
+        let mut t = mock(vec![Response::MemoryHits { hits: vec![hit] }]);
+        let reply = call_with(
+            "gavin_search_memories",
+            json!({ "query": "can I kill the daemon?", "topics": "daemon, pty", "limit": 3 }),
+            &mut t,
+        );
+        assert_eq!(
+            reply,
+            "1. Never pkill gavin-daemon.\n   (topics: daemon, pty; score 0.81; CLAUDE.md)\n   Why: every other session loses its PTYs."
+        );
+        match &t.requests[0] {
+            Request::SearchMemories { root_path, query, topics, limit } => {
+                assert_eq!(root_path, &Path::new("/ws").to_string_lossy().to_string());
+                assert_eq!(query, "can I kill the daemon?");
+                assert_eq!(topics, &vec!["daemon".to_string(), " pty".to_string()]);
+                assert_eq!(*limit, Some(3));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// Nothing adopted is an answer the agent can act on, not an error;
+    /// a missing model is the daemon's sentence, passed through.
+    #[test]
+    fn search_memories_says_so_when_nothing_matches_or_the_model_is_missing() {
+        let mut t = mock(vec![Response::MemoryHits { hits: vec![] }]);
+        let reply = call_with("gavin_search_memories", json!({ "query": "x", "topics": ["a"] }), &mut t);
+        assert!(reply.starts_with("no adopted memory matches"), "{reply}");
+
+        let mut t = mock(vec![Response::Error { message: "gavin's memory model isn't on this machine yet.".into() }]);
+        let reply = call_with("gavin_search_memories", json!({ "query": "x" }), &mut t);
+        assert!(reply.contains("memory model"), "{reply}");
+
+        let mut t = mock(vec![]);
+        let reply = call_with("gavin_search_memories", json!({}), &mut t);
+        assert!(reply.contains("missing required argument: query"), "{reply}");
+        assert!(t.requests.is_empty());
     }
 
     /// The tool maps to `FileHumanItem`, resolves the card against the

@@ -162,6 +162,13 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // Locate… run `headroom --version`, a Python start.
   ["session.rs", "get_headroom_status", "a daemon round trip, polled while Settings is open"],
   ["session.rs", "headroom_savings", "a daemon round trip, polled while the hub is open"],
+
+  // The Memory step polls the status while the model downloads; the
+  // ensure can load the model and embed a whole `### Learned` section.
+
+  ["session.rs", "get_memory_index", "a daemon round trip, polled while the Memory step is open"],
+
+  ["session.rs", "ensure_memory_index", "a model load and embedding in the daemon"],
   ["session.rs", "detect_headroom", "`headroom --version` in the daemon, a Python start"],
   ["session.rs", "install_headroom", "a daemon round trip"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],

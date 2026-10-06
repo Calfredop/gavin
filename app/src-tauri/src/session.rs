@@ -6192,6 +6192,56 @@ pub async fn install_headroom(
 /// The status a Headroom request answers with -- every one answers with
 /// the status AFTER it. Each command awaits its own lane, in its own
 /// body, so the main-thread guard can see that it does.
+/// Where a workspace's adopted-memory index stands (v60): the embedding
+/// model on this machine, and whether the index matches `### Learned`.
+/// What the setup wizard's Memory step and the open-time backfill read.
+///
+/// Local only, like Headroom: the model and the index live on the
+/// machine whose daemon answers, and an ssh workspace's agents search on
+/// their host. A new request TYPE, so the lane's gate refuses it against
+/// an older daemon; the app reads `FEATURE_MIN_VERSION.memoryIndex` first.
+#[tauri::command]
+pub async fn get_memory_index(
+    root_path: String,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::MemoryIndexStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetMemoryIndex { root_path })
+        .await
+        .map_err(|e| e.to_string())?;
+    memory_index_status(resp)
+}
+
+/// Brings a workspace's memory index up to `### Learned` (v60). With
+/// `download` -- the Memory step, and the backfill of a workspace that
+/// already has memories -- a missing model is fetched first, and the
+/// answer comes back before it has finished. Without it -- Adopt -- a
+/// missing model is an error rather than a download nobody asked for.
+#[tauri::command]
+pub async fn ensure_memory_index(
+    root_path: String,
+    download: bool,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::MemoryIndexStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::EnsureMemoryIndex { root_path, download })
+        .await
+        .map_err(|e| e.to_string())?;
+    memory_index_status(resp)
+}
+
+fn memory_index_status(resp: Response) -> Result<protocol::MemoryIndexStatus, String> {
+    match resp {
+        Response::MemoryIndex { status } => Ok(status),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected the memory index's status, got {other:?}")),
+    }
+}
+
 fn headroom_status(resp: Response) -> Result<protocol::HeadroomStatus, String> {
     match resp {
         Response::Headroom { status } => Ok(status),

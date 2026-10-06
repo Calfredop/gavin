@@ -6,6 +6,7 @@ mod git_watch;
 mod headroom;
 mod input;
 mod kanban;
+mod memory_index;
 mod orchestration;
 mod osc;
 mod pairing;
@@ -134,6 +135,9 @@ fn serve() -> anyhow::Result<()> {
     let headroom = headroom::Headroom::open(&dir);
     headroom.resume();
     manager.set_headroom(headroom);
+    // Opens nothing yet: the model loads on the first search or the
+    // Memory setup step, and an index on the first root that has one.
+    manager.set_memories(memory_index::Memories::open(&dir));
     // After the trust store, which is what it reads. It dials the Relay
     // only while that store says remote access is on, and sleeps
     // otherwise -- so on a machine that never turned it on, this starts a

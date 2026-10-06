@@ -44,6 +44,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "headroom_reach",
     "detect_headroom",
     "install_headroom",
+    "get_memory_index",
+    "ensure_memory_index",
     "get_session_names",
     "set_session_name",
     "get_file_tabs",

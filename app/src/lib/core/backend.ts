@@ -12,6 +12,7 @@ import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
+import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
 import type {
@@ -461,6 +462,21 @@ export function setHeadroomDefault(enabled: boolean | null): Promise<void> {
 /// AFTER the list was taken. See `compressionDriver.ts`, its one caller.
 export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<HeadroomStatus> {
   return invoke("set_headroom_workspaces", { workspaces });
+}
+
+/// Where a root's adopted-memory index stands: the model on this
+/// machine, and whether the index matches `### Learned`. Local only, like
+/// Headroom. See `memoryIndexState.ts`, its one caller.
+export function getMemoryIndex(rootPath: string): Promise<MemoryIndexStatus> {
+  return invoke("get_memory_index", { rootPath });
+}
+
+/// Brings a root's memory index up to `### Learned`. `download` lets a
+/// missing model be fetched (on the daemon's thread; the answer says
+/// `downloading` and `getMemoryIndex` follows it). See
+/// `memoryIndexState.ts`, its one caller.
+export function ensureMemoryIndex(rootPath: string, download: boolean): Promise<MemoryIndexStatus> {
+  return invoke("ensure_memory_index", { rootPath, download });
 }
 
 /// Headroom on this machine, as the local daemon sees it. Reads what

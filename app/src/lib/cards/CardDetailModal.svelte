@@ -82,6 +82,7 @@
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
   import { adoptBlockedReason, adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
+  import { syncAfterAdopt } from "$lib/cards/memoryIndexState";
   import {
     orchestrations,
     sendCardToRailAction,
@@ -910,6 +911,10 @@
       // watcher gets round to it -- and the file moved under the modal.
       patchPlanField(workspaceId, card.id, "status", done.name);
       followMove(result.movedTo);
+      // The search index, after the file: the fact is adopted whatever
+      // this says, and a miss here heals on the next search -- so it is
+      // a note on the modal, not a failed adopt.
+      errorMessage = await syncAfterAdopt(adoptRoot);
       // Opens nothing, deliberately: adopting is a filing gesture, and
       // dropping the human into an editor would make them close it
       // again. The modal stays put so the card's new column is visible.

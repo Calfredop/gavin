@@ -5,12 +5,14 @@ import {
   headroomStepSettled,
   type HeadroomReading,
 } from "$lib/agents/headroomSetup";
+import { memoryStepDone, memoryStepSettled, type MemoryReading } from "$lib/cards/memoryIndex";
 
 export type SetupStep =
   | "agent"
   | "integration"
   | "superpowers"
   | "headroom"
+  | "memory"
   | "git"
   | "review"
   | "prd"
@@ -22,7 +24,7 @@ export interface SetupProgress {
   next: SetupStep | null;
   complete: boolean;
   /// Every step a workspace can be BADLY SET UP for -- everything but
-  /// `launch`, `git`, `review` and `headroom`. The rest are configuration that stays
+  /// `launch`, `git`, `review`, `headroom` and `memory`. The rest are configuration that stays
   /// configured; launch's evidence is a live process, so it is the only
   /// step that can un-happen, and it is optional besides (W2). A nag must
   /// read this, never `complete`: keyed off `complete`, pressing Stop on
@@ -37,7 +39,8 @@ export interface SetupProgress {
   /// that state. Nagging them all would be a banner about a question,
   /// not about a problem. `review` and `headroom` are out for the same
   /// reason: compression is off by default, and off is a workspace set up
-  /// the way it always was.
+  /// the way it always was. `memory` too: a workspace with no index is
+  /// one whose agents read `### Learned` the way they always did.
   configured: boolean;
   /// True while an input the derivation needs has not been read yet.
   /// Every other field then describes only the evidence seen so far and
@@ -106,11 +109,20 @@ export interface SetupInput {
   /// `requireReviewAsked`: off, the default, is indistinguishable on disk
   /// from nobody having decided.
   headroomAsked: boolean;
+  /// This root's memory index as the local daemon reported it
+  /// (`workspaceMemoryReading`), `undefined` while the ask is out -- the
+  /// Headroom reading's rule, for its reason.
+  memoryReading: MemoryReading | undefined;
+  /// Whether the human said "not now" to the Memory step for this root
+  /// (`loadMemorySkipped`). Read synchronously, so it never joins
+  /// `pending` on its own.
+  memorySkipped: boolean;
 }
 
 /// Superpowers sits third (spec S2): it is agent tooling, so it belongs
 /// beside Integration, and PRD and Launch stay last. Headroom is agent
-/// tooling too, and follows Superpowers (the Headroom spec, "The switch"). Exported because
+/// tooling too, and follows Superpowers (the Headroom spec, "The switch");
+/// Memory follows Headroom, the last of the tooling. Exported because
 /// every surface that counts steps must count THIS list -- the Home hub's
 /// banner said "of 4" as a literal and would have gone on saying it.
 ///
@@ -125,6 +137,7 @@ export const SETUP_STEPS: SetupStep[] = [
   "integration",
   "superpowers",
   "headroom",
+  "memory",
   "git",
   "review",
   "prd",
@@ -152,6 +165,9 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // The question was put, or there is none to put: Headroom cannot serve
   // this workspace on this machine. Never on an unknown reading.
   if (headroomStepDone(input.headroomReading, input.headroomAsked)) done.push("headroom");
+  // The model is here and the index matches `### Learned`, the human said
+  // "not now", or this machine can do nothing for the workspace.
+  if (memoryStepDone(input.memoryReading, input.memorySkipped)) done.push("memory");
   // A recorded answer and nothing else -- see `gitTrackingAsked`. Both
   // answers finish the step; which one they gave lives in the repo.
   if (input.gitTrackingAsked) done.push("git");
@@ -176,21 +192,29 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // The Headroom reading the same way: out is pending, and a recorded
   // answer settles it whatever the reading.
   const headroomSettled = headroomStepSettled(input.headroomReading, input.headroomAsked);
+  const memorySettled = memoryStepSettled(input.memoryReading, input.memorySkipped);
   const pending =
     input.agentFileBody === undefined ||
     input.prdBody === undefined ||
     !superpowersSettled ||
-    !headroomSettled;
-  // Four steps sit outside the nag, for two different reasons. Launch's
+    !headroomSettled ||
+    !memorySettled;
+  // Five steps sit outside the nag, for two different reasons. Launch's
   // evidence is a live process rather than a file or a marker, so it is
   // the one step that can un-happen, and it is optional besides (W2).
-  // Git's, Review's and Headroom's are questions nobody has been asked
+  // Git's, Review's, Headroom's and Memory's are questions nobody has been asked
   // yet, which is not the same as a workspace set up wrong -- see
   // `configured`. What
   // is left is what the Home banner is allowed to read; `complete` still
   // means all of them, which is what the wizard opens on.
   const configured = ORDER.every(
-    (s) => s === "launch" || s === "git" || s === "review" || s === "headroom" || done.includes(s)
+    (s) =>
+      s === "launch" ||
+      s === "git" ||
+      s === "review" ||
+      s === "headroom" ||
+      s === "memory" ||
+      done.includes(s)
   );
   return { done: ordered, next, complete: next === null, configured, pending };
 }

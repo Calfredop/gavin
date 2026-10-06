@@ -158,6 +158,8 @@ pub fn run() {
             session::headroom_reach,
             session::detect_headroom,
             session::install_headroom,
+            session::get_memory_index,
+            session::ensure_memory_index,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,

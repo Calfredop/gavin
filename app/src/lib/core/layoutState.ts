@@ -1496,6 +1496,12 @@ export async function bootstrap(): Promise<void> {
   );
   unlisteners.push(await initCompression());
   unlisteners.push(whileHoldingAppDuties(startCompressionSwitch));
+  // The adopted-memory index: a workspace opened with memories the index
+  // does not match is brought up without anyone opening the wizard. One
+  // window, so two do not race the same model download. Dynamically
+  // imported for the cycle reason above.
+  const { startMemoryBackfill } = await import("$lib/cards/memoryIndexState");
+  unlisteners.push(whileHoldingAppDuties(startMemoryBackfill));
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
   // presses Run, with no panel open and possibly in a window showing a

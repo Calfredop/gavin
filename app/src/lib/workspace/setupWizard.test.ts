@@ -10,6 +10,12 @@ import {
 import type { SuperpowersStatus } from "$lib/agents/superpowers";
 import type { HeadroomStatus } from "$lib/agents/compression";
 import { SSH_UNAVAILABLE, workspaceHeadroomReading, type HeadroomReading } from "$lib/agents/headroomSetup";
+import {
+  SSH_MEMORY_UNAVAILABLE,
+  workspaceMemoryReading,
+  type MemoryIndexStatus,
+  type MemoryReading,
+} from "$lib/cards/memoryIndex";
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
@@ -73,6 +79,15 @@ const TEMPLATE = [
   "",
 ].join("\n");
 
+function memStatus(over: Partial<MemoryIndexStatus>): MemoryReading {
+  return {
+    kind: "status",
+    status: { model: "absent", modelError: null, learned: 0, indexed: 0, inSync: true, ...over },
+  };
+}
+const MEM_ABSENT = memStatus({});
+const MEM_READY = memStatus({ model: "ready", learned: 2, indexed: 2 });
+
 const NOTHING_DONE = {
   hasRoot: true,
   configCommand: null,
@@ -85,6 +100,8 @@ const NOTHING_DONE = {
   requireReviewAsked: false,
   headroomReading: HR_ABSENT,
   headroomAsked: false,
+  memoryReading: MEM_ABSENT,
+  memorySkipped: false,
 };
 
 const ALL_DONE = {
@@ -99,6 +116,8 @@ const ALL_DONE = {
   requireReviewAsked: true,
   headroomReading: HR_VERIFIED,
   headroomAsked: true,
+  memoryReading: MEM_READY,
+  memorySkipped: false,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -187,10 +206,10 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third, Headroom fourth, Git fifth and Review sixth", () => {
+  it("puts Superpowers third, Headroom fourth, Memory fifth, Git sixth and Review seventh", () => {
     // Superpowers beside Integration because it is agent tooling (S2);
     // Headroom right after it, agent tooling too (the Headroom spec, "The
-    // switch"); Git after those because it asks about the files gavin has
+    // switch"); Memory after Headroom, the last of the tooling; Git after those because it asks about the files gavin has
     // by then created; Review right after Git, the same shape of question,
     // before PRD because that step writes into a file the earlier ones
     // create.
@@ -199,6 +218,7 @@ describe("setupProgress", () => {
       "integration",
       "superpowers",
       "headroom",
+      "memory",
       "git",
       "review",
       "prd",
@@ -316,7 +336,7 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(8);
+    expect(SETUP_STEPS).toHaveLength(9);
   });
 
   // Both counters. The Home banner reads its total off SETUP_STEPS and
@@ -333,6 +353,14 @@ describe("setupProgress", () => {
     expect(home).toContain("{SETUP_STEPS.length}");
     expect(home).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
     expect(home).toContain("headroomReading: headroom,");
+    // And the Memory step, named on both surfaces.
+    expect(wizard).toContain('{ id: "memory", label: "Memory" }');
+    expect(wizard).toContain('current === "memory"');
+    expect(wizard).toContain("<MemoryStep");
+    expect(wizard).toContain("memoryReading: memory,");
+    expect(wizard).toContain("memorySkipped,");
+    expect(home).toContain("memoryReading: memory,");
+    expect(home).toContain("memorySkipped,");
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a
@@ -365,6 +393,80 @@ describe("setupProgress", () => {
     const p = setupProgress({ ...NOTHING_DONE, hasRoot: false, configCommand: "claude" });
     expect(p.complete).toBe(false);
     expect(p.done).toEqual([]);
+  });
+});
+
+describe("setupProgress: the Memory step", () => {
+  const upToMemory = {
+    ...NOTHING_DONE,
+    configCommand: "claude",
+    agentFileBody: "<!-- gavin:start -->",
+    superpowers: SP_FOUND,
+    headroomAsked: true,
+  };
+
+  it("comes right after Headroom", () => {
+    expect(setupProgress(upToMemory).next).toBe("memory");
+  });
+
+  it("counts once the model is here and the index matches Learned, empty included", () => {
+    expect(setupProgress({ ...NOTHING_DONE, memoryReading: MEM_READY }).done).toEqual(["memory"]);
+    const empty = memStatus({ model: "ready" });
+    expect(setupProgress({ ...NOTHING_DONE, memoryReading: empty }).done).toEqual(["memory"]);
+  });
+
+  // A model with a stale index is not done: the step is where it is
+  // brought up, and a fact adopted since is one search would miss.
+  it("does not count with no model, a download running, or a stale index", () => {
+    for (const memory of [
+      MEM_ABSENT,
+      memStatus({ model: "downloading" }),
+      memStatus({ model: "failed", modelError: "offline" }),
+      memStatus({ model: "ready", learned: 3, indexed: 2, inSync: false }),
+    ]) {
+      expect(setupProgress({ ...upToMemory, memoryReading: memory }).done).not.toContain("memory");
+    }
+  });
+
+  // "Not now" is a recorded answer, not a fake "installed": the reading
+  // still says absent, and only the mark finishes the step.
+  it("counts on the human's not now, whatever the reading", () => {
+    const p = setupProgress({ ...upToMemory, memoryReading: MEM_ABSENT, memorySkipped: true });
+    expect(p.done).toContain("memory");
+    expect(p.next).toBe("git");
+  });
+
+  it("counts on its own where the index cannot serve the workspace", () => {
+    const ssh = workspaceMemoryReading(MEM_ABSENT, { ssh: { host: "box" } });
+    expect(ssh).toEqual({ kind: "unavailable", reason: SSH_MEMORY_UNAVAILABLE });
+    expect(setupProgress({ ...upToMemory, memoryReading: ssh }).done).toContain("memory");
+    expect(workspaceMemoryReading(MEM_ABSENT, null)).toBe(MEM_ABSENT);
+  });
+
+  it("is pending while the reading has not landed, unless the human already declined", () => {
+    expect(setupProgress({ ...upToMemory, memoryReading: undefined }).pending).toBe(true);
+    const declined = setupProgress({ ...upToMemory, memoryReading: undefined, memorySkipped: true });
+    expect(declined.pending).toBe(false);
+    expect(declined.done).toContain("memory");
+  });
+
+  it("settles on a failed ask and on a daemon too old to ask, without counting either", () => {
+    for (const memory of [
+      { kind: "error", message: "gone" } as MemoryReading,
+      { kind: "blocked", reason: "Needs daemon v60" } as MemoryReading,
+    ]) {
+      const p = setupProgress({ ...upToMemory, memoryReading: memory });
+      expect(p.pending).toBe(false);
+      expect(p.done).not.toContain("memory");
+    }
+  });
+
+  // Outside the nag, like Headroom: no index is a workspace whose agents
+  // read `### Learned` as they always did.
+  it("never makes the Home banner nag", () => {
+    const p = setupProgress({ ...ALL_DONE, memoryReading: MEM_ABSENT });
+    expect(p.configured).toBe(true);
+    expect(p.complete).toBe(false);
   });
 });
 

@@ -193,6 +193,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   headroom_reach: ["ordinary"],
   detect_headroom: ["ordinary"],
   install_headroom: ["ordinary"],
+  // Adopted memories: the index's state, and bringing it up to the
+  // instructions file -- derived data, rebuilt from the file at will.
+  // The one cost is a model download the Memory step asks for.
+  get_memory_index: ["ordinary"],
+  ensure_memory_index: ["ordinary"],
   get_session_names: ["ordinary"],
   set_session_name: ["ordinary"],
   get_file_tabs: ["ordinary"],

@@ -603,6 +603,17 @@ export const FEATURE_MIN_VERSION = {
   // agent's flag and both complexity tables live in config.json and
   // work against any daemon, so they are not behind it.
   agentEffort: 56,
+  // Adopted-memory retrieval (v60, `feat-vectorized-memory.md`). Three
+  // new TYPES, so `min_version_for` is the wire gate and nothing can be
+  // silently dropped. The entry is `headroomSetup`'s: a Memory step that
+  // asked an older daemon would draw the wire error as a missing model
+  // and offer a download the daemon cannot run.
+  //
+  // Its consumer is `readMemoryIndex` in memoryIndexState.ts, which
+  // settles on the reason instead of asking -- so the wizard's step, the
+  // Home count and the open-time backfill all stand down -- and the
+  // index sync after Adopt, which skips the ask.
+  memoryIndex: 60,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
