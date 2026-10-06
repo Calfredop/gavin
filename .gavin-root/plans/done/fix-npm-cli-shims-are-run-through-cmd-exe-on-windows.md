@@ -1,7 +1,8 @@
 ---
+agent: cursor
 order: 2048
 title: [fix] an npm-installed agent CLI is run through cmd.exe, which eats its arguments
-status: In Progress
+status: Done
 priority: medium
 complexity: simple
 ---
@@ -134,3 +135,9 @@ this cannot launch at all. It becomes reachable the moment someone runs
 install them and what
 [feat-windows-port-on-a-windows-machine](./feat-windows-port-on-a-windows-machine.md)
 §2 asks the owner to do. **Fix this before that install, not after.**
+
+## Checklist
+
+- [x] Prefer extensionless PATH match before PATHEXT in `command_with_windows_shim`
+- [x] Tests: extensionless beside `.cmd` left alone; `.cmd`-only still rewrites; bundled-node arm untouched
+- [x] `cargo test -p gavin-daemon shell::` green

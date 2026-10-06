@@ -178,13 +178,19 @@ pub fn posix_tools_path(
 ///
 /// `sh -c` finds a bare `.exe` on PATH -- MSYS's search handles that
 /// extension itself -- but it does not probe `PATHEXT`, so a command
-/// installed as `agent.cmd` (the shape every npm-global install and many
-/// other Windows CLI installers use) reports "command not found" even
-/// though the exact same name resolves fine from `cmd.exe`, PowerShell, or
-/// a bash prompt a human types into. Handing bash the literal `agent.cmd`
+/// installed as `agent.cmd` (Cursor Agent's shape, and any installer that
+/// ships only `.cmd`/`.ps1`) reports "command not found" even though the
+/// exact same name resolves fine from `cmd.exe`, PowerShell, or a bash
+/// prompt a human types into. Handing bash the literal `agent.cmd`
 /// sidesteps the gap: an exact existing filename, extension and all, is
 /// something bash's own PATH search does match, and MSYS's spawn already
 /// knows how to run a `.bat`/`.cmd` once it has one.
+///
+/// **npm's three-file layout is left alone.** An npm-global CLI ships
+/// `<name>` (extensionless `#!/bin/sh` shim), `<name>.cmd` and
+/// `<name>.ps1` side by side. Preferring the extensionless match lets
+/// `sh` exec the POSIX shim; rewriting to `.cmd` hands arguments to
+/// `cmd.exe`, which splits a bare `&` and runs the tail.
 ///
 /// **`.cmd` / `.bat` and multiline prompts.** Those shims forward args
 /// with `%*`, and `cmd.exe` truncates an argument at the first newline.
@@ -286,13 +292,22 @@ pub fn command_with_windows_shim(
     // should not have to special-case what NTFS would paper over.
     let exts: Vec<String> =
         pathext.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect();
+    // Extensionless before PATHEXT, per PATH directory: npm's three-file
+    // layout ships `<name>` beside `<name>.cmd`, and `sh` will exec the
+    // POSIX shim when left alone. Preferring `.cmd` hands the line to
+    // `cmd.exe`, which splits a bare `&` and runs the tail. Cursor Agent
+    // has no extensionless sibling, so it still falls through.
     let found = std::env::split_paths(path).find_map(|dir| {
+        if exists(&dir.join(word)) {
+            return Some((dir, String::new()));
+        }
         exts.iter().find_map(|ext| {
             let candidate = dir.join(format!("{word}{ext}"));
             exists(&candidate).then(|| (dir.clone(), ext.clone()))
         })
     });
     match found {
+        Some((_, ext)) if ext.is_empty() => command.to_string(),
         Some((dir, ext)) if matches!(ext.as_str(), ".cmd" | ".bat") => {
             if let Some((node, script)) = node_entry(&dir) {
                 let node = node.to_string_lossy().replace('\\', "/");
@@ -633,6 +648,38 @@ mod tests {
         assert_eq!(
             shim("agent 'do the thing'", "/tools", ".COM;.EXE;.BAT;.CMD", &["/tools/agent.cmd"]),
             "agent.cmd 'do the thing'"
+        );
+    }
+
+    /// npm's three-file layout puts an extensionless POSIX shim beside
+    /// `.cmd`/`.ps1`. Preferring the extensionless match lets `sh` exec
+    /// that shim; rewriting to `.cmd` hands args to `cmd.exe`, which
+    /// splits on bare `&` and runs the tail.
+    #[test]
+    fn an_extensionless_shim_beside_a_cmd_is_left_alone() {
+        assert_eq!(
+            shim(
+                "codex --version 'x&whoami'",
+                "/npm",
+                ".COM;.EXE;.BAT;.CMD",
+                &["/npm/codex", "/npm/codex.cmd", "/npm/codex.ps1"]
+            ),
+            "codex --version 'x&whoami'"
+        );
+    }
+
+    /// Cursor Agent ships only `.cmd`/`.ps1` — no extensionless sibling —
+    /// so it must still fall through to PATHEXT and the bundled-node arm.
+    #[test]
+    fn a_cmd_only_shim_still_rewrites_when_no_extensionless_sibling() {
+        assert_eq!(
+            shim(
+                "cursor-agent --version",
+                "/cursor-agent",
+                ".COM;.EXE;.BAT;.CMD",
+                &["/cursor-agent/cursor-agent.cmd", "/cursor-agent/cursor-agent.ps1"]
+            ),
+            "cursor-agent.cmd --version"
         );
     }
 
