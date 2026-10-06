@@ -496,7 +496,15 @@ fn emit_queued_inputs_changed(manager: &SessionManager, id: &str) {
 /// pausing its rail for that would be exactly the false alarm this whole
 /// design is trying not to raise.
 fn failure_verdict(manager: &Arc<SessionManager>, id: &str) -> Option<String> {
-    let reason = if let Some(gap) = manager.slept_mid_turn.lock().unwrap().get(id).copied() {
+    // Read into an owned value in its own `let`, never inlined into the
+    // `if let` below: in edition 2021 a guard made in that scrutinee lives
+    // through the `else` too, and the `else` is where the screen is read.
+    // The pump holds a session's screen lock and takes this map on every
+    // chunk it reads, so a verdict that kept the map locked while it
+    // queued for that screen waited on the pump while the pump waited on
+    // it -- and the daemon's whole attach path stalled behind the pair.
+    let slept = manager.slept_mid_turn.lock().unwrap().get(id).copied();
+    let reason = if let Some(gap) = slept {
         slept_reason(gap)
     } else {
         let matched = failure_on_screen(manager, id)?;
@@ -4276,7 +4284,15 @@ impl SessionManager {
         // and a client drains that direction from its own reader thread. A
         // client that stopped draining has already stopped receiving output,
         // so there is nothing left for a resize to be late for.
-        if let Some(screen) = self.screens.lock().unwrap().get(id) {
+        //
+        // The map lock is released before the screen's own is taken, so
+        // the wait above holds nothing else: the lookup is cloned out in
+        // its own `let`, as `attach` and `failure_on_screen` do. Inlined
+        // into the `if let` it kept the WHOLE `screens` map locked for as
+        // long as this one session's screen was busy, and every Attach
+        // (which looks its screen up there) queued behind it.
+        let screen = self.screens.lock().unwrap().get(id).cloned();
+        if let Some(screen) = screen {
             screen.lock().unwrap().set_size(rows, cols);
         }
         Ok(())
@@ -18040,5 +18056,91 @@ mod tests {
             }
         }
         assert!(delivered, "an idle session never received its follow-up");
+    }
+
+    /// How long a lock-order test waits for the thread under test to reach
+    /// the screen lock this test is holding. Generous on purpose: a slow
+    /// scheduler can only make a deadlock test miss its window (and pass
+    /// on the broken code), never fail on the fixed one.
+    const LOCK_ORDER_SETTLE: Duration = Duration::from_millis(300);
+
+    // The two tests below pin one defect from two directions. The PTY pump
+    // holds a session's screen lock across feed-then-forward and, still
+    // holding it, takes `slept_mid_turn` on every chunk. Any other path that
+    // keeps a lock the pump needs while it WAITS for that screen is the
+    // other half of an ABBA deadlock -- and the daemon serves a connection
+    // on one thread, so the app's streaming connection (Attach, Snapshot,
+    // keystrokes, resize) stalls behind it and every terminal comes up
+    // blank. Both were live on a dev daemon for 5.5 days before it hung.
+    //
+    // Each test plays the pump's part by holding the screen lock itself,
+    // runs the real code on another thread, and then asks, from the pump's
+    // side, whether the lock the pump needs is still free.
+
+    #[test]
+    fn a_failure_verdict_does_not_hold_the_sleep_marks_while_it_waits_for_the_screen() {
+        // `if let Some(gap) = manager.slept_mid_turn.lock().unwrap()...
+        // else { failure_on_screen(..) }` keeps the guard alive through the
+        // `else` in edition 2021, so the idle timer held `slept_mid_turn`
+        // while it queued for the screen the pump was holding.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = "s-verdict";
+        manager.set_failure_patterns(id, vec!["API Error:".to_string()]).unwrap();
+        let screen = manager.screen_for(id);
+        let pump_holds_screen = screen.lock().unwrap();
+
+        let verdict = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || failure_verdict(&manager, id))
+        };
+        std::thread::sleep(LOCK_ORDER_SETTLE);
+
+        // The pump's next step, from its own side of the cycle.
+        let marks_are_free = manager.slept_mid_turn.try_lock().is_ok();
+
+        // Released BEFORE asserting, so a failing run ends instead of
+        // leaving the verdict thread parked on the lock for good.
+        drop(pump_holds_screen);
+        assert_eq!(verdict.join().unwrap(), None, "nothing failed on an empty screen");
+        assert!(
+            marks_are_free,
+            "failure_verdict kept `slept_mid_turn` locked while it waited for the session's \
+             screen -- the pump holds that screen and takes `slept_mid_turn` next, so the two \
+             wait on each other forever"
+        );
+    }
+
+    #[test]
+    fn a_resize_does_not_hold_the_screens_map_while_it_waits_for_a_screen() {
+        // `if let Some(screen) = self.screens.lock().unwrap().get(id) {
+        // screen.lock()..` holds the MAP across the wait, so every Attach
+        // (`write_snapshot` looks its screen up in that map), every failure
+        // read and every new pump queued behind one busy session's screen.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager
+            .create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell)
+            .unwrap();
+        let screen = manager.screen_for(&id);
+        let pump_holds_screen = screen.lock().unwrap();
+
+        let resize = {
+            let manager = Arc::clone(&manager);
+            let id = id.clone();
+            std::thread::spawn(move || manager.resize_session(&id, 100, 30))
+        };
+        std::thread::sleep(LOCK_ORDER_SETTLE);
+
+        // What an Attach does first: look its screen up in the map.
+        let map_is_free = manager.screens.try_lock().is_ok();
+
+        drop(pump_holds_screen);
+        resize.join().unwrap().unwrap();
+        assert!(
+            map_is_free,
+            "resize_session kept the `screens` map locked while it waited for one session's \
+             screen, so an Attach for any session stalls behind it"
+        );
     }
 }
