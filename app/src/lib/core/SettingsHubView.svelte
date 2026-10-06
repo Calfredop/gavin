@@ -88,7 +88,7 @@
   } from "$lib/core/settings";
   import { pickPath } from "$lib/workspace/picker";
   import * as backend from "$lib/core/backend";
-  import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
+  import AgentSkillsControls from "$lib/agents/AgentSkillsControls.svelte";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import ColourPicker from "$lib/core/ColourPicker.svelte";
@@ -117,7 +117,13 @@
     sanitizeFallbackThreshold,
     workspaceOwnsFallbackChain,
   } from "$lib/agents/agentFallback";
-  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import {
+    AGENT_SKILLS_NAME,
+    FAREWELL_NOTE,
+    agentSkillsLabel,
+    type AgentSkillsMark,
+    type AgentSkillsStatus,
+  } from "$lib/agents/agentSkills";
   import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
   import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
   import { apiFamilyOf } from "$lib/agents/apiFamily";
@@ -174,30 +180,47 @@
   const hasRoot = $derived(Boolean(ws?.rootPath));
   const profileLabel = $derived(profiles.find((p) => p.id === agent.profileId)?.label ?? agent.profileId);
 
-  // The Superpowers row's two inputs. Re-read on demand rather than
+  // The agent skills row's two inputs. Re-read on demand rather than
   // watched: this is a settings panel, not a live view, and the only
   // things that change either value are the controls right below.
   // undefined until the first read lands, so the row can say "checking"
   // instead of drawing an Install button for an unknown state.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
+  /// Whether this root is owed the one-time note about the plugin gavin
+  /// used to recommend. Read with the row and under the same token, so a
+  /// workspace switch cannot carry one root's note onto another.
+  let farewellDue = $state(false);
   let spToken = 0;
-  async function readSuperpowers(): Promise<void> {
+  async function readAgentSkills(): Promise<void> {
     const root = ws?.rootPath;
     // Cleared first, and the token bumped in the same breath: a switch to
     // another workspace must not leave the previous one's answer on
     // screen, nor let its in-flight read land here.
-    superpowers = undefined;
-    superpowersMark = undefined;
+    agentSkills = undefined;
+    agentSkillsMark = undefined;
+    farewellDue = false;
     const mine = ++spToken;
     if (!root) return;
-    const [status, marks] = await Promise.all([
-      backend.superpowersStatus(root, agent.command).catch(() => undefined),
-      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+    const [status, marks, farewell] = await Promise.all([
+      backend.agentSkillsStatus(root, agent.command).catch(() => undefined),
+      backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
+      // A failed read is no note: it is a courtesy, never worth an error.
+      backend.agentSkillsFarewell(root).catch(() => false),
     ]);
     if (mine !== spToken) return;
-    superpowers = status;
-    superpowersMark = marks[root];
+    agentSkills = status;
+    agentSkillsMark = marks[root];
+    farewellDue = farewell;
+  }
+
+  /// Hidden at once, recorded for good. A write that fails only means the
+  /// note comes back on the next visit.
+  async function dismissFarewell(): Promise<void> {
+    const root = ws?.rootPath;
+    if (!root) return;
+    farewellDue = false;
+    await backend.dismissAgentSkillsFarewell(root).catch(() => {});
   }
   $effect(() => {
     void ws?.rootPath;
@@ -205,7 +228,7 @@
     // re-ask -- otherwise the row keeps answering for the agent that was
     // selected a moment ago.
     void agent.profileId;
-    void readSuperpowers();
+    void readAgentSkills();
   });
 
   // --- compression --------------------------------------------------------
@@ -372,7 +395,7 @@
 
   // --- git --------------------------------------------------------------
   /// What git says about gavin's files in THIS root. Read on demand, like
-  /// the Superpowers row above and for the same reason -- the answer lives
+  /// the agent skills row above and for the same reason -- the answer lives
   /// in a `.gitignore` the human may have edited in another window, so a
   /// value cached at mount would be a claim rather than a reading.
   ///
@@ -386,7 +409,7 @@
   let trackToken = 0;
   async function readTracking(): Promise<void> {
     const root = ws?.rootPath;
-    // Cleared before the token bumps, exactly as readSuperpowers does: a
+    // Cleared before the token bumps, exactly as readAgentSkills does: a
     // workspace switch must not leave the last root's answer on screen,
     // nor let its in-flight read land under the new one.
     tracking = null;
@@ -977,7 +1000,7 @@
           >
             Set up {profileLabel} again…
           </button>
-          — re-run MCP, skills and Superpowers for this agent without changing the profile.
+          — re-run MCP, skills and Matt Pocock's skills for this agent without changing the profile.
           Per-agent setup (command, file, MCP) lives on that agent’s tab.
         </p>
       {/if}
@@ -1408,24 +1431,32 @@
 
         <div class="sp-row">
           <span class="sp-title">
-            {superpowers ? superpowersLabel(superpowers.state) : "Superpowers plugin"}
+            {agentSkills ? agentSkillsLabel(agentSkills.state) : AGENT_SKILLS_NAME}
           </span>
-          {#if superpowers}
-            <SuperpowersControls
+          {#if farewellDue}
+            <div class="farewell">
+              <p class="hint">{FAREWELL_NOTE}</p>
+              <button type="button" class="linkish" onclick={() => void dismissFarewell()}>
+                Dismiss
+              </button>
+            </div>
+          {/if}
+          {#if agentSkills}
+            <AgentSkillsControls
               rootPath={ws?.rootPath ?? null}
               agentCommand={agent.command}
-              status={superpowers}
-              mark={superpowersMark}
-              onChanged={() => void readSuperpowers()}
+              status={agentSkills}
+              mark={agentSkillsMark}
+              onChanged={() => void readAgentSkills()}
               allowClear
             />
           {:else}
             <p class="hint">Checking…</p>
           {/if}
           <p class="hint">
-            Process skills for {profileLabel} — brainstorm before building, plan before coding,
-            debug by narrowing. It is what makes gavin's plan and debug flows deep rather than
-            nominal.
+            Engineering skills for {profileLabel}, grilling first — <code>/grill-with-docs</code>,
+            <code>/tdd</code>, <code>/diagnosing-bugs</code>; <code>/ask-matt</code> picks one.
+            <code>/setup-matt-pocock-skills</code> is optional and yours to run in the agent.
           </p>
         </div>
       {/if}
@@ -1884,6 +1915,15 @@
     display: block;
     margin-bottom: 8px;
     color: var(--text-normal, #ddd);
+  }
+  .farewell {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle, #333);
+    border-radius: 4px;
+  }
+  .farewell .hint {
+    margin: 0 0 4px;
   }
   .hint.warn {
     color: var(--warning-text);

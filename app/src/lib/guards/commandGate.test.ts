@@ -280,10 +280,14 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_root_config_field: ["ordinary"],
   get_agent_model_defaults: ["ordinary"],
   set_agent_model_default: ["ordinary"],
-  get_superpowers_marks: ["ordinary"],
-  set_superpowers_mark: ["ordinary"],
-  superpowers_status: ["ordinary"],
-  superpowers_install: ["ordinary"],
+  get_agent_skills_marks: ["ordinary"],
+  set_agent_skills_mark: ["ordinary"],
+  // The Settings note about the plugin gavin used to recommend: a read of
+  // config.json, and a write of one root into it.
+  agent_skills_farewell: ["ordinary"],
+  dismiss_agent_skills_farewell: ["ordinary"],
+  agent_skills_status: ["ordinary"],
+  agent_skills_install: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.

@@ -123,7 +123,7 @@ const HUB_SYNONYMS: [string, string[]][] = [
   ["quota", ["agents"]],
   ["rate limit", ["agents"]],
   ["This agent", ["agents"]],
-  ["Superpowers", ["agents"]],
+  ["Matt Pocock", ["agents"]],
 ];
 
 describe.each([

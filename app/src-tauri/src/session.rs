@@ -86,7 +86,7 @@ pub(crate) fn persist_workspaces(
     session_names: HashMap<String, String>,
     file_tabs: HashMap<String, String>,
     board_tabs: HashMap<String, crate::config::BoardTabRecord>,
-    // Safe beside board_tabs for the reason `superpowers` spells out
+    // Safe beside board_tabs for the reason `agent_skills` spells out
     // below: its value type is not `BoardTabRecord`, so transposing the
     // two is a compile error rather than a silently swapped map.
     card_tabs: HashMap<String, crate::config::CardTabRecord>,
@@ -105,7 +105,7 @@ pub(crate) fn persist_workspaces(
     // transposing it with any of the three above is a type error, which
     // is the guarantee the comment on `agent_models` had to ask for in
     // prose.
-    superpowers: HashMap<String, crate::config::SuperpowersMark>,
+    agent_skills: HashMap<String, crate::config::AgentSkillsMark>,
     // The custom agent's command and flag plus the complexity table, in
     // one struct rather than three positionals -- see
     // `AgentDefaultsConfig`. Its type is shared with nothing else here,
@@ -146,11 +146,24 @@ pub(crate) fn persist_workspaces(
     // was going to overwrite every other field with defaults anyway, so
     // this loses nothing the rest of the function was not already
     // losing.
-    let typesafe = crate::config::load(config_dir).ok().and_then(|c| c.typesafe);
+    //
+    // The retired Superpowers marks and the farewell dismissals travel
+    // the same way, for a different reason: nothing in this process
+    // writes the first any more, and the second has one writer
+    // (`agent_skills::dismiss_agent_skills_farewell`) that edits the file
+    // directly. Mirroring either in managed state would be two more
+    // positionals for values no save site ever changes.
+    let on_disk = crate::config::load(config_dir).ok();
+    let typesafe = on_disk.as_ref().and_then(|c| c.typesafe.clone());
+    let (superpowers, superpowers_farewell_dismissed) = on_disk
+        .map(|c| (c.superpowers, c.superpowers_farewell_dismissed))
+        .unwrap_or_default();
     crate::config::save(
         config_dir,
         &crate::config::AppConfig {
             typesafe,
+            superpowers,
+            superpowers_farewell_dismissed,
             workspaces: data.workspaces.clone(),
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
@@ -163,7 +176,7 @@ pub(crate) fn persist_workspaces(
             auto_commit,
             removed_workspaces: data.removed_workspaces.clone(),
             agent_pause,
-            superpowers,
+            agent_skills,
             agent_defaults,
             git_tracking,
             require_review,
@@ -223,7 +236,7 @@ pub fn set_agent_pause(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -239,7 +252,7 @@ pub fn set_agent_pause(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -261,7 +274,7 @@ pub fn set_agent_pause(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -310,7 +323,7 @@ pub fn set_launch_config(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -327,7 +340,7 @@ pub fn set_launch_config(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -348,7 +361,7 @@ pub fn set_launch_config(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -397,7 +410,7 @@ pub fn set_custom_resume_args(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -413,7 +426,7 @@ pub fn set_custom_resume_args(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -436,7 +449,7 @@ pub fn set_custom_resume_args(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -449,11 +462,11 @@ pub fn set_custom_resume_args(
     Ok(())
 }
 
-/// The human's Superpowers word per workspace root. Same carry-through
+/// The human's word about Matt Pocock's skills per workspace root. Same carry-through
 /// contract as `AgentModels` above; the value type differs from the
 /// String maps so a transposed argument is a compile error rather than a
 /// silently wiped field.
-pub struct SuperpowersMarks(pub Mutex<HashMap<String, crate::config::SuperpowersMark>>);
+pub struct AgentSkillsMarks(pub Mutex<HashMap<String, crate::config::AgentSkillsMark>>);
 
 /// The app-wide custom agent (command + model flag) and the complexity
 /// table. Tauri-managed and persisted into the same `AppConfig` as the
@@ -517,7 +530,7 @@ pub fn set_agent_defaults(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -538,7 +551,7 @@ pub fn set_agent_defaults(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
@@ -555,7 +568,7 @@ pub fn set_agent_defaults(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -843,12 +856,12 @@ mod workspaces_data_tests {
     /// loud: a wiped marker does not break anything, it just starts the
     /// Home banner nagging again about a step the human already declined.
     #[test]
-    fn persist_workspaces_carries_superpowers_marks_through() {
+    fn persist_workspaces_carries_agent_skills_marks_through() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let mut marks = HashMap::new();
-        marks.insert("/repo/one".to_string(), crate::config::SuperpowersMark::Skipped);
-        marks.insert("/repo/two".to_string(), crate::config::SuperpowersMark::Installed);
+        marks.insert("/repo/one".to_string(), crate::config::AgentSkillsMark::Skipped);
+        marks.insert("/repo/two".to_string(), crate::config::AgentSkillsMark::Installed);
         persist_workspaces(
             dir.path(),
             &data,
@@ -870,7 +883,47 @@ mod workspaces_data_tests {
             None,
         )
         .unwrap();
-        assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_skills, marks);
+    }
+
+    /// The retired Superpowers marks and the farewell dismissals are not
+    /// arguments, so nothing can forget to pass them -- but a save that
+    /// rebuilt the config without reading them back would drop the
+    /// farewell note's targeting, and the older build's own answer, on
+    /// the first layout change.
+    #[test]
+    fn persist_workspaces_keeps_the_superpowers_fields_it_finds_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut before = crate::config::AppConfig::default();
+        before.superpowers.insert("/met".to_string(), crate::config::SuperpowersMark::Installed);
+        before.superpowers_farewell_dismissed.push("/met".to_string());
+        crate::config::save(dir.path(), &before).unwrap();
+
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        let after = crate::config::load(dir.path()).unwrap();
+        assert_eq!(after.superpowers, before.superpowers);
+        assert_eq!(after.superpowers_farewell_dismissed, before.superpowers_farewell_dismissed);
     }
 
     /// The eighth carry-through field, and the one whose loss is the most
@@ -1258,11 +1311,11 @@ mod workspaces_data_tests {
     /// "installed" must load, and a renamed variant must not silently
     /// become the other one.
     #[test]
-    fn superpowers_marks_serialize_as_lowercase_names() {
+    fn agent_skills_marks_serialize_as_lowercase_names() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let mut marks = HashMap::new();
-        marks.insert("/repo".to_string(), crate::config::SuperpowersMark::Installed);
+        marks.insert("/repo".to_string(), crate::config::AgentSkillsMark::Installed);
         persist_workspaces(
             dir.path(),
             &data,
@@ -1307,7 +1360,7 @@ mod workspaces_data_tests {
     /// `AppConfig::default()`, so the failure mode here is not an error
     /// message, it is every workspace silently vanishing.
     #[test]
-    fn a_config_written_before_superpowers_existed_still_loads_its_workspaces() {
+    fn a_config_written_before_agent_skills_existed_still_loads_its_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             crate::config::config_path(dir.path()),
@@ -1319,7 +1372,7 @@ mod workspaces_data_tests {
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
-        assert!(loaded.superpowers.is_empty());
+        assert!(loaded.agent_skills.is_empty());
         assert_eq!(loaded.active_workspace_id.as_deref(), Some("ws-1"));
         assert_eq!(loaded.theme.as_deref(), Some("dark"));
     }
@@ -1562,7 +1615,7 @@ pub fn set_workspaces_state(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1602,7 +1655,7 @@ pub fn set_workspaces_state(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1621,7 +1674,7 @@ pub fn set_workspaces_state(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1704,7 +1757,7 @@ pub(crate) fn persist_current(app_handle: &AppHandle, data: &WorkspacesData) -> 
         *app_handle.state::<TerminalFontSize>().0.lock().unwrap(),
         *app_handle.state::<AutoCommit>().0.lock().unwrap(),
         app_handle.state::<AgentPause>().0.lock().unwrap().clone(),
-        app_handle.state::<SuperpowersMarks>().0.lock().unwrap().clone(),
+        app_handle.state::<AgentSkillsMarks>().0.lock().unwrap().clone(),
         app_handle.state::<AgentDefaults>().0.lock().unwrap().clone(),
         *app_handle.state::<GitTrackingDefaults>().0.lock().unwrap(),
         *app_handle.state::<RequireReviewDefaults>().0.lock().unwrap(),
@@ -1736,7 +1789,7 @@ pub fn set_agent_model_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1766,7 +1819,7 @@ pub fn set_agent_model_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1786,7 +1839,7 @@ pub fn set_agent_model_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1799,13 +1852,13 @@ pub fn set_agent_model_default(
     Ok(())
 }
 
-/// What the human has told gavin about Superpowers, keyed by workspace
+/// What the human has told gavin about Matt Pocock's skills, keyed by workspace
 /// root path. Machine-local, so it answers only for this machine -- see
-/// `AppConfig::superpowers`.
+/// `AppConfig::agent_skills`.
 #[tauri::command]
-pub fn get_superpowers_marks(
-    state: State<SuperpowersMarks>,
-) -> HashMap<String, crate::config::SuperpowersMark> {
+pub fn get_agent_skills_marks(
+    state: State<AgentSkillsMarks>,
+) -> HashMap<String, crate::config::AgentSkillsMark> {
     state.0.lock().unwrap().clone()
 }
 
@@ -1815,9 +1868,9 @@ pub fn get_superpowers_marks(
 /// the honest "absent", and overwriting with the other marker would say
 /// something they did not mean.
 #[tauri::command]
-pub fn set_superpowers_mark(
+pub fn set_agent_skills_mark(
     root_path: String,
-    mark: Option<crate::config::SuperpowersMark>,
+    mark: Option<crate::config::AgentSkillsMark>,
     app_handle: AppHandle,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
@@ -1829,7 +1882,7 @@ pub fn set_superpowers_mark(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1837,8 +1890,8 @@ pub fn set_superpowers_mark(
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
-    let superpowers = {
-        let mut current = superpowers_state.0.lock().unwrap();
+    let agent_skills = {
+        let mut current = agent_skills_state.0.lock().unwrap();
         match mark {
             Some(m) => {
                 current.insert(root_path, m);
@@ -1878,7 +1931,7 @@ pub fn set_superpowers_mark(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1910,7 +1963,7 @@ pub fn set_theme_pref(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1936,7 +1989,7 @@ pub fn set_theme_pref(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1955,7 +2008,7 @@ pub fn set_theme_pref(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1997,7 +2050,7 @@ pub fn set_terminal_font_size(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2022,7 +2075,7 @@ pub fn set_terminal_font_size(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2042,7 +2095,7 @@ pub fn set_terminal_font_size(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2081,7 +2134,7 @@ pub fn set_auto_commit(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2103,7 +2156,7 @@ pub fn set_auto_commit(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2123,7 +2176,7 @@ pub fn set_auto_commit(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2162,7 +2215,7 @@ pub fn set_require_review(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2186,7 +2239,7 @@ pub fn set_require_review(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
@@ -2204,7 +2257,7 @@ pub fn set_require_review(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2248,7 +2301,7 @@ pub fn set_headroom_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2271,7 +2324,7 @@ pub fn set_headroom_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2290,7 +2343,7 @@ pub fn set_headroom_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2337,7 +2390,7 @@ pub fn set_git_tracking_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2360,7 +2413,7 @@ pub fn set_git_tracking_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let require_review = *require_review_state.0.lock().unwrap();
     let headroom = *headroom_state.0.lock().unwrap();
@@ -2379,7 +2432,7 @@ pub fn set_git_tracking_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2412,7 +2465,7 @@ pub fn set_session_name(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2443,7 +2496,7 @@ pub fn set_session_name(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2462,7 +2515,7 @@ pub fn set_session_name(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2497,7 +2550,7 @@ pub fn set_file_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2516,7 +2569,7 @@ pub fn set_file_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2535,7 +2588,7 @@ pub fn set_file_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2599,7 +2652,7 @@ pub fn set_card_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2618,7 +2671,7 @@ pub fn set_card_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2637,7 +2690,7 @@ pub fn set_card_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2670,7 +2723,7 @@ pub fn set_board_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2689,7 +2742,7 @@ pub fn set_board_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2708,7 +2761,7 @@ pub fn set_board_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -5581,7 +5634,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.terminal_font_size,
         config.auto_commit,
         config.agent_pause.clone(),
-        config.superpowers.clone(),
+        config.agent_skills.clone(),
         config.agent_defaults.clone(),
         config.git_tracking,
         config.require_review,
@@ -5604,7 +5657,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
     app_handle.manage(AutoCommit(Mutex::new(config.auto_commit)));
     app_handle.manage(AgentPause(Mutex::new(config.agent_pause)));
-    app_handle.manage(SuperpowersMarks(Mutex::new(config.superpowers)));
+    app_handle.manage(AgentSkillsMarks(Mutex::new(config.agent_skills)));
     app_handle.manage(AgentDefaults(Mutex::new(config.agent_defaults)));
     app_handle.manage(GitTrackingDefaults(Mutex::new(config.git_tracking)));
     app_handle.manage(RequireReviewDefaults(Mutex::new(config.require_review)));

@@ -16,7 +16,7 @@
 // a workspace map with no key for the primary inherits the app-wide
 // chain for it; an empty array under the key is an explicit "no
 // fallback" override for that primary. "Armed" is a set the workspace
-// records after setup-only Integration/Superpowers for that profile —
+// records after setup-only Integration/agent skills for that profile —
 // the workspace's own active profile is treated as armed by the
 // init/switch wizard, not this list. "Declined" is the set the human
 // answered "Don't ask again" for: it is never offered for arming in

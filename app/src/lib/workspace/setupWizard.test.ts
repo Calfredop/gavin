@@ -7,7 +7,7 @@ import {
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
 } from "$lib/workspace/setupWizard";
-import type { SuperpowersStatus } from "$lib/agents/superpowers";
+import type { AgentSkillsStatus } from "$lib/agents/agentSkills";
 import type { HeadroomStatus } from "$lib/agents/compression";
 import { SSH_UNAVAILABLE, workspaceHeadroomReading, type HeadroomReading } from "$lib/agents/headroomSetup";
 import {
@@ -19,15 +19,15 @@ import {
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
-/// `pending` without completing the Superpowers step.
-const SP_ABSENT: SuperpowersStatus = {
+/// `pending` without completing the agent skills step.
+const SP_ABSENT: AgentSkillsStatus = {
   state: "absent",
   detail: "",
   command: "",
   installable: true,
   output: "",
 };
-const SP_FOUND: SuperpowersStatus = { ...SP_ABSENT, state: "verified" };
+const SP_FOUND: AgentSkillsStatus = { ...SP_ABSENT, state: "verified" };
 
 function headroomStatus(over: Partial<HeadroomStatus> = {}): HeadroomStatus {
   return {
@@ -94,8 +94,8 @@ const NOTHING_DONE = {
   agentFileBody: null,
   prdBody: TEMPLATE,
   mainSessionId: null,
-  superpowers: SP_ABSENT,
-  superpowersMark: undefined,
+  agentSkills: SP_ABSENT,
+  agentSkillsMark: undefined,
   gitTrackingAsked: false,
   requireReviewAsked: false,
   headroomReading: HR_ABSENT,
@@ -110,8 +110,8 @@ const ALL_DONE = {
   agentFileBody: "<!-- gavin:start -->",
   prdBody: TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "Real."),
   mainSessionId: "agent-1",
-  superpowers: SP_FOUND,
-  superpowersMark: undefined,
+  agentSkills: SP_FOUND,
+  agentSkillsMark: undefined,
   gitTrackingAsked: true,
   requireReviewAsked: true,
   headroomReading: HR_VERIFIED,
@@ -206,8 +206,8 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third, Headroom fourth, Memory fifth, Git sixth and Review seventh", () => {
-    // Superpowers beside Integration because it is agent tooling (S2);
+  it("puts agent skills third, Headroom fourth, Memory fifth, Git sixth and Review seventh", () => {
+    // agent skills beside Integration because it is agent tooling (S2);
     // Headroom right after it, agent tooling too (the Headroom spec, "The
     // switch"); Memory after Headroom, the last of the tooling; Git after those because it asks about the files gavin has
     // by then created; Review right after Git, the same shape of question,
@@ -216,7 +216,7 @@ describe("setupProgress", () => {
     expect(SETUP_STEPS).toEqual([
       "agent",
       "integration",
-      "superpowers",
+      "agentSkills",
       "headroom",
       "memory",
       "git",
@@ -226,39 +226,39 @@ describe("setupProgress", () => {
     ]);
   });
 
-  it("counts Superpowers when a check found the plugin", () => {
-    const p = setupProgress({ ...NOTHING_DONE, superpowers: SP_FOUND });
-    expect(p.done).toEqual(["superpowers"]);
+  it("counts agent skills when a check found the plugin", () => {
+    const p = setupProgress({ ...NOTHING_DONE, agentSkills: SP_FOUND });
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
-  it("counts Superpowers on the human's word where gavin could not check", () => {
+  it("counts agent skills on the human's word where gavin could not check", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: { ...SP_ABSENT, state: "asserted", installable: false },
-      superpowersMark: "installed",
+      agentSkills: { ...SP_ABSENT, state: "asserted", installable: false },
+      agentSkillsMark: "installed",
     });
-    expect(p.done).toEqual(["superpowers"]);
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // S6's second route, and the reason it exists: without it, declining
   // once leaves the Home banner nagging for ever.
-  it("counts Superpowers as answered once it has been declined", () => {
-    const p = setupProgress({ ...NOTHING_DONE, superpowersMark: "skipped" });
-    expect(p.done).toEqual(["superpowers"]);
+  it("counts agent skills as answered once it has been declined", () => {
+    const p = setupProgress({ ...NOTHING_DONE, agentSkillsMark: "skipped" });
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // gavin failing to check is not the human deciding.
-  it("does not count Superpowers just because gavin cannot check it", () => {
+  it("does not count agent skills just because gavin cannot check it", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: { ...SP_ABSENT, state: "unavailable", installable: false },
+      agentSkills: { ...SP_ABSENT, state: "unavailable", installable: false },
     });
     expect(p.done).toEqual([]);
     expect(p.next).toBe("agent");
   });
 
-  it("is pending while the Superpowers check has not come back", () => {
-    expect(setupProgress({ ...NOTHING_DONE, superpowers: undefined }).pending).toBe(true);
+  it("is pending while the agent skills check has not come back", () => {
+    expect(setupProgress({ ...NOTHING_DONE, agentSkills: undefined }).pending).toBe(true);
   });
 
   // A settled marker answers on its own, so an in-flight detector that
@@ -266,11 +266,11 @@ describe("setupProgress", () => {
   it("is settled by a marker even with the check still running", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: undefined,
-      superpowersMark: "skipped",
+      agentSkills: undefined,
+      agentSkillsMark: "skipped",
     });
     expect(p.pending).toBe(false);
-    expect(p.done).toEqual(["superpowers"]);
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // The one step whose evidence is a recorded word rather than state on
@@ -345,7 +345,7 @@ describe("setupProgress", () => {
   // `next` disagree about where Headroom is.
   it("draws the wizard's stepper from the same steps, Headroom included", () => {
     const wizard = SOURCES["SetupWizard.svelte"];
-    const ids = [...wizard.matchAll(/\{ id: "([a-z]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
+    const ids = [...wizard.matchAll(/\{ id: "([a-zA-Z]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
     expect(ids).toEqual(SETUP_STEPS);
     expect(wizard).toContain('current === "headroom"');
     expect(wizard).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
@@ -401,7 +401,7 @@ describe("setupProgress: the Memory step", () => {
     ...NOTHING_DONE,
     configCommand: "claude",
     agentFileBody: "<!-- gavin:start -->",
-    superpowers: SP_FOUND,
+    agentSkills: SP_FOUND,
     headroomAsked: true,
   };
 
@@ -471,9 +471,9 @@ describe("setupProgress: the Memory step", () => {
 });
 
 describe("setupProgress: the Headroom step", () => {
-  const upToHeadroom = { ...NOTHING_DONE, configCommand: "claude", agentFileBody: "<!-- gavin:start -->", superpowers: SP_FOUND };
+  const upToHeadroom = { ...NOTHING_DONE, configCommand: "claude", agentFileBody: "<!-- gavin:start -->", agentSkills: SP_FOUND };
 
-  it("comes right after Superpowers", () => {
+  it("comes right after agent skills", () => {
     expect(setupProgress(upToHeadroom).next).toBe("headroom");
   });
 

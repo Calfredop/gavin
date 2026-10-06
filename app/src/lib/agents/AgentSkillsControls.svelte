@@ -1,7 +1,7 @@
 <script lang="ts">
   /// Everything the wizard step and the Settings row show identically:
-  /// the LED and its sentence, the Install button, the paste-able command
-  /// where gavin must not run one, the manual "I've installed it", and
+  /// the LED and its sentence, the Install button, the command to run yourself
+  /// where gavin cannot run one, the manual "I've installed it", and
   /// the output drawer. One component rather than two so the drawer they
   /// share is literally the same drawer -- the alternative is a copy that
   /// drifts, and the thing most worth not drifting here is which streams
@@ -17,10 +17,10 @@
     showsAssertButton,
     showsCopyCommand,
     showsInstallButton,
-    superpowersLed,
-    type SuperpowersMark,
-    type SuperpowersStatus,
-  } from "$lib/agents/superpowers";
+    agentSkillsLed,
+    type AgentSkillsMark,
+    type AgentSkillsStatus,
+  } from "$lib/agents/agentSkills";
 
   interface Props {
     rootPath: string | null;
@@ -32,10 +32,10 @@
     /// gave them, which is already gated.
     agentCommand: string;
     /// Overlay the workspace's active agent. Fallback arming names the
-    /// chain profile so Install writes that CLI's plugin, not Claude's.
+    /// chain profile so Install sets up that agent, not the workspace's own.
     profileId?: string;
-    status: SuperpowersStatus;
-    mark: SuperpowersMark | undefined;
+    status: AgentSkillsStatus;
+    mark: AgentSkillsMark | undefined;
     /// Re-reads status and marker in whoever owns them. Both surfaces
     /// derive something from those (a stepper tick, a settings row), so
     /// neither can hold them here.
@@ -56,7 +56,7 @@
   let runOutput = $state<string | null>(null);
   let copied = $state(false);
 
-  const led = $derived(superpowersLed(status.state));
+  const led = $derived(agentSkillsLed(status.state));
   const output = $derived(runOutput ?? status.output);
   const believedPresent = $derived(status.state === "verified" || status.state === "asserted");
 
@@ -65,7 +65,7 @@
     running = true;
     error = null;
     try {
-      const next = await backend.superpowersInstall(rootPath, agentCommand, profileId);
+      const next = await backend.agentSkillsInstall(rootPath, agentCommand, profileId);
       runOutput = next.output;
       // A failed install leaves something worth reading. Open the drawer
       // rather than making them hunt for it.
@@ -78,11 +78,11 @@
     onChanged();
   }
 
-  async function say(next: SuperpowersMark | null): Promise<void> {
+  async function say(next: AgentSkillsMark | null): Promise<void> {
     if (!rootPath) return;
     error = null;
     try {
-      await backend.setSuperpowersMark(rootPath, next);
+      await backend.setAgentSkillsMark(rootPath, next);
     } catch (e) {
       error = String(e);
       return;
@@ -105,7 +105,7 @@
   </div>
 
   {#if showsCopyCommand(status)}
-    <p class="note">gavin can't run this one for you — paste it in yourself:</p>
+    <p class="note">gavin can't run this one for you — run it in the workspace yourself:</p>
     <pre class="command">{status.command}</pre>
     <div class="links">
       <button type="button" class="link" onclick={() => void copy()}>

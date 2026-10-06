@@ -1,5 +1,5 @@
-import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
-import { superpowersDone } from "$lib/agents/superpowers";
+import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
+import { agentSkillsDone } from "$lib/agents/agentSkills";
 import {
   headroomStepDone,
   headroomStepSettled,
@@ -10,7 +10,7 @@ import { memoryStepDone, memoryStepSettled, type MemoryReading } from "$lib/card
 export type SetupStep =
   | "agent"
   | "integration"
-  | "superpowers"
+  | "agentSkills"
   | "headroom"
   | "memory"
   | "git"
@@ -72,15 +72,15 @@ export interface SetupInput {
   agentFileBody: string | null | undefined;
   prdBody: string | null | undefined;
   mainSessionId: string | null;
-  /// The Superpowers detector's answer, `undefined` while the check is
+  /// The agent skills detector's answer, `undefined` while the check is
   /// still running. Same distinction the two file bodies draw, and for
   /// the same reason: a check in flight is not a check that found
   /// nothing, and reading it as one opens the wizard on a finished step.
-  superpowers: SuperpowersStatus | undefined;
-  /// What the human has said about Superpowers for this root, if
+  agentSkills: AgentSkillsStatus | undefined;
+  /// What the human has said about agent skills for this root, if
   /// anything. `undefined` is "not asked yet", never "not now" -- the
   /// step's second completion route depends on telling those apart.
-  superpowersMark: SuperpowersMark | undefined;
+  agentSkillsMark: AgentSkillsMark | undefined;
   /// Whether the human has answered the git question for this workspace
   /// (`Workspace.gitTrackingAsked`).
   ///
@@ -119,9 +119,9 @@ export interface SetupInput {
   memorySkipped: boolean;
 }
 
-/// Superpowers sits third (spec S2): it is agent tooling, so it belongs
+/// agent skills sits third (spec S2): it is agent tooling, so it belongs
 /// beside Integration, and PRD and Launch stay last. Headroom is agent
-/// tooling too, and follows Superpowers (the Headroom spec, "The switch");
+/// tooling too, and follows agent skills (the Headroom spec, "The switch");
 /// Memory follows Headroom, the last of the tooling. Exported because
 /// every surface that counts steps must count THIS list -- the Home hub's
 /// banner said "of 4" as a literal and would have gone on saying it.
@@ -135,7 +135,7 @@ export interface SetupInput {
 export const SETUP_STEPS: SetupStep[] = [
   "agent",
   "integration",
-  "superpowers",
+  "agentSkills",
   "headroom",
   "memory",
   "git",
@@ -161,7 +161,7 @@ export function setupProgress(input: SetupInput): SetupProgress {
   if (input.agentFileBody?.includes(MARKER_START)) done.push("integration");
   // S6: a check that found it, the human's word, or their "not now".
   // The third route is why declining once stops the nagging.
-  if (superpowersDone(input.superpowers, input.superpowersMark)) done.push("superpowers");
+  if (agentSkillsDone(input.agentSkills, input.agentSkillsMark)) done.push("agentSkills");
   // The question was put, or there is none to put: Headroom cannot serve
   // this workspace on this machine. Never on an unknown reading.
   if (headroomStepDone(input.headroomReading, input.headroomAsked)) done.push("headroom");
@@ -183,12 +183,12 @@ export function setupProgress(input: SetupInput): SetupProgress {
 
   const ordered = ORDER.filter((s) => done.includes(s));
   const next = ORDER.find((s) => !done.includes(s)) ?? null;
-  // The Superpowers check joins the same rule the two file reads follow.
+  // The agent skills check joins the same rule the two file reads follow.
   // A settled marker answers on its own, though: once the human has said
   // "not now", no in-flight detector can change whether the step is done,
   // and waiting on one would hold the whole wizard for a round trip that
   // cannot matter.
-  const superpowersSettled = Boolean(input.superpowersMark) || input.superpowers !== undefined;
+  const agentSkillsSettled = Boolean(input.agentSkillsMark) || input.agentSkills !== undefined;
   // The Headroom reading the same way: out is pending, and a recorded
   // answer settles it whatever the reading.
   const headroomSettled = headroomStepSettled(input.headroomReading, input.headroomAsked);
@@ -196,7 +196,7 @@ export function setupProgress(input: SetupInput): SetupProgress {
   const pending =
     input.agentFileBody === undefined ||
     input.prdBody === undefined ||
-    !superpowersSettled ||
+    !agentSkillsSettled ||
     !headroomSettled ||
     !memorySettled;
   // Five steps sit outside the nag, for two different reasons. Launch's

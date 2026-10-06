@@ -2025,7 +2025,7 @@ pub struct IntegrationResult {
 #[tauri::command]
 /// `instructions_file` is the workspace's RESOLVED agent file. Passed
 /// rather than read from config.toml here for the same reason
-/// `superpowers::binary_for` takes its binary: `[agent] file` ships with
+/// `agent_skills::binary_for` takes its binary: `[agent] file` ships with
 /// the repository, and this command WRITES through it. The frontend
 /// supplies a value already gated by workspace trust
 /// (`workspaceTrust.ts`) -- the repo's only once a human approved this

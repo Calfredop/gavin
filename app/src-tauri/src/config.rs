@@ -388,7 +388,7 @@ pub struct Workspace {
     /// It exists because the setup wizard's git step has no other way to
     /// know it is finished: both answers are legitimate, and "tracked"
     /// is indistinguishable on disk from "nobody has decided yet". Same
-    /// problem the Superpowers step has, and the same shape of answer --
+    /// problem the agent skills step has, and the same shape of answer --
     /// a recorded word from the human, machine-local, because whether
     /// THIS person has seen a question is not a fact about the project.
     #[serde(default)]
@@ -526,7 +526,7 @@ pub struct Workspace {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub fallback_chains: HashMap<String, Vec<String>>,
     /// Profile ids this workspace has completed setup-only arming for
-    /// (Integration / Superpowers / skills) without switching the active
+    /// (Integration / agent skills / skills) without switching the active
     /// agent. The workspace's own profile is armed by init / agent-change,
     /// not this list. Empty is the ordinary case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -940,22 +940,30 @@ pub struct AppConfig {
     /// or it silently resets on the next save.
     #[serde(default)]
     pub agent_pause: Option<AgentPauseConfig>,
-    /// What the human told gavin about Superpowers, keyed by workspace
-    /// root path. The seventh carry-through field.
+    /// What the human told gavin about Matt Pocock's skills, keyed by
+    /// workspace root path: "Not now" for any agent, "I've installed it"
+    /// for a custom one (`agent_skills.rs`). The seventh carry-through
+    /// field.
     ///
-    /// Machine-local on purpose (spec S9): a repo can travel to a machine
-    /// that has no Superpowers, so an assertion made here must not vouch
-    /// for a checkout somewhere else. That is also why this is not an
-    /// `[agent].superpowers` key in `.gavin-root/config.toml` -- besides
-    /// travelling, a new root-config key widens `SetRootConfigField`,
-    /// which `min_version_for` gates by request TYPE and therefore cannot
-    /// see, so it would have cost a protocol bump to store a fact that
-    /// should never have left this machine.
-    #[serde(default)]
-    pub superpowers: HashMap<String, SuperpowersMark>,
+    /// Machine-local on purpose: an assertion about a custom agent's
+    /// install vouches for this machine, not for a checkout somewhere
+    /// else. That is also why this is not an `[agent]` key in
+    /// `.gavin-root/config.toml` -- besides travelling, a new root-config
+    /// key widens `SetRootConfigField`, which `min_version_for` gates by
+    /// request TYPE and therefore cannot see, so it would have cost a
+    /// protocol bump to store a fact that should never have left this
+    /// machine.
+    ///
+    /// A new key rather than the old `superpowers` one renamed: a word
+    /// about Superpowers is not a word about these skills, and reading
+    /// one as the other would finish a setup step nobody saw. Skipped
+    /// while empty, so a file nobody has answered this in is written back
+    /// with no key the older build sharing it does not know.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_skills: HashMap<String, AgentSkillsMark>,
     /// The app-wide custom agent and complexity table. The eighth
     /// carry-through field: like session_names/file_tabs/board_tabs/
-    /// theme/agent_models/removed_workspaces/agent_pause/superpowers it
+    /// theme/agent_models/removed_workspaces/agent_pause/agent_skills it
     /// must be carried through `persist_workspaces`, or it silently
     /// resets on the next save.
     ///
@@ -968,7 +976,7 @@ pub struct AppConfig {
     /// Whether a workspace gavin INITIALISES starts with its own files
     /// tracked by git. The ninth carry-through field: like
     /// session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces/agent_pause/superpowers/agent_defaults it must be
+    /// removed_workspaces/agent_pause/agent_skills/agent_defaults it must be
     /// carried through `persist_workspaces`, or it silently resets on the
     /// next save.
     ///
@@ -986,7 +994,7 @@ pub struct AppConfig {
     /// default reaches every install that never expressed a preference.
     /// The tenth carry-through field: like session_names/file_tabs/
     /// board_tabs/theme/agent_models/removed_workspaces/agent_pause/
-    /// superpowers/agent_defaults/git_tracking it must be carried through
+    /// agent_skills/agent_defaults/git_tracking it must be carried through
     /// `persist_workspaces`, or it silently resets on the next save.
     ///
     /// Unlike `git_tracking`, this is not an initialisation-only default:
@@ -1001,7 +1009,7 @@ pub struct AppConfig {
     /// change how the workspaces that already exist talk to their
     /// models. The THIRTEENTH carry-through field: like session_names/
     /// file_tabs/board_tabs/theme/agent_models/removed_workspaces/
-    /// agent_pause/superpowers/agent_defaults/git_tracking/
+    /// agent_pause/agent_skills/agent_defaults/git_tracking/
     /// require_review/launch/custom_resume_args it must be carried
     /// through `persist_workspaces`, or it silently resets on the next
     /// save.
@@ -1018,7 +1026,7 @@ pub struct AppConfig {
     pub headroom: HeadroomDefault,
     /// The app-wide launch wall. The ELEVENTH carry-through field: like
     /// session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces/agent_pause/superpowers/agent_defaults/
+    /// removed_workspaces/agent_pause/agent_skills/agent_defaults/
     /// git_tracking/require_review it must be carried through
     /// `persist_workspaces`, or it silently resets on the next save.
     ///
@@ -1033,7 +1041,7 @@ pub struct AppConfig {
     /// profile. Deserialized so migration can fold it onto
     /// `CustomProfile::resume_args`; skipped once cleared. The TWELFTH
     /// carry-through field: like session_names/file_tabs/board_tabs/
-    /// theme/agent_models/removed_workspaces/agent_pause/superpowers/
+    /// theme/agent_models/removed_workspaces/agent_pause/agent_skills/
     /// agent_defaults/git_tracking/require_review/launch it must be
     /// carried through `persist_workspaces`, or it silently resets on
     /// the next save.
@@ -1065,6 +1073,22 @@ pub struct AppConfig {
     /// also the one seam a later move to the OS keychain would touch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typesafe: Option<TypeSafeConfig>,
+    /// What the human told gavin about Superpowers, keyed by root, from
+    /// before gavin recommended Matt Pocock's skills instead. Read, never
+    /// written: it is only the farewell note's targeting -- a root here
+    /// is one whose owner met Superpowers through gavin.
+    ///
+    /// Carried forward from disk like `typesafe`, not a positional, and
+    /// still written back under its old key: a release build and a dev
+    /// build share this file, and an older one still reads it as its
+    /// own setup step's answer.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub superpowers: HashMap<String, SuperpowersMark>,
+    /// Roots whose Superpowers farewell note was dismissed. Carried
+    /// forward from disk; written only by
+    /// `agent_skills::dismiss_agent_skills_farewell`'s read-modify-write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superpowers_farewell_dismissed: Vec<String>,
 }
 
 /// The TypeSafe features' settings: the turn verdict's switch, change
@@ -1144,19 +1168,29 @@ impl HeadroomDefault {
 #[serde(transparent)]
 pub struct GitTrackingDefault(pub Option<bool>);
 
-/// The human's word about Superpowers for one workspace. A distinct type
-/// rather than a `String` so it cannot be transposed with the three
-/// same-shaped `HashMap<String, String>` fields it travels beside through
-/// `persist_workspaces` -- that argument list is already long enough to
-/// swap silently, and the comment there says so.
+/// The human's word about Matt Pocock's skills for one workspace. A
+/// distinct type rather than a `String` so it cannot be transposed with
+/// the three same-shaped `HashMap<String, String>` fields it travels
+/// beside through `persist_workspaces` -- that argument list is already
+/// long enough to swap silently, and the comment there says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SuperpowersMark {
-    /// "I've installed it" -- taken on trust where gavin cannot check.
+pub enum AgentSkillsMark {
+    /// "I've installed it" -- taken on trust for a custom agent, the one
+    /// profile gavin can neither check nor install for.
     Installed,
     /// "Not now". Finishes the setup step without claiming anything is
     /// installed, so declining once stops the Home banner nagging for
-    /// ever (spec S6).
+    /// ever.
+    Skipped,
+}
+
+/// The retired Superpowers answer, kept only so `AppConfig::superpowers`
+/// still parses. Same spelling the old builds wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuperpowersMark {
+    Installed,
     Skipped,
 }
 
@@ -2199,7 +2233,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2232,7 +2268,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2279,7 +2317,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2432,7 +2472,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2485,7 +2527,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2523,7 +2567,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2564,7 +2610,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2619,7 +2667,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2649,7 +2699,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2687,7 +2739,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2836,7 +2890,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2884,7 +2940,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2927,7 +2985,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2995,7 +3055,9 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),

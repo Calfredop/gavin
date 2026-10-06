@@ -20,7 +20,7 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
 
   /// What git says right now. Read here rather than handed down from the
-  /// wizard, unlike the Superpowers pair: the stepper's tick for this step
+  /// wizard, unlike the agent skills pair: the stepper's tick for this step
   /// is derived from a recorded answer, not from this, so the wizard has
   /// no reason to hold it.
   ///

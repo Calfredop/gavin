@@ -3077,7 +3077,7 @@ pub enum Response {
 /// `state` is one of `verified`, `too-old`, `absent` and `unavailable`,
 /// kept as a string like `SessionSummary::status` so a word written by a
 /// newer daemon reaches the app as written. There is no "asserted": the
-/// human's word is enough for Superpowers because the agent runs it, and
+/// human's word is enough for agent skills because the agent runs them, and
 /// gavin has to execute Headroom -- a word does not name a file.
 /// One workspace's adopted-memory index (v60).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
