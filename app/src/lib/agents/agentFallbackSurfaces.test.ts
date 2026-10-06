@@ -25,13 +25,17 @@ describe("fallback agent surfaces", () => {
 
   it("edits the chain in app settings, workspace settings, and the init wizard", () => {
     // Per-primary since the chains became a map keyed by primary profile
-    // id: the app view edits the default agent's chain, the workspace
-    // view the resolved profile's (and, on the per-agent tabs, any
-    // primary's).
-    expect(source("GlobalSettingsView.svelte")).toContain("withFallbackChainForPrimary");
-    expect(source("GlobalSettingsView.svelte")).toContain("FallbackChainEditor");
-    expect(source("SettingsHubView.svelte")).toContain("chainForPrimary");
-    expect(source("SettingsHubView.svelte")).toContain("setWorkspaceFallback");
+    // id. One panel draws a primary's chain for both scopes -- General
+    // points it at the default (app) or the resolved (workspace) agent,
+    // every agent tab at its own -- so neither settings page carries a
+    // copy of the editor.
+    const panel = source("AgentPrimaryPanel.svelte");
+    expect(panel).toContain("withFallbackChainForPrimary");
+    expect(panel).toContain("FallbackChainEditor");
+    expect(panel).toContain("chainForPrimary");
+    expect(panel).toContain("setWorkspaceFallback");
+    expect(source("GlobalSettingsView.svelte")).toContain('<AgentPrimaryPanel\n          scope="app"');
+    expect(source("SettingsHubView.svelte")).toContain('scope="workspace"');
     expect(source("AgentStep.svelte")).toContain("FallbackChainEditor");
   });
 
@@ -42,8 +46,8 @@ describe("fallback agent surfaces", () => {
     expect(source("SettingsHubView.svelte")).toContain("fallbackThresholds");
     expect(source("AgentStep.svelte")).toContain("Walk at");
     expect(source("AgentStep.svelte")).toContain("fallbackThresholds");
-    expect(source("GlobalSettingsView.svelte")).toContain("onThresholdChange");
-    expect(source("GlobalSettingsView.svelte")).toContain("fallbackThresholds");
+    expect(source("AgentPrimaryPanel.svelte")).toContain("onThresholdChange");
+    expect(source("AgentPrimaryPanel.svelte")).toContain("fallbackThresholds");
   });
 
   it("forces the arming wizard from a launch rather than skipping or launching degraded", () => {

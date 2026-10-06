@@ -6,6 +6,7 @@
     agentDefaultsStore,
     agentProfilesStore,
     agentModelDefaultsStore,
+    promptExtrasFor,
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
@@ -124,7 +125,11 @@
     busy = true;
     error = null;
     try {
-      const prompt = await backend.composeAgentPrompt(ws.rootPath, "prd");
+      const prompt = await backend.composeAgentPrompt(
+        ws.rootPath,
+        "prd",
+        promptExtrasFor(workspaceId, agentCfg.profileId)
+      );
       await startMainAgentWithPrompt(workspaceId, prompt);
       onDone();
     } catch (e) {

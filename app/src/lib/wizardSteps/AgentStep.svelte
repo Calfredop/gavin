@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { editableCycle, saveAgentPause } from "$lib/agents/agentPauseState";
+  import { editableCycle, saveAgentPauseFor } from "$lib/agents/agentPauseState";
   import {
     foundAgentsSummary,
     isAgentFound,
@@ -190,11 +190,12 @@
     onDone();
   }
 
-  /// The app-wide cycle is what the wizard offers: a workspace created
-  /// here has no override, so switching this on sets the app default that
-  /// every workspace then inherits. Turning it off later per workspace is
-  /// Settings' job, not the wizard's.
-  const pauseCycle = $derived(editableCycle(null));
+  /// The app-wide cycle FOR THE AGENT BEING CHOSEN is what the wizard
+  /// offers: cycles are per agent now, and a workspace created here has
+  /// no override, so switching this on sets that agent's app default that
+  /// every workspace on it then inherits. Turning it off later per
+  /// workspace is Settings' job, not the wizard's.
+  const pauseCycle = $derived(editableCycle(null, agentCfg.profileId));
 
   /// Whether the profile being chosen can be asked about its limits, so
   /// the copy does not promise a hold gavin cannot perform.
@@ -203,7 +204,7 @@
   );
 
   async function togglePause(enabled: boolean): Promise<void> {
-    await saveAgentPause({ ...pauseCycle, enabled });
+    await saveAgentPauseFor(agentCfg.profileId, { ...pauseCycle, enabled });
   }
 
   function profileOptionLabel(id: string, label: string): string {

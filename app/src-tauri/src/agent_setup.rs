@@ -2449,16 +2449,24 @@ fn step_skill(flow: &str) -> Option<StepSkill> {
 pub fn compose_agent_prompt(
     root_path: String,
     flow: String,
+    prompt_extras: Vec<String>,
     agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
 ) -> Result<String, String> {
     let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
-    compose_agent_prompt_for(&root_path, &flow, default_agent.as_deref())
+    compose_agent_prompt_for(&root_path, &flow, default_agent.as_deref(), &prompt_extras)
 }
 
 /// The command's body, with the app-wide default agent injected: a root
 /// with no `[agent] profile` composes for the agent its launches resolve
-/// to, exactly as `run_integration` writes for it.
-fn compose_agent_prompt_for(root_path: &str, flow: &str, default_agent: Option<&str>) -> Result<String, String> {
+/// to, exactly as `run_integration` writes for it. `prompt_extras` is the
+/// EFFECTIVE (workspace-overridden) list of extra prompt lines for that
+/// agent, resolved by the frontend from the two per-primary maps.
+fn compose_agent_prompt_for(
+    root_path: &str,
+    flow: &str,
+    default_agent: Option<&str>,
+    prompt_extras: &[String],
+) -> Result<String, String> {
     let root = Path::new(root_path);
     if !root.is_dir() {
         return Err(format!("root does not exist: {root_path}"));
@@ -2478,7 +2486,7 @@ fn compose_agent_prompt_for(root_path: &str, flow: &str, default_agent: Option<&
     // Keyed on the skill slot, not on MCP: a profile can have an MCP
     // config and still have nowhere to put a skill file (unconfigured
     // custom, or custom with mcp_file but no known skill root).
-    match resolved_mcp(&LocalFiles, root, profile).as_ref().and_then(ResolvedMcp::skill_slot) {
+    let prompt = match resolved_mcp(&LocalFiles, root, profile).as_ref().and_then(ResolvedMcp::skill_slot) {
         Some((parent, file)) => {
             // The step skill sits beside the gavin-managed ones: same
             // parent directory, one directory per skill, matching the
@@ -2491,15 +2499,28 @@ fn compose_agent_prompt_for(root_path: &str, flow: &str, default_agent: Option<&
             // matters more here, not less.
             let dir = root.join(parent).join(skill.name);
             write_owned(&LocalFiles, &dir.join(file), &document).map_err(|e| e.to_string())?;
-            Ok(format!(
+            format!(
                 "Use the {} skill to write {target} for this repo. Interview me first.",
                 skill.name
-            ))
+            )
         }
-        None => Ok(format!(
+        None => format!(
             "Write {target} for this repo, following these instructions exactly.\n\n{document}"
-        )),
+        ),
+    };
+    Ok(append_prompt_extras(prompt, prompt_extras))
+}
+
+/// The profile's extra prompt lines at the END of the composed prompt,
+/// each its own line, blanks skipped. Appended after composition rather
+/// than woven in, so the same list lands identically on a skill prompt
+/// and an inline-document one.
+fn append_prompt_extras(prompt: String, extras: &[String]) -> String {
+    let lines: Vec<&str> = extras.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return prompt;
     }
+    format!("{prompt}\n\n{}", lines.join("\n"))
 }
 
 /// The profile table, flattened for the frontend. Mirrors
@@ -3869,7 +3890,7 @@ mod tests {
         assert!(workflow.contains("read `docs/PRD.md`"), "{workflow}");
 
         // And the flow document, whether it lands as a file or a prompt.
-        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None, &[]).unwrap();
         let skill =
             std::fs::read_to_string(dir.path().join(".claude/skills/gavin-write-prd/SKILL.md"))
                 .unwrap();
@@ -3891,7 +3912,7 @@ mod tests {
         // Custom has no skill slot, so the target and the document both
         // arrive in the prompt text -- the one place a stale path would
         // send the agent to write a second PRD beside the real one.
-        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None)
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None, &[])
         .unwrap();
         assert!(prompt.contains("Write PRD.md for this repo"), "{prompt}");
         assert!(!prompt.contains(".gavin-root/PRD.md"), "{prompt}");
@@ -3918,7 +3939,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "claude-code");
 
-        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None, &[]).unwrap();
 
         assert!(prompt.contains("gavin-write-prd"), "invokes the skill by name");
         assert!(prompt.len() < 400, "a skill-capable profile gets a short prompt, not the doc");
@@ -3930,7 +3951,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "");
 
-        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None)
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None, &[])
         .unwrap();
 
         assert!(prompt.contains("## Vision"), "the guidance itself is in the prompt");
@@ -3949,7 +3970,7 @@ mod tests {
         )
         .unwrap();
 
-        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "agent-file", None)
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "agent-file", None, &[])
         .unwrap();
 
         assert!(prompt.contains("NOTES.md"), "the prompt names the configured file");
@@ -3959,7 +3980,7 @@ mod tests {
     fn compose_prompt_rejects_an_unknown_flow() {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "claude-code");
-        assert!(compose_agent_prompt_for(&root, "not-a-flow", None).is_err());
+        assert!(compose_agent_prompt_for(&root, "not-a-flow", None, &[]).is_err());
     }
 
     /// The whole column, not just which rows have one: `Some("")` and
@@ -4212,7 +4233,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = rooted_with_profile(dir.path(), "opencode");
 
-        let prompt = compose_agent_prompt_for(&root, "prd", None).unwrap();
+        let prompt = compose_agent_prompt_for(&root, "prd", None, &[]).unwrap();
 
         assert!(dir.path().join(".opencode/skills/gavin-write-prd/SKILL.md").is_file());
         assert!(!dir.path().join(".claude").exists());
@@ -4513,11 +4534,30 @@ mod tests {
     fn a_profile_less_root_composes_for_the_app_default_agent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
-        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", Some("codex")).unwrap();
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", Some("codex"), &[]).unwrap();
         assert!(prompt.contains("gavin-write-prd"), "{prompt}");
         // Codex's skill root, not claude's `.claude/skills`.
         assert!(dir.path().join(".agents/skills/gavin-write-prd/SKILL.md").is_file());
         assert!(!dir.path().join(".claude").exists());
+    }
+
+    /// The profile's extra prompt lines land at the END of the composed
+    /// prompt, each its own line, on both prompt shapes (skill and
+    /// inline document); blanks are skipped.
+    #[test]
+    fn compose_prompt_appends_the_prompt_extras() {
+        let dir = tempfile::tempdir().unwrap();
+        custom_rooted(dir.path(), "");
+        let extras = vec![
+            "Always run cargo test before reporting.".to_string(),
+            "  ".to_string(),
+            "Prefer small commits.".to_string(),
+        ];
+        let prompt = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None, &extras).unwrap();
+        assert!(prompt.ends_with("Always run cargo test before reporting.\nPrefer small commits."), "{prompt}");
+
+        let none = compose_agent_prompt_for(&dir.path().to_string_lossy(), "prd", None, &[]).unwrap();
+        assert!(!none.contains("Prefer small commits"), "{none}");
     }
 
 

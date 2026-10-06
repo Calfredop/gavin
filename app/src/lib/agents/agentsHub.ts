@@ -8,9 +8,16 @@
 // opens is a local choice; when search just revealed the section,
 // `agentsTabForQuery` picks General or the best agent tab.
 
-import type { AgentDefaults, CustomProfile } from "$lib/cards/complexity";
+import {
+  COMPLEXITY_LEVELS,
+  type AgentDefaults,
+  type ComplexityTable,
+  type CustomProfile,
+} from "$lib/cards/complexity";
 import type { AgentProfileInfo } from "$lib/core/settings";
 import type { SettingsSection } from "$lib/core/settingsSearch";
+import type { Workspace } from "$lib/core/workspace";
+import type { WorkspaceSettingsPatch } from "$lib/workspace/workspaceSettings";
 
 export type AgentsHubScope = "app" | "workspace";
 
@@ -20,9 +27,24 @@ export type AgentsHubTab = "general" | (string & {});
 export interface AgentsHubTabDef {
   id: AgentsHubTab;
   label: string;
+  /// Shown in a tooltip on the tab's button (the "+" tab's explanation).
+  hint?: string;
 }
 
 export const GENERAL_TAB: AgentsHubTab = "general";
+
+/// The trailing "+" tab: it opens the add-a-custom form instead of an
+/// agent's settings. A real tab id so selection, keyboard focus and the
+/// strip's `aria-selected` all work unchanged; never a profile id (those
+/// are slugs, optionally `local:`-prefixed).
+export const ADD_TAB: AgentsHubTab = "+";
+
+/// What the "+" tab says on hover, per scope.
+export const ADD_TAB_HINT: Record<AgentsHubScope, string> = {
+  app: "Add a custom agent. Each custom gets its own tab for command, flags, API family, fallback, complexity, pause and prompt lines.",
+  workspace:
+    "Add a local custom agent. Locals are marked on their tabs and only exist in this workspace.",
+};
 
 export const GENERAL_TAB_DEF: AgentsHubTabDef = { id: GENERAL_TAB, label: "General" };
 
@@ -60,6 +82,14 @@ export const AGENTS_SECTION_KEYWORDS: readonly string[] = [
   "rate limit",
   "arm",
   "Agent pause",
+  "Add custom",
+  "New custom",
+  "Prompt lines",
+  "Prompt params",
+  "Extra prompt",
+  "CLI args",
+  "CLI arguments",
+  "Extra arguments",
   "cycle",
   "schedule",
   "usage",
@@ -85,7 +115,7 @@ export function isStockProfileId(id: string): boolean {
 /// True when the id is a named custom (app-wide or `local:`), not a
 /// built-in. Replaces the old `profileId === "custom"` checks.
 export function isCustomProfileId(id: string): boolean {
-  return Boolean(id) && id !== GENERAL_TAB && !isStockProfileId(id);
+  return Boolean(id) && id !== GENERAL_TAB && id !== ADD_TAB && !isStockProfileId(id);
 }
 
 /// Label for a profile picker option. Locals are marked so a workspace
@@ -95,15 +125,33 @@ export function profileOptionLabel(profile: { label: string; local?: boolean }):
 }
 
 /// General + one tab per agent, in merge order (built-ins, app customs,
-/// workspace locals). Locals are marked in the tab label.
-export function agentsHubTabs(profiles: readonly AgentProfileInfo[]): AgentsHubTabDef[] {
+/// workspace locals), then — when `addHint` is given — the trailing "+"
+/// tab. Locals are marked in the tab label.
+export function agentsHubTabs(
+  profiles: readonly AgentProfileInfo[],
+  addHint?: string
+): AgentsHubTabDef[] {
   return [
     GENERAL_TAB_DEF,
     ...profiles.map((p) => ({
       id: p.id as AgentsHubTab,
       label: profileOptionLabel(p),
     })),
+    ...(addHint === undefined ? [] : [{ id: ADD_TAB, label: "+", hint: addHint }]),
   ];
+}
+
+/// The tab a surface should keep showing after the profile list changed
+/// under it: General, the "+" tab and any profile that still exists stay;
+/// a tab whose agent was deleted (or never loaded) falls back to General.
+export function validAgentsTab(
+  tab: AgentsHubTab,
+  profiles: readonly AgentProfileInfo[],
+  hasAddTab: boolean
+): AgentsHubTab {
+  if (tab === GENERAL_TAB) return tab;
+  if (tab === ADD_TAB) return hasAddTab ? tab : GENERAL_TAB;
+  return profiles.some((p) => p.id === tab) ? tab : GENERAL_TAB;
 }
 
 /// Which inner tab a search query should open when the Agents section
@@ -115,6 +163,10 @@ export function agentsTabForQuery(
 ): AgentsHubTab {
   const q = query.trim().toLowerCase();
   if (!q) return GENERAL_TAB;
+
+  // "add a custom" lands on the trailing "+" tab, which is where the
+  // form lives; a bare "customs" query is the same wish.
+  if (/\b(add|new|create)\b.*\bcustom/.test(q) || /^customs?$/.test(q)) return ADD_TAB;
 
   const generalHits = [
     "general",
@@ -246,10 +298,91 @@ export function fallbackChainsWithoutProfile(
   return next;
 }
 
+/// A per-primary map with one profile's own key removed. Used for the
+/// pause, prompt-line and CLI-arg maps, whose VALUES never name another
+/// profile (unlike the chains and complexity tables).
+export function mapWithoutKey<V>(
+  map: Record<string, V> | null | undefined,
+  id: string
+): Record<string, V> {
+  const next = { ...(map ?? {}) };
+  delete next[id];
+  return next;
+}
+
+/// A complexity-tables map with one profile's references removed: its own
+/// table, and every row of every other table that routes a level to it.
+/// A row left pointing at a deleted custom would send those cards to an
+/// agent that no longer exists, so they are cleared back to "run the
+/// workspace's agent" rather than left dangling.
+///
+/// `keepEmpty` is for a WORKSPACE map, where a present-but-empty table is
+/// a real answer ("no routing for this agent here") and absent means
+/// inherit: a table emptied by this cleanup stays as that answer instead
+/// of silently reverting to the app-wide table.
+export function complexityTablesWithoutProfile(
+  map: Record<string, ComplexityTable> | null | undefined,
+  id: string,
+  keepEmpty = false
+): Record<string, ComplexityTable> {
+  const next: Record<string, ComplexityTable> = {};
+  for (const [primary, table] of Object.entries(map ?? {})) {
+    if (primary === id) continue;
+    const kept: ComplexityTable = {};
+    for (const level of COMPLEXITY_LEVELS) {
+      const entry = table[level];
+      if (entry && entry.profile.trim() !== id) kept[level] = entry;
+    }
+    if (keepEmpty || COMPLEXITY_LEVELS.some((level) => kept[level])) next[primary] = kept;
+  }
+  return next;
+}
+
+/// What deleting a WORKSPACE-LOCAL custom must also clear from that
+/// workspace's own per-agent settings, as a settings patch (`null` removes
+/// a key that ends up empty). Empty when it was referenced nowhere.
+///
+/// The app-wide delete does this to the defaults in one pass
+/// (`agentDefaultsWithoutCustom`); a local lives on the workspace record,
+/// so its cleanup is a patch of the workspace's own maps: its fallback
+/// chain and any chain naming it, its complexity table and every row
+/// routing to it, its pause cycle, prompt lines and CLI arguments.
+export function workspacePatchWithoutProfile(
+  ws: Pick<
+    Workspace,
+    "fallbackChains" | "complexityTables" | "pauseCycles" | "promptExtras" | "extraCliArgs"
+  >,
+  id: string
+): WorkspaceSettingsPatch {
+  const patch: WorkspaceSettingsPatch = {};
+  const orNull = <V>(map: Record<string, V>): Record<string, V> | null =>
+    Object.keys(map).length > 0 ? map : null;
+  const changed = (before: unknown, after: unknown): boolean =>
+    JSON.stringify(before ?? {}) !== JSON.stringify(after ?? {});
+
+  if (ws.fallbackChains) {
+    const next = fallbackChainsWithoutProfile(ws.fallbackChains, id);
+    if (changed(ws.fallbackChains, next)) patch.fallbackChains = orNull(next);
+  }
+  if (ws.complexityTables) {
+    const next = complexityTablesWithoutProfile(ws.complexityTables, id, true);
+    if (changed(ws.complexityTables, next)) patch.complexityTables = orNull(next);
+  }
+  for (const key of ["pauseCycles", "promptExtras", "extraCliArgs"] as const) {
+    const map = ws[key] as Record<string, unknown> | undefined;
+    if (map && Object.prototype.hasOwnProperty.call(map, id)) {
+      (patch as Record<string, unknown>)[key] = orNull(mapWithoutKey(map, id));
+    }
+  }
+  return patch;
+}
+
 /// The app-wide defaults with one custom profile and every reference to
 /// it removed: its fallback chain (and any chain naming it), its walk-at
-/// threshold, and a default agent that pointed at it — which goes back
-/// to claude-code, the fallback an absent setting already means.
+/// threshold, its complexity table (and every row routing to it), pause
+/// cycle, prompt lines and CLI args, and a default agent that pointed at
+/// it — which goes back to claude-code, the fallback an absent setting
+/// already means.
 export function agentDefaultsWithoutCustom(defaults: AgentDefaults, id: string): AgentDefaults {
   const fallbackThresholds = { ...(defaults.fallbackThresholds ?? {}) };
   delete fallbackThresholds[id];
@@ -258,6 +391,10 @@ export function agentDefaultsWithoutCustom(defaults: AgentDefaults, id: string):
     customProfiles: deleteCustomProfile(defaults.customProfiles ?? [], id),
     fallbackChains: fallbackChainsWithoutProfile(defaults.fallbackChains, id),
     fallbackThresholds,
+    complexityTables: complexityTablesWithoutProfile(defaults.complexityTables, id),
+    pauseCycles: mapWithoutKey(defaults.pauseCycles, id),
+    promptExtras: mapWithoutKey(defaults.promptExtras, id),
+    extraCliArgs: mapWithoutKey(defaults.extraCliArgs, id),
     defaultAgent: (defaults.defaultAgent ?? "").trim() === id ? "claude-code" : defaults.defaultAgent,
   };
 }

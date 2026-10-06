@@ -20,6 +20,7 @@
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import {
+  promptExtrasFor,
   resolvedAgentFor,
   armFailureDetection,
   handleAgentSessionSpawned,
@@ -30,7 +31,7 @@ import {
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cards/cardRunActions";
-import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
+import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
   composeReviewPrompt,
@@ -270,7 +271,11 @@ async function launchReview(request: {
   // No conversation id, for the same reason a develop run has none: a
   // review binds to nothing, so there is no record for one to outlive
   // and nothing that could ever resume it.
-  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    withPromptExtras(prompt, promptExtrasFor(request.workspaceId, agent.profileId))
+  );
   if (command === null) {
     return reviewBlocker({
       promptArgs: agent.promptArgs,

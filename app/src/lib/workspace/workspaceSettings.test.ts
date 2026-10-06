@@ -46,19 +46,25 @@ function everyKey(id: string, flavour: string): Workspace {
     autoResumeRuns: flavour === "a",
     gitView: { navWidth: flavour === "a" ? 100 : 200 },
     lastActiveAt: flavour === "a" ? 1 : 2,
-    agentPause: {
-      enabled: true,
-      periodMinutes: 300,
-      pauseMinutes: 10,
-      anchorMs: flavour === "a" ? 1 : 2,
-      limitPercent: 95,
-      limitEnabled: true,
+    pauseCycles: {
+      "claude-code": {
+        enabled: true,
+        periodMinutes: 300,
+        pauseMinutes: 10,
+        anchorMs: flavour === "a" ? 1 : 2,
+        limitPercent: 95,
+        limitEnabled: true,
+      },
     },
+    complexityTables: {
+      "claude-code": { complex: { profile: `p-${flavour}`, model: `m-${flavour}` } },
+    },
+    promptExtras: { "claude-code": [`line-${flavour}`] },
+    extraCliArgs: { "claude-code": [`--flag-${flavour}`] },
     fallbackChains: { "claude-code": [`fb-${flavour}`] },
     armedAgents: [`armed-${flavour}`],
     declinedAgents: [`declined-${flavour}`],
     pinnedAt: flavour === "a" ? 10 : 20,
-    complexityAgents: { complex: { profile: `p-${flavour}`, model: `m-${flavour}` } },
     gitTrackingAsked: flavour === "a",
     trustedConfigHash: `hash-${flavour}`,
     mcpForeignServersChoice: { hash: `mcp-${flavour}`, action: "keep" },
@@ -125,8 +131,8 @@ describe("patchWorkspaceSettings", () => {
 
   it("removes a key patched with null, which is what inherit means", () => {
     const a = everyKey("ws-a", "a");
-    const next = patchWorkspaceSettings([a], "ws-a", { agentPause: null, requireReview: null });
-    expect("agentPause" in next[0]).toBe(false);
+    const next = patchWorkspaceSettings([a], "ws-a", { pauseCycles: null, requireReview: null });
+    expect("pauseCycles" in next[0]).toBe(false);
     expect("requireReview" in next[0]).toBe(false);
     expect(next[0].pages).toBe(a.pages);
   });

@@ -94,6 +94,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // The launching profile, as the real one names it against a daemon
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
+  promptExtrasFor: vi.fn((): string[] => []),
   conversationIdForLaunch: vi.fn(() => null as string | null),
   // The baseline half of the same gate: null is "this run has none",
   // which covers a launch outside a repo, an unborn HEAD and a daemon
@@ -144,7 +145,7 @@ vi.mock("$lib/core/workspace", () => {
 });
 
 import * as backend from "$lib/core/backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards, profileIdForLaunch } from "$lib/core/layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards, profileIdForLaunch, promptExtrasFor } from "$lib/core/layoutState";
 import { cardReviewed } from "$lib/core/layoutState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { findSessionLocation } from "$lib/core/workspace";
@@ -233,6 +234,8 @@ beforeEach(() => {
   vi.mocked(resolvedAgentFor).mockReturnValue(NO_RESUME_AGENT as never);
   vi.mocked(conversationIdForLaunch).mockReturnValue(null);
   vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+  // A test that gives the agent prompt lines must not hand them to the next one.
+  vi.mocked(promptExtrasFor).mockReturnValue([]);
   vi.mocked(baseShaForLaunch).mockResolvedValue(null);
   vi.mocked(findSessionLocation).mockReturnValue(null);
   // Both halves of the first-Run review, restored for the same reason
@@ -409,6 +412,27 @@ describe("runCard", () => {
       "status",
       "In Progress"
     );
+  });
+
+  /// The launching agent's own extra prompt lines close the prompt, and the
+  /// lookup is keyed by the agent that actually launches.
+  it("appends the launching agent's extra prompt lines, after the card prompt", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: To Do\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(promptExtrasFor).mockReturnValue(["Answer in British English.", "Be brief."]);
+
+    expect(await runCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("Do the thing.");
+    expect(command).toMatch(/Do the thing\.[\s\S]*Answer in British English\.\nBe brief\.'/);
+    expect(promptExtrasFor).toHaveBeenCalledWith("ws-1", vi.mocked(resolvedAgentFor).mock.results[0].value.profileId);
   });
 
   it("plan: a card in done/ is un-archived first, and the prompt names where it landed", async () => {

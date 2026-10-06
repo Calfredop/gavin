@@ -6,6 +6,7 @@ import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/core/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agents/agentPause";
+import { withPauseCycleForPrimary } from "$lib/agents/agentPause";
 import type { LaunchProfile } from "$lib/agents/compression";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/core/hotState";
@@ -43,11 +44,14 @@ import {
   normalizeColor,
   resolveAgentConfig,
   mergeAgentProfiles,
+  withExtraCliArgs,
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "$lib/core/settings";
 import { mergeDiscoveredModels } from "$lib/agents/agentModel";
 import { noteSessionCompression, seedSessionCompression } from "$lib/agents/headroomMarkState";
+import { effectiveListForPrimary, withListForPrimary } from "$lib/agents/promptParams";
+import { workspacePatchWithoutProfile } from "$lib/agents/agentsHub";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
@@ -67,6 +71,8 @@ import { indexQueued, type QueuedInput } from "$lib/agents/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
+  effectiveComplexityTable,
+  withComplexityTableForPrimary,
   EMPTY_AGENT_DEFAULTS,
   type AgentDefaults,
   type ComplexityTable,
@@ -1618,11 +1624,8 @@ export async function bootstrap(): Promise<void> {
 /// runs when another writer changed a setting, and what a Companion runs
 /// to draw its settings.
 export async function reloadAppSettings(): Promise<void> {
-  const [{ loadAgentPause }, { loadLaunchConfig }] = await Promise.all([
-    import("$lib/agents/agentPauseState"),
-    import("$lib/agents/launchQueue"),
-  ]);
-  await Promise.all([loadAppSettings(), loadAgentPause(), loadLaunchConfig(), themeState.reload()]);
+  const [{ loadLaunchConfig }] = await Promise.all([import("$lib/agents/launchQueue")]);
+  await Promise.all([loadAppSettings(), loadLaunchConfig(), themeState.reload()]);
 }
 
 export function teardown(): void {
@@ -2394,7 +2397,7 @@ function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the (merged) profile table.
 export function resolvedAgentFor(workspaceId: string) {
-  return resolveAgentConfig(
+  const agent = resolveAgentConfig(
     trustedAgentConfigFor(workspaceId),
     profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
@@ -2403,14 +2406,45 @@ export function resolvedAgentFor(workspaceId: string) {
     get(agentDefaultsStore).agentEfforts,
     get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
-/// This workspace's own complexity overrides, defaulted to empty. Empty
-/// means "inherit every level", which is what a workspace that has never
-/// opened the table looks like.
-export function workspaceComplexityTable(workspaceId: string): ComplexityTable {
+/// The effective extra CLI arguments for a launch on `profileId` in this
+/// workspace: its own list under that key, else the app-wide one.
+function extraCliArgsFor(workspaceId: string, profileId: string): string[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return effectiveListForPrimary(
+    ws?.extraCliArgs,
+    get(agentDefaultsStore).extraCliArgs,
+    profileId
+  );
+}
+
+/// The effective extra prompt lines for a launch on `profileId` in this
+/// workspace: its own list under that key, else the app-wide one. What
+/// every card-run composer appends (`withPromptExtras`) and what the
+/// wizard's host-composed prompts are handed.
+export function promptExtrasFor(workspaceId: string, profileId: string): string[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return effectiveListForPrimary(
+    ws?.promptExtras,
+    get(agentDefaultsStore).promptExtras,
+    profileId
+  );
+}
+
+/// This workspace's effective complexity table FOR ONE PRIMARY: its own
+/// map's entry under that key, else the app-wide table for it. The empty
+/// answer means "no attribution at any level", which is what a workspace
+/// that has never opened the table looks like.
+export function workspaceComplexityTable(workspaceId: string, primaryId: string): ComplexityTable {
   const state = get(layoutState);
-  return state.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {};
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  return effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    primaryId
+  );
 }
 
 /// The agent that should execute THIS card: the workspace's own, unless
@@ -2433,13 +2467,19 @@ export function agentForCard(
   workspaceId: string,
   card: CardAgentFields | null | undefined
 ) {
-  const entry = cardAgentEntry(
-    card,
-    get(agentDefaultsStore).complexity,
-    workspaceComplexityTable(workspaceId)
+  const base = resolvedAgentFor(workspaceId);
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  // The table keyed by the agent this workspace resolves to: an
+  // attributed card may still switch profile, but the RATING that picks
+  // it is a statement about running here, on this agent's terms.
+  const table = effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    base.profileId
   );
-  if (!entry) return resolvedAgentFor(workspaceId);
-  return resolveAgentConfig(
+  const entry = cardAgentEntry(card, table);
+  if (!entry) return base;
+  const agent = resolveAgentConfig(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
     profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
@@ -2448,13 +2488,14 @@ export function agentForCard(
     get(agentDefaultsStore).agentEfforts,
     get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// Resolve a specific profile in this workspace without changing the
 /// stored agent. Fallback launches use this so the chain can run Codex
 /// while `[agent] profile` still names Claude.
 export function agentForProfile(workspaceId: string, profileId: string) {
-  return resolveAgentConfig(
+  const agent = resolveAgentConfig(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
       profile: profileId,
       model: "",
@@ -2467,6 +2508,7 @@ export function agentForProfile(workspaceId: string, profileId: string) {
     get(agentDefaultsStore).agentEfforts,
     get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// The workspace's own `[agent]` block, unresolved. What a per-run
@@ -2489,7 +2531,7 @@ export function workspaceAgentConfig(workspaceId: string) {
 /// conversation argv as a board Run, and a second resolution path here
 /// is how those four quietly stop matching.
 export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
-  return resolveAgentConfig(
+  const agent = resolveAgentConfig(
     candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
     profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
@@ -2498,6 +2540,7 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
     get(agentDefaultsStore).agentEfforts,
     get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// The same answer, reactively: `$resolvedAgents(workspaceId)`.
@@ -2518,7 +2561,7 @@ export const resolvedAgents = derived(
   ([$configs, $layout, $profiles, $models, $defaults]) =>
     (workspaceId: string) => {
       const ws = $layout.workspaces.find((w) => w.id === workspaceId);
-      return resolveAgentConfig(
+      const agent = resolveAgentConfig(
         $configs(workspaceId),
         mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []),
         $models,
@@ -2526,6 +2569,10 @@ export const resolvedAgents = derived(
         undefined,
         $defaults.agentEfforts,
         $defaults.defaultAgent
+      );
+      return withExtraCliArgs(
+        agent,
+        effectiveListForPrimary(ws?.extraCliArgs, $defaults.extraCliArgs, agent.profileId)
       );
     }
 );
@@ -2546,15 +2593,36 @@ export const cardAgents = derived(
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
       const base = $configs(workspaceId);
       const ws = $layout.workspaces.find((w) => w.id === workspaceId);
-      const entry = cardAgentEntry(card, $defaults.complexity, ws?.complexityAgents ?? {});
-      return resolveAgentConfig(
-        agentConfigWithAttribution(base, entry),
-        mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []),
+      const merged = mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []);
+      // Which table answers is keyed by the agent the workspace resolves
+      // to, so resolve the bare config first.
+      const baseAgent = resolveAgentConfig(
+        base,
+        merged,
         $models,
         undefined,
         undefined,
         $defaults.agentEfforts,
         $defaults.defaultAgent
+      );
+      const table = effectiveComplexityTable(
+        ws?.complexityTables,
+        $defaults.complexityTables,
+        baseAgent.profileId
+      );
+      const entry = cardAgentEntry(card, table);
+      const agent = resolveAgentConfig(
+        agentConfigWithAttribution(base, entry),
+        merged,
+        $models,
+        undefined,
+        undefined,
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
+      );
+      return withExtraCliArgs(
+        agent,
+        effectiveListForPrimary(ws?.extraCliArgs, $defaults.extraCliArgs, agent.profileId)
       );
     }
 );
@@ -2913,7 +2981,7 @@ export async function setGitTrackingDefault(tracked: boolean | null): Promise<vo
 /// why the complexity TABLE needs no protocol bump and no compat gate,
 /// even though the card field it reads does.
 ///
-/// Wholesale rather than per key, matching `setAgentPause`: the panel
+/// Wholesale rather than per key, matching `setLaunchConfig`: the panel
 /// holds every field already, and a per-key command is how one of them
 /// ends up saved while another is dropped.
 export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
@@ -2931,21 +2999,28 @@ export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
   }
 }
 
-/// One workspace's complexity overrides. Rides the workspace record
-/// (config.json) like the accent colour, the font size and the pause
-/// cycle, rather than config.toml: which model tier THIS human spends on
-/// a hard card is a habit and a subscription fact about this machine,
-/// not something to hand everyone who clones the repo.
+/// One workspace's complexity table FOR ONE PRIMARY. Rides the workspace
+/// record (config.json) like the accent colour, the font size and the
+/// pause cycles, rather than config.toml: which model tier THIS human
+/// spends on a hard card is a habit and a subscription fact about this
+/// machine, not something to hand everyone who clones the repo.
 ///
-/// An empty table is stored as ABSENT, so a workspace that clears its
-/// last override goes back to inheriting rather than to shadowing the
-/// app table with nothing.
+/// `null` REMOVES the key so that primary inherits the app-wide table
+/// again. An empty table is a real answer here — "no routing for this
+/// agent in this workspace" — and is kept, so clearing the last row does
+/// not quietly hand the primary back to the app-wide table.
 export async function setWorkspaceComplexityTable(
   workspaceId: string,
-  table: ComplexityTable
+  primaryId: string,
+  table: ComplexityTable | null
 ): Promise<void> {
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = withComplexityTableForPrimary(workspace.complexityTables, id, table, true);
   await saveWorkspaceSettings(workspaceId, {
-    complexityAgents: Object.keys(table).length > 0 ? table : null,
+    complexityTables: Object.keys(map).length > 0 ? map : null,
   });
 }
 
@@ -3111,16 +3186,59 @@ export async function setHomeAgentShare(
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
-/// This workspace's own pause cycle. `null` REMOVES the override, which
-/// puts the workspace back to inheriting the app-wide one -- not to no
-/// pause at all. Turning the cycle off here while the app has one stores
-/// a cycle with `enabled: false`, which is why clearing and disabling are
-/// two different calls.
+/// This workspace's own pause cycle FOR ONE PRIMARY. `null` REMOVES the
+/// key, which puts that primary back to inheriting the app-wide cycle --
+/// not to no pause at all. Turning the cycle off here while the app has
+/// one stores a cycle with `enabled: false`, which is why clearing and
+/// disabling are two different calls. A fresh cycle without an anchor is
+/// stamped now, so the phase survives restarts (`saveAgentPauseFor` is
+/// the app-wide twin).
 export async function setWorkspacePause(
   workspaceId: string,
+  primaryId: string,
   cycle: PauseCycle | null
 ): Promise<void> {
-  await saveWorkspaceSettings(workspaceId, { agentPause: cycle });
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const stamped = cycle && !cycle.anchorMs ? { ...cycle, anchorMs: Date.now() } : cycle;
+  const map = withPauseCycleForPrimary(workspace.pauseCycles, id, stamped);
+  await saveWorkspaceSettings(workspaceId, {
+    pauseCycles: Object.keys(map).length > 0 ? map : null,
+  });
+}
+
+/// This workspace's extra prompt lines / CLI args FOR ONE PRIMARY.
+/// `null` removes the key so the primary inherits the app-wide list
+/// again; a present empty list is an explicit "nothing extra" override.
+export async function setWorkspacePromptParams(
+  workspaceId: string,
+  primaryId: string,
+  kind: "promptExtras" | "extraCliArgs",
+  list: string[] | null
+): Promise<void> {
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = withListForPrimary(workspace[kind], id, list);
+  await saveWorkspaceSettings(workspaceId, {
+    [kind]: Object.keys(map).length > 0 ? map : null,
+  });
+}
+
+/// Clears everything a workspace keeps per agent for a profile that no
+/// longer exists (a deleted workspace-local custom): its fallback chain
+/// and any chain naming it, its complexity table and the rows routing to
+/// it, its pause cycle, prompt lines and CLI arguments -- in ONE settings
+/// write, so a half-cleaned workspace is never what another window sees.
+export async function dropWorkspaceProfileRefs(workspaceId: string, profileId: string): Promise<void> {
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const patch = workspacePatchWithoutProfile(workspace, profileId);
+  if (Object.keys(patch).length === 0) return;
+  await saveWorkspaceSettings(workspaceId, patch);
 }
 
 /// This workspace's own fallback chain FOR ONE PRIMARY profile. `null`

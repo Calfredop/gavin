@@ -21,6 +21,7 @@
     agentConfigWithAttribution,
     recommendedComplexityAction,
     realignComplexityTable,
+    sameComplexityTable,
     type ComplexityRealignAction,
   } from "$lib/cards/complexity";
   import { resolveAgentConfig } from "$lib/core/settings";
@@ -57,7 +58,10 @@
     $agentProfilesStore.find((p) => p.id === toProfileId)?.label ?? toProfileId
   );
   const toProfile = $derived($agentProfilesStore.find((p) => p.id === toProfileId) ?? null);
-  const complexityTable = $derived(workspaceComplexityTable(workspaceId));
+  /// The table of the agent being switched TO: the one that governs this
+  /// workspace after the switch, workspace override else app-wide. Rows
+  /// naming the agent being left are what the wizard offers to remap.
+  const complexityTable = $derived(workspaceComplexityTable(workspaceId, toProfileId));
   /// Re-run keeps pins by default; a real switch remaps or clears.
   const defaultAction = $derived(
     rerun ? "keep" : recommendedComplexityAction(complexityTable, fromProfileId)
@@ -130,10 +134,20 @@
         fromProfileId,
         toProfileId
       );
+      // "clear" hands the primary back to the app-wide table (the key
+      // goes); anything else writes only when the rows actually changed,
+      // so a "keep" never freezes the inherited table into the workspace.
+      const realign = async (): Promise<void> => {
+        if (chosen === "clear") {
+          await setWorkspaceComplexityTable(workspaceId, toProfileId, null);
+        } else if (!sameComplexityTable(nextTable, complexityTable)) {
+          await setWorkspaceComplexityTable(workspaceId, toProfileId, nextTable);
+        }
+      };
       if (rerun) {
         // Same profile: leave command/file alone and only realign
         // complexity if the human asked to. Setup steps follow.
-        await setWorkspaceComplexityTable(workspaceId, nextTable);
+        await realign();
       } else {
         // A real switch must replace leftover command/file or the new
         // profile id is cosmetic — resolveAgentConfig keeps launching
@@ -143,7 +157,7 @@
           command: toProfile.command,
           file: toProfile.instructionsFile,
         });
-        await setWorkspaceComplexityTable(workspaceId, nextTable);
+        await realign();
       }
       committed = true;
       return true;

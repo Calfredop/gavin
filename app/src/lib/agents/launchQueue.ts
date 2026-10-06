@@ -79,7 +79,7 @@ export async function loadLaunchConfig(): Promise<void> {
   }
 }
 
-/// Saves the wall. Wholesale, the shape `setAgentPause` uses: the panel
+/// Saves the wall. Wholesale, the shape `setAgentDefaults` uses: the panel
 /// holds both fields, so there is no way for one to be written while the
 /// other is dropped.
 export async function saveLaunchConfig(config: LaunchConfig): Promise<void> {

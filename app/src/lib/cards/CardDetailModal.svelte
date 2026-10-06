@@ -29,6 +29,7 @@
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
     NO_COMPLEXITY,
+    effectiveComplexityTable,
   } from "$lib/cards/complexity";
   import CardAgentControls from "$lib/cards/CardAgentControls.svelte";
   import { cardAgentSummary } from "$lib/cards/cardAgent";
@@ -399,11 +400,17 @@
   /// The effort line's own gate: a v55 daemon keeps `agent:`/`model:` but
   /// refuses, and never parses, `effort:` (daemonCompat.ts, agentEffort).
   const cardEffortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
-  /// Read off `layoutState` rather than through `workspaceComplexityTable`,
-  /// which is a one-shot `get()`: this is a component, and a table read
-  /// once at mount would keep whatever the workspace said then.
-  const workspaceTable = $derived(
-    $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+  /// The table of the agent this workspace runs, workspace override else
+  /// app-wide. Read off the stores rather than through
+  /// `workspaceComplexityTable`, which is a one-shot `get()`: this is a
+  /// component, and a table read once at mount would keep whatever the
+  /// workspace said then.
+  const effectiveTable = $derived(
+    effectiveComplexityTable(
+      $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityTables,
+      $agentDefaultsStore.complexityTables,
+      $resolvedAgents(workspaceId).profileId
+    )
   );
   /// The complexity select's LIVE value, not the card's stored one, so
   /// the line below follows a level the human is still choosing.
@@ -423,8 +430,7 @@
   const cardAgentLine = $derived(
     cardAgentSummary(
       agentFields,
-      $agentDefaultsStore.complexity,
-      workspaceTable,
+      effectiveTable,
       (id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id
     )
   );

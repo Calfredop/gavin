@@ -70,9 +70,83 @@ Defaults · Customs · Complexity · Fallback · Pause layout. Agreed design:
 - [x] [Desktop: General + per-agent tabs in GlobalSettingsView and SettingsHubView; settings search lands on the new tabs](./done/desktop-general-per-agent-tabs-in-globalsettingsview-and-settingshubview-settings-search-lands-on-the-new-tabs.md)
 - [x] [Companion: same tab layout on PhoneAppSettings and PhoneWorkspaceSettings](./done/companion-same-tab-layout-on-phoneappsettings-and-phoneworkspacesettings.md)
 - [x] Code review of the rework diff
-- [ ] Human test: App Settings → Agents — General tab (default agent, its fallback chain follows the selection, complexity, pause); one tab per agent; create a custom and get its tab; restart and confirm migration from an old single-`custom` / single-chain config
-- [ ] Human test: Workspace Settings → Agents — choose the workspace agent in General; per-agent tabs edit overrides; workspace-local custom appears (marked) with its own tab; This agent launches as shown
+
+## Review round 2 (2026-10-05): per-agent everything
+
+Human reviewed the running rework and asked for four changes. Principle,
+in their words: max granularity on the agent + General edits the selected
+default agent's own config (same data, no override layer — the fallback
+chain pattern).
+
+- **Add custom becomes a "+" tab** at the end of the tab strip, with the
+  existing tooltip component showing the hint text that currently sits at
+  the bottom of General's add section. The add section leaves General.
+- **Complexity is per agent**: a FULL table (agent + model + effort per
+  level) per primary agent; the table that applies is the one belonging to
+  the agent the workspace/launch runs. General edits the selected default
+  agent's table. Migration folds the old single table onto every known
+  primary, same pattern as fallbackChains. Workspace overrides per primary
+  with inherit semantics, same as fallbackChains.
+- **Pause is per agent**: same model — per-primary cycles app-wide,
+  workspace override/inherit per primary, General edits the default agent's
+  cycle. Migration folds the existing cycle onto every known primary.
+- **Prompt params per agent**: each agent gets two add/remove line lists —
+  extra prompt-text lines (appended to the composed prompt) and extra CLI
+  args (appended to its launch command). General edits the default agent's
+  lists. Workspace settings get the same lists per agent, defaulting to the
+  app's (same inherit semantics as fallbackChains: key absent = inherit,
+  present = override, empty = none).
+
+### Checklist
+- [x] "+"" add-custom tab with tooltip; add section out of General (desk + Companion)
+- [x] Per-primary complexity tables (storage, migration, attribution keying, UI binding, workspace inherit)
+- [x] Per-primary pause cycles (storage, migration, launchDecision/mayStartWork keying, UI binding, workspace inherit)
+- [x] Per-agent prompt lines + CLI args (storage, compose_agent_prompt + launch composition, list editor UI)
+- [ ] Code review of review-round-2 diff
+- [ ] Human test: App Settings → Agents — General tab (default agent; under it that agent's fallback chain, complexity, pause, prompt lines and CLI arguments, which re-point when the default changes); one tab per agent with its own; the trailing "+" tab (hover for its hint) adds a custom and opens its tab; restart and confirm migration from an old single-`custom` / single-chain / single-complexity / single-pause config
+- [ ] Human test: Workspace Settings → Agents — choose the workspace agent in General; every block follows the app-wide value until its "give this workspace its own …" box is ticked; per-agent tabs edit overrides; workspace-local custom appears (marked) with its own tab; This agent launches as shown, CLI arguments included
 - [ ] Human test: Companion — same General + per-agent tabs on app + workspace settings; CRUD and picks match the desk
+
+### How round 2 landed (decisions a later reader should not re-derive)
+
+- **One panel, two homes.** `AgentPrimaryPanel.svelte` (desk) and
+  `PhoneAgentPrimary.svelte` (Companion) draw fallback · complexity · pause ·
+  prompt lines · CLI arguments for ONE agent in either scope. General points
+  it at the default agent (app) or the workspace's resolved agent (workspace);
+  every agent tab points it at its own agent — the same data, so there is no
+  "override layer" between General and a tab. What applies where is
+  `agentPrimary.ts` (`primaryView`, the `save*` writers), unit-tested.
+- **Inherit means key-absent, never empty.** A workspace key for an agent
+  replaces the app's value WHOLE: an own empty list is "none", an own empty
+  complexity table is "no routing here", an own cycle with `enabled:false` is
+  "never paused" — each block has its own "give this workspace its own …"
+  toggle for that reason. App scope strips empties (nothing inherits from it).
+- **The key is the launch's resolved primary**, not the workspace's agent: a
+  card whose complexity routes it to codex is held by codex's pause cycle and
+  walks codex's chain. The complexity table itself is read once, from the
+  workspace agent's table (`agentForCard`), because that is what rates a card.
+  A primary with no cycle is never held — including at usage limits, since the
+  limit gate is part of the cycle; migration folds the old single cycle onto
+  every known primary so existing installs behave as before.
+- **Prompt lines** are appended (blank line, then one per line) to every prompt
+  gavin composes for a visible agent: card run/resume/review/develop, Best-of-N
+  candidates, rail card and agent-tool steps, code/critical review launches,
+  workspace agent tools, and the setup flows (host-side `append_prompt_extras`,
+  same format). Not to hidden headless runs. **CLI arguments** ride
+  `ResolvedAgent.launchCommand` (after model/effort flags, before the session
+  id and prompt), so they reach every launch and headless run built from it.
+  They are verbatim argv words: a variadic flag (`--add-dir <dirs...>`) written
+  last can swallow the prompt positional on a CLI with no session-id flag.
+- **Gone:** `get_agent_pause` / `set_agent_pause` (cycles ride
+  `set_agent_defaults` / the workspace settings patch), `loadAgentPause`,
+  `complexityEntry`, the app-wide single `complexity` table. The Tauri
+  `AgentPause` state and the positional `agent_pause` of `persist_workspaces`
+  remain as deserialization-only legacy (always `None` once migrated).
+- Verified in the Companion's Demo Workstation (real render): General + agent
+  tabs, "+" adds a custom and selects its tab, a prompt line round-trips and is
+  per agent, workspace toggles seed from the app value. The desk pages cannot
+  be rendered outside Tauri, so they are covered by type-check, the shared
+  panel's logic tests and static-source guards only — hence the human tests.
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

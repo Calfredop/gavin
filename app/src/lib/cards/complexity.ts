@@ -13,6 +13,7 @@
 /// route) stays a template over this.
 
 import type { AgentConfig } from "$lib/core/gavin";
+import type { PauseCycle } from "$lib/agents/agentPause";
 
 /// One named custom agent, as config.json stores it. Mirrors
 /// `config::CustomProfile`.
@@ -106,6 +107,57 @@ export type ComplexityTable = Partial<Record<Complexity, ComplexityAgent>>;
 /// Missing key means pause-only (app) or inherit the app chain (workspace).
 export type FallbackChainsByPrimary = Record<string, string[]>;
 
+/// Complexity tables keyed by primary profile id. On the app map a
+/// missing key means "no table for that primary"; on a workspace map,
+/// missing means inherit the app table for it.
+export type ComplexityTablesByPrimary = Record<string, ComplexityTable>;
+
+/// One primary's app-wide table, or an empty one.
+export function complexityTableForPrimary(
+  map: ComplexityTablesByPrimary | null | undefined,
+  primaryId: string
+): ComplexityTable {
+  const id = (primaryId ?? "").trim();
+  return (id && map?.[id]) || {};
+}
+
+/// The table that governs a launch on `primaryId` in this workspace: the
+/// workspace's own table when its map has the key, else the app's.
+export function effectiveComplexityTable(
+  workspaceMap: ComplexityTablesByPrimary | null | undefined,
+  appMap: ComplexityTablesByPrimary | null | undefined,
+  primaryId: string
+): ComplexityTable {
+  const id = (primaryId ?? "").trim();
+  if (!id) return {};
+  if (workspaceMap != null && Object.prototype.hasOwnProperty.call(workspaceMap, id)) {
+    return workspaceMap[id];
+  }
+  return complexityTableForPrimary(appMap, id);
+}
+
+/// Copy of `map` with one primary's table set, or the key removed.
+///
+/// An EMPTY table is stored as absent by default, so "nothing to say" and
+/// "never touched" look alike on disk in the app-wide map. A workspace map
+/// passes `keepEmpty`: there absent means INHERIT, so an own table with no
+/// rows is a real answer ("no routing for this agent here") that must not
+/// collapse back into inheriting.
+export function withComplexityTableForPrimary(
+  map: ComplexityTablesByPrimary | null | undefined,
+  primaryId: string,
+  table: ComplexityTable | null,
+  keepEmpty = false
+): ComplexityTablesByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: ComplexityTablesByPrimary = { ...(map ?? {}) };
+  if (!id) return next;
+  const has = COMPLEXITY_LEVELS.some((level) => isAttributed(table?.[level]));
+  if (table && (has || keepEmpty)) next[id] = table;
+  else delete next[id];
+  return next;
+}
+
 /// The app-wide agent defaults, as config.json stores them. Mirrors
 /// `config::AgentDefaultsConfig`.
 export interface AgentDefaults {
@@ -132,7 +184,17 @@ export interface AgentDefaults {
   agentEfforts?: Record<string, string>;
   /** @deprecated Prefer `customProfiles[].apiFamily`. */
   customApiFamily?: string;
-  complexity: ComplexityTable;
+  /// Complexity tables keyed by primary profile id (`complexityTables`).
+  /// A primary with no table runs the workspace's agent at every level.
+  complexityTables: ComplexityTablesByPrimary;
+  /// App-wide pause cycles keyed by primary profile id (`pauseCycles`).
+  /// A primary with no cycle is never held.
+  pauseCycles: Record<string, PauseCycle>;
+  /// Extra prompt-text lines appended to prompts composed for each
+  /// primary (`promptExtras`), and extra CLI arguments appended to each
+  /// primary's launch command (`extraCliArgs`).
+  promptExtras: Record<string, string[]>;
+  extraCliArgs: Record<string, string[]>;
   /// App-wide fallback chains keyed by primary profile id. Empty map /
   /// missing primary means pause-only for that primary.
   fallbackChains: FallbackChainsByPrimary;
@@ -150,7 +212,10 @@ export interface AgentDefaults {
 export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
   customProfiles: [],
   defaultAgent: "claude-code",
-  complexity: {},
+  complexityTables: {},
+  pauseCycles: {},
+  promptExtras: {},
+  extraCliArgs: {},
   fallbackChains: {},
   fallbackThresholds: {},
   actionPromptOverrides: {},
@@ -191,23 +256,17 @@ export function isAttributed(entry: ComplexityAgent | undefined | null): boolean
   );
 }
 
-/// The entry that governs one level: the workspace's own if it says
-/// anything, else the app-wide one, else null.
-///
-/// Per LEVEL rather than per table, deliberately. A workspace that wants
-/// its intricate cards on a different agent should not have to restate
-/// the other four, and a wholesale override would silently drop the app
-/// defaults for every level the workspace left alone.
-export function complexityEntry(
+/// The entry that governs one level in ONE table: the level's own entry
+/// if it says anything, else null (run the workspace's agent). Which table
+/// is "the" table — the effective per-primary one — is the caller's
+/// question (`effectiveComplexityTable`).
+export function complexityEntryFor(
   level: Complexity | null | undefined,
-  app: ComplexityTable,
-  workspace: ComplexityTable
+  table: ComplexityTable
 ): ComplexityAgent | null {
   if (!level) return null;
-  const own = workspace[level];
-  if (isAttributed(own)) return own as ComplexityAgent;
-  const shared = app[level];
-  return isAttributed(shared) ? (shared as ComplexityAgent) : null;
+  const entry = table[level];
+  return isAttributed(entry) ? (entry as ComplexityAgent) : null;
 }
 
 /// The agent config an attributed card resolves through: the workspace's
@@ -285,8 +344,28 @@ export function effortPhrase(entry: { effort?: string | null } | null | undefine
   return effort ? `, at ${effort} effort` : "";
 }
 
-/// What the agent-change confirm wizard does to the workspace complexity
-/// table before the new profile is written.
+/// Whether two tables say the same thing at every level. Lets a caller
+/// that is about to WRITE a table skip the write when nothing changed --
+/// writing an unchanged EFFECTIVE table into a workspace would freeze the
+/// app-wide one into it, turning "inherit" into a copy that stops
+/// following the app.
+export function sameComplexityTable(a: ComplexityTable, b: ComplexityTable): boolean {
+  return COMPLEXITY_LEVELS.every((level) => {
+    const x = a[level];
+    const y = b[level];
+    if (!isAttributed(x) && !isAttributed(y)) return true;
+    if (!x || !y) return false;
+    return (
+      x.profile.trim() === y.profile.trim() &&
+      x.model.trim() === y.model.trim() &&
+      (x.effort ?? "").trim() === (y.effort ?? "").trim()
+    );
+  });
+}
+
+/// What the agent-change confirm wizard does to the complexity table of
+/// the agent being switched TO (the one that will govern this workspace)
+/// before the new profile is written.
 export type ComplexityRealignAction = "keep" | "remap" | "clear";
 
 /// Apply one realign choice. Never mutates `table`.

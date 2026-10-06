@@ -31,7 +31,7 @@
 
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { buildRunCommand, buildToolCommand } from "$lib/cards/cardRun";
+import { buildRunCommand, buildToolCommand, withPromptExtras } from "$lib/cards/cardRun";
 import { revealSession } from "$lib/cards/cardRunActions";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import {
@@ -41,6 +41,7 @@ import {
   handleAgentSessionSpawned,
   layoutState,
   profileIdForLaunch,
+  promptExtrasFor,
   resolvedAgentFor,
   retainTabOnExit,
   setSessionName,
@@ -173,7 +174,13 @@ async function launch(
   const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
   const command =
     tool.kind === "agent"
-      ? buildRunCommand(agent.launchCommand, agent.promptArgs, body, agent.sessionIdArgs, conversationId)
+      ? buildRunCommand(
+          agent.launchCommand,
+          agent.promptArgs,
+          withPromptExtras(body, promptExtrasFor(workspaceId, agent.profileId)),
+          agent.sessionIdArgs,
+          conversationId
+        )
       : buildToolCommand(tool.kind, body, tool.name);
   // Only an agent tool can land here: a shell tool builds its own line
   // and never asks the profile for one.

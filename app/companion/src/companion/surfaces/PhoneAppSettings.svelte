@@ -22,19 +22,10 @@
     setTerminalFontSizeDefault,
     terminalFontSizeDefault,
   } from "$lib/core/layoutState";
+  import { effectiveDefaultAgent, withAgentEffort, type CustomProfile } from "$lib/cards/complexity";
   import {
-    chainForPrimary,
-    sanitizeFallbackThreshold,
-    withFallbackChainForPrimary,
-  } from "$lib/agents/agentFallback";
-  import {
-    effectiveDefaultAgent,
-    withAgentEffort,
-    type Complexity,
-    type ComplexityAgent,
-    type CustomProfile,
-  } from "$lib/cards/complexity";
-  import {
+    ADD_TAB,
+    ADD_TAB_HINT,
     GENERAL_TAB,
     addCustomProfile,
     agentDefaultsWithoutCustom,
@@ -42,6 +33,7 @@
     isCustomProfileId,
     renameCustomProfile,
     updateCustomProfile,
+    validAgentsTab,
     type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
@@ -49,11 +41,8 @@
   import { effortOptions, modelOptions } from "$lib/agents/agentModel";
   import { askConfirm } from "$lib/core/dialog";
   import { mergeAgentProfiles } from "$lib/core/settings";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, validateCycle, type PauseCycle } from "$lib/agents/agentPause";
-  import { agentPauseStore, saveAgentPause } from "$lib/agents/agentPauseState";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import {
     DEFAULT_REQUIRE_REVIEW,
     requireReviewFromSelect,
@@ -71,8 +60,8 @@
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import type { ThemePref } from "$lib/ui/theme";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import { dismissSaveProblem, loadSettings, saveProblem, saveSetting } from "$companion/state/workstation";
+  import PhoneAgentPrimary from "$companion/surfaces/PhoneAgentPrimary.svelte";
   import PhoneModelPicker from "$companion/surfaces/PhoneModelPicker.svelte";
   import PhoneSetting from "$companion/surfaces/PhoneSetting.svelte";
   import PhoneSettingsGroup from "$companion/surfaces/PhoneSettingsGroup.svelte";
@@ -96,43 +85,24 @@
 
   let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let newCustomName = $state("");
-  const agentsTabs = $derived(agentsHubTabs(allProfiles));
+  const agentsTabs = $derived(agentsHubTabs(allProfiles, ADD_TAB_HINT.app));
+  const defaultAgentId = $derived(effectiveDefaultAgent($agentDefaultsStore));
+  const defaultAgentLabel = $derived(
+    allProfiles.find((p) => p.id === defaultAgentId)?.label ?? defaultAgentId
+  );
   $effect(() => {
-    if (agentsTab === GENERAL_TAB) return;
-    if (allProfiles.some((p) => p.id === agentsTab)) return;
-    agentsTab = GENERAL_TAB;
+    const valid = validAgentsTab(agentsTab, allProfiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
   });
   const activeAgentProfile = $derived(allProfiles.find((p) => p.id === agentsTab) ?? null);
   const activeCustom = $derived(
     ($agentDefaultsStore.customProfiles ?? []).find((p) => p.id === agentsTab) ?? null
   );
 
-  /// The app-wide cycle, or the shipped default while there is none: the
-  /// fields need values, and saving is what turns the default into one.
-  const cycle = $derived($agentPauseStore ?? { ...DEFAULT_CYCLE, anchorMs: 0 });
-  const cycleError = $derived(cycle.enabled ? validateCycle(cycle) : null);
   const launch = $derived($launchConfigStore);
-
-  function editCycle(patch: Partial<PauseCycle>): void {
-    const next = { ...cycle, ...patch };
-    // An unusable cycle stays on screen, so the message can explain it,
-    // and is not saved until it is usable again -- the desk's rule.
-    if (next.enabled && validateCycle(next)) {
-      agentPauseStore.set(next);
-      return;
-    }
-    void saveSetting(() => saveAgentPause(next));
-  }
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveSetting(() => saveLaunchConfig({ ...launch, ...patch }));
-  }
-
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const complexity = { ...$agentDefaultsStore.complexity };
-    if (entry) complexity[level] = entry;
-    else delete complexity[level];
-    void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, complexity }));
   }
 
   function addAppCustom(): void {
@@ -307,111 +277,14 @@
       </PhoneSetting>
 
       <p class="note">
-        Fallback for {effectiveDefaultAgent($agentDefaultsStore)}. Each agent's own tab edits the
-        chain for that agent as primary.
+        Everything below is {defaultAgentLabel}'s own configuration — the same settings its tab shows.
       </p>
-      <div class="desk-part">
-        <FallbackChainEditor
-          profiles={allProfiles}
-          value={chainForPrimary(
-            $agentDefaultsStore.fallbackChains,
-            effectiveDefaultAgent($agentDefaultsStore)
-          )}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackChains: withFallbackChainForPrimary(
-                  $agentDefaultsStore.fallbackChains,
-                  effectiveDefaultAgent($agentDefaultsStore),
-                  chain ?? []
-                ),
-              })
-            )}
-          onThresholdChange={(profileId, percent) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackThresholds: {
-                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                  [profileId]: sanitizeFallbackThreshold(percent),
-                },
-              })
-            )}
-        />
-      </div>
-
-      <p class="note">
-        Which agent, model and effort runs a card of each difficulty. A level left alone runs the
-        workspace's own agent.
-      </p>
-      <div class="desk-part">
-        <ComplexityTable
-          profiles={allProfiles}
-          table={$agentDefaultsStore.complexity}
-          onChange={setComplexity}
-        />
-      </div>
-
-      <p class="note">
-        Sit out part of every window so a rail does not spend a subscription's limit while nobody is
-        watching. Nothing already running is interrupted.
-      </p>
-      <PhoneToggle label="Pause on a cycle" checked={cycle.enabled} onChange={(on) => editCycle({ enabled: on })} />
-      <PhoneSetting label="Pause for">
-        <input
-          type="number"
-          inputmode="numeric"
-          min="1"
-          aria-label="Minutes paused"
-          disabled={!cycle.enabled}
-          value={cycle.pauseMinutes}
-          onchange={(e) => editCycle({ pauseMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes every</span>
-        <input
-          type="number"
-          inputmode="numeric"
-          min={MIN_PERIOD_MINUTES}
-          aria-label="Minutes in a cycle"
-          disabled={!cycle.enabled}
-          value={cycle.periodMinutes}
-          onchange={(e) => editCycle({ periodMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes</span>
-      </PhoneSetting>
-      <PhoneToggle
-        label="Hold when a usage window is nearly spent"
-        checked={cycle.limitEnabled}
-        onChange={(on) => editCycle({ limitEnabled: on })}
+      <PhoneAgentPrimary
+        scope="app"
+        primaryId={defaultAgentId}
+        label={defaultAgentLabel}
+        profiles={allProfiles}
       />
-      <PhoneSetting label="Hold at" warn={cycleError}>
-        <input
-          type="number"
-          inputmode="numeric"
-          min="1"
-          max="100"
-          aria-label="Percent of the window used"
-          disabled={!cycle.limitEnabled}
-          value={cycle.limitPercent}
-          onchange={(e) => editCycle({ limitPercent: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">% used</span>
-      </PhoneSetting>
-
-      <PhoneSetting label="Add custom" control="app-new-custom" hint="Each custom gets its own tab for command, flags, API family and fallback.">
-        <input
-          id="app-new-custom"
-          spellcheck="false"
-          placeholder="New custom name"
-          bind:value={newCustomName}
-          onkeydown={(e) => {
-            if (e.key === "Enter") addAppCustom();
-          }}
-        />
-        <button type="button" class="add-custom" onclick={addAppCustom}>Add custom</button>
-      </PhoneSetting>
     {:else if activeAgentProfile}
       {#if activeCustom}
         <PhoneSetting label="Name" control="custom-name-{activeCustom.id}">
@@ -505,38 +378,25 @@
         </PhoneSetting>
       {/if}
 
-      <p class="note">
-        When a launch whose resolved agent is {activeAgentProfile.label} is over its usage threshold,
-        walk this chain instead of pausing.
-      </p>
-      <div class="desk-part">
-        <FallbackChainEditor
-          profiles={allProfiles}
-          value={chainForPrimary($agentDefaultsStore.fallbackChains, activeAgentProfile.id)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackChains: withFallbackChainForPrimary(
-                  $agentDefaultsStore.fallbackChains,
-                  activeAgentProfile.id,
-                  chain ?? []
-                ),
-              })
-            )}
-          onThresholdChange={(profileId, percent) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackThresholds: {
-                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                  [profileId]: sanitizeFallbackThreshold(percent),
-                },
-              })
-            )}
+      <PhoneAgentPrimary
+        scope="app"
+        primaryId={activeAgentProfile.id}
+        label={activeAgentProfile.label}
+        profiles={allProfiles}
+      />
+    {:else if agentsTab === ADD_TAB}
+      <PhoneSetting label="Add custom" control="app-new-custom" hint={ADD_TAB_HINT.app}>
+        <input
+          id="app-new-custom"
+          spellcheck="false"
+          placeholder="New custom name"
+          bind:value={newCustomName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") addAppCustom();
+          }}
         />
-      </div>
+        <button type="button" class="add-custom" onclick={addAppCustom}>Add custom</button>
+      </PhoneSetting>
     {/if}
   </PhoneSettingsGroup>
 
@@ -638,12 +498,6 @@
   .desk-only {
     padding: 16px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
     line-height: 1.45;
-  }
-  /* The desk's own components size their text in `em`, for a desk panel's
-     smaller type; under a phone's 16px body their hints would read larger
-     than every other hint here. */
-  .desk-part {
-    font-size: 0.8125rem;
   }
   .add-custom,
   .danger {

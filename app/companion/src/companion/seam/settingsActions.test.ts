@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { listen } from "@tauri-apps/api/event";
 import { get } from "svelte/store";
 import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agents/agentPause";
-import { agentPauseStore, saveAgentPause } from "$lib/agents/agentPauseState";
+import { agentPauseStore, saveAgentPauseFor } from "$lib/agents/agentPauseState";
 import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
 import { EMPTY_AGENT_DEFAULTS } from "$lib/cards/complexity";
 import * as backend from "$lib/core/backend";
@@ -41,6 +41,7 @@ import {
   setWorkspaceFlag,
   setWorkspaceFontSize,
   setWorkspacePause,
+  setWorkspacePromptParams,
   setWorkspaceRequireReview,
   terminalFontSizeDefault,
 } from "$lib/core/layoutState";
@@ -95,7 +96,10 @@ describe("reading the settings", () => {
     demo.state.settings.autoCommit = true;
     demo.state.settings.terminalFontSize = 15;
     demo.state.settings.agentModels = { "claude-code": "opus" };
-    demo.state.settings.agentPause = CYCLE;
+    demo.state.settings.agentDefaults = {
+      ...demo.state.settings.agentDefaults,
+      pauseCycles: { "claude-code": CYCLE },
+    };
     demo.state.settings.launch = { maxInFlight: 2, holdOnPressure: false, reclaimDoneSessions: true };
     await connected(demo);
     const from = mark(demo);
@@ -109,7 +113,6 @@ describe("reading the settings", () => {
         "invoke agent_profiles",
         "invoke get_agent_defaults",
         "invoke get_agent_model_defaults",
-        "invoke get_agent_pause",
         "invoke get_auto_commit",
         "invoke get_custom_resume_args",
         "invoke get_git_tracking_default",
@@ -122,7 +125,8 @@ describe("reading the settings", () => {
     expect(get(autoCommitDefault)).toBe(true);
     expect(get(terminalFontSizeDefault)).toBe(15);
     expect(get(agentModelDefaultsStore)).toEqual({ "claude-code": "opus" });
-    expect(get(agentPauseStore)).toEqual(CYCLE);
+    // The cycles ride the agent defaults, per agent: no command of their own.
+    expect(get(agentPauseStore)).toEqual({ "claude-code": CYCLE });
     expect(get(launchConfigStore)).toEqual({ maxInFlight: 2, holdOnPressure: false, reclaimDoneSessions: true });
     expect(get(agentProfilesStore).map((p) => [p.id, p.models])).toEqual([
       ["claude-code", ["opus", "sonnet", "haiku"]],
@@ -180,7 +184,12 @@ describe("changing an app-wide setting", () => {
         },
       },
     ],
-    ["the pause cycle", () => saveAgentPause(CYCLE), "set_agent_pause", { agentPause: CYCLE }],
+    [
+      "an agent's pause cycle",
+      () => saveAgentPauseFor("claude-code", CYCLE),
+      "set_agent_defaults",
+      { agentDefaults: { ...EMPTY_AGENT_DEFAULTS, pauseCycles: { "claude-code": CYCLE } } },
+    ],
     [
       "the memory wall",
       () => saveLaunchConfig({ maxInFlight: null, holdOnPressure: true, reclaimDoneSessions: false }),
@@ -274,7 +283,7 @@ describe("changing an app-wide setting", () => {
     expect(get(saveProblem)).toContain("desktop app not running");
     expect(get(layoutState).status).toBe("ready");
 
-    await saveSetting(() => saveAgentPause(CYCLE));
+    await saveSetting(() => saveAgentPauseFor("claude-code", CYCLE));
     expect(get(saveProblem)).toContain("desktop app not running");
   });
 });
@@ -287,7 +296,21 @@ describe("changing a workspace's settings", () => {
     ["its font size, back to the default", () => setWorkspaceFontSize(DEMO.atlas, null), { terminalFontSize: null }],
     ["auto commit", () => setWorkspaceAutoCommit(DEMO.atlas, false), { autoCommit: false }],
     ["require review", () => setWorkspaceRequireReview(DEMO.atlas, true), { requireReview: true }],
-    ["its pause", () => setWorkspacePause(DEMO.atlas, CYCLE), { agentPause: CYCLE }],
+    [
+      "its pause for one agent",
+      () => setWorkspacePause(DEMO.atlas, "claude-code", CYCLE),
+      { pauseCycles: { "claude-code": CYCLE } },
+    ],
+    [
+      "its prompt lines for one agent",
+      () => setWorkspacePromptParams(DEMO.atlas, "codex", "promptExtras", ["Be brief."]),
+      { promptExtras: { codex: ["Be brief."] } },
+    ],
+    [
+      "its CLI arguments for one agent",
+      () => setWorkspacePromptParams(DEMO.atlas, "codex", "extraCliArgs", ["--flag"]),
+      { extraCliArgs: { codex: ["--flag"] } },
+    ],
     ["its fallback chain", () => setWorkspaceFallback(DEMO.atlas, "claude-code", ["codex"]), { fallbackChains: { "claude-code": ["codex"] } }],
     [
       "a notification",
@@ -301,8 +324,11 @@ describe("changing a workspace's settings", () => {
     ],
     [
       "its complexity table",
-      () => setWorkspaceComplexityTable(DEMO.atlas, { complex: { profile: "codex", model: "", effort: "high" } }),
-      { complexityAgents: { complex: { profile: "codex", model: "", effort: "high" } } },
+      () =>
+        setWorkspaceComplexityTable(DEMO.atlas, "claude-code", {
+          complex: { profile: "codex", model: "", effort: "high" },
+        }),
+      { complexityTables: { "claude-code": { complex: { profile: "codex", model: "", effort: "high" } } } },
     ],
     [
       "its local custom profiles",
@@ -398,12 +424,12 @@ describe("everything the settings screens send", () => {
     await saveSetting(() => setGitTrackingDefault(true));
     await saveSetting(() => setAgentModelDefault("codex", "gpt-5"));
     await saveSetting(() => setAgentDefaults({ ...get(agentDefaultsStore), fallbackChains: { "claude-code": ["codex"] } }));
-    await saveSetting(() => saveAgentPause(CYCLE));
+    await saveSetting(() => saveAgentPauseFor("claude-code", CYCLE));
     await saveSetting(() => saveLaunchConfig({ maxInFlight: 3, holdOnPressure: true, reclaimDoneSessions: true }));
     await saveSetting(() => renameWorkspace(DEMO.notes, "notes"));
     await saveSetting(() => setWorkspaceColor(DEMO.notes, "#60a5fa"));
     await saveSetting(() => setWorkspaceFontSize(DEMO.notes, 12));
-    await saveSetting(() => setWorkspacePause(DEMO.notes, null));
+    await saveSetting(() => setWorkspacePause(DEMO.notes, "claude-code", null));
     await saveSetting(() => setWorkspaceFallback(DEMO.notes, "claude-code", null));
     await saveSetting(() => setAgentField(DEMO.notes, "model", "opus"));
     await settle();

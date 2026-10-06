@@ -291,8 +291,6 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // the same resolver card_run_tokens reads through. It writes nothing and
   // reaches nothing but files the CLI wrote on this machine.
   conversation_log: ["ordinary"],
-  get_agent_pause: ["ordinary"],
-  set_agent_pause: ["ordinary"],
   get_agent_defaults: ["ordinary"],
   set_agent_defaults: ["ordinary"],
   // The memory wall. A read and a preference write, the same shape as

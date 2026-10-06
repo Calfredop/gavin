@@ -71,6 +71,8 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "setWorkspaceComplexityTable",
     "setWorkspaceCustomProfiles",
     "setWorkspacePause",
+    "setWorkspacePromptParams",
+    "dropWorkspaceProfileRefs",
     "setWorkspaceFallback",
     "setWorkspaceFlag",
     "setAgentField",
@@ -307,25 +309,47 @@ describe("the Agents settings hub", () => {
     }
   });
 
-  it("app screen: General + per-agent tabs, customs inline, setAgentDefaults", () => {
+  it("app screen: General + per-agent tabs, customs inline, the + tab, setAgentDefaults", () => {
     expect(app()).toContain("Default agent");
     expect(app()).toContain("Add custom");
     expect(app()).toContain("addCustomProfile");
     expect(app()).toContain("customProfiles:");
-    expect(app()).toContain("withFallbackChainForPrimary");
+    expect(app()).toContain("agentsHubTabs(allProfiles, ADD_TAB_HINT.app)");
+    expect(app()).toContain("{:else if agentsTab === ADD_TAB}");
     expect(app()).not.toContain("CustomsEditor");
     expect(app()).not.toContain("APP_AGENTS_TABS");
     expect(app()).not.toContain("customCommand");
   });
 
-  it("workspace screen: General + per-agent tabs, CustomsEditor on local customs", () => {
+  it("workspace screen: General + per-agent tabs, CustomsEditor on local customs, the + tab", () => {
     expect(workspace()).toContain("Add local custom");
     expect(workspace()).toContain("setWorkspaceCustomProfiles");
+    expect(workspace()).toContain("dropWorkspaceProfileRefs");
     expect(workspace()).toContain('import CustomsEditor from "$lib/agents/CustomsEditor.svelte"');
     expect(workspace()).toContain("<CustomsEditor");
     expect(workspace()).toContain("local");
-    expect(workspace()).toContain("workspaceOwnsFallbackChain");
+    expect(workspace()).toContain("agentsHubTabs(profiles, ADD_TAB_HINT.workspace)");
+    expect(workspace()).toContain("{:else if agentsTab === ADD_TAB}");
     expect(workspace()).not.toContain("WORKSPACE_AGENTS_TABS");
+  });
+
+  it("draws every per-agent block through one phone panel, General and each tab alike", () => {
+    const panel = codeOf(companionSource("companion/surfaces/PhoneAgentPrimary.svelte"));
+    // Fallback, complexity, pause, prompt lines and CLI arguments live in
+    // the panel, read and written through the same module the desk's uses.
+    expect(panel).toContain("withFallbackChainForPrimary");
+    expect(panel).toContain("workspaceOwnsFallbackChain");
+    expect(panel).toContain("<ComplexityTable");
+    expect(panel).toContain("<PromptParamsEditor");
+    expect(panel).toContain("$lib/agents/agentPrimary");
+    // Both screens point it at an agent; neither keeps its own copy.
+    for (const text of [app(), workspace()]) {
+      expect(text).toContain("<PhoneAgentPrimary");
+      expect(text).not.toContain("<FallbackChainEditor");
+      expect(text).not.toContain("<ComplexityTable");
+    }
+    expect((app().match(/<PhoneAgentPrimary/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect((workspace().match(/<PhoneAgentPrimary/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 });
 

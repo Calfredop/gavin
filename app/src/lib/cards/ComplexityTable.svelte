@@ -29,10 +29,14 @@
     /// where there is nothing underneath. Only ever read for the label on
     /// the inherit option, so a row can say what leaving it alone does.
     inherited?: ComplexityTable | null;
+    /// Show the table without letting it be edited -- a workspace that
+    /// follows the app-wide table shows it so the human can see what it
+    /// follows, but only the app-wide page changes it.
+    readonly?: boolean;
     /// `null` clears the row back to inheriting.
     onChange: (level: Complexity, entry: ComplexityAgent | null) => void;
   }
-  let { profiles, table, inherited = null, onChange }: Props = $props();
+  let { profiles, table, inherited = null, readonly = false, onChange }: Props = $props();
 
   /// The sentinel for the profile select's first option. Distinct from
   /// the empty PROFILE (which means "this workspace's agent, whatever it
@@ -114,7 +118,11 @@
         <span class="level" title={COMPLEXITY_LABELS[level].hint}>
           {COMPLEXITY_LABELS[level].label}
         </span>
-        <select value={entry.profile} onchange={(e) => pickProfile(level, e.currentTarget.value)}>
+        <select
+          value={entry.profile}
+          disabled={readonly}
+          onchange={(e) => pickProfile(level, e.currentTarget.value)}
+        >
           <option value={SAME_AGENT}>{inheritLabel(level)}</option>
           {#each profiles as profile (profile.id)}
             <option value={profile.id}>{profileOptionLabel(profile)}</option>
@@ -124,6 +132,7 @@
           class="model"
           spellcheck="false"
           placeholder="model"
+          disabled={readonly}
           value={entry.model}
           onchange={(e) => typeModel(level, e.currentTarget.value)}
           onkeydown={(e) => {
@@ -135,6 +144,7 @@
           spellcheck="false"
           placeholder="effort"
           list="complexity-effort-{level}"
+          disabled={readonly}
           value={entry.effort ?? ""}
           onchange={(e) => typeEffort(level, e.currentTarget.value)}
           onkeydown={(e) => {
@@ -150,7 +160,7 @@
           type="button"
           class="clear"
           title="Clear this level"
-          disabled={!isAttributed(table[level])}
+          disabled={readonly || !isAttributed(table[level])}
           onclick={() => onChange(level, null)}
         >
           <X size={12} />

@@ -36,10 +36,11 @@ import {
   createTiledPage,
   layoutState,
   profileIdForLaunch,
+  promptExtrasFor,
   setSessionName,
   switchWorkspaceView,
 } from "$lib/core/layoutState";
-import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "$lib/cards/cardRun";
+import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
@@ -175,11 +176,16 @@ export async function startBestOfN(
     const command = buildRunCommand(
       agent.launchCommand,
       agent.promptArgs,
-      composeCandidatePrompt(
-        prompt,
-        plan.label,
-        plans.length,
-        mustPromptBody("action:best-of-n-suffix", workspaceId)
+      // Each candidate's own agent's extra prompt lines go last: they are
+      // instructions to THAT agent, and the candidates may differ.
+      withPromptExtras(
+        composeCandidatePrompt(
+          prompt,
+          plan.label,
+          plans.length,
+          mustPromptBody("action:best-of-n-suffix", workspaceId)
+        ),
+        promptExtrasFor(workspaceId, agent.profileId)
       ),
       agent.sessionIdArgs,
       conversationId

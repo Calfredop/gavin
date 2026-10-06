@@ -10,7 +10,6 @@
 // phone keeps its own list of what it started, for this visit.
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { loadAgentPause } from "$lib/agents/agentPauseState";
 import { normalizeRequireReview } from "$lib/cards/cardReview";
 import {
   agentDefaultsStore,
@@ -52,7 +51,6 @@ export async function loadLaunchTables(): Promise<void> {
     backend.getAgentDefaults().catch(() => null),
     backend.getCustomResumeArgs().catch(() => null),
     backend.getRequireReview().catch(() => null),
-    loadAgentPause(),
   ]);
   if (!profiles || !models || !defaults) {
     tablesStore.set("unread");

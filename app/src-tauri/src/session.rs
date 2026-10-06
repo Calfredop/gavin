@@ -193,87 +193,7 @@ pub struct AgentModels(pub Mutex<HashMap<String, String>>);
 /// `persist_workspaces` for exactly that reason.
 pub struct AgentPause(pub Mutex<Option<crate::config::AgentPauseConfig>>);
 
-#[tauri::command]
-pub fn get_agent_pause(state: State<AgentPause>) -> Option<crate::config::AgentPauseConfig> {
-    state.0.lock().unwrap().clone()
-}
-
-/// Replaces the app-wide cycle. `None` clears it back to no cycle at
-/// all, the same "there is no separate clear command" shape as
-/// `set_theme_pref`.
-///
-/// The ANCHOR is the caller's to supply and gavin never rewrites it here:
-/// the frontend stamps one when the cycle is first switched on, and every
-/// later edit carries the same value through. Stamping `now` on each save
-/// would slide the pause forward every time somebody nudged a field, so
-/// the cycle would never actually fire for anyone who kept adjusting it.
-#[tauri::command]
-pub fn set_agent_pause(
-    agent_pause: Option<crate::config::AgentPauseConfig>,
-    app_handle: AppHandle,
-    window: tauri::Window,
-    request: tauri::ipc::Request<'_>,
-    state: State<WorkspacesState>,
-    names_state: State<SessionNames>,
-    file_tabs_state: State<FileTabs>,
-    board_tabs_state: State<BoardTabs>,
-    card_tabs_state: State<CardTabs>,
-    theme_state: State<ThemePref>,
-    agent_models_state: State<AgentModels>,
-    font_size_state: State<TerminalFontSize>,
-    auto_commit_state: State<AutoCommit>,
-    agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
-    agent_defaults_state: State<AgentDefaults>,
-    git_tracking_state: State<GitTrackingDefaults>,
-    require_review_state: State<RequireReviewDefaults>,
-    headroom_state: State<HeadroomDefaults>,
-    launch_state: State<LaunchSettings>,
-    custom_resume_args_state: State<CustomResumeArgs>,
-) -> Result<(), String> {
-    *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
-    let data = state.0.lock().unwrap().clone();
-    let session_names = names_state.0.lock().unwrap().clone();
-    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
-    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
-    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
-    let theme = theme_state.0.lock().unwrap().clone();
-    let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
-    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
-    let git_tracking = *git_tracking_state.0.lock().unwrap();
-    let require_review = *require_review_state.0.lock().unwrap();
-    let headroom = *headroom_state.0.lock().unwrap();
-    let launch = *launch_state.0.lock().unwrap();
-    let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
-    let terminal_font_size = *font_size_state.0.lock().unwrap();
-    let auto_commit = *auto_commit_state.0.lock().unwrap();
-    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(
-        &config_dir,
-        &data,
-        session_names,
-        file_tabs,
-        board_tabs,
-        card_tabs,
-        theme,
-        agent_models,
-        terminal_font_size,
-        auto_commit,
-        agent_pause,
-        superpowers,
-        agent_defaults,
-        git_tracking,
-        require_review,
-        headroom,
-        launch,
-        custom_resume_args,
-    )
-    .map_err(|e| e.to_string())?;
-    announce_app_settings(&app_handle, &window, &request);
-    Ok(())
-}
-/// The app-wide launch wall, `None` until somebody edits it (the shipped
+// The app-wide launch wall, `None` until somebody edits it (the shipped
 /// `LaunchConfig::default()` then applies). Tauri-managed and persisted
 /// into the same `AppConfig` as the rest -- the TENTH field a save site
 /// can silently wipe, and carried through `persist_workspaces` for
@@ -286,7 +206,7 @@ pub fn get_launch_config(state: State<LaunchSettings>) -> Option<crate::config::
 }
 
 /// Replaces the app-wide launch wall wholesale, the same shape as
-/// `set_agent_pause` and `set_agent_defaults`: the panel edits both
+/// `set_agent_defaults`: the panel edits the whole struct
 /// fields and hands them back, so there is no per-key command and no way
 /// for one of them to be saved while the other is dropped.
 ///
@@ -497,7 +417,7 @@ pub fn get_agent_defaults(state: State<AgentDefaults>) -> crate::config::AgentDe
 }
 
 /// Replaces the app-wide agent defaults wholesale, the same shape as
-/// `set_agent_pause`: the panel edits a whole struct and hands it back,
+/// `set_agent_defaults`: the panel edits a whole struct and hands it back,
 /// so there is no per-key command and no way for one field of it to be
 /// saved while another is dropped.
 #[tauri::command]
@@ -905,7 +825,11 @@ mod workspaces_data_tests {
             custom_effort_flag: String::new(),
             agent_efforts: HashMap::from([("claude-code".to_string(), "high".to_string())]),
             custom_api_family: String::new(),
-            complexity,
+            complexity: HashMap::new(),
+            complexity_tables: HashMap::from([("claude-code".to_string(), complexity)]),
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             default_agent: Some("codex".to_string()),
             agent_fallback: Vec::new(),
             fallback_chains: HashMap::from([("claude-code".to_string(), vec!["codex".to_string()])]),
@@ -1194,8 +1118,12 @@ mod workspaces_data_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -1213,13 +1141,16 @@ mod workspaces_data_tests {
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         };
-        ws.complexity_agents.insert(
-            "trivial".to_string(),
-            crate::config::ComplexityAgent {
-                profile: String::new(),
-                model: "haiku".to_string(),
-                effort: String::new(),
-            },
+        ws.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "trivial".to_string(),
+                crate::config::ComplexityAgent {
+                    profile: String::new(),
+                    model: "haiku".to_string(),
+                    effort: String::new(),
+                },
+            )]),
         );
         let data = WorkspacesData {
             workspaces: vec![ws.clone()],
@@ -1248,8 +1179,8 @@ mod workspaces_data_tests {
         )
         .unwrap();
         assert_eq!(
-            crate::config::load(dir.path()).unwrap().workspaces[0].complexity_agents,
-            ws.complexity_agents
+            crate::config::load(dir.path()).unwrap().workspaces[0].complexity_tables,
+            ws.complexity_tables
         );
     }
 
@@ -1362,6 +1293,9 @@ mod workspaces_data_tests {
     /// that reconstructed AppConfig without carrying them. A wiped pause
     /// cycle would be quieter than any of those -- nothing looks wrong
     /// until a rail runs straight through a window it was told to sit out.
+    /// The cycles live on `AgentDefaultsConfig::pause_cycles` now, riding
+    /// the wholesale agent-defaults carry-through; the legacy
+    /// `agent_pause` positional is deserialization-only for migration.
     #[test]
     fn persist_workspaces_carries_the_agent_pause_cycle_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -1374,6 +1308,10 @@ mod workspaces_data_tests {
             limit_percent: 95.0,
             limit_enabled: true,
         };
+        let defaults = crate::config::AgentDefaultsConfig {
+            pause_cycles: HashMap::from([("claude-code".to_string(), cycle.clone())]),
+            ..Default::default()
+        };
         persist_workspaces(
             dir.path(),
             &data,
@@ -1385,9 +1323,9 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             None,
-            Some(cycle.clone()),
+            None,
             HashMap::new(),
-            crate::config::AgentDefaultsConfig::default(),
+            defaults,
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
             crate::config::HeadroomDefault::default(),
@@ -1395,7 +1333,10 @@ mod workspaces_data_tests {
             None,
         )
         .unwrap();
-        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
+        assert_eq!(
+            crate::config::load(dir.path()).unwrap().agent_defaults.pause_cycles.get("claude-code"),
+            Some(&cycle)
+        );
     }
 
     /// The anchor is what makes the cycle survive a restart, so it has to
@@ -1445,8 +1386,12 @@ mod workspace_migration_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -4400,8 +4345,12 @@ mod resolve_workspaces_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -5524,8 +5473,12 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 auto_commit: None,
                 auto_resume_runs: false,
                 agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
                 pinned_at: None,
                 complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
                 git_tracking_asked: false,
                 trusted_config_hash: None,
                 mcp_foreign_servers_choice: None,
@@ -7505,8 +7458,12 @@ mod main_session_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -8251,8 +8208,12 @@ mod attach_target_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,

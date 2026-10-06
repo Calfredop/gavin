@@ -4,8 +4,7 @@
     renameWorkspace,
     setWorkspaceColor,
     setWorkspaceFlag,
-    setWorkspacePause,
-    setWorkspaceFallback,
+    dropWorkspaceProfileRefs,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -20,7 +19,6 @@
     setWorkspaceRequireReview,
     agentDefaultsStore,
     setAgentDefaults,
-    setWorkspaceComplexityTable,
     setWorkspaceCustomProfiles,
     markGitTrackingAsked,
     trustedAgentConfigs,
@@ -28,9 +26,10 @@
     setWorkspaceHeadroom,
     markHeadroomAsked,
   } from "$lib/core/layoutState";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
+  import AgentPrimaryPanel from "$lib/agents/AgentPrimaryPanel.svelte";
   import {
+    ADD_TAB,
+    ADD_TAB_HINT,
     AGENTS_SECTION,
     GENERAL_TAB,
     addCustomProfile,
@@ -38,6 +37,7 @@
     agentsTabForQuery,
     isCustomProfileId,
     profileOptionLabel,
+    validAgentsTab,
     type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
@@ -104,19 +104,11 @@
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
-  import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
-  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
-  import { armNewlyAdded, askAgainToArm } from "$lib/agents/agentFallbackState";
-  import {
-    chainForPrimary,
-    effectiveFallbackChain,
-    fallbackThresholdFor,
-    sanitizeFallbackThreshold,
-    workspaceOwnsFallbackChain,
-  } from "$lib/agents/agentFallback";
+  import { nowStore, pauseFor } from "$lib/agents/agentPauseState";
+  import { askAgainToArm } from "$lib/agents/agentFallbackState";
+  import { fallbackThresholdFor, sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
   import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
@@ -144,9 +136,6 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
 
-  /// What this workspace would inherit, and what an override starts from.
-  const appCycle = $derived($agentPauseStore);
-  const inheritedCycle = $derived(editableCycle(null));
   /// Recomputed on every clock tick, so the "right now" line below is a
   /// live countdown rather than whatever was true when the tab mounted.
   const pauseNow = $derived(pauseFor(workspaceId, $nowStore));
@@ -330,7 +319,7 @@
   let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let agentsQuerySeen = $state("");
   let newLocalCustomName = $state("");
-  const agentsTabs = $derived(agentsHubTabs(profiles));
+  const agentsTabs = $derived(agentsHubTabs(profiles, ADD_TAB_HINT.workspace));
   $effect(() => {
     const q = settingsQuery;
     if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
@@ -338,9 +327,8 @@
     agentsTab = agentsTabForQuery("workspace", q, profiles);
   });
   $effect(() => {
-    if (agentsTab === GENERAL_TAB) return;
-    if (profiles.some((p) => p.id === agentsTab)) return;
-    agentsTab = GENERAL_TAB;
+    const valid = validAgentsTab(agentsTab, profiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
   });
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
 
@@ -528,12 +516,6 @@
   /// keeps the row, so the value can be seen and cleared.
   const showEffortFlag = $derived(isCustom || ownEffortFlag !== "");
 
-  // --- complexity -------------------------------------------------------
-  /// This workspace's own overrides. Per LEVEL: a level absent here runs
-  /// whatever the app-wide table says, which is what the picker's first
-  /// option spells out.
-  const complexityTable = $derived(ws?.complexityAgents ?? {});
-
   // --- the lead document ------------------------------------------------
   /// Which file leads this workspace. Not an agent key: it lives at the
   /// root of config.toml and survives a change of CLI.
@@ -677,13 +659,6 @@
   function commitModelFlag(): void {
     const commit = fieldCommit(modelFlagDraft, ownModelFlag, { empty: "clear" });
     if (commit.kind === "write") void setAgentField(workspaceId, "model_flag", commit.value);
-  }
-
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const next = { ...complexityTable };
-    if (entry) next[level] = entry;
-    else delete next[level];
-    void setWorkspaceComplexityTable(workspaceId, next);
   }
 
   /// "" is a real value here, not a no-op: it removes the key and puts
@@ -982,118 +957,18 @@
         </p>
       {/if}
 
-        <h3 class="sub">Complexity</h3>
-        <p class="hint">
-          Which agent runs a card of each difficulty, in this workspace only. A level left on its
-          default follows the app-wide table in Settings, so leaving one alone is how this workspace
-          tracks that; naming an agent, a model or an effort here overrides that level and nothing
-          else.
-        </p>
-        <ComplexityTable
-          profiles={profiles}
-          table={complexityTable}
-          inherited={$agentDefaultsStore.complexity}
-          onChange={setComplexity}
+        <!-- General edits the agent THIS workspace runs: the same data that
+             agent's own tab shows, so choosing another profile above just
+             points this block at it. A key the workspace has not set
+             follows the app-wide value, and each block says so. -->
+        <h3 class="sub">{profileLabel}</h3>
+        <AgentPrimaryPanel
+          scope="workspace"
+          {workspaceId}
+          primaryId={agent.profileId}
+          label={profileLabel}
+          {profiles}
         />
-
-        <h3 class="sub">Pause</h3>
-        <!-- Absent means INHERIT, which is not the same as off: a
-             workspace that wants no pause while the app has one stores a
-             cycle with enabled:false, so clearing and disabling are two
-             different controls. -->
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={ws.agentPause != null}
-            onchange={(e) =>
-              void setWorkspacePause(
-                workspaceId,
-                e.currentTarget.checked ? { ...inheritedCycle } : null
-              )}
-          />
-          Give this workspace its own pause settings
-        </label>
-        {#if ws.agentPause == null}
-          <p class="hint">
-            {#if appCycle?.enabled}
-              Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
-              {appCycle.periodMinutes} minutes.
-            {:else}
-              Following the app-wide setting, which is off. Settings → Agents → General
-              changes it for every workspace.
-            {/if}
-          </p>
-        {:else}
-          {@const own = ws.agentPause}
-          <div class="pause-row">
-            <label class="check">
-              <input
-                type="checkbox"
-                checked={own.enabled}
-                onchange={(e) =>
-                  void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
-              />
-              Pause on a cycle
-            </label>
-          </div>
-          <div class="pause-row">
-            <span>Pause for</span>
-            <input
-              class="num"
-              type="number"
-              min="1"
-              disabled={!own.enabled}
-              value={own.pauseMinutes}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  pauseMinutes: Number(e.currentTarget.value),
-                })}
-            />
-            <span>minutes every</span>
-            <input
-              class="num"
-              type="number"
-              min={MIN_PERIOD_MINUTES}
-              disabled={!own.enabled}
-              value={own.periodMinutes}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  periodMinutes: Number(e.currentTarget.value),
-                })}
-            />
-            <span>minutes</span>
-          </div>
-          <div class="pause-row">
-            <label class="check">
-              <input
-                type="checkbox"
-                checked={own.limitEnabled}
-                onchange={(e) =>
-                  void setWorkspacePause(workspaceId, {
-                    ...own,
-                    limitEnabled: e.currentTarget.checked,
-                  })}
-              />
-              Hold when a window is
-            </label>
-            <input
-              class="num"
-              type="number"
-              min="1"
-              max="100"
-              disabled={!own.limitEnabled}
-              value={own.limitPercent}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  limitPercent: Number(e.currentTarget.value),
-                })}
-            />
-            <span>% used</span>
-          </div>
-        {/if}
         <p class="hint">
           A pause stops gavin STARTING work — a rail's next step, a card run, an automatic resume. An
           agent already mid-turn finishes, and your own Run button always works.
@@ -1101,21 +976,6 @@
             Right now: {pauseNow.why}.
           {/if}
         </p>
-
-        <h3 class="sub">Local customs</h3>
-        <div class="row">
-          <input
-            class="custom"
-            spellcheck="false"
-            placeholder="New local custom name"
-            bind:value={newLocalCustomName}
-            onkeydown={(e) => {
-              if (e.key === "Enter") void addLocalCustom();
-            }}
-          />
-          <button type="button" onclick={() => void addLocalCustom()}>Add local custom</button>
-        </div>
-        <p class="hint">Locals are marked on their tabs and only exist in this workspace.</p>
       {:else if agentsTab === agent.profileId}
         {#if !hasRoot}
           <p class="hint">Bind a root folder to configure the agent.</p>
@@ -1430,35 +1290,12 @@
         </div>
       {/if}
 
-        <h3 class="sub">Fallback</h3>
-        <p class="hint">
-          When a launch whose resolved agent is {profileLabel} is over its usage threshold, new
-          launches walk this chain instead of pausing.
-        </p>
-        <FallbackChainEditor
-          profiles={profiles}
-          value={chainForPrimary(ws.fallbackChains, agent.profileId)}
-          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agent.profileId)}
-          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agent.profileId)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) => {
-            const before = effectiveFallbackChain(
-              ws.fallbackChains,
-              $agentDefaultsStore.fallbackChains,
-              agent.profileId
-            );
-            void setWorkspaceFallback(workspaceId, agent.profileId, chain).then(() => {
-              if (chain) void armNewlyAdded(workspaceId, before, chain);
-            });
-          }}
-          onThresholdChange={(profileId, percent) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })}
+        <AgentPrimaryPanel
+          scope="workspace"
+          {workspaceId}
+          primaryId={agent.profileId}
+          label={profileLabel}
+          {profiles}
         />
         {#if (ws.declinedAgents ?? []).length > 0}
           <div class="sp-row">
@@ -1471,6 +1308,20 @@
             {/each}
           </div>
         {/if}
+      {:else if agentsTab === ADD_TAB}
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New local custom name"
+            aria-label="New local custom agent name"
+            bind:value={newLocalCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addLocalCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addLocalCustom()}>Add local custom</button>
+        </div>
       {:else}
         {#if (ws.customProfiles ?? []).some((p) => p.id === agentsTab)}
           <CustomsEditor
@@ -1481,15 +1332,13 @@
               const before = (ws.customProfiles ?? []).filter((p) => p.id === agentsTab);
               const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
               void setWorkspaceCustomProfiles(workspaceId, [...others, ...next]);
-              // A deleted local leaves its fallback chain, any chain
-              // naming it, and its walk-at threshold dangling — clean
-              // all three, exactly as the app-wide delete does.
+              // A deleted local leaves everything keyed by it dangling —
+              // its fallback chain (and any chain naming it), complexity
+              // table (and rows routing to it), pause cycle, prompt lines
+              // and CLI args, plus its walk-at threshold. Clean all of it,
+              // exactly as the app-wide delete does.
               for (const p of before.filter((p) => !next.some((n) => n.id === p.id))) {
-                for (const [primary, chain] of Object.entries(ws.fallbackChains ?? {})) {
-                  if (primary === p.id) void setWorkspaceFallback(workspaceId, primary, null);
-                  else if (chain.includes(p.id))
-                    void setWorkspaceFallback(workspaceId, primary, chain.filter((c) => c !== p.id));
-                }
+                void dropWorkspaceProfileRefs(workspaceId, p.id);
                 if (($agentDefaultsStore.fallbackThresholds ?? {})[p.id] != null) {
                   const fallbackThresholds = { ...$agentDefaultsStore.fallbackThresholds };
                   delete fallbackThresholds[p.id];
@@ -1499,32 +1348,16 @@
             }}
           />
         {/if}
-        <h3 class="sub">Fallback</h3>
-        <FallbackChainEditor
-          profiles={profiles}
-          value={chainForPrimary(ws.fallbackChains, agentsTab)}
-          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agentsTab)}
-          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agentsTab)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) => {
-            const before = effectiveFallbackChain(
-              ws.fallbackChains,
-              $agentDefaultsStore.fallbackChains,
-              agentsTab
-            );
-            void setWorkspaceFallback(workspaceId, agentsTab, chain).then(() => {
-              if (chain) void armNewlyAdded(workspaceId, before, chain);
-            });
-          }}
-          onThresholdChange={(profileId, percent) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })}
-        />
+        {@const tabProfile = profiles.find((p) => p.id === agentsTab)}
+        {#if tabProfile}
+          <AgentPrimaryPanel
+            scope="workspace"
+            {workspaceId}
+            primaryId={tabProfile.id}
+            label={tabProfile.label}
+            {profiles}
+          />
+        {/if}
       {/if}
     </section>
 

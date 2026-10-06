@@ -72,6 +72,50 @@ export const DEFAULT_CYCLE: Omit<PauseCycle, "anchorMs"> = {
 /// indistinguishable from gavin being broken.
 export const MIN_PERIOD_MINUTES = 15;
 
+/// Pause cycles keyed by primary profile id. On the app map a missing
+/// key means that agent is never held; on a workspace map it means
+/// inherit the app cycle for that primary.
+export type PauseCyclesByPrimary = Record<string, PauseCycle>;
+
+/// One primary's cycle in a map, or null.
+export function pauseCycleForPrimary(
+  map: PauseCyclesByPrimary | null | undefined,
+  primaryId: string
+): PauseCycle | null {
+  const id = (primaryId ?? "").trim();
+  return (id && map?.[id]) || null;
+}
+
+/// The cycle in force for `primaryId` in this workspace: the workspace's
+/// override under that key (a cycle with `enabled: false` is the explicit
+/// "no pause for this agent"), else the app-wide cycle for it, else none.
+export function effectivePauseCycle(
+  workspaceMap: PauseCyclesByPrimary | null | undefined,
+  appMap: PauseCyclesByPrimary | null | undefined,
+  primaryId: string
+): PauseCycle | null {
+  const id = (primaryId ?? "").trim();
+  if (!id) return null;
+  if (workspaceMap != null && Object.prototype.hasOwnProperty.call(workspaceMap, id)) {
+    return workspaceMap[id];
+  }
+  return pauseCycleForPrimary(appMap, id);
+}
+
+/// Copy of `map` with one primary's cycle set, or the key removed (null).
+export function withPauseCycleForPrimary(
+  map: PauseCyclesByPrimary | null | undefined,
+  primaryId: string,
+  cycle: PauseCycle | null
+): PauseCyclesByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: PauseCyclesByPrimary = { ...(map ?? {}) };
+  if (!id) return next;
+  if (cycle) next[id] = cycle;
+  else delete next[id];
+  return next;
+}
+
 /// A pause must leave more time working than paused, or the cycle is a
 /// stop switch wearing a schedule. Half the period is the ceiling.
 export function maxPauseMinutes(periodMinutes: number): number {

@@ -10,6 +10,7 @@ import {
   composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
+  withPromptExtras,
   buildResumeCommand,
   unresumableConversationReason,
   mintConversationId,
@@ -297,6 +298,32 @@ describe("shellQuote", () => {
     expect(shellQuote("plain")).toBe("'plain'");
     expect(shellQuote("it's here")).toBe("'it'\\''s here'");
     expect(shellQuote('say "hi"\nnewline \\ backslash')).toBe("'say \"hi\"\nnewline \\ backslash'");
+  });
+});
+
+describe("withPromptExtras", () => {
+  it("returns the prompt untouched when there are no lines", () => {
+    expect(withPromptExtras("Do it.", [])).toBe("Do it.");
+    expect(withPromptExtras("Do it.", null)).toBe("Do it.");
+    expect(withPromptExtras("Do it.", undefined)).toBe("Do it.");
+    expect(withPromptExtras("Do it.", ["", "   "])).toBe("Do it.");
+  });
+
+  it("puts each line on its own, after a blank line, trimmed, in order", () => {
+    expect(withPromptExtras("Do it.", ["  Be brief. ", "", "Answer in British English."])).toBe(
+      "Do it.\n\nBe brief.\nAnswer in British English."
+    );
+  });
+
+  /// The host appends the same way to the wizard's prompts
+  /// (`append_prompt_extras` in agent_setup.rs): one format everywhere.
+  it("matches the separator the host uses for the setup flows", () => {
+    expect(withPromptExtras("P", ["a", "b"])).toBe("P\n\na\nb");
+  });
+
+  it("survives shell quoting as one argument, newlines and all", () => {
+    const command = buildRunCommand("claude", "", withPromptExtras("Do 'it'.", ["Don't stop."]));
+    expect(command).toBe("claude 'Do '\\''it'\\''.\n\nDon'\\''t stop.'");
   });
 });
 

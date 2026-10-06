@@ -542,6 +542,19 @@ export function resolveAgentConfig(
   };
 }
 
+/// The resolved agent with this profile's extra CLI arguments appended
+/// to the launch command — each entry verbatim, space-separated, after
+/// the model and effort flags. Verbatim because they are the human's own
+/// argv words for their own machine, the same raw-text convention
+/// `command` and the flags already use. Every composer (`buildRunCommand`,
+/// `buildHeadlessCommand`) takes `launchCommand` as its base, so this is
+/// the single seam both interactive and headless launches read.
+export function withExtraCliArgs(agent: ResolvedAgent, extras: readonly string[]): ResolvedAgent {
+  const args = extras.map((s) => s.trim()).filter(Boolean);
+  if (args.length === 0) return agent;
+  return { ...agent, launchCommand: `${agent.launchCommand} ${args.join(" ")}` };
+}
+
 /// The CSS custom-property value for a workspace accent, or `undefined`
 /// when none is set. Undefined is load-bearing twice over: it lets each
 /// indicator keep its OWN default (the hub nav's amber, a pane tab's

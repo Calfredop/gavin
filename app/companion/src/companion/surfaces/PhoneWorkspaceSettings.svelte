@@ -18,35 +18,27 @@
     setAgentField,
     setWorkspaceAutoCommit,
     setWorkspaceColor,
-    setWorkspaceComplexityTable,
     setWorkspaceCustomProfiles,
-    setWorkspaceFallback,
+    dropWorkspaceProfileRefs,
     setWorkspaceFlag,
     setWorkspaceFontSize,
-    setWorkspacePause,
     setWorkspaceRequireReview,
     terminalFontSizeDefault,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import {
-    chainForPrimary,
-    sanitizeFallbackThreshold,
-    workspaceOwnsFallbackChain,
-  } from "$lib/agents/agentFallback";
-  import {
+    ADD_TAB,
+    ADD_TAB_HINT,
     GENERAL_TAB,
     addCustomProfile,
     agentsHubTabs,
     profileOptionLabel,
+    validAgentsTab,
     type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
   import { effortOptions, modelOptions } from "$lib/agents/agentModel";
-  import { MIN_PERIOD_MINUTES, validateCycle, type PauseCycle } from "$lib/agents/agentPause";
-  import { agentPauseStore, editableCycle } from "$lib/agents/agentPauseState";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import {
     requireReviewFromSelect,
     requireReviewOptions,
@@ -60,13 +52,13 @@
   import type { Workspace } from "$lib/core/workspace";
   import { autoCommitFromSelect, autoCommitOptions, autoCommitToSelect, resolveAutoCommit } from "$lib/git/autoCommit";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import { dismissSaveProblem, loadSettings, saveProblem, saveSetting } from "$companion/state/workstation";
+  import PhoneAgentPrimary from "$companion/surfaces/PhoneAgentPrimary.svelte";
   import PhoneModelPicker from "$companion/surfaces/PhoneModelPicker.svelte";
   import PhoneSetting from "$companion/surfaces/PhoneSetting.svelte";
   import PhoneSettingsGroup from "$companion/surfaces/PhoneSettingsGroup.svelte";
   import PhoneToggle from "$companion/surfaces/PhoneToggle.svelte";
-  import { folderLine, inheritedPauseLine, workspaceAgentView } from "$companion/surfaces/phoneSettings";
+  import { folderLine, workspaceAgentView } from "$companion/surfaces/phoneSettings";
 
   interface Props {
     workspace: Workspace;
@@ -138,11 +130,10 @@
 
   let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let newLocalCustomName = $state("");
-  const agentsTabs = $derived(agentsHubTabs(profiles));
+  const agentsTabs = $derived(agentsHubTabs(profiles, ADD_TAB_HINT.workspace));
   $effect(() => {
-    if (agentsTab === GENERAL_TAB) return;
-    if (profiles.some((p) => p.id === agentsTab)) return;
-    agentsTab = GENERAL_TAB;
+    const valid = validAgentsTab(agentsTab, profiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
   });
 
   function addLocalCustom(): void {
@@ -156,25 +147,6 @@
     });
   }
 
-  // --- complexity ---------------------------------------------------------
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const next = { ...(ws.complexityAgents ?? {}) };
-    if (entry) next[level] = entry;
-    else delete next[level];
-    void saveSetting(() => setWorkspaceComplexityTable(id, next));
-  }
-
-  // --- pause --------------------------------------------------------------
-  /// Absent is INHERIT, which is not off: a workspace that wants no pause
-  /// while the app has one keeps a cycle switched off, so giving it its
-  /// own and switching it off are two different controls.
-  function editPause(own: PauseCycle, patch: Partial<PauseCycle>): void {
-    void saveSetting(() => setWorkspacePause(id, { ...own, ...patch }));
-  }
-
-  function saveFallback(primaryId: string, chain: string[] | null): void {
-    void saveSetting(() => setWorkspaceFallback(id, primaryId, chain));
-  }
 </script>
 
 <div class="settings">
@@ -288,85 +260,16 @@
       {/if}
 
       <p class="note">
-        Which agent runs a card of each difficulty, here only. A level left on its default follows the
-        Workstation's table.
+        Everything below is {agent.profileLabel}'s configuration in this workspace — the same settings its
+        tab shows. A setting this workspace has not made its own follows the Workstation's.
       </p>
-      <div class="desk-part">
-        <ComplexityTable
-          profiles={profiles}
-          table={ws.complexityAgents ?? {}}
-          inherited={$agentDefaultsStore.complexity}
-          onChange={setComplexity}
-        />
-      </div>
-
-      <PhoneToggle
-        label="Give this workspace its own pause settings"
-        checked={ws.agentPause != null}
-        hint={ws.agentPause == null ? inheritedPauseLine($agentPauseStore) : null}
-        onChange={(own) => void saveSetting(() => setWorkspacePause(id, own ? { ...editableCycle(null) } : null))}
+      <PhoneAgentPrimary
+        scope="workspace"
+        workspaceId={id}
+        primaryId={resolved.profileId}
+        label={agent.profileLabel}
+        {profiles}
       />
-      {#if ws.agentPause != null}
-        {@const own = ws.agentPause}
-        <PhoneToggle label="Pause on a cycle" checked={own.enabled} onChange={(on) => editPause(own, { enabled: on })} />
-        <PhoneSetting label="Pause for">
-          <input
-            type="number"
-            inputmode="numeric"
-            min="1"
-            aria-label="Minutes paused"
-            disabled={!own.enabled}
-            value={own.pauseMinutes}
-            onchange={(e) => editPause(own, { pauseMinutes: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">minutes every</span>
-          <input
-            type="number"
-            inputmode="numeric"
-            min={MIN_PERIOD_MINUTES}
-            aria-label="Minutes in a cycle"
-            disabled={!own.enabled}
-            value={own.periodMinutes}
-            onchange={(e) => editPause(own, { periodMinutes: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">minutes</span>
-        </PhoneSetting>
-        <PhoneToggle
-          label="Hold when a usage window is nearly spent"
-          checked={own.limitEnabled}
-          onChange={(on) => editPause(own, { limitEnabled: on })}
-        />
-        <PhoneSetting label="Hold at" warn={own.enabled ? validateCycle(own) : null}>
-          <input
-            type="number"
-            inputmode="numeric"
-            min="1"
-            max="100"
-            aria-label="Percent of the window used"
-            disabled={!own.limitEnabled}
-            value={own.limitPercent}
-            onchange={(e) => editPause(own, { limitPercent: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">% used</span>
-        </PhoneSetting>
-      {/if}
-
-      <PhoneSetting
-        label="Add local custom"
-        control="ws-new-local-custom"
-        hint="Locals are marked on their tabs and only exist in this workspace."
-      >
-        <input
-          id="ws-new-local-custom"
-          spellcheck="false"
-          placeholder="New local custom name"
-          bind:value={newLocalCustomName}
-          onkeydown={(e) => {
-            if (e.key === "Enter") addLocalCustom();
-          }}
-        />
-        <button type="button" class="add-custom" onclick={addLocalCustom}>Add local custom</button>
-      </PhoneSetting>
     {:else if agentsTab === resolved.profileId}
       {#if !ws.rootPath}
         <p class="note">This workspace is bound to no folder, so it has no agent to configure.</p>
@@ -403,30 +306,26 @@
         {/if}
       {/if}
 
-      <p class="note">
-        When a launch whose resolved agent is {agent.profileLabel} is over its usage threshold, new
-        launches walk this chain instead of pausing.
-      </p>
-      <div class="desk-part">
-        <FallbackChainEditor
-          profiles={profiles}
-          value={chainForPrimary(ws.fallbackChains, resolved.profileId)}
-          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, resolved.profileId)}
-          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, resolved.profileId)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) => saveFallback(resolved.profileId, chain)}
-          onThresholdChange={(profileId, percent) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackThresholds: {
-                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                  [profileId]: sanitizeFallbackThreshold(percent),
-                },
-              })
-            )}
+      <PhoneAgentPrimary
+        scope="workspace"
+        workspaceId={id}
+        primaryId={resolved.profileId}
+        label={agent.profileLabel}
+        {profiles}
+      />
+    {:else if agentsTab === ADD_TAB}
+      <PhoneSetting label="Add local custom" control="ws-new-local-custom" hint={ADD_TAB_HINT.workspace}>
+        <input
+          id="ws-new-local-custom"
+          spellcheck="false"
+          placeholder="New local custom name"
+          bind:value={newLocalCustomName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") addLocalCustom();
+          }}
         />
-      </div>
+        <button type="button" class="add-custom" onclick={addLocalCustom}>Add local custom</button>
+      </PhoneSetting>
     {:else}
       {#if (ws.customProfiles ?? []).some((p) => p.id === agentsTab)}
         <div class="desk-part">
@@ -438,18 +337,13 @@
               const before = (ws.customProfiles ?? []).filter((p) => p.id === agentsTab);
               const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
               void saveSetting(() => setWorkspaceCustomProfiles(id, [...others, ...next]));
-              // A deleted local leaves its fallback chain, any chain
-              // naming it, and its walk-at threshold dangling — clean
-              // all three, exactly as the app-wide delete does.
+              // A deleted local leaves everything keyed by it dangling —
+              // its fallback chain (and any chain naming it), complexity
+              // table (and rows routing to it), pause cycle, prompt lines
+              // and CLI args, plus its walk-at threshold. Clean all of it,
+              // exactly as the app-wide delete does.
               for (const p of before.filter((p) => !next.some((n) => n.id === p.id))) {
-                for (const [primary, chain] of Object.entries(ws.fallbackChains ?? {})) {
-                  if (primary === p.id)
-                    void saveSetting(() => setWorkspaceFallback(id, primary, null));
-                  else if (chain.includes(p.id))
-                    void saveSetting(() =>
-                      setWorkspaceFallback(id, primary, chain.filter((c) => c !== p.id))
-                    );
-                }
+                void saveSetting(() => dropWorkspaceProfileRefs(id, p.id));
                 if (($agentDefaultsStore.fallbackThresholds ?? {})[p.id] != null) {
                   const fallbackThresholds = { ...$agentDefaultsStore.fallbackThresholds };
                   delete fallbackThresholds[p.id];
@@ -460,27 +354,16 @@
           />
         </div>
       {/if}
-      <p class="note">Fallback when this agent is the resolved primary.</p>
-      <div class="desk-part">
-        <FallbackChainEditor
-          profiles={profiles}
-          value={chainForPrimary(ws.fallbackChains, agentsTab)}
-          inherited={chainForPrimary($agentDefaultsStore.fallbackChains, agentsTab)}
-          inheriting={!workspaceOwnsFallbackChain(ws.fallbackChains, agentsTab)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) => saveFallback(agentsTab, chain)}
-          onThresholdChange={(profileId, percent) =>
-            void saveSetting(() =>
-              setAgentDefaults({
-                ...$agentDefaultsStore,
-                fallbackThresholds: {
-                  ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                  [profileId]: sanitizeFallbackThreshold(percent),
-                },
-              })
-            )}
+      {@const tabProfile = profiles.find((p) => p.id === agentsTab)}
+      {#if tabProfile}
+        <PhoneAgentPrimary
+          scope="workspace"
+          workspaceId={id}
+          primaryId={tabProfile.id}
+          label={tabProfile.label}
+          {profiles}
         />
-      </div>
+      {/if}
     {/if}
   </PhoneSettingsGroup>
 

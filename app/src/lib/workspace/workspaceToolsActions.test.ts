@@ -16,6 +16,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(),
+  promptExtrasFor: vi.fn((): string[] => []),
   conversationIdForLaunch: vi.fn(() => "conv-1"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),

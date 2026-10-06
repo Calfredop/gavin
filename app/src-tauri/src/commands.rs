@@ -148,8 +148,6 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "pr_status",
     "card_run_tokens",
     "conversation_log",
-    "get_agent_pause",
-    "set_agent_pause",
     "get_launch_config",
     "set_launch_config",
     "get_custom_resume_args",

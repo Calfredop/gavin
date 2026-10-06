@@ -80,6 +80,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
+  promptExtrasFor: vi.fn((): string[] => []),
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
   // agent -- and a test that moves one has to move both, or a rail's

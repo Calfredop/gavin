@@ -205,6 +205,17 @@ export function composeDevelopPrompt(
   });
 }
 
+/// The agent's extra prompt lines at the END of a composed prompt, each
+/// its own line, blanks skipped, separated from the prompt by a blank
+/// line. Appended after composition rather than woven into a template so
+/// the same list lands identically on a run, a resume, a review, a
+/// develop and a Best-of-N candidate -- and matches what the host does to
+/// the wizard's prompts (`append_prompt_extras` in agent_setup.rs).
+export function withPromptExtras(prompt: string, extras: readonly string[] | null | undefined): string {
+  const lines = (extras ?? []).map((l) => l.trim()).filter(Boolean);
+  return lines.length === 0 ? prompt : `${prompt}\n\n${lines.join("\n")}`;
+}
+
 // POSIX single-quoting: wrap in single quotes, closing/reopening around
 // each embedded single quote. Newlines and every other byte ride inside
 // the quotes untouched.

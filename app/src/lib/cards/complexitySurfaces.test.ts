@@ -119,23 +119,42 @@ describe("the card surfaces", () => {
 });
 
 describe("the settings panels", () => {
+  const PANEL = "AgentPrimaryPanel.svelte";
+
   it.each([
     ["the workspace panel", WORKSPACE_PANEL],
     ["the app panel", APP_PANEL],
-  ])("%s renders the shared table rather than its own", (_name, file) => {
-    expect(source(file)).toContain("<ComplexityTable");
-    expect(source(file)).toContain('import ComplexityTable from "$lib/cards/ComplexityTable.svelte"');
+  ])("%s draws the table through the one per-agent panel, not its own copy", (_name, file) => {
+    expect(source(file)).toContain("<AgentPrimaryPanel");
+    expect(source(file)).not.toContain("<ComplexityTable");
   });
 
-  it("gives the workspace panel the app table to fall through to", () => {
-    // Without `inherited` every row would read "This workspace's agent",
-    // which is a lie about any level the app has attributed.
-    expect(source(WORKSPACE_PANEL)).toContain("inherited={$agentDefaultsStore.complexity}");
+  it("renders the shared table inside the per-agent panel", () => {
+    expect(source(PANEL)).toContain("<ComplexityTable");
+    expect(source(PANEL)).toContain('import ComplexityTable from "$lib/cards/ComplexityTable.svelte"');
+  });
+
+  it("keys the table by the agent it belongs to", () => {
+    // Complexity is per primary agent: the table shown is the one for the
+    // agent the panel was pointed at, never one table for every agent.
+    expect(source(PANEL)).toContain("primaryView(scope, primaryId, defaults, ws)");
+    expect(source("agentPrimary.ts")).toContain("complexityTableForPrimary(defaults.complexityTables, primaryId)");
+    expect(source("agentPrimary.ts")).toContain(
+      "withComplexityTableForPrimary(defaults.complexityTables, primaryId, table)"
+    );
+  });
+
+  it("lets a workspace follow the app table until it takes one of its own", () => {
+    // Without the toggle a workspace would silently freeze a copy of the
+    // app-wide table into itself the first time anybody looked at it.
+    expect(source(PANEL)).toContain("Give this workspace its own complexity table for {label}");
+    expect(source(PANEL)).toMatch(/<ComplexityTable \{profiles\} table=\{view\.appTable\} readonly/);
   });
 
   it("writes a workspace row to the workspace and an app row to the app", () => {
-    expect(source(WORKSPACE_PANEL)).toContain("setWorkspaceComplexityTable(workspaceId");
-    expect(source(APP_PANEL)).toContain("setAgentDefaults({ ...$agentDefaultsStore, complexity })");
+    expect(source("agentPrimary.ts")).toContain("setWorkspaceComplexityTable(workspaceId, primaryId, table)");
+    expect(source("agentPrimary.ts")).toContain("setAgentDefaults({");
+    expect(source(PANEL)).toContain("saveComplexityTable(scope, workspaceId, primaryId, defaults, next)");
   });
 
   it("clears a row rather than storing an empty one", () => {

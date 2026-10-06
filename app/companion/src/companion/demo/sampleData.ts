@@ -12,7 +12,6 @@
 // no root at all. The cards are files (sampleCards.ts), and the trees
 // are what a scan of them reads; the two projects' other files and their
 // Git histories are sampleProjects.ts.
-import type { PauseCycle } from "$lib/agents/agentPause";
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { SessionBaseline } from "$lib/core/backend";
@@ -53,7 +52,6 @@ export interface DemoSettings {
   customResumeArgs: string | null;
   agentModels: Record<string, string>;
   agentDefaults: AgentDefaults;
-  agentPause: PauseCycle | null;
   launch: LaunchConfig | null;
 }
 
@@ -370,12 +368,14 @@ export function sampleSettings(): DemoSettings {
           apiFamily: "openai",
         },
       ],
-      complexity: {},
+      complexityTables: {},
+      pauseCycles: {},
+      promptExtras: {},
+      extraCliArgs: {},
       fallbackChains: {},
       fallbackThresholds: {},
       actionPromptOverrides: {},
     },
-    agentPause: null,
     launch: null,
   };
 }

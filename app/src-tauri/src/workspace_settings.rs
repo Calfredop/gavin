@@ -63,11 +63,13 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "terminalFontSize",
     "autoCommit",
     "autoResumeRuns",
-    "agentPause",
+    "pauseCycles",
     "fallbackChains",
     "armedAgents",
     "declinedAgents",
-    "complexityAgents",
+    "complexityTables",
+    "promptExtras",
+    "extraCliArgs",
     "gitTrackingAsked",
     "trustedConfigHash",
     "mcpForeignServersChoice",
@@ -380,19 +382,23 @@ mod tests {
                 }),
             }),
             last_active_at: Some(n),
-            agent_pause: Some(AgentPauseConfig {
+            agent_pause: None,
+            pause_cycles: HashMap::from([(s("claude-code"), AgentPauseConfig {
                 enabled: flavour == "a",
                 period_minutes: 300,
                 pause_minutes: 10 * n as u32,
                 anchor_ms: n,
                 limit_percent: 95.0,
                 limit_enabled: flavour == "a",
-            }),
+            })]),
+            prompt_extras: HashMap::from([(s("claude-code"), vec![s("prompt-line")])]),
+            extra_cli_args: HashMap::from([(s("claude-code"), vec![s("--flag")])]),
             pinned_at: Some(10 * n),
-            complexity_agents: HashMap::from([(
+            complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::from([(s("claude-code"), HashMap::from([(
                 "complex".to_string(),
                 ComplexityAgent { profile: s("profile"), model: s("model"), effort: s("effort") },
-            )]),
+            )]))]),
             git_tracking_asked: flavour == "a",
             trusted_config_hash: Some(s("hash")),
             mcp_foreign_servers_choice: Some(McpForeignServersChoice {
@@ -534,14 +540,14 @@ mod tests {
         let after = apply_settings_patch(
             &before,
             &patch(serde_json::json!({
-                "agentPause": null,
+                "pauseCycles": null,
                 "requireReview": null,
                 "notifyNeedsInput": null,
                 "armedAgents": null,
             })),
         )
         .unwrap();
-        assert_eq!(after.agent_pause, None, "absent means inherit the app-wide cycle");
+        assert!(after.pause_cycles.is_empty(), "absent means inherit the app-wide cycle");
         assert_eq!(after.require_review, None);
         assert!(after.notify_needs_input, "a cleared notification toggle is back on");
         assert!(after.armed_agents.is_empty());
@@ -725,9 +731,9 @@ mod tests {
                 "agentCommit": { "sessionId": "commit-1", "cwd": "/Users/me/gavin", "retries": 1, "startedAt": 1700000000001 }
               },
               "lastActiveAt": 1700000000002,
-              "agentPause": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 1700000000003, "limitPercent": 95.0, "limitEnabled": true },
+              "pauseCycles": { "claude-code": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 1700000000003, "limitPercent": 95.0, "limitEnabled": true } },
               "pinnedAt": 1700000000004,
-              "complexityAgents": { "complex": { "profile": "claude-code", "model": "opus" } },
+              "complexityTables": { "claude-code": { "complex": { "profile": "claude-code", "model": "opus" } } },
               "gitTrackingAsked": true,
               "trustedConfigHash": "abc123",
               "mcpForeignServersChoice": { "hash": "def456", "action": "keep" },
@@ -775,7 +781,6 @@ mod tests {
           "terminal_font_size": 13,
           "auto_commit": false,
           "removed_workspaces": [{ "id": "ws-old", "name": "Old", "rootPath": "/Users/me/old", "removedAt": 1690000000000 }],
-          "agent_pause": null,
           "superpowers": { "/Users/me/gavin": "installed" },
           "agent_defaults": {
             "customProfiles": [{
@@ -783,8 +788,7 @@ mod tests {
               "label": "Custom",
               "command": "claude",
               "modelFlag": "--model"
-            }],
-            "complexity": {}
+            }]
           },
           "git_tracking": null,
           "require_review": null,

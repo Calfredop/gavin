@@ -54,7 +54,6 @@ export const SETTINGS_COMMANDS: Record<string, DemoCommand> = {
   get_git_tracking_default: (_args, demo): Answer<"getGitTrackingDefault"> => demo.state.settings.gitTracking,
   get_agent_model_defaults: (_args, demo): Answer<"getAgentModelDefaults"> => ({ ...demo.state.settings.agentModels }),
   get_agent_defaults: (_args, demo): Answer<"getAgentDefaults"> => copy(demo.state.settings.agentDefaults),
-  get_agent_pause: (_args, demo): Answer<"getAgentPause"> => copy(demo.state.settings.agentPause),
   get_launch_config: (_args, demo): Answer<"getLaunchConfig"> => copy(demo.state.settings.launch),
 
   // A blank theme is no theme: "System", stored as absence.
@@ -88,8 +87,5 @@ export const SETTINGS_COMMANDS: Record<string, DemoCommand> = {
     if (!defaults) throw new DemoFailure('missing argument "agentDefaults"');
     return copy(defaults) as unknown as DemoSettings["agentDefaults"];
   }),
-  set_agent_pause: write("agentPause", (args) =>
-    copy(nullable(args, "agentPause", isObject)) as DemoSettings["agentPause"]
-  ),
   set_launch_config: write("launch", (args) => copy(nullable(args, "launch", isObject)) as DemoSettings["launch"]),
 };

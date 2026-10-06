@@ -19,24 +19,20 @@
     headroomDefault,
     setHeadroomDefault,
   } from "$lib/core/layoutState";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
-  import {
-    chainForPrimary,
-    effectiveFallbackChain,
-    sanitizeFallbackThreshold,
-    withFallbackChainForPrimary,
-  } from "$lib/agents/agentFallback";
+  import AgentPrimaryPanel from "$lib/agents/AgentPrimaryPanel.svelte";
   import { effectiveDefaultAgent } from "$lib/cards/complexity";
-  import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
+  import { withAgentEffort } from "$lib/cards/complexity";
   import { effortOptions, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
+    ADD_TAB,
+    ADD_TAB_HINT,
     AGENTS_SECTION,
     GENERAL_TAB,
     addCustomProfile,
     agentsHubTabs,
     agentsTabForQuery,
     isCustomProfileId,
+    validAgentsTab,
     type AgentsHubTab,
   } from "$lib/agents/agentsHub";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
@@ -94,7 +90,6 @@
     type ClosestMatch,
   } from "$lib/core/settingsSearchFallback";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
   import { grantForAnsweredPrompt, pairingSubject, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
@@ -153,7 +148,7 @@
     type PairingRequest,
     type PairingState,
   } from "$lib/core/remoteAccess";
-  import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
+  import { profilesInUse } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
@@ -178,12 +173,6 @@
   );
   const profiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
 
-  /// The app-wide cycle, or the shipped default while there is none --
-  /// an editor needs fields on screen, and `saveAgentPause` is what turns
-  /// the default into a stored cycle.
-  const cycle = $derived($agentPauseStore ?? { ...DEFAULT_CYCLE, anchorMs: 0 });
-  const cycleError = $derived(cycle.enabled ? validateCycle(cycle) : null);
-
   /// Whether any agent in use can actually be asked about its limits. The
   /// limit gate is offered either way -- a workspace may switch agents --
   /// but saying so beats a control that silently never fires.
@@ -191,25 +180,12 @@
     $agentProfilesStore.some((p) => p.usageProbe && profilesInUse().includes(p.id))
   );
 
-  /// Writes through on every change, refusing an invalid cycle rather
-  /// than storing one gavin would then have to ignore at read time.
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
   const launch = $derived($launchConfigStore);
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveLaunchConfig({ ...launch, ...patch });
-  }
-
-  function edit(patch: Partial<PauseCycle>): void {
-    const next = { ...cycle, ...patch };
-    if (next.enabled && validateCycle(next)) {
-      // Keep it on screen so the message can explain itself; nothing is
-      // saved until it is usable again.
-      agentPauseStore.set(next);
-      return;
-    }
-    void saveAgentPause(next);
   }
 
   /// Which rows have their custom box open. A row whose stored value is
@@ -294,15 +270,6 @@
 
   /// Named customs' API family: dark on a daemon that would drop it.
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
-
-  /// One complexity row. `null` clears it, which is what "no agent for
-  /// this level" means -- the card then runs the workspace's own.
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const complexity = { ...$agentDefaultsStore.complexity };
-    if (entry) complexity[level] = entry;
-    else delete complexity[level];
-    void setAgentDefaults({ ...$agentDefaultsStore, complexity });
-  }
 
   // --- headroom --------------------------------------------------------
   //
@@ -695,8 +662,8 @@
   /// One entry per section below, in the same order -- see
   /// SettingsHubView's own SECTIONS for why whole sections, not rows.
   ///
-  /// Agents is one section with inner tabs (Defaults / Customs /
-  /// Complexity / Fallback / Pause). Headroom, Tools and TypeSafe stay
+  /// Agents is one section with inner tabs (General, one per agent, and a
+  /// trailing "+" to add a custom). Headroom, Tools and TypeSafe stay
   /// top-level. Updates / Daemon / Remote access are app-wide
   /// infrastructure that used to live on each workspace's Settings tab
   /// by mistake.
@@ -858,7 +825,13 @@
   let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
   let agentsQuerySeen = $state("");
   let newCustomName = $state("");
-  const agentsTabs = $derived(agentsHubTabs(allProfiles));
+  const agentsTabs = $derived(agentsHubTabs(allProfiles, ADD_TAB_HINT.app));
+  /// The agent General is about: the app-wide default, and what its label
+  /// reads as in the heading over the block.
+  const defaultAgentId = $derived(effectiveDefaultAgent($agentDefaultsStore));
+  const defaultAgentLabel = $derived(
+    allProfiles.find((p) => p.id === defaultAgentId)?.label ?? defaultAgentId
+  );
   $effect(() => {
     const q = settingsQuery;
     if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
@@ -866,9 +839,8 @@
     agentsTab = agentsTabForQuery("app", q, allProfiles);
   });
   $effect(() => {
-    if (agentsTab === GENERAL_TAB) return;
-    if (allProfiles.some((p) => p.id === agentsTab)) return;
-    agentsTab = GENERAL_TAB;
+    const valid = validAgentsTab(agentsTab, allProfiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
   });
 
   const activeAgentProfile = $derived(allProfiles.find((p) => p.id === agentsTab) ?? null);
@@ -1120,137 +1092,21 @@
         </label>
         <p class="hint">
           Used when a workspace has not chosen its own agent. Today that silent fallback was Claude
-          Code; this setting makes it explicit.
+          Code; this setting makes it explicit. Everything below is that agent's own configuration —
+          the same settings its tab shows.
         </p>
 
-        <h3 class="sub">Fallback for {effectiveDefaultAgent($agentDefaultsStore)}</h3>
-        <p class="hint">
-          When that default agent is over its usage threshold, walk this chain instead of pausing.
-          Each agent’s own tab edits the chain for that agent as primary. Switching the default
-          above shows that agent’s chain here.
-        </p>
-        <FallbackChainEditor
+        <!-- General edits the SELECTED default agent's own settings: the same
+             data its tab shows, so switching the default above just points
+             this block at another agent. -->
+        <h3 class="sub">{defaultAgentLabel}</h3>
+        <AgentPrimaryPanel
+          scope="app"
+          primaryId={defaultAgentId}
+          label={defaultAgentLabel}
           profiles={allProfiles}
-          value={chainForPrimary(
-            $agentDefaultsStore.fallbackChains,
-            effectiveDefaultAgent($agentDefaultsStore)
-          )}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackChains: withFallbackChainForPrimary(
-                $agentDefaultsStore.fallbackChains,
-                effectiveDefaultAgent($agentDefaultsStore),
-                chain ?? []
-              ),
-            })}
-          onThresholdChange={(profileId, percent) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })}
+          limitsProbed={probed}
         />
-
-        <h3 class="sub">Complexity</h3>
-        <p class="hint">
-          A card can say how hard its work is, and each level can run a different agent — so a rename
-          need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
-          workspace runs; a model or an effort on its own keeps that agent and changes only that.
-          Every workspace can override any level on its own Settings tab.
-        </p>
-        <ComplexityTable
-          profiles={allProfiles}
-          table={$agentDefaultsStore.complexity}
-          onChange={setComplexity}
-        />
-
-        <h3 class="sub">Pause</h3>
-        <p class="hint">
-          Sit out part of every window so a rail does not spend a subscription limit
-          while nobody is watching. Nothing already running is interrupted — only
-          new starts wait.
-        </p>
-        <div class="row">
-          <span>Scheduled</span>
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={cycle.enabled}
-              onchange={(e) => edit({ enabled: e.currentTarget.checked })}
-            />
-            <span>Pause on a cycle</span>
-          </label>
-        </div>
-        <div class="row">
-          <span>Pause for</span>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            disabled={!cycle.enabled}
-            value={cycle.pauseMinutes}
-            onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">minutes every</span>
-          <input
-            class="num"
-            type="number"
-            min={MIN_PERIOD_MINUTES}
-            disabled={!cycle.enabled}
-            value={cycle.periodMinutes}
-            onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">minutes</span>
-        </div>
-        <div class="row">
-          <span>At the limit</span>
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={cycle.limitEnabled}
-              onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
-            />
-            <span>Hold when a window is</span>
-          </label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="100"
-            disabled={!cycle.limitEnabled}
-            value={cycle.limitPercent}
-            onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
-          />
-          <span class="unit">% used</span>
-        </div>
-        {#if cycleError}
-          <p class="hint error">{cycleError}</p>
-        {:else if !probed}
-          <p class="hint">
-            Holding at a limit needs an agent whose limits gavin can read — today
-            Claude Code and Codex. No workspace here runs one, so only the schedule
-            applies.
-          </p>
-        {/if}
-
-        <h3 class="sub">Customs</h3>
-        <div class="row">
-          <input
-            class="custom"
-            spellcheck="false"
-            placeholder="New custom name"
-            bind:value={newCustomName}
-            onkeydown={(e) => {
-              if (e.key === "Enter") void addAppCustom();
-            }}
-          />
-          <button type="button" onclick={() => void addAppCustom()}>Add custom</button>
-        </div>
-        <p class="hint">Each custom gets its own tab for command, flags, API family and fallback.</p>
       {:else if activeAgentProfile}
         {#if activeCustom}
           <label class="row">
@@ -1374,33 +1230,27 @@
           </div>
         {/if}
 
-        <h3 class="sub">Fallback</h3>
-        <p class="hint">
-          When a launch whose resolved agent is {activeAgentProfile.label} is over its usage
-          threshold, walk this chain instead of pausing.
-        </p>
-        <FallbackChainEditor
+        <AgentPrimaryPanel
+          scope="app"
+          primaryId={activeAgentProfile.id}
+          label={activeAgentProfile.label}
           profiles={allProfiles}
-          value={chainForPrimary($agentDefaultsStore.fallbackChains, activeAgentProfile.id)}
-          thresholds={$agentDefaultsStore.fallbackThresholds}
-          onChange={(chain) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackChains: withFallbackChainForPrimary(
-                $agentDefaultsStore.fallbackChains,
-                activeAgentProfile.id,
-                chain ?? []
-              ),
-            })}
-          onThresholdChange={(profileId, percent) =>
-            void setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })}
+          limitsProbed={probed}
         />
+      {:else if agentsTab === ADD_TAB}
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New custom name"
+            aria-label="New custom agent name"
+            bind:value={newCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addAppCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addAppCustom()}>Add custom</button>
+        </div>
       {/if}
     </section>
 

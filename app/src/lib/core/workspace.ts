@@ -182,10 +182,11 @@ export interface Workspace {
   /// how the app hub orders its recents: stamped newest first, then the
   /// never-stamped ones in their stored order.
   lastActiveAt?: number;
-  /// This workspace's own agent pause cycle. Absent means INHERIT the
-  /// app-wide one, which is not the same as off: a workspace that wants
-  /// no pause while the app has one stores a cycle with `enabled: false`.
-  agentPause?: PauseCycle;
+  /// This workspace's own pause cycles, keyed by primary profile id.
+  /// A key absent means INHERIT the app-wide cycle for that primary,
+  /// which is not the same as off: a workspace that wants no pause for a
+  /// primary stores a cycle with `enabled: false` under its key.
+  pauseCycles?: Record<string, PauseCycle>;
   /// This workspace's own fallback chains keyed by primary profile id.
   /// A missing key inherits the app-wide chain for that primary; a present
   /// empty array is an explicit "no fallback" override for that primary.
@@ -203,12 +204,17 @@ export interface Workspace {
   /// milliseconds; absent means not pinned. Same rule and same reason as
   /// `Page.pinnedAt`, one level up.
   pinnedAt?: number;
-  /// This workspace's overrides of the app-wide complexity table, keyed
-  /// by level name. Overridden PER LEVEL: a level with no entry here
-  /// means "whatever the app says", so a workspace that only cares about
-  /// its hardest cards need not restate the other four. Absent (rather
-  /// than empty) is the ordinary inheriting case.
-  complexityAgents?: ComplexityTable;
+  /// This workspace's own complexity tables, keyed by primary profile
+  /// id. A key absent means INHERIT the app-wide table for that primary;
+  /// a key present is that primary's whole table (a level left alone in
+  /// it still means "run the workspace's agent"). An absent/empty map
+  /// inherits every primary's table.
+  complexityTables?: Record<string, ComplexityTable>;
+  /// Extra prompt lines / CLI args per primary. A key absent inherits
+  /// the app-wide list for that primary; a present empty list is an
+  /// explicit "nothing extra" override for it.
+  promptExtras?: Record<string, string[]>;
+  extraCliArgs?: Record<string, string[]>;
   /// Whether the human has been ASKED whether gavin's own files belong in
   /// this repo's git history. Not the answer: that is the ignore rule in
   /// the repository itself, which git owns and this must never shadow.

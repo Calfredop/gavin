@@ -17,6 +17,7 @@ import {
   agentFileFromPick,
   fieldCommit,
   deleteBlockedReason,
+  withExtraCliArgs,
   type AgentProfileInfo,
   type CustomProfile,
 } from "$lib/core/settings";
@@ -209,6 +210,27 @@ describe("renameDecision", () => {
 
   it("points when the name did not actually change", () => {
     expect(renameDecision("CLAUDE.md", "CLAUDE.md", true, false)).toBe("point");
+  });
+});
+
+describe("withExtraCliArgs", () => {
+  const agent = () =>
+    resolveAgentConfig({ profile: "claude-code", file: null, command: null, model: "opus" }, PROFILES, {});
+
+  it("leaves the launch command alone when the agent has no extra arguments", () => {
+    const base = agent();
+    expect(withExtraCliArgs(base, [])).toBe(base);
+    expect(withExtraCliArgs(base, ["", "  "])).toBe(base);
+  });
+
+  it("appends each argument verbatim, space-separated, after the model and effort flags", () => {
+    const base = agent();
+    expect(base.launchCommand).toBe("claude --model opus");
+    const next = withExtraCliArgs(base, ["--verbose", "  --add-dir ../shared "]);
+    expect(next.launchCommand).toBe("claude --model opus --verbose --add-dir ../shared");
+    // Only the launch line changes; the bare command other code reads does not.
+    expect(next.command).toBe(base.command);
+    expect(base.launchCommand).toBe("claude --model opus");
   });
 });
 

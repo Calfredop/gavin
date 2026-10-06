@@ -1,5 +1,4 @@
 import type { AgentDefaults } from "$lib/cards/complexity";
-import type { PauseCycle } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import type { GavinMemorySample, SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
 import type { LaunchConfig } from "$lib/agents/launchGate";
@@ -566,20 +565,6 @@ export function watchmanForget(root: string): Promise<void> {
   return invoke("watchman_forget", { root });
 }
 
-/// The app-wide agent pause cycle, machine-local beside the theme.
-/// `null` is no cycle at all, which is the shipped default.
-export function getAgentPause(): Promise<PauseCycle | null> {
-  return invoke("get_agent_pause");
-}
-
-/// Replaces it; `null` clears it. The ANCHOR is the caller's to supply
-/// and the host never rewrites it -- stamping `now` on every save would
-/// slide the pause forward each time somebody nudged a field, so the
-/// cycle would never fire for anyone who kept adjusting it.
-export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
-  return invoke("set_agent_pause", { agentPause });
-}
-
 /// The app-wide launch wall: how many agent turns may be in flight at
 /// once, and whether memory pressure holds new ones. `null` means nobody
 /// has expressed a preference and gavin's own default applies -- absence
@@ -589,7 +574,7 @@ export function getLaunchConfig(): Promise<LaunchConfig | null> {
   return invoke("get_launch_config");
 }
 
-/// Replaces it wholesale, the same shape as `setAgentPause`: the panel
+/// Replaces it wholesale, the same shape as `setAgentDefaults`: the panel
 /// holds both fields, so there is no per-key command and no way for one
 /// to be saved while the other is dropped.
 export function setLaunchConfig(launch: LaunchConfig | null): Promise<void> {
@@ -622,7 +607,7 @@ export function getAgentDefaults(): Promise<AgentDefaults> {
 }
 
 /// Replaces the whole struct. Wholesale rather than per key, the same
-/// shape as `setAgentPause`: the panel already holds every field, and a
+/// shape as `setLaunchConfig`: the panel already holds every field, and a
 /// per-key command is how one of them ends up saved while another is
 /// dropped.
 export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
@@ -1722,8 +1707,17 @@ export function gitMergeToolName(cwd: string): Promise<string | null> {
 
 /// Installs the flow's step skill when the profile supports skills, and
 /// returns the prompt that starts the agent on it (spec §7.1).
-export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file"): Promise<string> {
-  return invoke("compose_agent_prompt", { rootPath, flow });
+///
+/// `promptExtras` is the EFFECTIVE list of extra prompt lines for the
+/// agent that will run it (workspace override else app-wide); the host
+/// appends them after composing, so a skill prompt and an inline-document
+/// prompt carry them alike.
+export function composeAgentPrompt(
+  rootPath: string,
+  flow: "prd" | "agent-file",
+  promptExtras: string[] = []
+): Promise<string> {
+  return invoke("compose_agent_prompt", { rootPath, flow, promptExtras });
 }
 
 // --- Orchestration (SP1) ----------------------------------------------------

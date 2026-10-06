@@ -8,7 +8,7 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
@@ -26,6 +26,7 @@ import {
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
+  withPromptExtras,
   noPromptReason,
   provisionalSessionName,
   runStatusNeeded,
@@ -479,7 +480,10 @@ export async function developCard(
   const command = buildRunCommand(
     agent.launchCommand,
     agent.promptArgs,
-    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop"))
+    withPromptExtras(
+      composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
+      promptExtrasFor(workspaceId, agent.profileId)
+    )
   );
   if (command === null) return noPromptReason(agent.label);
 
@@ -664,7 +668,7 @@ async function launchCard(
   // by the note refusal at the top of this function, and a closure over a
   // parameter loses that.
   const kind = card.kind;
-  const composePrompt = (at: string): string => {
+  const composeCardPrompt = (at: string): string => {
     if (mode === "review") {
       return composeReviewLaunchPrompt(
         at,
@@ -716,6 +720,12 @@ async function launchCard(
           promptOpts(workspaceId, "action:run-plan")
         );
   };
+  // The launching agent's own extra prompt lines, after whichever card
+  // prompt the mode composed. Keyed by the agent that actually launches
+  // (a fallback's, not the card's primary), because the lines are
+  // instructions to THAT agent.
+  const composePrompt = (at: string): string =>
+    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
     if (!file.exists) return `Card file not found: ${card.id}`;
@@ -1014,7 +1024,7 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // whatever CLI the workspace chose -- a card's own `agent:`/`model:`
   // attribution never changes that.
   const agent = resolvedAgentFor(workspaceId);
-  const composePrompt = (at: string): string =>
+  const composeCardPrompt = (at: string): string =>
     card.kind === "task"
       ? composeTaskPrompt(
           at,
@@ -1034,6 +1044,8 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
           agent.sessionIdDiscovery,
           promptOpts(workspaceId, "action:run-plan")
         );
+  const composePrompt = (at: string): string =>
+    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,

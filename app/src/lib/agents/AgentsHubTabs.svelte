@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { AgentsHubTab, AgentsHubTabDef } from "$lib/agents/agentsHub";
+  import { ADD_TAB, type AgentsHubTab, type AgentsHubTabDef } from "$lib/agents/agentsHub";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     tabs: readonly AgentsHubTabDef[];
@@ -19,9 +20,12 @@
       aria-selected={tab === t.id}
       tabindex={tab === t.id ? 0 : -1}
       class:on={tab === t.id}
+      class:add={t.id === ADD_TAB}
+      aria-label={t.hint ? `${t.label} — ${t.hint}` : undefined}
+      use:tooltip={t.hint ?? ""}
       onclick={() => onTab(t.id)}
     >
-      {t.label}
+      <span class="label">{t.label}</span>
     </button>
   {/each}
 </div>
@@ -49,6 +53,15 @@
   .tabs button:hover {
     color: var(--text);
     background: var(--surface-overlay);
+  }
+  /* The "+" tab is a control, not an agent: narrower, and its glyph larger
+     so it reads as an add affordance rather than a one-character name. */
+  .tabs button.add {
+    padding-inline: 14px;
+  }
+  .tabs button.add .label {
+    font-size: 1.15em;
+    line-height: 1;
   }
   .tabs button.on {
     color: var(--text);

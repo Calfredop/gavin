@@ -34,7 +34,7 @@ const layout = vi.hoisted(() => {
   const agentDefaultsStore = store({
     customCommand: "",
     customModelFlag: "",
-    complexity: {} as Record<string, { profile: string; model: string }>,
+    complexityTables: {} as Record<string, Record<string, { profile: string; model: string }>>,
     fallbackChains: {},
   });
   return {
@@ -87,7 +87,7 @@ beforeEach(() => {
   layout.agentDefaultsStore.set({
     customCommand: "",
     customModelFlag: "",
-    complexity: {},
+    complexityTables: {},
     fallbackChains: {},
   });
   layout.resolvedAgentFor.mockReturnValue({ profileId: "claude-code" });
@@ -103,11 +103,22 @@ describe("owedArming", () => {
     layout.agentDefaultsStore.set({
       customCommand: "",
       customModelFlag: "",
-      complexity: { intricate: { profile: "gemini", model: "" } },
+      complexityTables: { "claude-code": { intricate: { profile: "gemini", model: "" } } },
       fallbackChains: {},
     });
-    layout.workspaceComplexityTable.mockReturnValue({});
+    // The effective table of the agent this workspace runs: the one place
+    // a card's attributed profile comes from.
+    layout.workspaceComplexityTable.mockReturnValue({ intricate: { profile: "gemini", model: "" } });
     expect(owedArming("w1")).toEqual(["codex", "gemini"]);
+    expect(layout.workspaceComplexityTable).toHaveBeenCalledWith("w1", "claude-code");
+  });
+
+  it("asks for the table of whichever agent the workspace runs", () => {
+    layout.layoutState.set({ workspaces: [{ id: "w1", armedAgents: [] }], activeWorkspaceId: "w1" });
+    layout.resolvedAgentFor.mockReturnValue({ profileId: "codex" });
+    layout.workspaceComplexityTable.mockReturnValue({ trivial: { profile: "opencode", model: "" } });
+    expect(owedArming("w1")).toEqual(["opencode"]);
+    expect(layout.workspaceComplexityTable).toHaveBeenCalledWith("w1", "codex");
   });
 
   it("leaves out an agent the human said not to ask about again", () => {
@@ -136,7 +147,7 @@ describe("owedArming", () => {
     layout.agentDefaultsStore.set({
       customCommand: "",
       customModelFlag: "",
-      complexity: {},
+      complexityTables: {},
       fallbackChains: { "claude-code": ["codex"] },
     });
     expect(owedArming("w1")).toEqual([]);

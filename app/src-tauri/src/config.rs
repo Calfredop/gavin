@@ -354,32 +354,54 @@ pub struct Workspace {
     /// workspaces save, so an older config simply loads with it absent.
     #[serde(default)]
     pub last_active_at: Option<i64>,
-    /// This workspace's own pause cycle, overriding the app-wide one.
-    /// Absent means INHERIT, which is not the same as off -- a workspace
-    /// that wants no pause while the app has one stores a cycle with
-    /// `enabled: false`, and `skip_serializing_if` keeps the key out of
-    /// config.json entirely for the ordinary inheriting case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Legacy single pause cycle. Deserialized so `migrate_pause_cycles`
+    /// can fold it onto `pause_cycles` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
     pub agent_pause: Option<AgentPauseConfig>,
+    /// This workspace's own pause cycles, keyed by PRIMARY profile id.
+    /// A key absent means INHERIT the app-wide cycle for that primary,
+    /// which is not the same as off — a workspace that wants no pause
+    /// for a primary stores a cycle with `enabled: false` under its key.
+    /// An empty map — the ordinary case — inherits every primary's
+    /// cycle, and `skip_serializing_if` keeps the key out of config.json
+    /// then.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pause_cycles: HashMap<String, AgentPauseConfig>,
     /// When this workspace was pinned to the top of the sidebar, epoch
     /// milliseconds; absent means not pinned. Same rule and same reason
     /// as `Page::pinned_at`, one level up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<i64>,
-    /// This workspace's overrides of the app-wide complexity table,
-    /// keyed by the level's written name. Overridden PER LEVEL rather
-    /// than wholesale: a workspace that wants its gnarly cards on a
-    /// different agent should not have to restate the other four, and a
-    /// level with no entry here genuinely means "whatever the app says".
+    /// Legacy single complexity table (one table for every agent).
+    /// Deserialized so `migrate_complexity_tables` can fold it onto
+    /// `complexity_tables` under every known primary; never serialized
+    /// again.
+    #[serde(default, skip_serializing)]
+    pub complexity_agents: HashMap<String, ComplexityAgent>,
+    /// This workspace's own complexity tables, keyed by PRIMARY profile
+    /// id. A key absent means INHERIT the app-wide table for that
+    /// primary; a key present is that primary's whole table (a level
+    /// with no entry in it still means "run the workspace's own agent").
+    /// An empty map — the ordinary case — inherits every primary's
+    /// table, and `skip_serializing_if` keeps the key out of config.json
+    /// then.
     ///
     /// Machine-local for the same reason as `auto_commit` and
-    /// `agent_pause` (D35): which model tier this human spends on a hard
+    /// `pause_cycles` (D35): which model tier this human spends on a hard
     /// card here is a habit and a subscription fact, not something to
-    /// hand everyone who clones the repo. `skip_serializing_if` keeps
-    /// the key out of config.json entirely for the ordinary inheriting
-    /// case.
+    /// hand everyone who clones the repo.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub complexity_agents: HashMap<String, ComplexityAgent>,
+    pub complexity_tables: HashMap<String, HashMap<String, ComplexityAgent>>,
+    /// Extra prompt-text lines appended to prompts composed for each
+    /// primary, and extra CLI arguments appended to each primary's
+    /// launch command. A key absent means INHERIT the app-wide list for
+    /// that primary; an empty vec under a key is an explicit "nothing
+    /// extra" override for it.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prompt_extras: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_cli_args: HashMap<String, Vec<String>>,
     /// Whether the human has been ASKED whether gavin's own files belong
     /// in this repo's git history. Not the answer -- that is the ignore
     /// rule in the repo itself (`git::tracking`), which git owns and this
@@ -774,7 +796,7 @@ pub struct ComplexityAgent {
 /// machine and this subscription, not about the project. The per-workspace
 /// override lives on `Workspace::complexity_agents` for the same reason,
 /// rather than in the repo's `.gavin-root/config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefaultsConfig {
     /// Named app-wide custom agent profiles. Built-ins stay in
@@ -803,12 +825,37 @@ pub struct AgentDefaultsConfig {
     /// Folded onto `CustomProfile::api_family` by migration.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub custom_api_family: String,
-    /// Which agent and model each complexity level runs, keyed by the
-    /// level's written name (`Complexity::as_str`). A level with no entry
-    /// runs the workspace's own agent, exactly as every card did before
-    /// the field existed.
-    #[serde(default)]
+    /// Legacy single complexity table (one table for every agent).
+    /// Deserialized so `migrate_complexity_tables` can fold it onto
+    /// `complexity_tables` under every known primary; never serialized
+    /// again.
+    #[serde(default, skip_serializing)]
     pub complexity: HashMap<String, ComplexityAgent>,
+    /// Which agent and model each complexity level runs, keyed by PRIMARY
+    /// profile id and then by the level's written name
+    /// (`Complexity::as_str`). A primary with no table runs the
+    /// workspace's own agent at every level, exactly as every card did
+    /// before complexity existed; a level with no entry in a primary's
+    /// table means the same for that level.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub complexity_tables: HashMap<String, HashMap<String, ComplexityAgent>>,
+    /// The app-wide pause cycles, keyed by PRIMARY profile id. A primary
+    /// with no cycle is never held — the behaviour every install had
+    /// before the pause existed. Lives here rather than beside
+    /// `AppConfig::agent_pause` (which it replaces) so it rides the same
+    /// wholesale `set_agent_defaults` save as the other per-primary
+    /// maps. A workspace override lives on `Workspace::pause_cycles`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pause_cycles: HashMap<String, AgentPauseConfig>,
+    /// Extra prompt-text lines appended to prompts composed for each
+    /// primary, and extra CLI arguments appended to each primary's
+    /// launch command. A primary with no entry gets nothing extra. A
+    /// workspace override lives on `Workspace::prompt_extras` /
+    /// `Workspace::extra_cli_args`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prompt_extras: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_cli_args: HashMap<String, Vec<String>>,
     /// The app-wide default agent: the profile a workspace with no
     /// `[agent] profile` of its own resolves to. Absent — the shipped
     /// state — means "claude-code", the hard-coded fallback every build
@@ -932,13 +979,12 @@ pub struct AppConfig {
     /// it silently resets on the next save.
     #[serde(default)]
     pub removed_workspaces: Vec<RemovedWorkspace>,
-    /// The app-wide agent pause cycle. `None` -- the shipped default --
-    /// means no cycle at all, so no existing workspace changes behaviour
-    /// on update. A workspace with no cycle of its own inherits this one.
-    /// Like session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces it must be carried through `persist_workspaces`,
-    /// or it silently resets on the next save.
-    #[serde(default)]
+    /// Legacy single app-wide pause cycle. Deserialized so
+    /// `migrate_pause_cycles` can fold it onto
+    /// `AgentDefaultsConfig::pause_cycles` under every known primary;
+    /// never serialized again. Still carried through `persist_workspaces`
+    /// positionally — always `None` once migrated.
+    #[serde(default, skip_serializing)]
     pub agent_pause: Option<AgentPauseConfig>,
     /// What the human told gavin about Superpowers, keyed by workspace
     /// root path. The seventh carry-through field.
@@ -1196,6 +1242,30 @@ fn rewrite_chain_map_profile_ids(map: &mut HashMap<String, Vec<String>>, replace
     }
 }
 
+/// Whether any primary key or nested entry's profile names the retired
+/// hard-coded `custom` profile.
+fn complexity_maps_reference(map: &HashMap<String, HashMap<String, ComplexityAgent>>) -> bool {
+    map.keys().any(|k| profile_id_is_legacy_custom(k))
+        || map
+            .values()
+            .flat_map(|t| t.values())
+            .any(|a| profile_id_is_legacy_custom(&a.profile))
+}
+
+/// The same pass over per-primary complexity tables: rewrite a legacy
+/// primary key and every entry's `profile`.
+fn rewrite_complexity_maps_profile_ids(
+    map: &mut HashMap<String, HashMap<String, ComplexityAgent>>,
+    replacement: &str,
+) {
+    rename_map_key(map, LEGACY_CUSTOM_PROFILE_ID, replacement);
+    for table in map.values_mut() {
+        for entry in table.values_mut() {
+            rewrite_profile_id(&mut entry.profile, replacement);
+        }
+    }
+}
+
 fn rename_map_key<V>(map: &mut HashMap<String, V>, from: &str, to: &str) {
     if let Some(value) = map.remove(from) {
         map.entry(to.to_string()).or_insert(value);
@@ -1246,21 +1316,29 @@ fn rewrite_config_toml_custom_profile(root: &Path, new_id: &str) {
 fn references_legacy_custom(config: &AppConfig) -> bool {
     let d = &config.agent_defaults;
     if d.complexity.values().any(|a| profile_id_is_legacy_custom(&a.profile))
+        || complexity_maps_reference(&d.complexity_tables)
         || d.agent_fallback.iter().any(|id| profile_id_is_legacy_custom(id))
         || chain_map_references(&d.fallback_chains)
         || d.fallback_thresholds.contains_key(LEGACY_CUSTOM_PROFILE_ID)
         || d.agent_efforts.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.pause_cycles.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.prompt_extras.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.extra_cli_args.contains_key(LEGACY_CUSTOM_PROFILE_ID)
         || config.agent_models.contains_key(LEGACY_CUSTOM_PROFILE_ID)
     {
         return true;
     }
     for ws in &config.workspaces {
         if ws.complexity_agents.values().any(|a| profile_id_is_legacy_custom(&a.profile))
+            || complexity_maps_reference(&ws.complexity_tables)
             || ws
                 .agent_fallback
                 .as_ref()
                 .is_some_and(|c| c.iter().any(|id| profile_id_is_legacy_custom(id)))
             || chain_map_references(&ws.fallback_chains)
+            || ws.pause_cycles.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+            || ws.prompt_extras.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+            || ws.extra_cli_args.contains_key(LEGACY_CUSTOM_PROFILE_ID)
             || ws.declined_agents.iter().any(|id| profile_id_is_legacy_custom(id))
             || ws.armed_agents.iter().any(|id| profile_id_is_legacy_custom(id))
         {
@@ -1342,6 +1420,25 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
     rewrite_profile_ids(&mut config.agent_defaults.agent_fallback, MIGRATED_CUSTOM_PROFILE_ID);
     rewrite_chain_map_profile_ids(
         &mut config.agent_defaults.fallback_chains,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rewrite_complexity_maps_profile_ids(
+        &mut config.agent_defaults.complexity_tables,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.pause_cycles,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.prompt_extras,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.extra_cli_args,
+        LEGACY_CUSTOM_PROFILE_ID,
         MIGRATED_CUSTOM_PROFILE_ID,
     );
     rename_map_key(
@@ -1441,6 +1538,10 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
             rewrite_profile_ids(chain, &replacement);
         }
         rewrite_chain_map_profile_ids(&mut ws.fallback_chains, &replacement);
+        rewrite_complexity_maps_profile_ids(&mut ws.complexity_tables, &replacement);
+        rename_map_key(&mut ws.pause_cycles, LEGACY_CUSTOM_PROFILE_ID, &replacement);
+        rename_map_key(&mut ws.prompt_extras, LEGACY_CUSTOM_PROFILE_ID, &replacement);
+        rename_map_key(&mut ws.extra_cli_args, LEGACY_CUSTOM_PROFILE_ID, &replacement);
         rewrite_profile_ids(&mut ws.declined_agents, &replacement);
         rewrite_profile_ids(&mut ws.armed_agents, &replacement);
         if let Some(root) = root.as_deref() {
@@ -1503,6 +1604,110 @@ pub fn migrate_fallback_chains(config: &mut AppConfig) -> bool {
     changed
 }
 
+/// Every primary known at migration time: the stock ids plus the
+/// app-wide custom ids, and per workspace its `local:` customs.
+fn known_primaries(config: &AppConfig) -> Vec<String> {
+    STOCK_PROFILE_IDS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(config.agent_defaults.custom_profiles.iter().map(|p| p.id.clone()))
+        .collect()
+}
+
+/// Fold the legacy single complexity table — one table consulted no
+/// matter which agent a card resolved to — into the per-primary maps:
+/// the old table becomes EVERY known primary's table. Runs AFTER
+/// `migrate_custom_profiles` so the fold carries rewritten entry
+/// profiles and knows the migrated customs. Idempotent: legacy fields
+/// are cleared as they are folded, so a second call returns false.
+pub fn migrate_complexity_tables(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    if !config.agent_defaults.complexity.is_empty() {
+        if config.agent_defaults.complexity_tables.is_empty() {
+            let table = std::mem::take(&mut config.agent_defaults.complexity);
+            for id in known_primaries(config) {
+                config.agent_defaults.complexity_tables.insert(id, table.clone());
+            }
+        } else {
+            config.agent_defaults.complexity.clear();
+        }
+        changed = true;
+    }
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+    for ws in &mut config.workspaces {
+        if ws.complexity_agents.is_empty() {
+            continue;
+        }
+        if ws.complexity_tables.is_empty() {
+            let table = std::mem::take(&mut ws.complexity_agents);
+            let ids = STOCK_PROFILE_IDS
+                .iter()
+                .map(|s| s.to_string())
+                .chain(app_custom_ids.iter().cloned())
+                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+            for id in ids {
+                ws.complexity_tables.insert(id, table.clone());
+            }
+        } else {
+            ws.complexity_agents.clear();
+        }
+        changed = true;
+    }
+
+    changed
+}
+
+/// Fold the legacy single pause cycle — one cycle for every agent — into
+/// the per-primary maps: the old cycle becomes EVERY known primary's
+/// cycle, because the old model applied it to any launch. A workspace
+/// legacy `None` means it never chose, which the new model already
+/// spells as an empty map (inherit). Idempotent: legacy fields are
+/// cleared as they are folded, so a second call returns false.
+pub fn migrate_pause_cycles(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    if let Some(cycle) = config.agent_pause.take() {
+        if config.agent_defaults.pause_cycles.is_empty() {
+            for id in known_primaries(config) {
+                config.agent_defaults.pause_cycles.insert(id, cycle.clone());
+            }
+        }
+        changed = true;
+    }
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+    for ws in &mut config.workspaces {
+        let Some(cycle) = ws.agent_pause.take() else {
+            continue;
+        };
+        if ws.pause_cycles.is_empty() {
+            let ids = STOCK_PROFILE_IDS
+                .iter()
+                .map(|s| s.to_string())
+                .chain(app_custom_ids.iter().cloned())
+                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+            for id in ids {
+                ws.pause_cycles.insert(id, cycle.clone());
+            }
+        }
+        changed = true;
+    }
+
+    changed
+}
+
 /// Look up the API family a launch should send for `profile_id`: the
 /// matching custom profile's, else the legacy `custom_api_family` while
 /// a config still names `"custom"`.
@@ -1542,7 +1747,11 @@ pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
     // `|` rather than `||`: both passes must run even when the first one
     // already changed something (the fallback fold needs the custom
     // migration's rewritten ids).
-    if migrate_custom_profiles(&mut config) | migrate_fallback_chains(&mut config) {
+    if migrate_custom_profiles(&mut config)
+        | migrate_fallback_chains(&mut config)
+        | migrate_complexity_tables(&mut config)
+        | migrate_pause_cycles(&mut config)
+    {
         // Persist so a second load is a no-op and legacy keys leave the
         // file; a failed write still returns the migrated in-memory shape.
         let _ = save(config_dir, &config);
@@ -1636,8 +1845,12 @@ mod tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -1843,8 +2056,11 @@ mod tests {
         assert!(loaded.agent_defaults.custom_model_flag.is_empty());
         assert!(loaded.agent_defaults.custom_effort_flag.is_empty());
         assert!(loaded.agent_defaults.custom_api_family.is_empty());
+        // The legacy complexity table was rewritten, then folded onto
+        // every known primary by `migrate_complexity_tables`.
+        assert!(loaded.agent_defaults.complexity.is_empty());
         assert_eq!(
-            loaded.agent_defaults.complexity["intricate"].profile,
+            loaded.agent_defaults.complexity_tables["claude-code"]["intricate"].profile,
             MIGRATED_CUSTOM_PROFILE_ID
         );
         // The legacy single chain was rewritten, then folded onto every
@@ -1880,7 +2096,13 @@ mod tests {
             Some("--resume-ws")
         );
         assert!(loaded.workspaces[0].custom_resume_args.is_none());
-        assert_eq!(loaded.workspaces[0].complexity_agents["complex"].profile, local_id);
+        // The workspace's legacy complexity table folded onto every known
+        // primary, rewritten to the local profile id first.
+        assert!(loaded.workspaces[0].complexity_agents.is_empty());
+        assert_eq!(
+            loaded.workspaces[0].complexity_tables["claude-code"]["complex"].profile,
+            local_id
+        );
         // The workspace's legacy chain folded onto every known primary:
         // stock, the app-wide custom, and this workspace's new local.
         assert!(loaded.workspaces[0].agent_fallback.is_none());
@@ -2015,20 +2237,26 @@ mod tests {
             resume_args: None,
         });
         config.agent_defaults.agent_efforts.insert("claude-code".to_string(), "high".to_string());
-        config.agent_defaults.complexity.insert(
-            "intricate".to_string(),
-            ComplexityAgent { profile: String::new(), model: "opus".to_string(), effort: "max".to_string() },
+        config.agent_defaults.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "intricate".to_string(),
+                ComplexityAgent { profile: String::new(), model: "opus".to_string(), effort: "max".to_string() },
+            )]),
         );
         save(dir.path(), &config).unwrap();
         let loaded = load(dir.path()).unwrap().agent_defaults;
         assert_eq!(loaded.custom_profiles[0].effort_flag, "--think=");
         assert_eq!(loaded.agent_efforts.get("claude-code").map(String::as_str), Some("high"));
-        assert_eq!(loaded.complexity["intricate"].effort, "max");
+        assert_eq!(loaded.complexity_tables["claude-code"]["intricate"].effort, "max");
 
         config.agent_defaults = AgentDefaultsConfig::default();
-        config.agent_defaults.complexity.insert(
-            "simple".to_string(),
-            ComplexityAgent { profile: String::new(), model: "haiku".to_string(), effort: String::new() },
+        config.agent_defaults.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "simple".to_string(),
+                ComplexityAgent { profile: String::new(), model: "haiku".to_string(), effort: String::new() },
+            )]),
         );
         save(dir.path(), &config).unwrap();
         let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
@@ -2041,8 +2269,12 @@ mod tests {
             r#"{"workspaces":[],"agent_defaults":{"complexity":{"complex":{"profile":"codex","model":"gpt-5.1"}}}}"#,
         )
         .unwrap();
+        // A config written before per-primary tables folds the legacy
+        // `complexity` map onto every known primary.
         let old = load(dir.path()).unwrap().agent_defaults;
-        assert_eq!(old.complexity["complex"].effort, "");
+        assert!(old.complexity.is_empty());
+        assert_eq!(old.complexity_tables["claude-code"]["complex"].effort, "");
+        assert_eq!(old.complexity_tables["codex"]["complex"].model, "gpt-5.1");
         assert!(old.agent_efforts.is_empty());
         assert!(old.custom_profiles.is_empty());
     }
@@ -2148,6 +2380,67 @@ mod tests {
         assert_eq!(again, loaded);
         let mut again_mut = again.clone();
         assert!(!migrate_fallback_chains(&mut again_mut));
+    }
+
+    /// The legacy single complexity table and pause cycle fold onto every
+    /// known primary at both levels, once; legacy keys leave the file and
+    /// a second load is a no-op. The new prompt-param maps need no
+    /// migration: they have no legacy shape.
+    #[test]
+    fn migrates_legacy_complexity_and_pause_once_and_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{
+  "workspaces": [{
+    "id": "w",
+    "name": "W",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null,
+    "agentPause": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 7, "limitPercent": 90.0, "limitEnabled": true },
+    "complexityAgents": { "complex": { "profile": "codex", "model": "gpt" } },
+    "customProfiles": [{"id": "local:bot", "label": "Bot", "command": "bot", "modelFlag": ""}]
+  }],
+  "agent_pause": { "enabled": true, "periodMinutes": 240, "pauseMinutes": 5, "anchorMs": 3, "limitPercent": 95.0, "limitEnabled": false },
+  "agent_defaults": {
+    "complexity": { "intricate": { "profile": "claude-code", "model": "opus" } },
+    "customProfiles": [{"id": "my-bot", "label": "My Bot", "command": "mb", "modelFlag": ""}]
+  }
+}"#;
+        std::fs::write(config_path(dir.path()), raw).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot"].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.complexity_tables[*id]["intricate"].model,
+                "opus",
+                "app complexity table for {id}"
+            );
+            let cycle = &loaded.agent_defaults.pause_cycles[*id];
+            assert_eq!((cycle.period_minutes, cycle.anchor_ms), (240, 3), "app cycle for {id}");
+        }
+        assert!(loaded.agent_defaults.complexity.is_empty());
+        assert!(loaded.agent_pause.is_none());
+
+        let ws = &loaded.workspaces[0];
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot", "local:bot"].iter()) {
+            assert_eq!(ws.complexity_tables[*id]["complex"].profile, "codex", "ws table for {id}");
+            let cycle = &ws.pause_cycles[*id];
+            assert_eq!((cycle.pause_minutes, cycle.limit_percent), (10, 90.0), "ws cycle for {id}");
+        }
+        assert!(ws.complexity_agents.is_empty());
+        assert!(ws.agent_pause.is_none());
+
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("complexityAgents"), "{written}");
+        assert!(!written.contains("agentPause"), "{written}");
+        assert!(!written.contains("agent_pause"), "{written}");
+        assert!(written.contains("complexityTables"), "{written}");
+        assert!(written.contains("pauseCycles"), "{written}");
+        let again = load(dir.path()).unwrap();
+        assert_eq!(again, loaded);
+        let mut again_mut = again.clone();
+        assert!(!migrate_complexity_tables(&mut again_mut));
+        assert!(!migrate_pause_cycles(&mut again_mut));
     }
 
     /// Both halves of the setting round-trip, and both read as absent from

@@ -104,6 +104,7 @@ import {
   agentForCard,
   agentForProfile,
   resolvedAgentFor,
+  promptExtrasFor,
   armFailureDetection,
   baseShaForLaunch,
   cardReviewed,
@@ -150,6 +151,7 @@ import {
   buildToolCommand,
   runStatusNeeded,
   unresumableConversationReason,
+  withPromptExtras,
 } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
@@ -1442,10 +1444,15 @@ async function executeToolLaunch(
   // exactly what "a shell step is simply re-run" means.
   const prompt =
     tool.kind === "agent"
-      ? withRetryPrefix(
-          body,
-          await retryNoteFor(workspaceId, rail, step.id),
-          mustPromptBody("action:until-retry-prefix", workspaceId)
+      ? withPromptExtras(
+          withRetryPrefix(
+            body,
+            await retryNoteFor(workspaceId, rail, step.id),
+            mustPromptBody("action:until-retry-prefix", workspaceId)
+          ),
+          // The launching agent's own extra prompt lines go last, after
+          // the retry note: they are standing instructions to that agent.
+          promptExtrasFor(workspaceId, agent.profileId)
         )
       : body;
   const command =
@@ -1673,6 +1680,9 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await retryNoteFor(workspaceId, rail, stepId),
     mustPromptBody("action:until-retry-prefix", workspaceId)
   );
+  // The agent that actually launches (a fallback's, not the card's
+  // primary): the lines are instructions to THAT agent.
+  prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
 
   const conversationId = conversationIdForLaunch(launchAgent);
   const command = buildRunCommand(
@@ -3092,7 +3102,11 @@ async function launchOrchestrationAgent(
   }
 
   const agent = resolvedAgentFor(workspaceId);
-  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    withPromptExtras(prompt, promptExtrasFor(workspaceId, agent.profileId))
+  );
   // The same refusal every other launch gives a no-prompt profile,
   // returned as the button's error rather than thrown past it.
   if (command === null) return noPromptReason(agent.label);
