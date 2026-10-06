@@ -196,7 +196,7 @@ committed source — not a re-run of already-green suites.
 
 When a change needs a person to look, file that check on the card as
 `- [ ] Human test: <what to check>` — `gavin_request_human(card, "test", text)`,
-or by hand in that spelling. It waits in the Decisions tab with the card until
+or by hand in that spelling. It waits in the Review tab with the card until
 the owner passes or fails it, and a failure comes back to you with their note
 and the box still unticked; re-file the identical text once you have fixed it
 and the same item re-arms. This is for checks only a person can run — another

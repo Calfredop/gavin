@@ -709,21 +709,31 @@ export function resolveSelection(groups: ReviewGroup[], selected: string | null)
   return groups[0]?.cards[0]?.card.id ?? null;
 }
 
-/// Selection across rails and card groups in one list. Keeps a still-
-/// listed choice; otherwise the first rail, else the first card.
+/// Selection across the human tests, rails and card groups in one list.
+/// Keeps a still-listed choice; otherwise the first card with tests,
+/// else the first rail, else the first card.
 ///
-/// Rails lead the fallback so a workspace that only has rails (or whose
-/// card filters emptied the card half) still has a subject, and so the
-/// list does not jump past every rail to land on a card.
+/// The fallback follows the list top to bottom, which is also the order
+/// of urgency: a test waits on the human, and lands first so a tab
+/// opened on its mark lands on what the mark was about. Rails come next
+/// so a workspace that only has rails (or whose card filters emptied the
+/// card half) still has a subject, and so the list does not jump past
+/// every rail to land on a card.
+///
+/// `tests` are card paths, so a card listed under its tests and in a
+/// file group is one selection, kept by either.
 export function resolveReviewSelection(
   groups: ReviewGroup[],
   rails: readonly ReviewRailCandidate[],
-  selected: string | null
+  selected: string | null,
+  tests: readonly string[] = []
 ): string | null {
+  if (selected && tests.includes(selected)) return selected;
   const railIds = new Set(rails.map((r) => r.id));
   if (selected && railIds.has(selected)) return selected;
   const cardPaths = new Set(groups.flatMap((g) => g.cards.map((c) => c.card.id)));
   if (selected && cardPaths.has(selected)) return selected;
+  if (tests[0]) return tests[0];
   if (rails[0]) return rails[0].id;
   return groups[0]?.cards[0]?.card.id ?? null;
 }

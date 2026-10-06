@@ -357,7 +357,7 @@ export function cardIndex(tree: GavinTree | undefined): Map<string, CardEntry> {
 /// `parent:` resolves: (contextFolder, fileName). Only plans, because
 /// only a plan card can be a parent -- exactly the index
 /// `mergePlanCards` builds for the board.
-export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry> {
+export function planIndex(cards: ReadonlyMap<string, CardEntry>): Map<string, CardEntry> {
   const index = new Map<string, CardEntry>();
   for (const entry of cards.values()) {
     if (entry.plan.kind === "plan") index.set(planKey(entry.contextFolder, entry.plan.fileName), entry);
@@ -379,7 +379,7 @@ export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry>
 /// itself is NOT nested -- the board draws it in its own column wearing
 /// a broken-parent mark, and every surface here has to agree with what
 /// the human is looking at.
-export function nestedParent(entry: CardEntry, plans: Map<string, CardEntry>): CardEntry | null {
+export function nestedParent(entry: CardEntry, plans: ReadonlyMap<string, CardEntry>): CardEntry | null {
   const { plan, contextFolder } = entry;
   if ((plan.status ?? null) !== null) return null;
   if (plan.kind !== "task" || !plan.parent || plan.parent === plan.fileName) return null;
@@ -396,7 +396,7 @@ export function nestedParent(entry: CardEntry, plans: Map<string, CardEntry>): C
 /// task under a Done plan looked unfinished: pressing Start re-ran
 /// finished work, and the launch then wrote `In Progress` onto the card,
 /// which un-nested it and moved it back out of `done/`.
-export function effectiveStatus(entry: CardEntry, plans: Map<string, CardEntry>): string | null {
+export function effectiveStatus(entry: CardEntry, plans: ReadonlyMap<string, CardEntry>): string | null {
   const parent = nestedParent(entry, plans);
   return parent ? (parent.plan.status ?? null) : (entry.plan.status ?? null);
 }

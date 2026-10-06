@@ -21,7 +21,7 @@ import { kanbanState } from "$lib/board/kanbanState";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { attentionState, daemonCompat } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
-import { cardIndex } from "$lib/orchestration/orchestration";
+import { cardIndex, doneColumnOf } from "$lib/orchestration/orchestration";
 import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
 import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { decisionsList, decisionsWaiting, type DecisionCard } from "$lib/decisions/decisions";
@@ -92,6 +92,7 @@ export const decisionsWaitingByWorkspace: Readable<Record<string, boolean>> = de
         marks: $marks[ws.id] ?? new Map(),
         tools: renderLibraryFor($tools, ws.id),
         itemsBlockedReason,
+        doneStatus: doneColumnOf(board?.columns ?? [])?.name ?? null,
       });
       out[ws.id] = decisionsWaiting(list.summary);
     }

@@ -113,9 +113,10 @@ line is written, and the answer arrives on the card later.
 
 It writes `- [ ] Decision: <question>` or `- [ ] Human test: <what to
 check>` into the card's checklist — with an indented `Options: A) … B) …`
-line when you passed options — and the item appears in the workspace's
-**Decisions** tab under that card. Filing one claims the card for your
-session, exactly like setting it In Progress.
+line when you passed options — and the item appears under that card in
+the workspace's **Decisions** tab (a decision) or **Review** tab (a test).
+Filing one claims the card for your session, exactly like setting it In
+Progress.
 
 The answer comes back **under the item, on the card**: `Answer (date): …`
 for a decision, `Result (date): passed` or `Result (date): failed —

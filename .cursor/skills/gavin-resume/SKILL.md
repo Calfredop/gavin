@@ -70,7 +70,8 @@ Work the rest of the card the ordinary way: a plan's checklist top to
 bottom, ticking items (`- [x]`) as you complete them and promoting the
 ones that need their own agent with `gavin_promote_task`; a task's body
 to its end. `Decision:` and `Human test:` items are not yours to tick —
-they close when the human answers them in the Decisions tab.
+they close when the human answers them in the Decisions tab (a decision)
+or the Review tab (a test).
 
 Keep the card's status current with `gavin_set_plan_field`, and set it
 to the board's done column when the work is genuinely finished — the app

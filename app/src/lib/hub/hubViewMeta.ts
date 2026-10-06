@@ -197,9 +197,9 @@ export interface HubViewActivity {
   /// reaching the done column (see stepAttentions).
   railsWantingAttention: boolean;
   /// Anything at all in this workspace is waiting on the human: an open
-  /// `Decision:` or `Human test:` item, a session that has stopped and
-  /// asked, a rail review gate, a card nobody has read
-  /// (`decisionsWaiting` over decisions.ts's own list).
+  /// `Decision:` item, a session that has stopped and asked, a rail
+  /// review gate, a card nobody has read (`decisionsWaiting` over
+  /// decisions.ts's own list).
   ///
   /// Its own field rather than a roll-up of the one above, and they are
   /// not the same set in either direction: the Decisions tab lists
@@ -210,6 +210,13 @@ export interface HubViewActivity {
   /// as "nothing waits" -- which is also what a workspace whose board
   /// and tree have not loaded looks like.
   decisionsWaiting?: boolean;
+  /// A `Human test:` item on an open card is waiting on the human to run
+  /// it (`humanTestsWaiting` over review/humanTests.ts's list). The
+  /// Review tab's mark, and its own field for the reason the one above
+  /// is: a test is a check on finished work, and the tab that lists it
+  /// is the one the mark has to send the human to. Optional and absent
+  /// reads as "nothing waits", like `decisionsWaiting`.
+  reviewWaiting?: boolean;
 }
 
 /// Whether this tab should say, from the tab strip, that something it
@@ -227,6 +234,7 @@ export function hubViewBusy(viewId: string, activity: HubViewActivity): boolean 
 export function hubViewAttention(viewId: string, activity: HubViewActivity): boolean {
   if (viewId === "orchestration") return activity.railsWantingAttention;
   if (viewId === "decisions") return activity.decisionsWaiting === true;
+  if (viewId === "review") return activity.reviewWaiting === true;
   return false;
 }
 
@@ -243,6 +251,7 @@ export function hubViewAttention(viewId: string, activity: HubViewActivity): boo
 /// takes as "no bubble".
 export function hubViewAttentionLabel(viewId: string): string {
   if (viewId === "decisions") return "Something here is waiting on you";
+  if (viewId === "review") return "A human test is waiting on you";
   return "A rail is waiting on you";
 }
 

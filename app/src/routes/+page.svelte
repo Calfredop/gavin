@@ -89,6 +89,7 @@
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
   import { decisionsWaitingByWorkspace } from "$lib/decisions/decisionsAttention";
+  import { humanTestsWaitingByWorkspace } from "$lib/review/humanTestsAttention";
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/shell/windowDrag";
@@ -201,6 +202,11 @@
     // it. See decisionsAttention.ts.
     decisionsWaiting: activeWorkspace
       ? ($decisionsWaitingByWorkspace[activeWorkspace.id] ?? false)
+      : false,
+    // The Review tab, for a human test waiting to be run. The same store
+    // shape, for the same reason (humanTestsAttention.ts).
+    reviewWaiting: activeWorkspace
+      ? ($humanTestsWaitingByWorkspace[activeWorkspace.id] ?? false)
       : false,
   });
 

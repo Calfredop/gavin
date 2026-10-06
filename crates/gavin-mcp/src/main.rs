@@ -470,7 +470,7 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
-        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). It appears in the workspace's Decisions tab with the card, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). A decision appears in the workspace's Decisions tab with the card and a test in its Review tab, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
             "card": { "type": "string", "description": "Path to the card file this is blocking; relative resolves against the workspace root" },
             "kind": { "type": "string", "enum": ["decision", "test"], "description": "decision = a question for the human to answer; test = a check for them to run by hand" },
             "text": { "type": "string", "description": "The question or the check, as one line. Specific enough to act on without reading the rest of the card" },
@@ -689,6 +689,13 @@ fn dispatch_tool(
         Request::SetPlanFrontmatterField { path, .. } => Some(path.clone()),
         _ => None,
     };
+    // Which hub tab a filed item waits in: a test is a check on finished
+    // work and lists in the Review tab beside the diff it checks; a
+    // decision lists in the Decisions tab.
+    let item_tab = match &req {
+        Request::FileHumanItem { kind: protocol::HumanItemKind::Test, .. } => "Review",
+        _ => "Decisions",
+    };
     let resp = transport.request(&req)?;
     // Before the reply is shaped, and its outcome deliberately dropped:
     // see `claim_card`.
@@ -701,16 +708,18 @@ fn dispatch_tool(
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
         Response::HumanItemFiled { rearmed } => Ok(if rearmed {
-            "re-armed the identical test the human had already failed — their note on \
-             the last attempt is on the card, above the re-test line. It is back in \
-             their Decisions tab; carry on with whatever does not depend on it."
-                .to_string()
+            format!(
+                "re-armed the identical test the human had already failed — their note on \
+                 the last attempt is on the card, above the re-test line. It is back in \
+                 their {item_tab} tab; carry on with whatever does not depend on it."
+            )
         } else {
-            "filed on the card — it is in the human's Decisions tab now. The answer \
-             gets written under the item on the card itself, so read it there; nothing \
-             will interrupt you when it arrives. Carry on with whatever does not \
-             depend on it."
-                .to_string()
+            format!(
+                "filed on the card — it is in the human's {item_tab} tab now. The answer \
+                 gets written under the item on the card itself, so read it there; nothing \
+                 will interrupt you when it arrives. Carry on with whatever does not \
+                 depend on it."
+            )
         }),
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
@@ -3734,6 +3743,11 @@ mod tests {
         )
         .unwrap();
         assert!(reply.contains("re-armed"), "{reply}");
+        // A test waits in the Review tab, beside the work it checks --
+        // telling the agent "Decisions" would have it send the human to
+        // the wrong tab.
+        assert!(reply.contains("Review tab"), "{reply}");
+        assert!(!reply.contains("Decisions tab"), "{reply}");
         match &t.requests[0] {
             Request::FileHumanItem { kind, options, .. } => {
                 // Case-insensitive: the agent typed the enum, not a path.

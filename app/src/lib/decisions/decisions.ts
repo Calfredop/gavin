@@ -6,8 +6,8 @@
 // for me", and every row in it is a session. This asks "what is waiting
 // on me", which has four answers and only one of them is a session:
 //
-//   card        a card carrying open `Decision:` / `Human test:` items
-//               (its bound session's state alongside, when it has one)
+//   card        a card carrying open `Decision:` items (its bound
+//               session's state alongside, when it has one)
 //   session     a session waiting on you that no card is filed for
 //   gate        a rail `review` step -- the rail was told to stop here
 //   unreviewed  a rail step whose card nobody has read, so it never
@@ -20,15 +20,31 @@
 // would put the question and the agent that asked it in two different
 // places in the list.
 //
+// `Human test:` items are not here. A test is a check on finished work,
+// which is the Review tab's question, so `review/humanTests.ts` lists
+// them there -- built on the item rules below, so the two tabs cannot
+// disagree about which items are still owed. Neither tab lists an item
+// on a card that is Done or archived (`cardFinished`): the work it asks
+// about has been closed, and an unticked box left on it is the card's
+// record, not something waiting on anybody.
+//
 // Everything here is pure. `decisionsActions.ts` owns the writes, the
 // dialog and the store reads; this module owns what the list IS, what
 // order it comes in, the payload each answer sends, and the sentence the
 // agent is told afterwards.
 
 import type { AttentionReason, AttentionRow } from "$lib/agents/attentionInbox";
-import type { HumanItem, HumanItemOutcome, PlanFileInfo } from "$lib/core/gavin";
+import type { HumanItem, HumanItemKind, HumanItemOutcome, PlanFileInfo } from "$lib/core/gavin";
 import { workspaceWaiting } from "$lib/agents/nextWaiting";
-import type { Rail, StepAttention } from "$lib/orchestration/orchestration";
+import type { Column } from "$lib/board/kanban";
+import { isArchivedCard, slugStatus } from "$lib/core/planBoard";
+import { matchesFields, queryTokens, type Field } from "$lib/core/search";
+import {
+  effectiveStatus,
+  planIndex,
+  type Rail,
+  type StepAttention,
+} from "$lib/orchestration/orchestration";
 
 /// Which of the four things a row is. A discriminated union rather than
 /// a bag with nullable halves: the actions a row offers are completely
@@ -49,9 +65,12 @@ export interface CardSubject {
   /// The card's context folder, for the row's second line in a
   /// workspace with more than one.
   contextFolder: string;
-  /// The items still owed: open ones and failed tests. A settled item
-  /// (ticked, answered, passed) is off this list -- the record of it
-  /// stays on the card, which is where it belongs.
+  /// The card's EFFECTIVE status -- a nested task's is its parent's --
+  /// which is what the status filter reads. Null for a card with none.
+  status: string | null;
+  /// The decisions still open. A settled one (ticked, answered) is off
+  /// this list -- the record of it stays on the card, which is where it
+  /// belongs.
   items: HumanItem[];
   /// The bound session's id, or null when nothing has ever run the card.
   /// What a notify message is queued to.
@@ -107,6 +126,8 @@ export interface UnreviewedSubject {
   stepId: string;
   cardPath: string;
   title: string;
+  /// The card's effective status, as `CardSubject.status`.
+  status: string | null;
   /// Null for `GateSubject`'s reason, one step further along: this step
   /// never launched at all.
   waitedMs: null;
@@ -115,18 +136,13 @@ export interface UnreviewedSubject {
 
 export type DecisionSubject = CardSubject | SessionSubject | GateSubject | UnreviewedSubject;
 
-/// What the list is worth saying about itself: the two counts, kept
-/// apart.
-///
-/// `waiting` is the number the tab's attention pip and the strip's count
-/// come from -- subjects whose next move is the human's. `failedTests`
-/// is the opposite claim about the same list: a failed test is back with
-/// the AGENT (it has to be fixed before there is anything to re-check),
-/// so counting it as waiting on you would put a number on the tab that
-/// no amount of answering could bring down.
+/// What the list is worth saying about itself: how many subjects'
+/// next move is the human's -- the number the tab's attention pip and
+/// the strip's count come from. Taken over the WHOLE list, never the
+/// filtered one: a filter changes what the human is looking at, not what
+/// is waiting on them.
 export interface DecisionsSummary {
   waiting: number;
-  failedTests: number;
 }
 
 /// A card as this module needs it: the tree's own `PlanFileInfo` plus
@@ -161,6 +177,10 @@ export interface DecisionsInput {
   /// loaded", which is why the fallback is a sentence about a review
   /// rather than a blank.
   tools?: readonly { id: string; name: string }[];
+  /// The board's done column's NAME (`doneColumnOf`), or null/absent
+  /// while the board has not loaded. A card in it asks nothing here --
+  /// see `cardFinished`.
+  doneStatus?: string | null;
   /// `featureBlockedReason(compat, "humanItems")` -- null when the
   /// daemon speaks v42.
   ///
@@ -208,23 +228,51 @@ export function humanItemWaiting(item: HumanItem): boolean {
   return humanItemPending(item) && item.state === "open";
 }
 
-/// The card's items that belong on its row, in file order.
+/// The card's items still owed, in file order -- every kind, or only
+/// `kind` when one is named: the Decisions tab asks for decisions and
+/// the Review tab for tests.
 ///
 /// File order rather than by state: the items on one card are usually a
 /// sequence the agent wrote as it went, and re-sorting them by whether
 /// they have failed would shuffle a checklist the human is reading
 /// against the card itself.
-export function pendingItems(plan: PlanFileInfo): HumanItem[] {
-  return (plan.humanItems ?? []).filter(humanItemPending).sort((a, b) => a.lineIndex - b.lineIndex);
+export function pendingItems(plan: PlanFileInfo, kind?: HumanItemKind): HumanItem[] {
+  return (plan.humanItems ?? [])
+    .filter((item) => humanItemPending(item) && (kind === undefined || item.kind === kind))
+    .sort((a, b) => a.lineIndex - b.lineIndex);
+}
+
+/// Whether this card's work is closed: archived, or Done -- by its
+/// EFFECTIVE status, so a nested task is as finished as the plan it
+/// rides inside. Neither the Decisions tab nor the Review tab's human
+/// tests list an item on such a card. A box left unticked on it is a
+/// record of what nobody answered before the work was closed, and
+/// listing it would ask the human about work that has already gone.
+///
+/// Done is a status that slugs to `done` -- the daemon's own rule for
+/// filing a card under `plans/done/`, which needs no board to answer --
+/// or one naming the board's done column (`doneStatus`, `doneColumnOf`'s
+/// name), for a board whose last column is called something else.
+export function cardFinished(
+  card: DecisionCard,
+  plans: ReadonlyMap<string, DecisionCard>,
+  doneStatus: string | null
+): boolean {
+  if (isArchivedCard(card.plan.path)) return true;
+  const status = effectiveStatus(card, plans);
+  if (status === null) return false;
+  const slug = slugStatus(status);
+  return slug === "done" || (doneStatus !== null && slug === slugStatus(doneStatus));
 }
 
 /// Whether a subject's next move is the human's.
 ///
-/// A card row whose only items are failed tests is NOT this -- it is
-/// listed so the human can see what the agent owes, and pressing
-/// nothing on it is the correct thing to do. Every other kind of row
-/// is: a waiting session, a gate the rail is parked on, a card nobody
-/// has read.
+/// Every row this tab builds is, today: a card lists here only with an
+/// open decision or a waiting agent, and a waiting session, a gate the
+/// rail is parked on and a card nobody has read all are. Kept as the one
+/// place that says so, because the item rule underneath it
+/// (`humanItemWaiting`) is the one that tells an item the agent owes
+/// apart, and a kind of item that could fail would land on it.
 export function subjectWaits(subject: DecisionSubject): boolean {
   if (subject.kind !== "card") return true;
   return subject.reason !== null || subject.items.some(humanItemWaiting);
@@ -250,11 +298,17 @@ export function decisionsList(input: DecisionsInput): DecisionsList {
   // it still has to say that its agent is asking.
   const bySession = new Map(input.inbox.map((row) => [row.sessionId, row]));
 
+  const plans = planIndex(input.cards);
+  const doneStatus = input.doneStatus ?? null;
+  const statusOf = (card: DecisionCard): string | null => effectiveStatus(card, plans);
+  // Only a card whose work is still open can ask anything here; the
+  // rest keep their items as a record (see `cardFinished`).
+  const decisionsOf = (card: DecisionCard): HumanItem[] =>
+    blocked || cardFinished(card, plans, doneStatus) ? [] : pendingItems(card.plan, "decision");
+
   const cardPaths = new Set<string>();
-  if (!blocked) {
-    for (const [path, card] of input.cards) {
-      if (pendingItems(card.plan).length > 0) cardPaths.add(path);
-    }
+  for (const [path, card] of input.cards) {
+    if (decisionsOf(card).length > 0) cardPaths.add(path);
   }
   // A waiting session whose card is in THIS tree joins that card's row
   // rather than standing beside it. Its card may well carry no items at
@@ -286,7 +340,8 @@ export function decisionsList(input: DecisionsInput): DecisionsList {
       cardPath: path,
       title: card.plan.title.trim() || card.plan.fileName,
       contextFolder: card.contextFolder,
-      items: blocked ? [] : pendingItems(card.plan),
+      status: statusOf(card),
+      items: decisionsOf(card),
       sessionId,
       reason: row?.reason ?? null,
       row,
@@ -335,6 +390,7 @@ export function decisionsList(input: DecisionsInput): DecisionsList {
               card?.plan.title.trim() ||
               card?.plan.fileName ||
               (step.cardPath.split("/").at(-1) ?? step.cardPath),
+            status: card ? statusOf(card) : null,
             waitedMs: null,
             watched: false,
           });
@@ -419,16 +475,12 @@ export function subjectAgentLine(subject: DecisionSubject): string | null {
 export function subjectDetail(subject: DecisionSubject): string {
   switch (subject.kind) {
     case "card": {
-      const decisions = subject.items.filter((i) => i.kind === "decision").length;
-      const tests = subject.items.filter((i) => i.kind === "test").length;
-      const parts: string[] = [];
-      if (decisions > 0) parts.push(decisions === 1 ? "1 decision" : `${decisions} decisions`);
-      if (tests > 0) parts.push(tests === 1 ? "1 human test" : `${tests} human tests`);
+      const decisions = subject.items.length;
       // A card row with no items at all is a card whose AGENT is
-      // waiting, and saying "0 items" about it would be answering a
+      // waiting, and saying "0 decisions" about it would be answering a
       // question nobody asked.
-      if (parts.length === 0) parts.push("this card's agent");
-      return parts.join(" · ");
+      if (decisions === 0) return "this card's agent";
+      return decisions === 1 ? "1 decision" : `${decisions} decisions`;
     }
     case "session":
       return `${subject.row.pageName} · no card`;
@@ -439,47 +491,30 @@ export function subjectDetail(subject: DecisionSubject): string {
   }
 }
 
-/// The two counts (see DecisionsSummary). Taken over the UNORDERED list
-/// on purpose -- it is a property of the set, and computing it after the
+/// The count (see DecisionsSummary). Taken over the UNORDERED list on
+/// purpose -- it is a property of the set, and computing it after the
 /// sort would invite someone to make it depend on the order.
 export function decisionsSummary(subjects: readonly DecisionSubject[]): DecisionsSummary {
   let waiting = 0;
-  let failedTests = 0;
   for (const subject of subjects) {
     if (subjectWaits(subject)) waiting += 1;
-    if (subject.kind === "card") {
-      for (const item of subject.items) {
-        if (item.state === "failed") failedTests += 1;
-      }
-    }
   }
-  return { waiting, failedTests };
+  return { waiting };
 }
 
-/// The strip's line: what is waiting, and what the agents still owe.
-/// Null for a list with nothing in it -- the empty state says that
-/// better than a row of zeroes.
+/// The list head's count. Null for a list with nothing waiting -- the
+/// empty state says that better than a zero.
 export function summaryLine(summary: DecisionsSummary): string | null {
-  const parts: string[] = [];
-  if (summary.waiting > 0) {
-    parts.push(summary.waiting === 1 ? "1 waiting on you" : `${summary.waiting} waiting on you`);
-  }
-  if (summary.failedTests > 0) {
-    parts.push(
-      summary.failedTests === 1
-        ? "1 failed test, with the agent"
-        : `${summary.failedTests} failed tests, with the agent`
-    );
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
+  if (summary.waiting === 0) return null;
+  return summary.waiting === 1 ? "1 waiting on you" : `${summary.waiting} waiting on you`;
 }
 
 /// Whether the hub tab should wear its attention mark: anything at all
 /// is waiting on the human.
 ///
-/// The WAITING count and not the list length, so a workspace whose only
-/// row is a failed test the agent owes does not put a mark on the tab
-/// that answering cannot clear.
+/// The WAITING count and not the list length, so a row whose next move
+/// is not the human's cannot put a mark on the tab that answering
+/// cannot clear.
 export function decisionsWaiting(summary: DecisionsSummary): boolean {
   return summary.waiting > 0;
 }
@@ -490,6 +525,11 @@ export function decisionsWaiting(summary: DecisionsSummary): boolean {
 /// "gavin cannot see what is waiting" are opposite facts that must never
 /// be drawn with the same sentence.
 export const NOTHING_WAITING = "Nothing in this workspace is waiting on you.";
+/// The empty state for a list the search or the status filter emptied.
+/// A third sentence and never either of the two above: the workspace may
+/// well have things waiting, and saying "nothing" with a filter on is
+/// how a human comes to believe it.
+export const NOTHING_MATCHES = "Nothing waiting on you matches that.";
 
 /// The selection re-resolved against the list, never merely remembered:
 /// the list moves under it as agents answer, as cards are written and as
@@ -505,6 +545,169 @@ export function resolveSelection(
   if (subjects.length === 0) return null;
   if (selected && subjects.some((s) => s.id === selected)) return selected;
   return subjects[0].id;
+}
+
+// ---- searching and filtering ------------------------------------------
+//
+// The list can run long -- every open question on every card still in
+// play -- so it takes a search and a status filter. Both narrow what is
+// SHOWN and nothing else: the count, the tab's attention mark and the
+// summary are taken over the whole list, so a filter can never make the
+// tab say that nothing is waiting.
+
+/// The status key of a row with no card behind it: a waiting session
+/// nobody filed a card for, or a rail review gate. They have no status,
+/// and leaving them out of every option would make them unreachable the
+/// moment any status was picked. A colon, which `slugStatus` never
+/// produces, so no column name can collide with it.
+export const NO_CARD_STATUS = ":no-card";
+/// ...and of a card with no `status:` line at all.
+export const NO_STATUS = ":no-status";
+
+export interface DecisionsFilter {
+  query: string;
+  /// The status keys to show (`subjectStatusKey`). Empty shows them all.
+  statuses: readonly string[];
+}
+
+/// One choice in the status filter.
+export interface StatusOption {
+  key: string;
+  label: string;
+  /// How many rows of the WHOLE list carry this status, so the picker
+  /// says what each choice holds before it is made.
+  count: number;
+}
+
+/// Which status a row is filed under: the card's effective status,
+/// slugged the way the board matches a status to a column, or one of the
+/// two keys above.
+export function subjectStatusKey(subject: DecisionSubject): string {
+  if (subject.kind === "card" || subject.kind === "unreviewed") {
+    return subject.status === null ? NO_STATUS : slugStatus(subject.status) || NO_STATUS;
+  }
+  return NO_CARD_STATUS;
+}
+
+/// What the status filter offers: the board's columns in board order,
+/// minus the done column -- nothing finished asks anything here, so that
+/// option could only ever empty the list -- and after them any status the
+/// list actually holds that no column names (a hand-written status the
+/// board draws in a column of its own, "No status", "No card"). Those
+/// appear only while a row carries them.
+export function statusOptions(
+  columns: readonly Column[],
+  doneStatus: string | null,
+  subjects: readonly DecisionSubject[]
+): StatusOption[] {
+  const counts = new Map<string, number>();
+  for (const subject of subjects) {
+    const key = subjectStatusKey(subject);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const done = doneStatus ? slugStatus(doneStatus) : null;
+  const options: StatusOption[] = [];
+  const seen = new Set<string>();
+  for (const column of [...columns].sort((a, b) => a.position - b.position)) {
+    const key = slugStatus(column.name);
+    if (!key || key === done || seen.has(key)) continue;
+    seen.add(key);
+    options.push({ key, label: column.name, count: counts.get(key) ?? 0 });
+  }
+  const extras: StatusOption[] = [];
+  for (const subject of subjects) {
+    const key = subjectStatusKey(subject);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const label =
+      key === NO_CARD_STATUS
+        ? "No card"
+        : key === NO_STATUS
+          ? "No status"
+          : (subject.kind === "card" || subject.kind === "unreviewed" ? subject.status : null) ?? key;
+    extras.push({ key, label, count: counts.get(key) ?? 0 });
+  }
+  // The two keys that are not statuses go last, after every real one.
+  const rank = (key: string): number => (key === NO_STATUS ? 1 : key === NO_CARD_STATUS ? 2 : 0);
+  extras.sort((a, b) => rank(a.key) - rank(b.key));
+  return [...options, ...extras];
+}
+
+/// The chosen statuses the picker still offers. A key whose column was
+/// renamed or deleted is dropped rather than obeyed -- `pruneFacets`'
+/// rule: a filter on a value the picker no longer shows would empty the
+/// list with nothing on screen to say why.
+export function activeStatuses(
+  statuses: readonly string[],
+  options: readonly StatusOption[]
+): string[] {
+  const offered = new Set(options.map((o) => o.key));
+  return statuses.filter((key) => offered.has(key));
+}
+
+/// One status ticked or unticked in the picker.
+export function toggleStatus(statuses: readonly string[], key: string): string[] {
+  return statuses.includes(key) ? statuses.filter((k) => k !== key) : [...statuses, key];
+}
+
+/// The picker's closed label: "All", or the chosen statuses by name.
+export function statusFilterLabel(
+  statuses: readonly string[],
+  options: readonly StatusOption[]
+): string {
+  const active = new Set(activeStatuses(statuses, options));
+  if (active.size === 0) return "All";
+  return options
+    .filter((o) => active.has(o.key))
+    .map((o) => o.label)
+    .join(", ");
+}
+
+/// Whether the search or the status filter is narrowing the list.
+export function decisionsFiltering(
+  filter: DecisionsFilter,
+  options: readonly StatusOption[]
+): boolean {
+  return queryTokens(filter.query).length > 0 || activeStatuses(filter.statuses, options).length > 0;
+}
+
+/// Everything a search reads on a row: what the row shows, and what the
+/// pane beside it would show -- the questions themselves, their options
+/// and the last answer line, so a decision is found by what it asks.
+export function subjectSearchFields(subject: DecisionSubject): Field[] {
+  const shown: Field[] = [subjectTitle(subject), subjectDetail(subject), subjectAgentLine(subject)];
+  switch (subject.kind) {
+    case "card":
+      return [
+        ...shown,
+        subject.cardPath.split("/").at(-1),
+        subject.status,
+        subject.row?.tabName,
+        ...subject.items.flatMap((item) => [item.text, item.latest, ...item.options]),
+      ];
+    case "session":
+      return [...shown, subject.row.pageName, subject.row.cardTitle];
+    case "gate":
+      return [...shown, subject.railName];
+    case "unreviewed":
+      return [...shown, subject.railName, subject.cardPath.split("/").at(-1), subject.status];
+  }
+}
+
+/// The rows the list shows: the whole list narrowed by the status filter
+/// and the search, order kept.
+export function filterSubjects(
+  subjects: readonly DecisionSubject[],
+  filter: DecisionsFilter,
+  options: readonly StatusOption[]
+): DecisionSubject[] {
+  const statuses = new Set(activeStatuses(filter.statuses, options));
+  const tokens = queryTokens(filter.query);
+  return subjects.filter(
+    (subject) =>
+      (statuses.size === 0 || statuses.has(subjectStatusKey(subject))) &&
+      matchesFields(tokens, subjectSearchFields(subject))
+  );
 }
 
 // ---- answering --------------------------------------------------------

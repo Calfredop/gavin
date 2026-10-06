@@ -127,7 +127,7 @@ describe("the version gate", () => {
   it("says why the items are missing rather than drawing an empty list", () => {
     const text = source(VIEW);
     expect(text).toContain("{list.itemsBlockedReason}");
-    expect(text).toContain("Decisions and human tests can't be shown:");
+    expect(text).toContain("Decisions can't be shown:");
   });
 
   it("greys nothing when the app has not connected yet", () => {
@@ -157,7 +157,32 @@ describe("the hub view", () => {
     // Rows leave as they are answered, so a stored id routinely points
     // at nothing -- and an empty pane beside a list with plenty in it is
     // what a remembered-only selection draws.
-    expect(source(VIEW)).toContain("resolveSelection(list.subjects, prefs.selected)");
+    expect(source(VIEW)).toContain("resolveSelection(visible, prefs.selected)");
+  });
+
+  it("filters what it shows through decisions.ts, and counts the whole list", () => {
+    // The count and the tab's mark are the WHOLE list's: a filter that
+    // emptied the summary would have the tab say nothing is waiting.
+    const text = source(VIEW);
+    expect(text).toContain("filterSubjects(list.subjects, filter, options)");
+    expect(text).toContain("statusOptions(columns, doneStatus, list.subjects)");
+    expect(text).toContain("summaryLine(list.summary)");
+    expect(text).toContain("{NOTHING_MATCHES}");
+  });
+
+  it("leaves Done and archived cards out in the tab and in its mark alike", () => {
+    // The mark is computed outside the tab, so both have to hand the
+    // done column to decisions.ts or the two disagree.
+    expect(source(VIEW)).toContain("doneStatus,");
+    expect(source("decisionsAttention.ts")).toContain(
+      "doneStatus: doneColumnOf(board?.columns ?? [])?.name ?? null"
+    );
+  });
+
+  it("keeps its search and status filter outside the component", () => {
+    const text = source(VIEW);
+    expect(text).toContain("setDecisionsPrefs(workspaceId, { query: next })");
+    expect(text).toContain("toggleStatus(prefs.statuses, option.key)");
   });
 
   it("keeps the selection outside the component that draws it", () => {

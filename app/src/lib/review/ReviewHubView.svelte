@@ -12,6 +12,13 @@
   // three columns beside it are all about one card: its agent, the files
   // its run touched, and one of those files.
   //
+  // Human tests live here too (review/humanTests.ts): a `Human test:`
+  // item is a check on work, like the diff, so the cards still owing one
+  // head the list wherever they sit on the board short of Done, and the
+  // selected card's tests are answered in a band over the three columns
+  // -- with the Decisions tab's own row and write, so a pass or a
+  // failure means the same thing wherever it is pressed.
+  //
   // Thin, like every other hub view: the policy is in reviewBoard.ts,
   // the fetching in reviewState.ts, the remembering in reviewPrefs.ts.
   import { onDestroy, onMount, untrack } from "svelte";
@@ -19,6 +26,17 @@
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { layoutState, daemonCompat } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import type { HumanItem, HumanItemOutcome } from "$lib/core/gavin";
+  import DecisionsItemRow from "$lib/decisions/DecisionsItemRow.svelte";
+  import { answerHumanItem } from "$lib/decisions/decisionsActions";
+  import type { DecisionCard } from "$lib/decisions/decisions";
+  import {
+    humanTestList,
+    reviewTestRows,
+    testSubjectDetail,
+    type HumanTestSubject,
+  } from "$lib/review/humanTests";
   import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
@@ -66,7 +84,7 @@
   import { criticalReviewRuns } from "$lib/review/criticalReviewState";
   import { runBaseline, type RunBaseline } from "$lib/cards/runChanges";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
-  import { conflictCheckout } from "$lib/orchestration/orchestration";
+  import { cardIndex, conflictCheckout, doneColumnOf } from "$lib/orchestration/orchestration";
   import { railIndex } from "$lib/board/planFilter";
   import { contextFacets, facetsEqual, pruneFacets } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
@@ -156,6 +174,45 @@
   );
   const archivedPaths = $derived(new Set((merged?.archived ?? []).map((c) => c.id)));
 
+  // The human tests still owed on every card in play (humanTests.ts):
+  // any column short of Done, never archived, and through this tab's own
+  // search and facets but not its column picker -- the picker chooses
+  // which finished columns to read diffs from, and a test is owed
+  // wherever its card is. The version gate is the Decisions tab's, for
+  // its reason: an older daemon parses no item lines, and its silence is
+  // not "no tests".
+  const testsBlockedReason = $derived(featureBlockedReason($daemonCompat, "humanItems"));
+  const testList = $derived(
+    humanTestList({
+      cards: new Map<string, DecisionCard>(
+        [...cardIndex(tree)].map(([path, entry]) => [
+          path,
+          { plan: entry.plan, contextFolder: entry.contextFolder },
+        ])
+      ),
+      bindings: new Map((board?.cardSessions ?? []).map((cs) => [cs.path, cs.sessionId])),
+      doneStatus: doneColumnOf(columns)?.name ?? null,
+      itemsBlockedReason: testsBlockedReason,
+    })
+  );
+  const testRows = $derived(
+    reviewTestRows(testList.subjects, new Map(allCards.map((c) => [c.id, c])), {
+      query: prefs.query,
+      facets,
+      rails,
+    })
+  );
+  const testCards = $derived<CardView[]>(
+    testRows.map((row) => row.card).filter((c): c is CardView => c !== null)
+  );
+  // Every card this tab measures: the listed ones, and the tested ones
+  // the column picker left out, so a card picked from its tests shows
+  // its touched files like any other.
+  const measured = $derived<CardView[]>([
+    ...listed,
+    ...testCards.filter((card) => !listed.some((c) => c.id === card.id)),
+  ]);
+
   // Rails as peers of the card list — same search/facet lens, no
   // Cards|Rails switcher. Position order from reviewRails.
   const listedRails = $derived(
@@ -191,7 +248,7 @@
   // sha into withBaselinePeers would bound every card in that cwd.
   const cardRequests = $derived(
     withBaselinePeers(
-      listed
+      measured
         .map((card) => {
           const baseline = baselineFor(card);
           return baseline.kind === "ready"
@@ -299,7 +356,14 @@
   // when the archive toggle flips, and when a card is filed elsewhere in
   // the app. A selection pointing at a card the list no longer holds
   // renders three empty columns beside a list with plenty in it.
-  const selected = $derived(resolveReviewSelection(groups, railSubjects, prefs.selected));
+  const selected = $derived(
+    resolveReviewSelection(
+      groups,
+      railSubjects,
+      prefs.selected,
+      testRows.map((row) => row.subject.cardPath)
+    )
+  );
 
   // ...and then written down, so the answer stops moving. Nothing about
   // `resolveSelection` is stable while the tab is loading: it falls back
@@ -325,7 +389,7 @@
       : null
   );
   const card = $derived(
-    selectedRail ? null : (listed.find((c) => c.id === selected) ?? null)
+    selectedRail ? null : (measured.find((c) => c.id === selected) ?? null)
   );
   const binding = $derived(card ? (cardSessionFor(board, card.id) ?? null) : null);
   const run = $derived(selected ? (view?.runs[selected] ?? null) : null);
@@ -379,9 +443,37 @@
     if (err) findingsError = err;
   }
 
+  // The selected card's own tests, from the whole list rather than the
+  // filtered rows: a card picked from its file group still owes them.
+  const selectedTests = $derived<HumanTestSubject | null>(
+    testList.subjects.find((s) => s.cardPath === selected) ?? null
+  );
+  let testError = $state<string | null>(null);
+  let testNotice = $state<string | null>(null);
+
+  // DecisionsHubView's `answer`, for the same row: resolves to whether
+  // the card was written, which is what the row clears its buffers on.
+  async function answerTest(item: HumanItem, outcome: HumanItemOutcome): Promise<boolean> {
+    const subject = selectedTests;
+    if (!subject) return false;
+    testError = null;
+    testNotice = null;
+    const result = await answerHumanItem(
+      workspaceId,
+      subject.cardPath,
+      item,
+      outcome,
+      subject.sessionId
+    );
+    testError = result.error;
+    testNotice = result.notice;
+    return result.wrote;
+  }
+
   // Changing card/rail drops the file: a diff belongs to the subject it
   // was read from, and leaving it up under another name would be somebody
-  // else's work under this heading.
+  // else's work under this heading. The test lines go with it, for the
+  // same reason.
   let fileFor = $state<string | null>(null);
   $effect(() => {
     const path = selected;
@@ -389,6 +481,8 @@
     fileFor = path;
     criticalError = null;
     findingsError = null;
+    testError = null;
+    testNotice = null;
     untrack(() => clearReviewFile(workspaceId));
   });
 
@@ -427,6 +521,8 @@
   <ReviewCardList
     {groups}
     railSubjects={railSubjects}
+    tests={testRows}
+    {testsBlockedReason}
     {selected}
     collapsed={prefs.listCollapsed}
     query={prefs.query}
@@ -495,6 +591,26 @@
         {/each}
         {#if findingsError}<span class="critical-error">{findingsError}</span>{/if}
       </div>
+    {/if}
+    {#if selectedTests}
+      <!-- Keyed on the card: each row keeps the note typed into it, and
+           two cards' tests can share a line index, so without the key a
+           half-typed failure would follow the human to the next card. -->
+      {#key selectedTests.cardPath}
+        <div class="tests" aria-label="Human tests on this card">
+          <div class="tests-head">
+            <span class="label">Human tests</span>
+            <span class="tests-sub">{testSubjectDetail(selectedTests)}</span>
+          </div>
+          <div class="test-list">
+            {#each selectedTests.items as item (item.lineIndex)}
+              <DecisionsItemRow {item} blockedReason={testsBlockedReason} onAnswer={answerTest} />
+            {/each}
+            {#if testError}<p class="test-error">{testError}</p>{/if}
+            {#if testNotice}<p class="test-notice">{testNotice}</p>{/if}
+          </div>
+        </div>
+      {/key}
     {/if}
     <div class="cols" bind:this={colsEl}>
       <ReviewAgentPane
@@ -690,6 +806,47 @@
   }
   .run-summary .critical {
     margin-left: auto;
+  }
+  /* The selected card's tests, over the three columns. Capped so a card
+     with a long checklist scrolls inside its band instead of pushing the
+     diff off the window. */
+  .tests {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    max-height: 40%;
+    min-height: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tests-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    padding: 6px 10px 0;
+  }
+  .tests-sub {
+    font-size: 0.78em;
+    color: var(--text-muted);
+  }
+  .test-list {
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px 10px;
+  }
+  .test-error,
+  .test-notice {
+    margin: 0;
+    font-size: 0.8em;
+  }
+  .test-error {
+    color: var(--danger-text);
+  }
+  .test-notice {
+    color: var(--text-muted);
   }
   /* A grid, not three flex children: the middle column is a file list
      with a natural width and the outer two are elastic, and only a

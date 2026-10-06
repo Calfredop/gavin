@@ -391,8 +391,9 @@ export const FEATURE_MIN_VERSION = {
   // wrong answer this tab must never give: the human would go away
   // satisfied.
   //
-  // So the consumer is the tab's answer controls (DecisionsHubView ->
-  // DecisionsItemRow), which is also why the gate is on the ITEMS and
+  // So the consumers are the answer controls (DecisionsHubView ->
+  // DecisionsItemRow for decisions, ReviewHubView -> DecisionsItemRow
+  // for human tests), which is also why the gate is on the ITEMS and
   // not the tab: waiting sessions, rail review gates and unreviewed
   // cards are all readable from an older daemon, so the tab still lists
   // them and says why the items are missing rather than drawing an empty

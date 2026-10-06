@@ -81,8 +81,9 @@ word.
 ### Items only a person can close
 
 Two checklist items are not an agent's to tick, and they carry a marker
-that says so. Both surface in the workspace's **Decisions** tab under
-this card, and the human's reply is written back under the item —
+that says so. A decision surfaces in the workspace's **Decisions** tab
+and a test in its **Review** tab, both under this card, and the human's
+reply is written back under the item —
 `Answer (date): …`, `Result (date): passed`, `Result (date): failed —
 <what went wrong>`.
 

@@ -1,5 +1,6 @@
-// Which row the Decisions tab has selected, and which pane its agent
-// column is showing, per workspace.
+// Which row the Decisions tab has selected, which pane its agent column
+// is showing, and what its search and status filter narrow the list to,
+// per workspace.
 //
 // A module-level store rather than component `$state`, for `hubFacets`'
 // reason: `+page.svelte` renders one hub view at a time and destroys the
@@ -27,10 +28,17 @@ export interface DecisionsPrefs {
   /// Which half of `ReviewAgentPane` is showing. Borrowed rather than
   /// redeclared: the pane is reused as-is, so its vocabulary is too.
   pane: ReviewPane;
+  /// The list's search box.
+  query: string;
+  /// The status keys the list is narrowed to (decisions.ts's
+  /// `subjectStatusKey`); empty shows every status.
+  statuses: string[];
+  /// Whether the status picker is open.
+  statusPickerOpen: boolean;
 }
 
 function empty(): DecisionsPrefs {
-  return { selected: null, pane: "session" };
+  return { selected: null, pane: "session", query: "", statuses: [], statusPickerOpen: false };
 }
 
 export const decisionsPrefs = writable<Record<string, DecisionsPrefs>>({});
@@ -43,7 +51,9 @@ export function prefsFor(
   all: Record<string, DecisionsPrefs>,
   workspaceId: string
 ): DecisionsPrefs {
-  return all[workspaceId] ?? empty();
+  // Merged over the defaults rather than returned as stored, so a
+  // record written before a field existed still reads whole.
+  return { ...empty(), ...all[workspaceId] };
 }
 
 export function setDecisionsPrefs(workspaceId: string, patch: Partial<DecisionsPrefs>): void {

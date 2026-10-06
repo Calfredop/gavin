@@ -5,10 +5,16 @@
   // The board answers "what is being worked on" and Review answers "what
   // did this work do to the checkout". This answers the question that
   // stops both of them: what is waiting on ME. Its rows are subjects
-  // rather than sessions — a card carrying open items, a waiting session
-  // nobody filed a card for, a rail review gate, a card nobody has read
-  // — because the human's next move is about the SUBJECT, and a card
-  // whose agent is also asking is one errand rather than two.
+  // rather than sessions — a card carrying open decisions, a waiting
+  // session nobody filed a card for, a rail review gate, a card nobody
+  // has read — because the human's next move is about the SUBJECT, and a
+  // card whose agent is also asking is one errand rather than two. Human
+  // tests are not here: a test is a check on finished work, and the
+  // Review tab lists them beside the diff they check.
+  //
+  // The list takes a search and a status filter, which narrow what is
+  // shown and nothing else — the count and the tab's mark stay the whole
+  // list's (decisions.ts).
   //
   // Thin, like every other hub view: what the list is and what an answer
   // means live in decisions.ts, the writes in decisionsActions.ts, the
@@ -16,7 +22,7 @@
   // Review's own ReviewAgentPane, reused as-is — a card's agent and its
   // plan are the same two things to look at here as there, and a second
   // panel would be a second vocabulary for one card.
-  import { BookOpen, Check, SkipForward } from "@lucide/svelte";
+  import { BookOpen, Check, ChevronDown, ChevronRight, SkipForward } from "@lucide/svelte";
   import { onMount, untrack } from "svelte";
   import { cardSessionFor, fetchBoard, refreshBoard, kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -24,11 +30,12 @@
   import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import { tooltip } from "$lib/core/tooltip";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
   import { waitLabel, rowTip, REASON_LABEL, attentionInbox } from "$lib/agents/attentionInbox";
   import { revealWaitingSession } from "$lib/cards/cardRunActions";
   import { nowStore } from "$lib/agents/agentPauseState";
   import { turnVerdictById, verdictsOf } from "$lib/agents/turnVerdictState";
-  import { cardIndex } from "$lib/orchestration/orchestration";
+  import { cardIndex, doneColumnOf } from "$lib/orchestration/orchestration";
   import {
     fetchOrchestration,
     orchestrations,
@@ -38,9 +45,15 @@
   import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
   import DecisionsItemRow from "$lib/decisions/DecisionsItemRow.svelte";
   import {
+    NOTHING_MATCHES,
     NOTHING_WAITING,
+    decisionsFiltering,
     decisionsList,
+    filterSubjects,
     resolveSelection,
+    statusFilterLabel,
+    statusOptions,
+    toggleStatus,
     subjectAgentLine,
     subjectDetail,
     subjectTitle,
@@ -78,6 +91,11 @@
   const board = $derived($kanbanState[workspaceId]);
   const tree = $derived($gavinTrees[workspaceId]);
   const prefs = $derived(prefsFor($decisionsPrefs, workspaceId));
+  const columns = $derived(board?.columns ?? []);
+  // The done column's name: a card in it asks nothing here
+  // (decisions.ts's `cardFinished`), and the status filter does not
+  // offer it.
+  const doneStatus = $derived(doneColumnOf(columns)?.name ?? null);
 
   // `attentionState` and not `layoutState`, for the hub inbox's own
   // reason: a wait the human has marked as read is no longer a reason to
@@ -138,15 +156,24 @@
       marks: $stepAttentionsByWorkspace[workspaceId] ?? new Map(),
       tools: renderLibraryFor($toolRecords, workspaceId),
       itemsBlockedReason,
+      doneStatus,
     })
   );
   const summary = $derived(summaryLine(list.summary));
 
-  // Re-resolved against the list on every change rather than merely
-  // remembered: rows leave as they are answered, so a stored id
-  // routinely points at nothing and would draw an empty pane beside a
-  // list with plenty in it.
-  const selected = $derived(resolveSelection(list.subjects, prefs.selected));
+  // What the list SHOWS: the whole list narrowed by the status filter
+  // and the search. The summary above stays the whole list's — a filter
+  // changes what the human is looking at, not what is waiting on them.
+  const options = $derived(statusOptions(columns, doneStatus, list.subjects));
+  const filter = $derived({ query: prefs.query, statuses: prefs.statuses });
+  const visible = $derived(filterSubjects(list.subjects, filter, options));
+  const filtering = $derived(decisionsFiltering(filter, options));
+
+  // Re-resolved against the shown rows on every change rather than
+  // merely remembered: rows leave as they are answered and as the filter
+  // moves, so a stored id routinely points at nothing and would draw an
+  // empty pane beside a list with plenty in it.
+  const selected = $derived(resolveSelection(visible, prefs.selected));
 
   // ...and then written down, so the answer stops moving — ReviewHubView's
   // own reason: `resolveSelection` falls back to the first row, and the
@@ -161,7 +188,7 @@
   });
 
   const subject = $derived<DecisionSubject | null>(
-    list.subjects.find((s) => s.id === selected) ?? null
+    visible.find((s) => s.id === selected) ?? null
   );
 
   // What ReviewAgentPane needs and this tab has no other reason to
@@ -262,20 +289,76 @@
     setDecisionsPrefs(workspaceId, { selected: id });
   }
 
-  const columns = $derived(board?.columns ?? []);
+  function resetFilters(): void {
+    setDecisionsPrefs(workspaceId, { query: "", statuses: [] });
+  }
 </script>
 
 <div class="decisions">
   <div class="list">
     <div class="list-head">
-      <span class="label">Waiting on you</span>
+      <SearchInput
+        value={prefs.query}
+        onValue={(next) => setDecisionsPrefs(workspaceId, { query: next })}
+        placeholder="Search decisions…"
+        label="Search what is waiting on you"
+        class="grow"
+      />
       {#if summary}<span class="count">{summary}</span>{/if}
+    </div>
+    <!-- The status filter, drawn as the Review tab draws its column
+         picker: closed it is one line the height of the head beside it,
+         so the two halves of the window keep one rule. -->
+    <div class="statuses">
+      <div class="status-row">
+        <button
+          type="button"
+          class="picker-toggle"
+          aria-expanded={prefs.statusPickerOpen}
+          onclick={() => setDecisionsPrefs(workspaceId, { statusPickerOpen: !prefs.statusPickerOpen })}
+        >
+          {#if prefs.statusPickerOpen}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+          Status
+          <span class="chosen">{statusFilterLabel(prefs.statuses, options)}</span>
+        </button>
+        {#if filtering}
+          <button
+            type="button"
+            class="reset"
+            use:tooltip={"Clear the search and the status filter"}
+            onclick={resetFilters}>Reset</button
+          >
+        {/if}
+      </div>
+      {#if prefs.statusPickerOpen}
+        <div class="picker">
+          {#each options as option (option.key)}
+            <label>
+              <input
+                type="checkbox"
+                checked={prefs.statuses.includes(option.key)}
+                onchange={() =>
+                  setDecisionsPrefs(workspaceId, { statuses: toggleStatus(prefs.statuses, option.key) })}
+              />
+              <span class="option-label">{option.label}</span>
+              <span class="option-count">{option.count}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
     </div>
     <div class="rows" role="listbox" aria-label="Everything in this workspace waiting on you">
       {#if list.subjects.length === 0}
         <div class="none">{NOTHING_WAITING}</div>
+      {:else if visible.length === 0}
+        <!-- Never NOTHING_WAITING: things ARE waiting, and the filter is
+             what hides them. -->
+        <div class="none">
+          <p>{NOTHING_MATCHES}</p>
+          <button type="button" onclick={resetFilters}>Clear the filters</button>
+        </div>
       {:else}
-        {#each list.subjects as row (row.id)}
+        {#each visible as row (row.id)}
           <button
             type="button"
             class="row"
@@ -297,7 +380,7 @@
         <!-- Under the rows rather than instead of them: the sessions and
              gates above ARE the whole truth about themselves, and only
              the card items are missing. -->
-        <div class="blocked">Decisions and human tests can't be shown: {list.itemsBlockedReason}</div>
+        <div class="blocked">Decisions can't be shown: {list.itemsBlockedReason}</div>
       {/if}
     </div>
   </div>
@@ -455,6 +538,10 @@
     min-height: 0;
     border-right: 1px solid var(--border);
   }
+  .list-head :global(.grow) {
+    flex: 1;
+    min-width: 0;
+  }
   .list-head,
   .strip {
     display: flex;
@@ -477,6 +564,90 @@
     flex: none;
     font-size: 0.78em;
     color: var(--text-muted);
+  }
+  /* The "What it needs" head's opposite number. `min-height` rather
+     than `height`: the picker opens inside this block, and a fixed one
+     would clip the checkboxes. Closed, it measures the same as that
+     head, so the two rules land on one y (ReviewCardList's `.columns`). */
+  .statuses {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    flex: none;
+    min-height: var(--review-head-height);
+    box-sizing: border-box;
+    padding: 0 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .picker-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+  .chosen {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+  }
+  .reset {
+    flex: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+  .reset:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  .picker {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 4px 6px;
+  }
+  .picker label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    cursor: pointer;
+  }
+  .option-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .option-count {
+    flex: none;
+    font-size: 0.85em;
+    color: var(--text-subtle);
   }
   .rows {
     flex: 1;

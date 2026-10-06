@@ -140,7 +140,7 @@ items had shipped.
 retired smoke checklist is not coming back as a routine UI backlog. But checks
 that genuinely need a person — another machine, a real install, a judgement
 call — are being brought back as card items (`Human test:`), gathered on the
-Decisions tab, rather than living only in an agent's memory of what it could not
+Review tab beside the work they check, rather than living only in an agent's memory of what it could not
 verify. Looking at what a change does in the running app stays the owner's.
 
 ## Out of scope
