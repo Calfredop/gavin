@@ -1,6 +1,6 @@
 ---
 agent: cursor
-order: 16384
+order: 1024
 kind: task
 title: [ui] usage modal rework
 status: Done

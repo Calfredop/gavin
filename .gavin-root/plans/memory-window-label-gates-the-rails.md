@@ -1,5 +1,5 @@
 ---
-order: 36864
+order: 11264
 kind: note
 title: Outside Tauri the window label is "main", which runs rails
 labels: memory

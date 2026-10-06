@@ -1,8 +1,8 @@
 ---
-order: 7168
+parent: feat-vectorized-memory.md
+order: 1024
 kind: task
 title: [feat] memories tab
-status: To Do
 ---
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

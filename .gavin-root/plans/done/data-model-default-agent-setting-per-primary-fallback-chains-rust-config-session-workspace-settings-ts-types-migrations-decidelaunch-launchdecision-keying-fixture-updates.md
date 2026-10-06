@@ -1,4 +1,5 @@
 ---
+order: 3072
 kind: task
 title: Data model: default-agent + per-primary fallback
 parent: feat-rework-agent-s-settings.md

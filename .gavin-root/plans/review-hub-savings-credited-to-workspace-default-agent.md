@@ -1,5 +1,5 @@
 ---
-order: 38912
+order: 12288
 kind: note
 title: The hub credits Headroom savings to the workspace's default agent, not the agent that ran
 status: To Do

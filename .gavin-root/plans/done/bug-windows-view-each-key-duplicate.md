@@ -1,6 +1,7 @@
 ---
+order: 7168
 title: [bug] Windows main view crashes with each_key_duplicate
-status: In Progress
+status: Done
 priority: high
 complexity: moderate
 labels: windows, bug
