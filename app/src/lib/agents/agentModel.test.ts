@@ -110,6 +110,15 @@ describe("commandSpecifiesEffort", () => {
   it("says no when there is no flag", () => {
     expect(commandSpecifiesEffort("claude --effort high", "")).toBe(false);
   });
+
+  it("detects an existing env-assignment prefix, kimi's shape", () => {
+    const flag = "KIMI_MODEL_THINKING_EFFORT=";
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT=low kimi", flag)).toBe(true);
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT='max' kimi -m kimi-code/k3", flag)).toBe(true);
+    expect(commandSpecifiesEffort("kimi -m kimi-code/k3", flag)).toBe(false);
+    // A same-named variable without a value is not an effort choice.
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT kimi", flag)).toBe(false);
+  });
 });
 
 describe("composeEffort", () => {
@@ -122,6 +131,26 @@ describe("composeEffort", () => {
   it("attaches the level to a flag ending in =", () => {
     expect(composeEffort("codex", "-c model_reasoning_effort=", "xhigh")).toBe(
       "codex -c model_reasoning_effort=xhigh"
+    );
+  });
+
+  it("prepends an env-assignment shape before the whole command", () => {
+    // kimi's effort is `KIMI_MODEL_THINKING_EFFORT`, not an argv flag:
+    // the launch composes through `sh -c`, so the prefix lands like one.
+    expect(composeEffort("kimi", "KIMI_MODEL_THINKING_EFFORT=", "low")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=low kimi"
+    );
+    expect(composeEffort("kimi -m kimi-code/k3", "KIMI_MODEL_THINKING_EFFORT=", "max")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=max kimi -m kimi-code/k3"
+    );
+    // An effort the command already sets wins, same as the flag shapes.
+    expect(composeEffort("KIMI_MODEL_THINKING_EFFORT=low kimi", "KIMI_MODEL_THINKING_EFFORT=", "max")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=low kimi"
+    );
+    // A lowercase `-c key=` override is NOT the env shape: it keeps its
+    // append meaning.
+    expect(composeEffort("codex", "-c model_reasoning_effort=", "high")).toBe(
+      "codex -c model_reasoning_effort=high"
     );
   });
 

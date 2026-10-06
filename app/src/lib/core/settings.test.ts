@@ -273,6 +273,7 @@ describe("resolveAgentConfig", () => {
       mcpConfigFile: ".codex/config.toml",
       headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --",
       promptArgs: "",
+      promptInjection: false,
       model: "",
       modelFlag: "--model",
       effort: "",
@@ -301,6 +302,7 @@ describe("resolveAgentConfig", () => {
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
       sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume",
+      promptInjection: false,
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
@@ -542,6 +544,7 @@ describe("resolveAgentConfig", () => {
       mcpConfigFile: "",
       headlessArgs: "",
       promptArgs: null,
+      promptInjection: false,
       model: "",
       modelFlag: "",
       effort: "",

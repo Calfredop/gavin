@@ -80,10 +80,10 @@ pub const LEGACY_CUSTOM_PROFILE_ID: &str = "custom";
 /// with an app-wide custom slug the human chose.
 pub const LOCAL_PROFILE_PREFIX: &str = "local:";
 
-/// The five stock built-in profile ids, in their shipped order. Migration
+/// The six stock built-in profile ids, in their shipped order. Migration
 /// folds a legacy single fallback chain onto exactly these plus every
 /// custom id known at the time.
-pub const STOCK_PROFILE_IDS: [&str; 5] = ["claude-code", "codex", "gemini", "cursor", "opencode"];
+pub const STOCK_PROFILE_IDS: [&str; 6] = ["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"];
 
 /// Stock built-in profile ids. A custom slug must not use these; Headroom
 /// and `api_family_for_daemon` treat anything else as custom-like.
@@ -1554,7 +1554,7 @@ pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
 
 /// Fold the legacy single fallback chain — one list walked no matter
 /// which agent was spent — into the per-primary maps: the old vec becomes
-/// EVERY known primary's chain (the five stock ids plus every custom id
+/// EVERY known primary's chain (the six stock ids plus every custom id
 /// known at migration time), because the old model offered it for any
 /// spent agent. A workspace legacy `None` means it never chose, which the
 /// new model already spells as an empty map (inherit). Runs AFTER
@@ -2110,7 +2110,7 @@ mod tests {
             MIGRATED_CUSTOM_PROFILE_ID
         );
         // The legacy single chain was rewritten, then folded onto every
-        // known primary (the five stock ids plus the migrated custom one)
+        // known primary (the six stock ids plus the migrated custom one)
         // by `migrate_fallback_chains`.
         assert!(loaded.agent_defaults.agent_fallback.is_empty());
         let expected_chain = vec![MIGRATED_CUSTOM_PROFILE_ID.to_string(), "gemini".to_string()];

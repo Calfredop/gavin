@@ -218,7 +218,7 @@
   // blocks all of them for one reason -- said once, on the header
   // button, rather than as N identical error strips after the click.
   const runBlocked = $derived(
-    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label, $resolvedAgents(workspaceId).promptInjection)
   );
 
   function sessionStateFor(path: string): CardSessionState {

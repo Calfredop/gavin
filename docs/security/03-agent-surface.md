@@ -329,6 +329,19 @@ with `/bin/other` standing in for the hostile command.
 for a config the human owns; the gap is that a config arriving with a clone is
 merged into with no notice.
 
+**Update 2026-10-06 — the kimi profile writes outside the workspace.** Kimi Code
+refuses a repository's own MCP servers until its per-folder trust record exists
+(`~/.kimi-code/workspace-trust/<key>`), which is a gate against exactly the
+hostile-clone case above. On the human's decision, Integration for the kimi
+profile writes that record itself (`grant_folder_trust`), so it is the one place
+gavin writes into an agent's per-user state. It does not weaken the gate: the
+record is written only when this run actually wrote gavin's entry — so a run
+paused at, or refused by, the foreign-server disclosure grants nothing — and never
+while kimi's other project MCP file (`.kimi-code/mcp.json`) declares servers, never
+over an existing record, and never for an ssh workspace, whose home is the host's.
+The run reports the path it wrote. Kimi does not inherit trust to subdirectories,
+so worktrees are not covered by it.
+
 ---
 
 ### AG-08 — State the scheduler trusts is writable over the socket for any rail/step/card

@@ -750,7 +750,7 @@
   // gated: it replays the command the first launch stored, and never
   // builds one.
   const runBlocked = $derived(
-    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label, $resolvedAgents(workspaceId).promptInjection)
   );
 
   async function handleDevelop(): Promise<void> {

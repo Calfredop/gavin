@@ -601,6 +601,59 @@ mod tests {
         );
     }
 
+    /// The kimi-code profile: kimi's own skill root, claude-code's
+    /// `.mcp.json` (K6 -- two profiles share the one file), and no agent
+    /// file (the headless grant rides kimi's default `auto` policy).
+    fn kimi_workspace(dir: &Path) {
+        let gavin_root = dir.join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(gavin_root.join("plans")).unwrap();
+        std::fs::write(gavin_root.join("config.toml"), "[agent]\nprofile = \"kimi-code\"\n")
+            .unwrap();
+        for skill in ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"] {
+            let d = dir.join(".kimi-code").join("skills").join(skill);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "skill").unwrap();
+        }
+        std::fs::write(
+            dir.join(".mcp.json"),
+            "{\n  \"mcpServers\": {\n    \"gavin\": { \"command\": \"/bin/gavin-mcp\", \"args\": [] }\n  }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Project\n\n<!-- gavin:start -->\nblah\n<!-- gavin:end -->\n",
+        )
+        .unwrap();
+    }
+
+    /// Same pin as the opencode one, for the profile that shares TWO of
+    /// its neighbours' conventions: kimi's skills live under
+    /// `.kimi-code/skills/` while its MCP file is claude-code's
+    /// `.mcp.json`. A sweep that followed either half alone would miss
+    /// the other.
+    #[test]
+    fn the_scan_follows_the_profile_to_the_kimi_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        kimi_workspace(dir.path());
+        // A step skill, which appears in no table, and somebody else's
+        // skill, which is not gavin's to remove.
+        std::fs::create_dir_all(dir.path().join(".kimi-code/skills/gavin-write-prd")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".kimi-code/skills/my-own")).unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.skills.len(), 5, "four table skills plus the step skill: {:?}", f.skills);
+        assert!(f.skills.iter().all(|s| s.contains(".kimi-code/skills/gavin")));
+        assert!(!f.skills.iter().any(|s| s.ends_with("my-own")));
+        assert!(f.agent_file.is_none(), "kimi-code has no agent file");
+        assert_eq!(
+            f.mcp.as_ref().unwrap().path,
+            protocol::wire_path(&dir.path().join(".mcp.json"))
+        );
+        assert_eq!(f.mcp.as_ref().unwrap().server_key, "gavin");
+        assert!(f.instructions.as_ref().unwrap().ends_with("AGENTS.md"));
+    }
+
     /// The agent file is removable BECAUSE the scan reported it -- the
     /// same intersection every other path goes through. Without the
     /// entry in `removable_paths` the plan would name a file the

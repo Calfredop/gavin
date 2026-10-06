@@ -292,6 +292,7 @@ fn run_probe(probe: UsageProbe, now: i64) -> (UsageReport, Option<i64>) {
         UsageProbe::CursorSession => cursor_usage(now),
         UsageProbe::GeminiCodeAssist => gemini_usage(now),
         UsageProbe::OpencodeGo => opencode_go_usage(now),
+        UsageProbe::KimiOauth => kimi_usage(now),
     }
 }
 
@@ -1633,6 +1634,151 @@ fn opencode_go_usage(now: i64) -> (UsageReport, Option<i64>) {
     }
 }
 
+// ---- Kimi Code --------------------------------------------------------------
+
+/// Where kimi's own config points the managed provider, when gavin cannot
+/// read it. The host is the ACCOUNT's to say, not gavin's to pin: both
+/// api.kimi.ai and api.kimi.com answered the same token 200 when this
+/// route was verified (2026-10-05, kimi 2.1.1), and which one a login
+/// lives on is region, not version. Only the fallback is a constant.
+const KIMI_FALLBACK_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+
+fn kimi_home() -> Option<PathBuf> {
+    Some(home_dir()?.join(".kimi-code"))
+}
+
+/// The OAuth access token out of kimi's credentials directory. READ-ONLY,
+/// strictly: kimi refreshes and rewrites these files itself, and gavin
+/// writing one would race exactly that.
+fn kimi_token() -> Option<String> {
+    let files = kimi_credential_files(&kimi_home()?.join("credentials"));
+    kimi_token_from_credentials(&std::fs::read_to_string(files.first()?).ok()?)
+}
+
+/// The `kimi-code-env-*.json` files under a credentials directory, sorted
+/// so more than one (kimi writes one per login, and usually keeps exactly
+/// one) picks deterministically rather than by readdir order.
+fn kimi_credential_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("kimi-code-env-"))
+                && p.extension().is_some_and(|e| e == "json")
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// `access_token` out of a `kimi-code-env-*.json` blob. Split out so the
+/// shape is testable without a real login.
+fn kimi_token_from_credentials(raw: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    nonempty(parsed.get("access_token")?.as_str()?)
+}
+
+/// `<managed base>` from `[providers."managed:kimi-code"] base_url` in
+/// kimi's own config.toml. A read that fails in any way -- no file, no
+/// table, no key, broken TOML -- falls back rather than fails: both known
+/// hosts answered the same token when the route was verified, so a wrong
+/// guess degrades instead of erroring.
+fn kimi_base_url() -> String {
+    let raw = kimi_home().and_then(|d| std::fs::read_to_string(d.join("config.toml")).ok());
+    raw.as_deref().and_then(kimi_base_url_from_config).unwrap_or_else(|| KIMI_FALLBACK_BASE_URL.to_string())
+}
+
+fn kimi_base_url_from_config(raw: &str) -> Option<String> {
+    let table = raw.parse::<toml::Table>().ok()?;
+    let url = table.get("providers")?.get("managed:kimi-code")?.get("base_url")?.as_str()?;
+    // Sent verbatim into a curl config, so only a plain https URL is
+    // taken -- anything else is kimi's config saying something gavin does
+    // not follow.
+    nonempty(url).filter(|u| u.starts_with("https://") && !u.contains('"') && !u.contains('\n'))
+}
+
+fn kimi_usage(now: i64) -> (UsageReport, Option<i64>) {
+    let token = match kimi_token() {
+        Some(t) => t,
+        None => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not find Kimi Code's login — run `kimi login`".to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    if token.contains('"') || token.contains('\n') {
+        return (
+            UsageReport::Unavailable {
+                reason: "Kimi Code's login is not a session gavin can read — run `kimi login`".to_string(),
+                retry_after: None,
+            },
+            None,
+        );
+    }
+    // The same stdin-config discipline as every other probe: the token
+    // never reaches argv.
+    let config = format!(
+        "url = \"{base}/usages\"\n\
+         header = \"Authorization: Bearer {token}\"\n\
+         header = \"Accept: application/json\"\n\
+         silent\n\
+         show-error\n\
+         max-time = \"{TIMEOUT_SECS}\"\n\
+         write-out = \"\\n%{{http_code}}\"\n",
+        base = kimi_base_url().trim_end_matches('/'),
+    );
+    http_probe_result(
+        run_curl(&config),
+        now,
+        parse_kimi,
+        "Kimi Code's login is not valid any more — run `kimi login`",
+        "the Kimi usage endpoint",
+    )
+}
+
+/// `GET <managed base>/usages` (verified live 2026-10-05, kimi 2.1.1, HTTP
+/// 200): windows under `usages`, snake_case, each `{used_ratio,
+/// reset_time}`. `used_ratio` is a 0..1 FRACTION -- unlike Anthropic's
+/// `utilization`, which is already a percent -- so it is scaled, not
+/// copied. The `limits` array beside `usages` carries the same windows as
+/// string limit/remaining pairs and adds nothing the ratio does not say,
+/// so it is not read.
+///
+/// Every window is OPTIONAL: the verified answer carried no `limit_7d`
+/// for this account at all, so a missing key is skipped rather than
+/// zeroed.
+fn parse_kimi(body: &str, now: i64) -> Option<UsageReport> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let usages = parsed.get("usages")?;
+    let rows: [(&str, &str, &str); 4] = [
+        ("limit_5h", "kimi-5h", "5-hour"),
+        ("limit_7d", "kimi-7d", "Weekly"),
+        ("limit_month_total", "kimi-month-total", "Monthly total"),
+        ("limit_month_code", "kimi-month-code", "Monthly code"),
+    ];
+    let mut windows = Vec::new();
+    for (key, id, label) in rows {
+        let Some(obj) = usages.get(key) else { continue };
+        let Some(ratio) = obj.get("used_ratio").and_then(as_percent) else { continue };
+        let resets_at = obj.get("reset_time").and_then(as_epoch_secs);
+        // The same drop every route makes: a window past its reset is
+        // stale, not full.
+        if resets_at.is_some_and(|t| t <= now) {
+            continue;
+        }
+        windows.push(window(id, label, ratio * 100.0, resets_at));
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(UsageReport::Ready { windows, plan: None, observed_at: now, cached: false })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2020,7 +2166,7 @@ mod tests {
     /// whenever claude is.
     #[test]
     fn profiles_without_a_route_are_unsupported() {
-        for id in ["claude-code", "codex", "gemini", "cursor", "opencode"] {
+        for id in ["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"] {
             assert!(usage_probe_for(id).is_some(), "{id} has no probe");
         }
         for id in ["custom", "custom-agent", "my-bot", "local:desk"] {
@@ -2215,6 +2361,99 @@ mod tests {
         );
         assert_eq!(opencode_go_key(r#"{"openrouter":{"key":"sk-or"}}"#), None);
         assert_eq!(opencode_go_key("not json"), None);
+    }
+
+    #[test]
+    fn kimi_credentials_are_globbed_not_named() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("kimi-code-env-0e4f99c69cc27850.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("other.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("kimi-code-env-notes.txt"), "{}").unwrap();
+
+        assert_eq!(
+            kimi_credential_files(dir.path()),
+            vec![dir.path().join("kimi-code-env-0e4f99c69cc27850.json")]
+        );
+        assert!(kimi_credential_files(&dir.path().join("absent")).is_empty());
+    }
+
+    #[test]
+    fn kimi_credentials_yield_the_access_token_and_nothing_else() {
+        let raw = r#"{"access_token":"sk-kimi-a","refresh_token":"r","expires_at":1,"scope":"s","token_type":"Bearer","expires_in":3600}"#;
+        assert_eq!(kimi_token_from_credentials(raw).as_deref(), Some("sk-kimi-a"));
+        assert_eq!(kimi_token_from_credentials(r#"{"refresh_token":"r"}"#), None);
+        assert_eq!(kimi_token_from_credentials(r#"{"access_token":"  "}"#), None);
+        assert_eq!(kimi_token_from_credentials("not json"), None);
+    }
+
+    /// The managed provider's base_url is the route's host; every read
+    /// failure -- no provider table, no key, broken TOML, a non-https
+    /// value -- answers None so the caller falls back instead of sending
+    /// the token somewhere kimi never pointed at.
+    #[test]
+    fn kimi_base_url_comes_from_the_managed_provider_with_a_fallback() {
+        let config = "default_model = \"kimi-code/k3\"\n\n\
+                      [providers.\"managed:kimi-code\"]\n\
+                      type = \"kimi\"\n\
+                      base_url = \"https://api.kimi.ai/coding/v1\"\n";
+        assert_eq!(kimi_base_url_from_config(config).as_deref(), Some("https://api.kimi.ai/coding/v1"));
+        assert_eq!(kimi_base_url_from_config("default_model = \"k\""), None);
+        assert_eq!(kimi_base_url_from_config("[providers.other]\nbase_url = \"https://x\""), None);
+        assert_eq!(kimi_base_url_from_config("not toml ="), None);
+        assert_eq!(
+            kimi_base_url_from_config("[providers.\"managed:kimi-code\"]\nbase_url = \"file:///etc/passwd\""),
+            None
+        );
+    }
+
+    /// Live shape, 2026-10-05 (kimi 2.1.1, HTTP 200): snake_case windows
+    /// under `usages`, and `used_ratio` is a 0..1 FRACTION, not the
+    /// percent Anthropic's `utilization` already is. This account's
+    /// answer carried no `limit_7d`, and the parser must not need it.
+    #[test]
+    fn kimi_windows_scale_the_ratio_and_skip_absent_ones() {
+        let now = parse_rfc3339("2026-10-05T18:00:00Z").unwrap();
+        let body = r#"{
+            "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                        "detail": {"limit": "100", "remaining": "100", "resetTime": "2026-10-05T19:03:26Z"}}],
+            "usages": {
+                "limit_5h": {"used_ratio": 0.425, "reset_time": "2026-10-05T19:03:25Z"},
+                "limit_month_total": {"used_ratio": 0.1, "reset_time": "2026-11-06T00:00:00Z"},
+                "limit_month_code": {"used_ratio": 0, "reset_time": "2026-11-06T00:00:00Z"}
+            }
+        }"#;
+        let report = parse_kimi(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(
+            w.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["kimi-5h", "kimi-month-total", "kimi-month-code"]
+        );
+        assert_eq!(w[0].label, "5-hour");
+        assert!((w[0].used_percent - 42.5).abs() < 0.001, "the fraction scaled, got {}", w[0].used_percent);
+        assert!((w[1].used_percent - 10.0).abs() < 0.001);
+        assert_eq!(w[2].used_percent, 0.0);
+        assert_eq!(w[0].resets_at, parse_rfc3339("2026-10-05T19:03:25Z"));
+    }
+
+    /// A window whose reset has passed is dropped (the every-route rule),
+    /// a key gavin does not know is skipped, and nothing left is nothing
+    /// to show -- never an empty panel claiming zero usage.
+    #[test]
+    fn kimi_windows_drop_expired_and_unknown_and_empty_is_not_ready() {
+        let now = parse_rfc3339("2026-10-05T18:00:00Z").unwrap();
+        let body = r#"{"usages": {
+            "limit_5h": {"used_ratio": 0.9, "reset_time": "2026-10-05T17:00:00Z"},
+            "limit_year": {"used_ratio": 0.5, "reset_time": "2027-01-01T00:00:00Z"},
+            "limit_month_total": {"used_ratio": 0.2, "reset_time": "2026-11-06T00:00:00Z"}
+        }}"#;
+        let report = parse_kimi(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["kimi-month-total"]);
+
+        let expired = r#"{"usages": {"limit_5h": {"used_ratio": 0.9, "reset_time": "2026-10-05T17:00:00Z"}}}"#;
+        assert!(parse_kimi(expired, now).is_none());
+        assert!(parse_kimi(r#"{"usages": {}}"#, now).is_none());
+        assert!(parse_kimi("{}", now).is_none());
     }
 
     fn fake_jwt(payload: &str) -> String {

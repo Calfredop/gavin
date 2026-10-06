@@ -28,6 +28,14 @@ export interface AgentProfileInfo {
   /// Null and "" are opposite answers, so nothing here may test it for
   /// truthiness -- "" is a working profile.
   promptArgs: string | null;
+  /// True when a visible run launches this agent BARE and its card
+  /// prompt reaches it through the daemon's follow-up queue instead of
+  /// argv (K3, agent_setup.rs's `prompt_injection`): the daemon holds the
+  /// queued prompt until the agent's gavin-mcp handshake says the agent
+  /// is alive, then writes it into the PTY. Only meaningful with
+  /// `promptArgs: null`; kimi-code is the first row. Optional because a
+  /// host built before K3 does not send it.
+  promptInjection?: boolean;
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
@@ -368,6 +376,12 @@ export interface ResolvedAgent {
   /// describes the BINARY, and claude-code's argv on somebody else's
   /// agent would be garbage.
   promptArgs: string | null;
+  /// `promptArgs: null` without the refusal: this agent takes no prompt
+  /// ARGV, but a visible run launches it bare and the daemon injects the
+  /// composed prompt into its PTY once its MCP handshake reports the
+  /// agent alive (K3). Resolved through the same no-fallback chain as
+  /// promptArgs -- false for every profile that did not say so.
+  promptInjection: boolean;
   /// The MCP config file gavin would write for this workspace, or "" when
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
@@ -539,6 +553,7 @@ export function resolveAgentConfig(
     // denying that claude takes a prompt would block every card run in
     // the app with a sentence naming an agent nobody chose.
     promptArgs: effective ? effective.promptArgs : "",
+    promptInjection: effective?.promptInjection ?? false,
   };
 }
 

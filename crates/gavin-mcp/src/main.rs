@@ -758,6 +758,28 @@ fn current_session_id() -> Option<String> {
     std::env::var("GAVIN_SESSION_ID").ok().filter(|v| !v.is_empty())
 }
 
+/// The eager half of the K3 prompt-injection handshake: connect to the
+/// daemon NOW, at process start, rather than lazily at the first tool
+/// call. `connect` presents this session's token -- the same `Hello` the
+/// lazy path sends -- and for an agent whose CLI has no prompt flag that
+/// Hello is the daemon's "the agent is alive" signal: it is what
+/// releases a card prompt the daemon is holding for this session's PTY.
+///
+/// Gated on `GAVIN_SESSION_ID`: outside a gavin tab there is no session
+/// to announce and nothing waiting on the signal, so the transport stays
+/// exactly as lazy as it always was. Every failure is swallowed: the
+/// lazy path retries at the first tool call, and an MCP server that
+/// fails to START reaches the agent as "server failed to start" -- which
+/// would cost it every gavin tool over a signal it never asked for.
+fn announce_to_daemon(transport: &mut dyn DaemonTransport, session_id: Option<String>) {
+    // Empty counts as absent, the way every other optional variable in
+    // this codebase is read.
+    if session_id.as_deref().is_none_or(str::is_empty) {
+        return;
+    }
+    let _ = transport.prepare();
+}
+
 /// The card this tool call just put in the calling session's hands, if
 /// it put one there at all.
 ///
@@ -1816,6 +1838,7 @@ fn main() {
     );
 
     let mut transport = SocketTransport::new();
+    announce_to_daemon(&mut transport, current_session_id());
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
@@ -1906,6 +1929,47 @@ mod tests {
     }
     fn mock(replies: Vec<Response>) -> MockTransport {
         MockTransport { replies, requests: vec![] }
+    }
+
+    /// Counts `prepare` calls, so the announce tests see the connect
+    /// decision without a socket.
+    #[derive(Default)]
+    struct PrepareCounting {
+        prepares: usize,
+        fail: bool,
+    }
+    impl DaemonTransport for PrepareCounting {
+        fn request(&mut self, _req: &Request) -> anyhow::Result<Response> {
+            anyhow::bail!("unused")
+        }
+        fn prepare(&mut self) -> anyhow::Result<()> {
+            self.prepares += 1;
+            if self.fail { anyhow::bail!("no daemon") } else { Ok(()) }
+        }
+    }
+
+    /// The eager announce (K3): inside a gavin session the daemon
+    /// connection -- and with it the session-token Hello -- happens at
+    /// process start, not at the first tool call. Outside one, the
+    /// transport stays as lazy as it always was.
+    #[test]
+    fn the_announce_connects_only_inside_a_gavin_session() {
+        let mut t = PrepareCounting::default();
+        announce_to_daemon(&mut t, None);
+        announce_to_daemon(&mut t, Some(String::new()));
+        assert_eq!(t.prepares, 0, "no session means no announce");
+        announce_to_daemon(&mut t, Some("sess-1".into()));
+        assert_eq!(t.prepares, 1);
+    }
+
+    /// A daemon that cannot be reached must not stop the server from
+    /// starting: the announce is a signal, not a prerequisite, and the
+    /// lazy path retries at the first tool call.
+    #[test]
+    fn a_failed_announce_is_swallowed() {
+        let mut t = PrepareCounting { prepares: 0, fail: true };
+        announce_to_daemon(&mut t, Some("sess-1".into()));
+        assert_eq!(t.prepares, 1, "the attempt was made and its failure dropped");
     }
 
     /// A fake daemon on a throwaway socket that answers the version probe

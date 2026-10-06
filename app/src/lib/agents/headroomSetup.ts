@@ -400,6 +400,7 @@ export function profileRecipeReason(profileId: string, customApiFamily: ApiFamil
     case "claude-code":
     case "codex":
     case "opencode":
+    case "kimi-code":
       return null;
     case "cursor":
       return "Cursor sends everything through Cursor's servers — Headroom can't reach it.";

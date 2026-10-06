@@ -92,7 +92,7 @@
     workspaceId === null
       ? null
       : (sshRunBlocked($layoutState.workspaces.find((w) => w.id === workspaceId), $sshLinks) ??
-        agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label))
+        agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label, $resolvedAgents(workspaceId).promptInjection))
   );
 
   // Live session binding (card-model spec §3) -- the shared agent

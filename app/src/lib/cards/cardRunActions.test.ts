@@ -243,6 +243,9 @@ beforeEach(() => {
   // every later launch waiting to be reviewed.
   vi.mocked(cardReviewed).mockReturnValue(true);
   vi.mocked(ensureCardReviewed).mockResolvedValue(true);
+  // A rejection leaked forward once: clearAllMocks clears calls, not
+  // implementations, so the queue's happy path is restored per test too.
+  vi.mocked(backend.queueInput).mockResolvedValue([]);
 });
 
 /// The card AG-01 was reproduced with: the board shows "Fix login", and
@@ -526,6 +529,94 @@ describe("runCard", () => {
     const err = await runCard("ws-1", card("task", null));
     expect(err).toContain("spawn failed");
     expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("prompt injection (K3)", () => {
+  /// The kimi-code shape: no prompt argv, but the daemon injects the
+  /// composed prompt into the session's PTY once the agent's MCP
+  /// handshake reports it alive.
+  const KIMI_AGENT = {
+    ...NO_RESUME_AGENT,
+    profileId: "kimi-code",
+    label: "Kimi Code",
+    command: "kimi",
+    launchCommand: "kimi",
+    promptArgs: null,
+    promptInjection: true,
+  };
+
+  it("launches bare and hands the daemon the composed prompt as a queued input", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(KIMI_AGENT as never);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: To Do\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-kimi");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    expect(await runCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    // Bare: the CLI has no prompt argv, so the command is the launch
+    // line alone and nothing of the prompt is shell-quoted into it.
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toBe("kimi");
+    // The prompt rides the queue instead, verbatim -- the daemon's
+    // bracketed-paste envelope is applied at delivery, not here.
+    const [queuedSession, queuedText] = vi.mocked(backend.queueInput).mock.calls[0];
+    expect(queuedSession).toBe("s-kimi");
+    expect(queuedText).toContain("the task card at /ws/.gavin-root/plans/t.md");
+    expect(queuedText).toContain("Do the thing.");
+    // The rest of the launch is unchanged: the run is placed, named and bound.
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-kimi");
+    expect(backend.linkCardSession).toHaveBeenCalled();
+  });
+
+  it("a failed queue write surfaces instead of leaving a promptless agent running silently", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(KIMI_AGENT as never);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-kimi");
+    vi.mocked(backend.queueInput).mockRejectedValue(new Error("daemon gone"));
+
+    const err = await runCard("ws-1", card("task", "To Do"));
+
+    expect(err).toContain("daemon gone");
+  });
+
+  it("a no-prompt profile WITHOUT the flag is still refused — cursor's null is not kimi's null", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue({
+      ...NO_RESUME_AGENT,
+      label: "Cursor",
+      promptArgs: null,
+    } as never);
+
+    const err = await runCard("ws-1", card("task", "To Do"));
+
+    expect(err).toContain("Cursor");
+    expect(err).toContain("Settings");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.queueInput).not.toHaveBeenCalled();
+  });
+
+  it("develop launches bare and queues its prompt too", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(KIMI_AGENT as never);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(HOSTILE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-dev");
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toBe("kimi");
+    const [queuedSession, queuedText] = vi.mocked(backend.queueInput).mock.calls[0];
+    expect(queuedSession).toBe("s-dev");
+    // The develop prompt, which carries no card body by design.
+    expect(queuedText).toContain("gavin-develop");
   });
 });
 

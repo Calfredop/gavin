@@ -87,7 +87,10 @@ function flagIsInert(flag: string): boolean {
 ///
 /// An attached flag (ending in `=`) matches any token it begins, so
 /// `model_reasoning_effort="high"` counts; a separated one matches itself
-/// or its own `=` form, so `--effortless` does not.
+/// or its own `=` form, so `--effortless` does not. The env-assignment
+/// shape below rides the attached rule: `KIMI_MODEL_THINKING_EFFORT=low`
+/// at the front of the command is a token that begins with
+/// `KIMI_MODEL_THINKING_EFFORT=`.
 export function commandSpecifiesEffort(command: string, flag: string): boolean {
   const last = flag.trim().split(/\s+/).pop() ?? "";
   if (!last) return false;
@@ -96,15 +99,28 @@ export function commandSpecifiesEffort(command: string, flag: string): boolean {
   return tokens.some((token) => token === last || token.startsWith(`${last}=`));
 }
 
+/// The effort "flag" that is not a flag: an env-assignment shape
+/// (`KIMI_MODEL_THINKING_EFFORT=`), for an agent whose effort knob is an
+/// environment variable. Distinct from an attached flag because it goes
+/// BEFORE the command, not after it -- `KIMI_MODEL_THINKING_EFFORT=low
+/// kimi ...` -- and gavin composes every launch through `sh -c`, so the
+/// prefix composes like a flag. The shape is deliberately narrow
+/// (screaming-shell-variable only) so a lowercase `-c key=` override
+/// keeps its append meaning.
+const EFFORT_ENV_SHAPE = /^[A-Z][A-Z0-9_]*=$/;
+
 /// `command` plus the effort, when there is one to add, a usable flag to
 /// add it with, and the command does not already carry one. Returns
 /// `command` untouched otherwise, for `composeLaunchCommand`'s reason.
 ///
-/// Two shapes, the `headless_args` convention the Rust table uses: a flag
-/// ending in `=` takes the level attached (`-c model_reasoning_effort=high`),
-/// anything else takes it as the next argument (`--effort high`). The
-/// level is quoted exactly as a model name is, and in the attached shape
-/// the quotes still close on the same word: `--think='a b'` is one argv.
+/// Three shapes, the `AgentProfile::effort_flag` convention the Rust
+/// table documents: a flag ending in `=` takes the level attached
+/// (`-c model_reasoning_effort=high`), an env-assignment shape
+/// (`EFFORT_ENV_SHAPE`) is PREPENDED before the whole command
+/// (`KIMI_MODEL_THINKING_EFFORT=low kimi ...`), and anything else takes
+/// the level as the next argument (`--effort high`). The level is quoted
+/// exactly as a model name is, and in the attached shape the quotes still
+/// close on the same word: `--think='a b'` is one argv.
 export function composeEffort(command: string, flag: string, effort: string): string {
   const chosen = effort.trim();
   const usable = flag.trim();
@@ -112,6 +128,7 @@ export function composeEffort(command: string, flag: string, effort: string): st
     return command;
   }
   const level = quoteModel(chosen);
+  if (EFFORT_ENV_SHAPE.test(usable)) return `${usable}${level} ${command}`;
   return usable.endsWith("=") ? `${command} ${usable}${level}` : `${command} ${usable} ${level}`;
 }
 

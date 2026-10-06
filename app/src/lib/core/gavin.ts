@@ -112,7 +112,7 @@ export interface AgentConfig {
   profile: string | null;
   file: string | null;
   command: string | null;
-  /// The `custom` profile's MCP config path and dialect; the five stock
+  /// The `custom` profile's MCP config path and dialect; the six stock
   /// profiles carry a verified layout in the Rust table instead. Optional
   /// because an older daemon's tree does not send them.
   mcpFile?: string | null;

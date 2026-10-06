@@ -190,7 +190,7 @@ describe("every surface that launches an agent asks the gate", () => {
     // `.profileId` passed straight through, skips the version gate.
     const skipping = CALLS.filter(
       (call) =>
-        /["'`](claude-code|codex|gemini|cursor|opencode|custom)["'`]/.test(call.text) ||
+        /["'`](claude-code|codex|gemini|cursor|opencode|kimi-code|custom)["'`]/.test(call.text) ||
         /\b\w+\.profileId\s*[,)]/.test(call.text.replace(/spec\.profileId/g, ""))
     ).map((call) => `${call.file}: ${call.text}`);
 

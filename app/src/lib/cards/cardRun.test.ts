@@ -17,6 +17,7 @@ import {
   withFreshConversationId,
   noPromptReason,
   agentPromptBlocker,
+  usesPromptInjection,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -380,6 +381,27 @@ describe("agentPromptBlocker", () => {
     expect(agentPromptBlocker("", "Claude Code")).toBeNull();
     expect(agentPromptBlocker("--prompt=", "opencode")).toBeNull();
     expect(agentPromptBlocker(null, "Cursor")).toBe(noPromptReason("Cursor"));
+  });
+
+  // K3: an injection profile's null promptArgs is a bare launch with the
+  // prompt arriving through the daemon's queue, not a refusal. Cursor's
+  // null -- no flag -- stays one, which is the half of the distinction
+  // the flag exists to keep.
+  it("is null for a prompt-injection profile, and still the reason for a plain no-prompt one", () => {
+    expect(agentPromptBlocker(null, "Kimi Code", true)).toBeNull();
+    expect(agentPromptBlocker(null, "Cursor", false)).toBe(noPromptReason("Cursor"));
+  });
+});
+
+describe("usesPromptInjection", () => {
+  // Both halves: the flag alone is not the answer (an argv profile takes
+  // its prompt on the command line), and null alone is not (cursor
+  // refuses). Only null-with-flag routes a run through the queue.
+  it("is true only for a no-argv profile that said so", () => {
+    expect(usesPromptInjection({ promptArgs: null, promptInjection: true })).toBe(true);
+    expect(usesPromptInjection({ promptArgs: null, promptInjection: false })).toBe(false);
+    expect(usesPromptInjection({ promptArgs: null })).toBe(false);
+    expect(usesPromptInjection({ promptArgs: "", promptInjection: true })).toBe(false);
   });
 });
 

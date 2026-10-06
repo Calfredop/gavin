@@ -16,7 +16,8 @@
 export interface UsageWindow {
   /// "five_hour" | "seven_day" | "spend_limit" | "primary" | "secondary"
   /// | "total" | "auto" | "api" | "on_demand" | "pro" | "flash" |
-  /// "flash-lite" | "rolling" | "weekly" | "monthly".
+  /// "flash-lite" | "rolling" | "weekly" | "monthly" | "kimi-5h" |
+  /// "kimi-7d" | "kimi-month-total" | "kimi-month-code".
   id: string;
   label: string;
   /// 0-100, and can exceed 100 for a spend limit. Never clamped upstream,

@@ -26,8 +26,9 @@ import {
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
-  withPromptExtras,
   noPromptReason,
+  usesPromptInjection,
+  withPromptExtras,
   provisionalSessionName,
   runStatusNeeded,
   unresumableConversationReason,
@@ -477,14 +478,13 @@ export async function developCard(
   const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
   const held = holdLaunch(workspaceId, decision);
   if (held) return held;
-  const command = buildRunCommand(
-    agent.launchCommand,
-    agent.promptArgs,
-    withPromptExtras(
-      composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
-      promptExtrasFor(workspaceId, agent.profileId)
-    )
+  const prompt = withPromptExtras(
+    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
+    promptExtrasFor(workspaceId, agent.profileId)
   );
+  const command = usesPromptInjection(agent)
+    ? agent.launchCommand
+    : buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
   if (command === null) return noPromptReason(agent.label);
 
   let sessionId: string;
@@ -497,6 +497,17 @@ export async function developCard(
     );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
+  }
+  if (usesPromptInjection(agent)) {
+    // The launch carried no prompt; the daemon delivers this one the
+    // moment the agent's MCP handshake reports it alive (K3). Queued
+    // before anything else awaited below, so a fast handshake can never
+    // find the queue empty.
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      return `Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`;
+    }
   }
   // No conversation id: a develop run binds nothing, so there is no
   // record for one to outlive and nothing that could ever resume it.
@@ -569,7 +580,7 @@ async function launchCard(
   const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
-  if (agent.promptArgs === null) return noPromptReason(agent.label);
+  if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label);
 
   // Whether the conversation a resume would reopen exists at all. Asked
   // here, ahead of the launch wall, so the refusal reaches the surface
@@ -846,16 +857,23 @@ async function launchCard(
   const prompt = composePrompt(path);
 
   const conversationId = conversationIdForLaunch(agent);
-  const command = buildRunCommand(
-    agent.launchCommand,
-    agent.promptArgs,
-    prompt,
-    agent.sessionIdArgs,
-    conversationId
-  );
-  // Cannot be null -- the gate above returned already -- but the null is
-  // the whole point of buildRunCommand's signature, so it is checked
-  // rather than asserted away.
+  // An injection launch (K3) composes BARE: the CLI has no prompt argv,
+  // so the command is the launch line alone and the prompt goes to the
+  // daemon's queue after spawn, delivered the moment the agent's MCP
+  // handshake reports it alive.
+  const inject = usesPromptInjection(agent);
+  const command = inject
+    ? agent.launchCommand
+    : buildRunCommand(
+        agent.launchCommand,
+        agent.promptArgs,
+        prompt,
+        agent.sessionIdArgs,
+        conversationId
+      );
+  // Cannot be null for an argv profile -- the gate above returned
+  // already -- but the null is the whole point of buildRunCommand's
+  // signature, so it is checked rather than asserted away.
   if (command === null) return noPromptReason(agent.label);
   // A review runs WHERE THE WORK IS: the run's launch directory, which
   // is a worktree of its own whenever a rail cut one. The card's context
@@ -895,6 +913,17 @@ async function launchCard(
     );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
+  }
+  if (inject) {
+    // The prompt the launch could not carry. Queued immediately after
+    // the spawn resolves, before anything else is awaited: the daemon
+    // holds it for the agent's first MCP Hello either way, so a fast
+    // handshake can never find the queue empty (K3).
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      return `Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`;
+    }
   }
   void armFailureDetection(sessionId, agent.failurePatterns);
   host.place(workspaceId, sessionId);

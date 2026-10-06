@@ -315,6 +315,7 @@ describe("the switch", () => {
     expect(profileRecipeReason("claude-code", "")).toBeNull();
     expect(profileRecipeReason("codex", "")).toBeNull();
     expect(profileRecipeReason("opencode", "")).toBeNull();
+    expect(profileRecipeReason("kimi-code", "")).toBeNull();
     expect(profileRecipeReason("cursor", "")).toBe(
       "Cursor sends everything through Cursor's servers — Headroom can't reach it."
     );

@@ -106,7 +106,7 @@ export const AGENTS_SECTION: SettingsSection = {
   keywords: [...AGENTS_SECTION_KEYWORDS],
 };
 
-const STOCK_IDS = new Set(["claude-code", "codex", "gemini", "cursor", "opencode"]);
+const STOCK_IDS = new Set(["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"]);
 
 export function isStockProfileId(id: string): boolean {
   return STOCK_IDS.has(id);

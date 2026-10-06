@@ -407,15 +407,32 @@ export function noPromptReason(agentLabel: string): string {
   );
 }
 
+/// Whether a visible run launches this agent BARE and hands it the
+/// composed prompt through the daemon's follow-up queue instead of argv
+/// (K3). The daemon holds the queued prompt until the agent's gavin-mcp
+/// handshake reports the agent alive -- the only "the TUI is up" signal
+/// a CLI with no prompt flag has -- then writes it into the PTY.
+///
+/// This is the answer that keeps `promptArgs: null` from meaning one
+/// thing. Cursor's null is a refusal (`noPromptReason`); kimi's null
+/// with this flag is a launch with the prompt arriving a breath later.
+export function usesPromptInjection(agent: {
+  promptArgs: string | null;
+  promptInjection?: boolean;
+}): boolean {
+  return agent.promptArgs === null && agent.promptInjection === true;
+}
+
 // The same answer in gitState's agentCommitBlocker shape, for the
 // surfaces that bind a reason to a control rather than react to a failed
 // launch. Hang it on a NON-disabled ancestor: a disabled element never
 // fires mouseenter, so a tooltip bound to one can never appear.
 export function agentPromptBlocker(
   promptArgs: string | null,
-  agentLabel: string
+  agentLabel: string,
+  promptInjection = false
 ): string | null {
-  return promptArgs === null ? noPromptReason(agentLabel) : null;
+  return promptArgs === null && !promptInjection ? noPromptReason(agentLabel) : null;
 }
 
 /// Legacy one-liner kept for back-compat tests. The Git tab's

@@ -66,8 +66,8 @@ impl McpFormat {
     ];
 
     /// An unknown or absent name falls back to the `mcpServers.<key>`
-    /// JSON shape -- three of the five stock CLIs use it, so it is the
-    /// best guess for a sixth.
+    /// JSON shape -- three of the six stock CLIs use it, so it is the
+    /// best guess for a seventh.
     fn from_id(id: Option<&str>) -> McpFormat {
         McpFormat::ALL
             .iter()
@@ -90,7 +90,7 @@ pub struct McpLayout {
     pub skills: &'static [ManagedFile],
 }
 
-/// A layout with the path resolved: from the profile table for the five
+/// A layout with the path resolved: from the profile table for the six
 /// stock profiles, from the workspace's own config for `custom`, whose
 /// agent reads MCP config wherever its author decided. Owned rather than
 /// borrowed for exactly that reason -- a configured path is a String, and
@@ -174,6 +174,35 @@ pub trait WorkspaceFiles {
         cfg!(windows)
     }
 
+    /// The home directory of the account the agent CLIs run under, on the
+    /// machine whose disk this is -- where an agent keeps state that
+    /// belongs to the USER rather than to one workspace (kimi's folder
+    /// trust). `None` is the default and means "not reachable": an ssh
+    /// workspace's home is the host's, which nothing here can find, and a
+    /// test double has no home worth writing to. Callers write there only
+    /// on a `Some`, so an implementation that forgets to override this
+    /// fails safe -- no write -- rather than putting a record on the
+    /// wrong machine.
+    fn agent_home(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// An environment variable of the machine whose disk this is, for
+    /// the one kind of question the CLIs answer that way: where their
+    /// state lives (`KIMI_CODE_HOME`). Behind the trait for the reason
+    /// `agent_home` is: an ssh host's environment is not this process's,
+    /// and a test must not depend on the developer's.
+    fn env_var(&self, _name: &str) -> Option<std::ffi::OsString> {
+        None
+    }
+
+    /// `write_bytes` for a file in the user's own state (`agent_home`),
+    /// which agent CLIs keep owner-only. Defaults to `write_bytes`;
+    /// `LocalFiles` narrows the modes on unix.
+    fn write_private(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+        self.write_bytes(path, contents)
+    }
+
     fn read_to_string(&self, path: &Path) -> anyhow::Result<Option<String>> {
         match self.read_bytes(path)? {
             Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|_| {
@@ -213,6 +242,30 @@ impl WorkspaceFiles for LocalFiles {
 
     fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
         std::fs::canonicalize(path).ok()
+    }
+
+    fn agent_home(&self) -> Option<PathBuf> {
+        crate::home::home_dir()
+    }
+
+    fn env_var(&self, name: &str) -> Option<std::ffi::OsString> {
+        std::env::var_os(name)
+    }
+
+    #[cfg(unix)]
+    fn write_private(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        if let Some(dir) = path.parent() {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        Ok(file.write_all(contents)?)
     }
 }
 
@@ -312,6 +365,14 @@ pub struct AgentProfile {
     /// one concatenation expresses both: `<command> <prompt_args><quoted>`
     /// is the whole builder, for every row.
     pub prompt_args: Option<&'static str>,
+    /// True when a visible run launches this agent BARE and its card
+    /// prompt reaches it through the daemon's follow-up queue rather
+    /// than argv (K3): the daemon holds the queued prompt until the
+    /// agent's gavin-mcp presents its session token -- the "the TUI is
+    /// up" signal such a CLI has -- then writes it into the PTY. Only
+    /// meaningful with `prompt_args: None` (an agent that takes a prompt
+    /// on its command line gets it there); kimi-code is the first row.
+    pub prompt_injection: bool,
     /// The argv that makes this agent run ONE prompt with no TUI and
     /// then exit. Empty where the convention is unverified, which hides
     /// every background run -- a hidden session that never exits is a
@@ -358,8 +419,8 @@ pub struct AgentProfile {
     /// - gemini -- `auto`, `pro`, `flash` and `flash-lite`, the four
     ///   `GEMINI_MODEL_ALIAS_*` constants its own `resolveModel` switches
     ///   on before falling through to a concrete name.
-    /// - codex and opencode -- no stable alias exists. Both ship empty
-    ///   here and are enumerated at runtime instead; see
+    /// - codex, opencode and kimi-code -- no stable alias exists. All
+    ///   three ship empty here and are enumerated at runtime instead; see
     ///   `model_catalog` below.
     /// - cursor -- Cursor Agent CLI (`agent`): `--model` takes dated ids
     ///   from `agent --list-models`, enumerated at runtime like
@@ -379,15 +440,24 @@ pub struct AgentProfile {
     /// of the six rows have none, and for them the picker is `models`
     /// plus "Custom…", exactly as before.
     pub model_catalog: Option<ModelCatalog>,
-    /// The argv that sets how hard this agent thinks, composed onto the
-    /// command after the model. Two shapes, told apart the way
-    /// `headless_args` tells its two apart: a flag ending in `=` is
-    /// concatenated with the level (`-c model_reasoning_effort=high`),
-    /// anything else takes it as the next argument (`--effort high`).
+    /// How a chosen effort level reaches this agent's launch command,
+    /// composed by `composeEffort` in agentModel.ts. Three shapes, told
+    /// apart the way `headless_args` tells its two apart:
     ///
-    /// Empty where the launched TUI has no such flag, which hides every
+    /// - a flag ending in `=` is concatenated with the level
+    ///   (`-c model_reasoning_effort=high`);
+    /// - anything else takes the level as the next argument
+    ///   (`--effort high`);
+    /// - an ENV-ASSIGNMENT shape -- `/^[A-Z][A-Z0-9_]*=$/`, e.g.
+    ///   `KIMI_MODEL_THINKING_EFFORT=` -- is PREPENDED before the whole
+    ///   command (`KIMI_MODEL_THINKING_EFFORT=low kimi ...`), for an
+    ///   agent whose effort is an environment variable rather than an
+    ///   argv flag. Gavin composes every launch through `sh -c`, so the
+    ///   prefix composes like a flag.
+    ///
+    /// Empty where the launched TUI has no such knob, which hides every
     /// effort control for the profile -- the posture `model_flag` takes.
-    /// Checked 2026-09-30:
+    /// Checked 2026-09-30, kimi-code added 2026-10-05:
     ///
     /// - gemini -- no flag; the thinking budget lives in settings.json.
     /// - cursor -- effort is a bracket parameter OF the model id
@@ -397,6 +467,10 @@ pub struct AgentProfile {
     /// - opencode -- `--variant` is the provider's reasoning effort, but
     ///   only `opencode run` takes it; the interactive TUI gavin launches
     ///   rejects it (1.18.25, `opencode --help`).
+    /// - kimi-code -- no effort flag exists (docs-verified); the knob is
+    ///   the `KIMI_MODEL_THINKING_EFFORT` env var, verified at the wire
+    ///   through a local proxy: the request body carried
+    ///   `thinking.effort="low"` with it set (2.1.1, 2026-10-05).
     pub effort_flag: &'static str,
     /// The effort levels the CLI itself documents, lowest first. Offered
     /// as picks beside "Custom…", which stays for a level a newer CLI
@@ -508,6 +582,9 @@ pub struct AgentProfile {
     ///   `opencode-go` key from `auth.json`. BYO provider keys (and Zen
     ///   without Go) have no account-wide limit; the probe then reports
     ///   Unavailable rather than inventing a bar.
+    /// - `kimi-code` -- `GET <managed base>/usages` with the OAuth token
+    ///   from `~/.kimi-code/credentials/kimi-code-env-*.json`; verified
+    ///   200 on both kimi.com and kimi.ai hosts (2026-10-05, kimi 2.1.1).
     /// - `custom` -- no route.
     pub usage_probe: Option<UsageProbe>,
     /// Where this agent writes the per-CONVERSATION transcript gavin
@@ -532,14 +609,26 @@ pub struct AgentProfile {
     ///   numbers.
     /// - `cursor`, `opencode` -- no per-conversation transcript on disk
     ///   that gavin mints the id for. No row.
+    /// - `kimi-code` -- `~/.kimi-code/sessions/.../wire.jsonl`, resolved
+    ///   through `~/.kimi-code/session_index.jsonl` (verified 2026-10-05,
+    ///   kimi 2.1.1; see `TokenLog::KimiWireJsonl`). The id is the
+    ///   self-reported one `session_id_discovery` learns, exactly where
+    ///   opencode's resumes get theirs.
     pub token_log: Option<TokenLog>,
+    /// The per-folder trust record this agent's CLI wants before it will
+    /// load a repository's own MCP servers, or `None` where it has no
+    /// such gate (every row but kimi-code). Integration writes it, and
+    /// reports it -- the one place gavin writes outside the workspace.
+    pub folder_trust: Option<FolderTrust>,
     /// A gavin-owned agent DEFINITION this profile's headless run names
     /// by `--agent`, when its CLI grants tool permissions through a file
     /// rather than a flag. Written and removed exactly like a skill --
     /// gavin owns the whole file -- and deliberately not merged into the
     /// user's own agent config: that would silently re-scope the
     /// interactive sessions they drive themselves, and gavin writes
-    /// nothing into someone else's config beyond the MCP entry.
+    /// nothing into someone else's config beyond the MCP entry (and, for
+    /// kimi, the per-folder trust record -- `folder_trust` -- which is
+    /// state, not config).
     ///
     /// None where the grant rides the argv instead, which is every other
     /// row that runs headless.
@@ -623,6 +712,22 @@ pub enum UsageProbe {
     /// probe then reports Unavailable naming Go, rather than Unsupported
     /// -- the route exists, this account is not on it.
     OpencodeGo,
+    /// Kimi Code. `GET <managed base>/usages` with
+    /// `Authorization: Bearer <access_token>` from
+    /// `~/.kimi-code/credentials/kimi-code-env-*.json` (the same
+    /// AnthropicOauth-shaped credential file Claude Code's probe reads).
+    /// Verified live 2026-10-05 against kimi 2.1.1: HTTP 200 on BOTH
+    /// `api.kimi.ai/coding/v1` and `api.kimi.com/coding/v1`, and the body
+    /// is snake_case:
+    /// `{limits: [{window, detail: {limit, remaining, resetTime}}],
+    ///   usages: {limit_5h: {used_ratio, reset_time}, limit_month_total,
+    ///   limit_month_code}}`.
+    ///
+    /// Chosen over the console API key (`sk-kimi-xxx`) third-party
+    /// trackers use: gavin will not ask users to mint console keys when
+    /// the membership OAuth credential the CLI already holds answers the
+    /// same endpoint.
+    KimiOauth,
 }
 
 impl UsageProbe {
@@ -636,6 +741,7 @@ impl UsageProbe {
             UsageProbe::CursorSession => "cursor-session",
             UsageProbe::GeminiCodeAssist => "gemini-code-assist",
             UsageProbe::OpencodeGo => "opencode-go",
+            UsageProbe::KimiOauth => "kimi-oauth",
         }
     }
 }
@@ -671,6 +777,46 @@ pub enum TokenLog {
     /// event rather than a sum, and a sum would multiply the transcript
     /// by its own length.
     CodexRollout,
+    /// Kimi Code. Per-session
+    /// `~/.kimi-code/sessions/<wd_key>/<session_id>/agents/<agent_id>/wire.jsonl`,
+    /// verified live 2026-10-05 against kimi 2.1.1: its `usage.record`
+    /// events carry `{usage: {inputOther, output, inputCacheRead,
+    /// inputCacheCreation}, usageScope: "turn"}` and its
+    /// `token_counting.turn_recorded`/`measured` events carry
+    /// context-length tokens. `wd_key` is `wd_<slug>_<sha256(cwd)[:12]>`.
+    ///
+    /// Resolved through `~/.kimi-code/session_index.jsonl`, which maps
+    /// sessionId to its sessionDir -- not by path derivation: kimi's
+    /// `transcript_path` analogue has no cwd to slug from, and the
+    /// index's `workDir` is the PHYSICAL path (`/private/tmp/...`), the
+    /// same `pwd -P` caveat opencode's discovery carries.
+    KimiWireJsonl,
+}
+
+/// How an agent CLI gates the PROJECT-level MCP servers a repository
+/// ships behind a per-folder "do you trust this?" record, and so how
+/// gavin's own `.mcp.json` entry reaches it. One variant per VERIFIED
+/// store, like `UsageProbe` and `TokenLog`.
+///
+/// Written only when a human runs Integration for the workspace, and
+/// only when that run actually wrote gavin's MCP entry -- see
+/// `grant_folder_trust`, which is where the consent rules live.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FolderTrust {
+    /// Kimi Code. An untrusted folder makes the interactive TUI stop at a
+    /// "Trust this folder?" screen (declining exits kimi) and makes a
+    /// headless `-p` run skip every project MCP server with `Warning:
+    /// this folder is not trusted; skipped N project-level MCP server`.
+    /// The record is `<kimi home>/workspace-trust/<wd_key>` holding
+    /// `{"root": <physical path>, "trustedAt": <ms>}`, with
+    /// `wd_key = wd_<slug>_<sha256(root)[:12]>` (`kimi_workdir_key`).
+    ///
+    /// Read out of the kimi 2.1.1 binary (`workdir-slug.ts`,
+    /// `trustRecord.ts`) and then proven against it in a scratch
+    /// `KIMI_CODE_HOME` (2026-10-06): a record written this way lifts the
+    /// warning, and a trusted PARENT does not cover a subdirectory -- a
+    /// worktree is its own workspace and needs its own record.
+    KimiRecord,
 }
 
 /// Where a profile's model list is read from at runtime. One variant per
@@ -708,6 +854,16 @@ pub enum ModelCatalog {
     /// dies with `ProviderModelNotFoundError { providerID: "sonnet",
     /// modelID: "" }`, so a name gavin could hard-code does not exist.
     OpencodeCli,
+    /// Kimi Code. `kimi provider list --json` prints
+    /// `{providers: {...}, models: {"kimi-code/kimi-for-coding":
+    /// {provider, model, displayName, supportEfforts, defaultEffort,
+    /// ...}, ...}, defaultModel: "..."}` -- verified against kimi 2.1.1
+    /// (2026-10-05). The `models` map's KEYS are the aliases `-m` takes.
+    ///
+    /// The command rather than a static list for opencode's reason: the
+    /// aliases are managed and refresh upstream, so a name gavin pinned
+    /// here would be stale the day it lands.
+    KimiCli,
 }
 
 /// One row of a profile's cause table: a substring of the failure line
@@ -753,6 +909,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "claude",
         // `claude "<prompt>"`: the bare positional starts the session.
         prompt_args: Some(""),
+        prompt_injection: false,
         // `claude -p`: print/non-interactive mode (code.claude.com/docs/en/headless,
         // re-checked 2026-09-11). `--allowedTools "Bash(git *)"` auto-
         // approves git for commit-via-agent without opening the whole
@@ -860,6 +1017,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         resume_args: "--resume",
         usage_probe: Some(UsageProbe::AnthropicOauth),
         token_log: Some(TokenLog::ClaudeSessionJsonl),
+        folder_trust: None,
         // The allow-list rides claude's own argv, so there is no file.
         agent_file: None,
         mcp: Some(McpLayout {
@@ -920,6 +1078,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // Verified against developers.openai.com/codex/cli/reference
         // (2026-09-11).
         prompt_args: Some(""),
+        prompt_injection: false,
         // `codex exec` is the non-interactive subcommand. Default sandbox
         // is read-only, so a commit run needs `workspace-write`;
         // `--ask-for-approval never` stops a hidden session stalling on
@@ -938,6 +1097,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         resume_args: "",
         usage_probe: Some(UsageProbe::CodexRollout),
         token_log: Some(TokenLog::CodexRollout),
+        folder_trust: None,
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".codex/config.toml",
@@ -997,6 +1157,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // Verified against `gemini --help` 2026-09-11 and
         // geminicli.com/docs/cli/headless.
         prompt_args: Some(""),
+        prompt_injection: false,
         // Headless is `--prompt=<value>`, not a bare positional: a
         // positional without `-p` stays interactive. `--yolo` auto-
         // accepts tool calls so a hidden commit does not stall.
@@ -1020,6 +1181,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         resume_args: "",
         usage_probe: Some(UsageProbe::GeminiCodeAssist),
         token_log: None,
+        folder_trust: None,
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".gemini/settings.json",
@@ -1084,6 +1246,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // Bare positional after the flags
         // (`Usage: agent [options] [command] [prompt...]`).
         prompt_args: Some(""),
+        prompt_injection: false,
         // Print mode for scripts; `--force` so a hidden run can write
         // and run tools (without it, `-p` proposes and applies nothing);
         // same MCP/trust pins as the interactive command. Trailing `--`
@@ -1100,6 +1263,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         resume_args: "",
         usage_probe: Some(UsageProbe::CursorSession),
         token_log: None,
+        folder_trust: None,
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".cursor/mcp.json",
@@ -1161,6 +1325,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // 2026-09-02 against 1.3.13 through `sh -c`, which is how the
         // daemon runs every session.
         prompt_args: Some("--prompt="),
+        prompt_injection: false,
         // `run` is the non-interactive subcommand; `--agent` names the
         // gavin-owned definition below, which carries the git-only grant.
         // `--auto` (verified on current `opencode run --help` 2026-09-11)
@@ -1203,6 +1368,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         resume_args: "--session",
         usage_probe: Some(UsageProbe::OpencodeGo),
         token_log: None,
+        folder_trust: None,
         // opencode reads `.claude/skills/` too, but a workspace that
         // never chose Claude Code should not grow a `.claude/`
         // directory. Its own validator accepts gavin's existing
@@ -1241,6 +1407,124 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             ],
         }),
     },
+    AgentProfile {
+        id: "kimi-code",
+        // `-m <alias>` (`kimi --help`, 2.1.1). No static list: the
+        // aliases are managed and refresh upstream, so they are read off
+        // `kimi provider list --json` at startup like opencode's.
+        model_flag: "-m",
+        models: &[],
+        model_catalog: Some(ModelCatalog::KimiCli),
+        // ENV-ASSIGNMENT shape (see the field's doc comment): kimi has no
+        // effort flag at all -- the knob is `KIMI_MODEL_THINKING_EFFORT`,
+        // which `composeEffort` prepends as `KIMI_MODEL_THINKING_EFFORT=low
+        // kimi ...`. Verified at the wire through a local proxy: the
+        // request body carried `thinking.effort="low"` (2.1.1,
+        // 2026-10-05). Levels from the managed models' `supportEfforts`.
+        effort_flag: "KIMI_MODEL_THINKING_EFFORT=",
+        efforts: &["low", "high", "max"],
+        label: "Kimi Code",
+        // kimi reads AGENTS.md only -- not CLAUDE.md or KIMI.md -- so it
+        // shares codex's file; the marker-block writer already merges.
+        instructions_file: "AGENTS.md",
+        command: "kimi",
+        // None ON PURPOSE (K3): kimi has NO interactive prompt flag --
+        // `-p` is non-interactive and exits, and there is no positional.
+        // A visible run launches `kimi` bare and gets its card prompt
+        // written into the PTY once kimi's MCP handshake says the TUI is
+        // up (verified eager, 2.1.1) -- which is what
+        // prompt_injection tells the app to do.
+        prompt_args: None,
+        prompt_injection: true,
+        // `-p='<prompt>'`, ATTACHED: the separated `-p -- '<prompt>'`
+        // form does not work (verified live 2026-10-05, 2.1.1). Headless
+        // runs land in kimi's `auto` permission policy by default -- no
+        // approvals, static deny rules apply -- so a hidden commit needs
+        // no grant flag (and `--yolo` conflicts with `-p`).
+        headless_args: "-p=",
+        // `error: failed to run prompt: <reason>` observed live 4x
+        // (2.1.1); the rest are kimi's own i18n failure strings.
+        failure_patterns: &[
+            "error: failed to run prompt:",
+            "Model rate limit reached",
+            "Model authentication failed",
+            "Model overloaded",
+            "Context size exceeded",
+            "Cannot connect to the model service",
+        ],
+        // Auth first, the same ordering rule claude-code's table
+        // carries: a line that is an auth failure must never classify as
+        // a network blip worth retrying. Only verified strings carry a
+        // row -- the same posture as every other profile.
+        failure_causes: &[
+            FailureCausePattern { pattern: "Model authentication failed", cause: "auth" },
+            FailureCausePattern { pattern: "Model rate limit reached", cause: "usage-limit" },
+            FailureCausePattern { pattern: "Context size exceeded", cause: "usage-limit" },
+            FailureCausePattern { pattern: "Model overloaded", cause: "outage" },
+            FailureCausePattern { pattern: "Cannot connect to the model service", cause: "network" },
+        ],
+        // Discover-not-mint, the opencode pattern: `--session <unknown>`
+        // hard-errors, so gavin cannot hand kimi an id. kimi also prints
+        // `To resume this session: kimi -r session_<uuid>` on stderr
+        // after every `-p` run, and the naming skill's self-report route
+        // gets the id either way. `kimi session list --json` is
+        // newest-first and defaults to the cwd (`--cwd` takes a REQUIRED
+        // path arg, so omitting it is what scopes the list); the first
+        // `"id":` line of the pretty-printed array is the answer.
+        // Verified against the real CLI (2.1.1, 2026-10-05).
+        session_id_args: "",
+        session_id_discovery: "kimi session list --json | sed -n -E 's/^ *\"id\": \"([^\"]+)\".*/\\1/p' | head -1",
+        // Top-level `--session <id>` reopens the conversation: the
+        // interactive TUI this profile launches bare, continued at the
+        // discovered id -- the same shape opencode's `--session` has.
+        // `--continue` was rejected: newest-for-cwd is the race
+        // opencode's V11e demonstrated.
+        resume_args: "--session",
+        usage_probe: Some(UsageProbe::KimiOauth),
+        token_log: Some(TokenLog::KimiWireJsonl),
+        // The per-folder trust record kimi checks before it loads a
+        // project `.mcp.json` (K18, decided B: gavin writes it at
+        // integration). Granted only when this run wrote gavin's entry
+        // -- `grant_folder_trust` holds the consent rules.
+        folder_trust: Some(FolderTrust::KimiRecord),
+        // No grant file: the headless grant rides kimi's default `auto`
+        // policy, not an agent definition.
+        agent_file: None,
+        mcp: Some(McpLayout {
+            // The SAME file and dialect as claude-code (K6): kimi reads
+            // the project `.mcp.json`, proven live with this repo's own
+            // committed file. The merge writer and the foreign-server
+            // gate already handle two profiles sharing one file.
+            config_file: ".mcp.json",
+            server_key: "gavin",
+            format: McpFormat::JsonServers,
+            // kimi also reads the shared `.agents/skills/`, but gavin
+            // keeps its files in kimi's own root -- the same reasoning as
+            // opencode's layout.
+            skills: &[
+                ManagedFile {
+                    dir: ".kimi-code/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".kimi-code/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".kimi-code/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".kimi-code/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
+            ],
+        }),
+    },
 ];
 
 pub fn profile_by_id(id: &str) -> &'static AgentProfile {
@@ -1273,6 +1557,7 @@ static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
     instructions_file: "",
     command: "",
     prompt_args: None,
+    prompt_injection: false,
     headless_args: "",
     failure_patterns: &[],
     failure_causes: &[],
@@ -1281,6 +1566,7 @@ static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
     resume_args: "",
     usage_probe: None,
     token_log: None,
+    folder_trust: None,
     agent_file: None,
     mcp: None,
 };
@@ -1976,7 +2262,7 @@ fn foreign_mcp_servers_toml(
 /// Why "isolate" refuses today. It would write gavin's entry to a file
 /// that carries only it, leaving the repo's own config untouched -- for
 /// a CLI whose docs name a SECOND file it reads automatically beside
-/// the project one. None of the five stock dialects have one gavin has
+/// the project one. None of the six stock dialects have one gavin has
 /// verified: each CLI's own "second scope" (a user/global config) lives
 /// under the human's home directory, which gavin's writes never reach
 /// on purpose (`usable_mcp_path`, `validate_agent_file_path`) -- so this
@@ -1987,6 +2273,223 @@ fn isolate_refusal(layout: &ResolvedMcp) -> String {
         "gavin knows no second file this agent reads automatically alongside {} — \"keep\" is the only option until one is verified",
         layout.config_file
     )
+}
+
+// --- Folder trust (K18) -------------------------------------------------
+//
+// An agent CLI that gates a repository's own MCP servers behind a
+// per-folder "trust this?" record has no use for gavin's `.mcp.json` entry
+// until the folder is trusted: an interactive run stops at a prompt and a
+// headless run silently drops the server. The human decided gavin should
+// write the record itself when they run Integration (2026-10-06, card
+// feat-kimi-integration), so this is the one place gavin writes into the
+// user's own agent state. Everything that keeps that from being a blank
+// cheque lives in `grant_folder_trust`.
+
+/// What `grant_folder_trust` came to, for the integration report.
+#[derive(Debug, PartialEq, Eq)]
+enum TrustGrant {
+    /// A record was written at this path.
+    Written(PathBuf),
+    /// The folder already has one -- the human's own answer to the CLI's
+    /// prompt, or an earlier run's. Left exactly as it was.
+    Present,
+    /// Not granted, and why, in words the wizard can show as they are.
+    Withheld(String),
+}
+
+/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\host\share` becomes
+/// `\\host\share`: the spelling `std::fs::canonicalize` gives on Windows,
+/// which no process's own cwd ever has -- and the cwd is what kimi keys
+/// its records on.
+fn without_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// kimi's `canonicalWorkspaceRoot` for a path that is already absolute and
+/// physical: backslashes to `/`, trailing `/` dropped, and a drive or UNC
+/// shaped path lowercased (Windows paths compare case-insensitively).
+fn kimi_canonical_root(path: &str) -> String {
+    let slashed = path.replace('\\', "/");
+    let bytes = slashed.as_bytes();
+    let win_shaped = slashed.starts_with("//")
+        || (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/');
+    let trimmed = slashed.trim_end_matches('/');
+    let key = if win_shaped { trimmed.to_lowercase() } else { trimmed.to_string() };
+    if key.is_empty() {
+        slashed
+    } else {
+        key
+    }
+}
+
+/// The directory-name part of a kimi workdir key: kimi's
+/// `slugifyWorkDirName`. Lowercased, every run outside `[a-z0-9._-]`
+/// collapsed to one `-`, `-` trimmed from both ends, cut to 40, trimmed
+/// again, and `workspace` when nothing usable is left.
+fn kimi_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut in_run = false;
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') {
+            slug.push(c);
+            in_run = false;
+        } else if !in_run {
+            slug.push('-');
+            in_run = true;
+        }
+    }
+    let slug: String = slug.trim_matches('-').chars().take(40).collect();
+    let slug = slug.trim_matches('-');
+    if matches!(slug, "" | "." | "..") {
+        "workspace".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// kimi's `encodeWorkDirKey`: `wd_<slug of the last segment>_<first 12 hex
+/// of sha256 of the whole normalised path>`. The hash covers the whole
+/// path, so a repository and each of its worktrees are different
+/// workspaces -- which is also why a trusted parent does not cover a
+/// child (proved against kimi 2.1.1, 2026-10-06).
+///
+/// Read out of the kimi binary and checked against every key kimi itself
+/// wrote on the machine it was verified on (see the test); a rule this
+/// exact is not something to re-derive from two samples.
+fn kimi_workdir_key(path: &str) -> String {
+    let slashed = path.replace('\\', "/");
+    let normalized = slashed.trim_end_matches('/');
+    let last = normalized.rsplit('/').next().unwrap_or(normalized);
+    // `hash_token_hex` is named for the tokens it was written for and is
+    // plain SHA-256 of the string's UTF-8 bytes, which is all this needs.
+    let hash = protocol::hash_token_hex(normalized);
+    format!("wd_{}_{}", kimi_slug(last), &hash[..12])
+}
+
+/// The trust key for a workspace root: canonical first (kimi's
+/// `trustKey`), then the workdir key of THAT.
+fn kimi_trust_key(root: &str) -> String {
+    kimi_workdir_key(&kimi_canonical_root(root))
+}
+
+/// The record's bytes, in kimi's own compact shape.
+fn kimi_trust_record(root: &str, trusted_at_ms: u128) -> String {
+    serde_json::json!({ "root": root, "trustedAt": trusted_at_ms as u64 }).to_string()
+}
+
+/// kimi's home: `KIMI_CODE_HOME` when it names an absolute directory
+/// (documented, and what the scratch setups in the spike use), else
+/// `~/.kimi-code`. A relative value is ignored rather than guessed at --
+/// kimi would resolve it against a cwd gavin does not know.
+fn kimi_home_from(home: &Path, override_dir: Option<std::ffi::OsString>) -> PathBuf {
+    match override_dir.map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        _ => home.join(".kimi-code"),
+    }
+}
+
+fn kimi_home(fs: &dyn WorkspaceFiles, home: &Path) -> PathBuf {
+    kimi_home_from(home, fs.env_var("KIMI_CODE_HOME"))
+}
+
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Trust `root` for the agent whose `FolderTrust` this is.
+///
+/// What keeps this from being a blank cheque:
+///
+/// - Only when this run WROTE gavin's MCP entry (the caller's gate). A
+///   run that stopped at the foreign-server disclosure, or was told to
+///   isolate, enables nothing: trusting the folder would switch on every
+///   server the repository declares, including the ones the human has not
+///   been shown or has just refused.
+/// - Never when the agent's OTHER project MCP file -- `.kimi-code/mcp.json`
+///   -- declares servers, for the same reason: the disclosure only reads
+///   `.mcp.json`, and kimi gates and loads both behind the one record.
+/// - Never over an existing record. It is the human's own answer, or an
+///   earlier run's, and either way not this run's to rewrite.
+/// - Only on a disk with a home to write to (`agent_home`): an ssh
+///   workspace's record belongs on the host, out of reach from here.
+///
+/// And never revoked by gavin afterwards: it cannot tell its own record
+/// from the one the human wrote by answering kimi's prompt.
+///
+/// A failure here is a `Withheld`, not an error: the instructions, skills
+/// and MCP entry are already on disk, and a record that could not be
+/// written costs one prompt on kimi's first run, not the whole setup.
+fn grant_folder_trust(fs: &dyn WorkspaceFiles, trust: FolderTrust, root: &Path) -> TrustGrant {
+    match try_grant_folder_trust(fs, trust, root) {
+        Ok(grant) => grant,
+        Err(e) => TrustGrant::Withheld(format!(
+            "could not write the trust record ({e}) — kimi will ask once on its first run in this folder"
+        )),
+    }
+}
+
+fn try_grant_folder_trust(
+    fs: &dyn WorkspaceFiles,
+    trust: FolderTrust,
+    root: &Path,
+) -> anyhow::Result<TrustGrant> {
+    let FolderTrust::KimiRecord = trust;
+    let Some(home) = fs.agent_home() else {
+        return Ok(TrustGrant::Withheld(
+            "gavin cannot reach the machine kimi runs on from here — kimi will ask once on its first run in this folder"
+                .to_string(),
+        ));
+    };
+
+    // The second project MCP file kimi gates behind the same record.
+    if let Some(text) = fs.read_to_string(&root.join(".kimi-code").join("mcp.json"))? {
+        // An empty file is `{}` to kimi; so is a document with no
+        // `mcpServers`. Anything unreadable is withheld on, since what
+        // trusting would start is then unknown.
+        let declared = if text.trim().is_empty() {
+            Some(0)
+        } else {
+            serde_json::from_str::<serde_json::Value>(&text).ok().map(|doc| {
+                doc.get("mcpServers").and_then(|s| s.as_object()).map_or(0, |servers| servers.len())
+            })
+        };
+        match declared {
+            Some(0) => {}
+            Some(_) => {
+                return Ok(TrustGrant::Withheld(
+                    ".kimi-code/mcp.json declares MCP servers gavin has not shown you, and trusting the folder would start them — kimi will ask once on its first run in this folder"
+                        .to_string(),
+                ))
+            }
+            None => {
+                return Ok(TrustGrant::Withheld(
+                    ".kimi-code/mcp.json is not valid JSON, so gavin cannot tell what trusting the folder would start — kimi will ask once on its first run in this folder"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    // kimi keys on its own cwd, which is the PHYSICAL path.
+    let physical = without_verbatim_prefix(
+        &fs.canonical_dir(root).unwrap_or_else(|| root.to_path_buf()).to_string_lossy(),
+    );
+    let record = kimi_home(fs, &home).join("workspace-trust").join(kimi_trust_key(&physical));
+    if fs.is_file(&record) {
+        return Ok(TrustGrant::Present);
+    }
+    fs.write_private(&record, kimi_trust_record(&physical, unix_millis()).as_bytes())?;
+    Ok(TrustGrant::Written(record))
 }
 
 /// What a setup run wrote, and what it could not. Rendered verbatim by
@@ -2145,6 +2648,11 @@ fn run_integration(
     let mut skipped = Vec::new();
     let mut replaced = Vec::new();
     let mut mcp_foreign = None;
+    // Whether gavin's own entry reached the MCP config on this run: the
+    // gate on `folder_trust`, since trusting a folder starts every server
+    // it declares and the foreign-server disclosure is what says the
+    // human has seen them.
+    let mut mcp_written = false;
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
     // profile without an McpLayout errored out and got nothing at all.
@@ -2193,12 +2701,14 @@ fn run_integration(
                 written.push(protocol::wire_path(
                     &write_mcp_config(fs, root, layout, &binary).map_err(|e| e.to_string())?,
                 ));
+                mcp_written = true;
             } else {
                 match mcp_choice {
                     Some(McpForeignChoice::Keep) => {
                         written.push(protocol::wire_path(
                             &write_mcp_config(fs, root, layout, &binary).map_err(|e| e.to_string())?,
                         ));
+                        mcp_written = true;
                     }
                     Some(McpForeignChoice::Isolate) => {
                         skipped.push(("MCP config".to_string(), isolate_refusal(layout)));
@@ -2235,6 +2745,28 @@ fn run_integration(
                     profile.label
                 ),
             ));
+        }
+    }
+
+    // The per-folder trust record the agent's CLI wants before it loads
+    // the entry just written (K18). Reported either way: a write outside
+    // the workspace is something the human is told, and a record that was
+    // withheld is a prompt they will meet on first run.
+    if let Some(trust) = profile.folder_trust {
+        if !mcp_written {
+            skipped.push((
+                "folder trust".to_string(),
+                format!(
+                    "not granted — gavin's MCP entry was not written (see MCP config), so there is nothing to trust; {} will ask once on its first run in this folder",
+                    profile.label
+                ),
+            ));
+        } else {
+            match grant_folder_trust(fs, trust, root) {
+                TrustGrant::Written(path) => written.push(protocol::wire_path(&path)),
+                TrustGrant::Present => {}
+                TrustGrant::Withheld(why) => skipped.push(("folder trust".to_string(), why)),
+            }
         }
     }
 
@@ -2543,6 +3075,12 @@ pub struct AgentProfileDto {
     /// "no prompt argument exists" with "the prompt is the bare
     /// positional" -- the two are opposite answers and "" is the second.
     pub prompt_args: Option<String>,
+    /// True when a visible run launches this agent bare and its prompt
+    /// reaches it through the daemon's follow-up queue (K3; see
+    /// `AgentProfile::prompt_injection`). The frontend's cue to compose
+    /// a bare launch plus a queued prompt instead of refusing with
+    /// "takes no prompt".
+    pub prompt_injection: bool,
     pub headless_args: String,
     /// The flag that selects a model, empty where the CLI takes none --
     /// which is how the settings panels decide whether to offer a model
@@ -2553,7 +3091,10 @@ pub struct AgentProfileDto {
     pub models: Vec<String>,
     /// The flag that sets the effort level, empty where the CLI takes
     /// none -- the same gate `model_flag` is for the model controls. A
-    /// trailing `=` means the level is attached rather than separated.
+    /// trailing `=` means the level is attached rather than separated,
+    /// and an env-assignment shape (`KIMI_MODEL_THINKING_EFFORT=`) means
+    /// it is prepended before the command instead (see
+    /// `AgentProfile::effort_flag`).
     pub effort_flag: String,
     /// The effort levels the CLI documents, lowest first.
     pub efforts: Vec<String>,
@@ -2595,6 +3136,7 @@ pub fn agent_profile_dto_from_custom(profile: &crate::config::CustomProfile) -> 
         mcp_supported: false,
         mcp_config_file: String::new(),
         prompt_args: None,
+        prompt_injection: false,
         headless_args: String::new(),
         model_flag: profile.model_flag.clone(),
         models: Vec::new(),
@@ -2653,6 +3195,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             mcp_supported: p.mcp.is_some(),
             mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
             prompt_args: p.prompt_args.map(|a| a.to_string()),
+            prompt_injection: p.prompt_injection,
             headless_args: p.headless_args.to_string(),
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),
@@ -2771,6 +3314,11 @@ mod tests {
         assert!(by("codex").models.is_empty());
         assert_eq!(by("opencode").model_flag, "--model");
         assert!(by("opencode").models.is_empty());
+        // Kimi's `-m` (`kimi --help`, 2.1.1); no presets either -- its
+        // aliases are managed and refresh upstream, so the picker is
+        // filled from `kimi provider list --json` like opencode's.
+        assert_eq!(by("kimi-code").model_flag, "-m");
+        assert!(by("kimi-code").models.is_empty());
         // Cursor Agent CLI (`agent`): flag verified from `--help`;
         // models are dated ids from `--list-models`, so none ship here.
         assert_eq!(by("cursor").model_flag, "--model");
@@ -2829,16 +3377,21 @@ mod tests {
         assert_eq!(json["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]));
     }
 
-    /// Only the two CLIs whose LAUNCHED command takes an effort argument
-    /// carry a flag: claude's own `--effort`, and codex's config override
-    /// (attached, hence the `=`). The other rows are empty on purpose --
-    /// see `AgentProfile::effort_flag` for what each one was checked for.
+    /// The three CLIs whose LAUNCHED command can carry an effort carry a
+    /// flag: claude's own `--effort`, codex's config override (attached,
+    /// hence the `=`), and kimi's env-assignment shape
+    /// (`KIMI_MODEL_THINKING_EFFORT=`, which `composeEffort` PREPENDS
+    /// rather than appends -- kimi has no effort flag at all). The other
+    /// rows are empty on purpose -- see `AgentProfile::effort_flag` for
+    /// what each one was checked for.
     #[test]
     fn only_verified_cli_s_ship_an_effort_flag() {
         let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
         assert_eq!(by("claude-code").effort_flag, "--effort");
         assert_eq!(by("codex").effort_flag, "-c model_reasoning_effort=");
         assert_eq!(by("codex").efforts, &["minimal", "low", "medium", "high", "xhigh"]);
+        assert_eq!(by("kimi-code").effort_flag, "KIMI_MODEL_THINKING_EFFORT=");
+        assert_eq!(by("kimi-code").efforts, &["low", "high", "max"]);
         for id in ["gemini", "cursor", "opencode"] {
             assert_eq!(by(id).effort_flag, "", "{id} ships an unverified effort flag");
         }
@@ -2864,7 +3417,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count, "profile ids must be unique");
-        assert_eq!(count, 5, "claude-code, codex, gemini, cursor, opencode");
+        assert_eq!(count, 6, "claude-code, codex, gemini, cursor, opencode, kimi-code");
 
         for p in AGENT_PROFILES {
             assert!(!p.label.is_empty(), "{} has no label", p.id);
@@ -2883,7 +3436,7 @@ mod tests {
         assert!(rows.iter().all(|r| r.id != "custom"));
         assert_eq!(
             rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-            ["claude-code", "codex", "gemini", "cursor", "opencode"]
+            ["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"]
         );
         let claude = rows.iter().find(|r| r.id == "claude-code").unwrap();
         assert!(claude.found);
@@ -2901,8 +3454,14 @@ mod tests {
     /// table is a failing test rather than a config written to the wrong
     /// path. `custom` is the only row with no layout: its path comes from
     /// the workspace's own config, not from here.
+    ///
+    /// "A verified layout", deliberately not "its own": kimi-code shares
+    /// claude-code's `.mcp.json` and JsonServers dialect -- the file kimi
+    /// actually reads (K6, proven live 2026-10-05). Two profiles writing
+    /// one file coexist because the writer only ever merges its own
+    /// `gavin` key.
     #[test]
-    fn every_stock_profile_writes_its_own_verified_mcp_layout() {
+    fn every_stock_profile_writes_a_verified_mcp_layout() {
         let layouts: Vec<(&str, &str, McpFormat)> = AGENT_PROFILES
             .iter()
             .filter_map(|p| p.mcp.as_ref().map(|m| (p.id, m.config_file, m.format)))
@@ -2915,6 +3474,7 @@ mod tests {
                 ("gemini", ".gemini/settings.json", McpFormat::JsonServers),
                 ("cursor", ".cursor/mcp.json", McpFormat::JsonServersStdio),
                 ("opencode", "opencode.json", McpFormat::JsonLocal),
+                ("kimi-code", ".mcp.json", McpFormat::JsonServers),
             ]
         );
         for p in AGENT_PROFILES {
@@ -2948,6 +3508,7 @@ mod tests {
                 ("gemini", ".gemini/skills/SKILL.md".to_string()),
                 ("cursor", ".cursor/skills/SKILL.md".to_string()),
                 ("opencode", ".opencode/skills/SKILL.md".to_string()),
+                ("kimi-code", ".kimi-code/skills/SKILL.md".to_string()),
             ]
         );
         // Every profile that installs skills installs the SAME four, so
@@ -2959,7 +3520,7 @@ mod tests {
             .filter(|m| !m.skills.is_empty())
             .map(|m| m.skills.iter().map(|s| s.dir.rsplit('/').next().unwrap()).collect())
             .collect();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
         assert_eq!(names[0], ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"]);
         for other in &names[1..] {
             assert_eq!(&names[0], other);
@@ -2978,6 +3539,7 @@ mod tests {
             ("gemini", ".gemini/skills/gavin/SKILL.md"),
             ("cursor", ".cursor/skills/gavin/SKILL.md"),
             ("opencode", ".opencode/skills/gavin/SKILL.md"),
+            ("kimi-code", ".kimi-code/skills/gavin/SKILL.md"),
         ] {
             let layout: ResolvedMcp = profile_by_id(id).mcp.as_ref().unwrap().into();
             let block = instructions_block_for(Some(&layout), "docs/PRD.md");
@@ -3000,23 +3562,30 @@ mod tests {
     /// A headless row must be promptable at all: the caller builds
     /// either `<command> <headless_args> '<prompt>'` (args end in ` --`)
     /// or `<command> <headless_args>'<prompt>'` (args end in `=`, the
-    /// attach form gemini's `--prompt=` needs). And a positional form
-    /// must end in `--`, or a flag ahead of the prompt eats it --
-    /// claude's allow-list flag is variadic, and opencode's yargs reads
-    /// a leading `-` as a flag.
+    /// attach form gemini's `--prompt=` and kimi's `-p=` need). And a
+    /// positional form must end in `--`, or a flag ahead of the prompt
+    /// eats it -- claude's allow-list flag is variadic, and opencode's
+    /// yargs reads a leading `-` as a flag.
     #[test]
     fn headless_rows_are_the_verified_set_and_well_formed() {
         let headless: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| !p.headless_args.is_empty()).map(|p| p.id).collect();
         assert_eq!(
             headless,
-            ["claude-code", "codex", "gemini", "cursor", "opencode"]
+            ["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"]
         );
         for p in AGENT_PROFILES {
             if p.headless_args.is_empty() {
                 continue;
             }
-            assert!(p.prompt_args.is_some(), "{} runs headless but takes no prompt", p.id);
+            // kimi-code is the deliberate exception: its VISIBLE run has
+            // no prompt argv (K3 -- the prompt is written into the PTY
+            // once kimi's MCP handshake says the TUI is up), while its
+            // headless `-p=` carries one. Every other headless row must
+            // also be launchable with a prompt.
+            if p.id != "kimi-code" {
+                assert!(p.prompt_args.is_some(), "{} runs headless but takes no prompt", p.id);
+            }
             let args = p.headless_args;
             assert!(
                 args.ends_with(" --") || args.ends_with('='),
@@ -3039,7 +3608,7 @@ mod tests {
     fn conversation_resume_argv_is_all_or_nothing_per_profile() {
         let resumable: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| !p.resume_args.is_empty()).map(|p| p.id).collect();
-        assert_eq!(resumable, ["claude-code", "opencode"]);
+        assert_eq!(resumable, ["claude-code", "opencode", "kimi-code"]);
         for p in AGENT_PROFILES {
             assert!(
                 p.resume_args.is_empty() || !p.session_id_args.is_empty() || !p.session_id_discovery.is_empty(),
@@ -3065,6 +3634,7 @@ mod tests {
                 ("gemini", false),
                 ("cursor", false),
                 ("opencode", true),
+                ("kimi-code", true),
             ]
         );
     }
@@ -3090,6 +3660,7 @@ mod tests {
                 ("gemini", "gemini-code-assist"),
                 ("cursor", "cursor-session"),
                 ("opencode", "opencode-go"),
+                ("kimi-code", "kimi-oauth"),
             ]
         );
     }
@@ -3105,12 +3676,15 @@ mod tests {
         assert_eq!(UsageProbe::CursorSession.id(), "cursor-session");
         assert_eq!(UsageProbe::GeminiCodeAssist.id(), "gemini-code-assist");
         assert_eq!(UsageProbe::OpencodeGo.id(), "opencode-go");
+        assert_eq!(UsageProbe::KimiOauth.id(), "kimi-oauth");
     }
 
     /// The empty pattern list is a real answer -- "nobody has verified
     /// what this agent says when it breaks" -- and it must read as NO
     /// detection rather than as a licence to guess. Only rows measured
-    /// against the real CLI carry one.
+    /// against the real CLI carry one: claude-code's from a fake-API
+    /// session plus this repo's own transcripts, kimi-code's from live
+    /// 2.1.1 runs (2026-10-05).
     #[test]
     fn only_verified_profiles_carry_failure_patterns() {
         let detecting: Vec<&str> = AGENT_PROFILES
@@ -3118,7 +3692,7 @@ mod tests {
             .filter(|p| !p.failure_patterns.is_empty())
             .map(|p| p.id)
             .collect();
-        assert_eq!(detecting, ["claude-code"]);
+        assert_eq!(detecting, ["claude-code", "kimi-code"]);
         for p in AGENT_PROFILES {
             for pattern in p.failure_patterns {
                 assert!(!pattern.trim().is_empty(), "{} carries a blank pattern", p.id);
@@ -3162,7 +3736,7 @@ mod tests {
             .filter(|p| !p.failure_causes.is_empty())
             .map(|p| p.id)
             .collect();
-        assert_eq!(classifying, ["claude-code"]);
+        assert_eq!(classifying, ["claude-code", "kimi-code"]);
 
         for p in AGENT_PROFILES {
             assert_eq!(
@@ -3394,6 +3968,39 @@ mod tests {
         || Ok(PathBuf::from("/apps/gavin-mcp"))
     }
 
+    /// This machine's real disk, with the account home moved into a
+    /// tempdir. A test that integrates a kimi profile through plain
+    /// `LocalFiles` would write the folder-trust record into the
+    /// DEVELOPER's `~/.kimi-code/workspace-trust/` -- a real grant, left
+    /// behind by every run -- so any such test goes through this instead.
+    struct HomedFiles {
+        home: PathBuf,
+    }
+
+    impl WorkspaceFiles for HomedFiles {
+        fn agent_home(&self) -> Option<PathBuf> {
+            Some(self.home.clone())
+        }
+        fn write_private(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+            LocalFiles.write_private(path, contents)
+        }
+        fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+            LocalFiles.read_bytes(path)
+        }
+        fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+            LocalFiles.write_bytes(path, contents)
+        }
+        fn is_dir(&self, path: &Path) -> bool {
+            LocalFiles.is_dir(path)
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            LocalFiles.is_file(path)
+        }
+        fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
+            LocalFiles.canonical_dir(path)
+        }
+    }
+
     /// A workspace that exists only in memory -- what the host's disk is
     /// to the desktop. Every read and write goes through the trait, and
     /// the test below proves the integration never reaches past it.
@@ -3405,9 +4012,22 @@ mod tests {
         /// the banner. Left false by `Default` so it differs from this
         /// suite's own machine on Windows -- the point of the field.
         windows: bool,
+        /// The account home on this disk, which `RemoteFiles` has no
+        /// answer for. `None` by `Default` -- the ssh case -- so nothing
+        /// here writes outside the workspace unless a test gives it one.
+        home: Option<PathBuf>,
+        /// The machine's environment, as `RemoteFiles` would have to ask
+        /// it of the host. Empty by `Default`.
+        env: Vec<(String, std::ffi::OsString)>,
     }
 
     impl WorkspaceFiles for MemoryFiles {
+        fn agent_home(&self) -> Option<PathBuf> {
+            self.home.clone()
+        }
+        fn env_var(&self, name: &str) -> Option<std::ffi::OsString> {
+            self.env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+        }
         fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
             Ok(self.files.lock().unwrap().get(path).cloned())
         }
@@ -3777,8 +4397,8 @@ mod tests {
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
     }
 
-    /// An unnamed dialect is the JSON shape three of the five CLIs use --
-    /// the best guess for a sixth, and better than refusing to write.
+    /// An unnamed dialect is the JSON shape three of the six CLIs use --
+    /// the best guess for a seventh, and better than refusing to write.
     #[test]
     fn an_unnamed_or_unknown_custom_format_falls_back_to_mcp_servers_json() {
         for extra in
@@ -3991,6 +4611,10 @@ mod tests {
     /// 2026-09-02 against 1.3.13 (see the card's `## Verified` block),
     /// Cursor Agent CLI (`agent`) re-verified 2026-09-11 against
     /// 2026.09.10 — bare positional prompt, same shape as claude-code.
+    /// kimi-code's `None` is verified ABSENCE (2.1.1, 2026-10-05, K3):
+    /// kimi has no interactive prompt flag, so a visible run launches
+    /// bare and gets its prompt by PTY injection once kimi's MCP
+    /// handshake reports the TUI up -- that injection is a separate task.
     #[test]
     fn prompt_args_is_set_only_where_the_convention_is_verified() {
         let column: Vec<(&str, Option<&str>)> =
@@ -4003,6 +4627,7 @@ mod tests {
                 ("gemini", Some("")),
                 ("cursor", Some("")),
                 ("opencode", Some("--prompt=")),
+                ("kimi-code", None),
             ]
         );
         // A prefix is concatenated with the quoted prompt, never joined
@@ -4013,6 +4638,31 @@ mod tests {
                 assert!(args.ends_with('='), "{} must attach its prompt value", p.id);
             }
         }
+    }
+
+    /// Injection and argv are the two ways a prompt reaches a visible
+    /// run, and a row gets exactly one: injection exists only because
+    /// kimi has no prompt flag, and an agent that takes a prompt on its
+    /// command line gets it there. kimi-code is the whole `true` set;
+    /// cursor's `None` stays a REFUSAL, which is the other half of what
+    /// this pin protects -- the flag is what keeps "takes no prompt"
+    /// and "takes no prompt ARGV" from blurring into one answer.
+    #[test]
+    fn prompt_injection_is_kimi_only_and_always_replaces_prompt_args() {
+        for p in AGENT_PROFILES {
+            assert_eq!(
+                p.prompt_injection,
+                p.id == "kimi-code",
+                "{}: prompt_injection drifted",
+                p.id
+            );
+            if p.prompt_injection {
+                assert!(p.prompt_args.is_none(), "{} injects AND takes argv", p.id);
+            }
+        }
+        // And it rides the DTO, or the frontend has nothing to read.
+        let dto = agent_profiles().into_iter().find(|p| p.id == "kimi-code").unwrap();
+        assert!(dto.prompt_injection);
     }
 
     /// A setup run over a workspace that EDITED a managed skill. The
@@ -4163,6 +4813,374 @@ mod tests {
             block.contains(".agents/skills/gavin/SKILL.md"),
             "instructions block must point at Codex's skill, not inline: {block}"
         );
+    }
+
+    /// Kimi's whole install: codex's instructions file (kimi reads
+    /// AGENTS.md, not CLAUDE.md), claude-code's MCP file and dialect
+    /// (kimi reads the project `.mcp.json` -- K6, proven live), and kimi's
+    /// own skill root (K8: gavin does not use the shared `.agents/skills/`
+    /// kimi would also discover, for opencode's O5 reason).
+    #[test]
+    fn a_kimi_code_root_gets_its_skills_and_mcp_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "kimi-code");
+
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+
+        // The last entry is the folder-trust record, which lives in the
+        // account's kimi home and so cannot be made relative to the root:
+        // `a_kimi_run_trusts_its_folder_and_says_so` owns that one.
+        let (trust, in_workspace) = result.written.split_last().unwrap();
+        assert!(trust.contains("workspace-trust"), "{trust}");
+        let rel: Vec<String> = in_workspace
+            .iter()
+            .map(|p| {
+                Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "AGENTS.md",
+                ".kimi-code/skills/gavin/SKILL.md",
+                ".kimi-code/skills/gavin-orchestrate/SKILL.md",
+                ".kimi-code/skills/gavin-resume/SKILL.md",
+                ".kimi-code/skills/gavin-develop/SKILL.md",
+                ".mcp.json",
+            ]
+        );
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        assert!(!dir.path().join(".claude").exists(), "kimi-code must not grow a .claude/");
+        assert!(!dir.path().join(".agents").exists(), "kimi's skills live in its own root");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+        let block = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            block.contains(".kimi-code/skills/gavin/SKILL.md"),
+            "instructions block must point at Kimi's skill, not inline: {block}"
+        );
+    }
+
+    // --- Folder trust (K18) ----------------------------------------------
+
+    /// kimi's trust records under a home, empty when it has none yet.
+    fn trust_records(home: &Path) -> Vec<PathBuf> {
+        match std::fs::read_dir(home.join(".kimi-code").join("workspace-trust")) {
+            Ok(entries) => entries.map(|e| e.unwrap().path()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The path kimi sees as its cwd for `dir`: physical, and spelled the
+    /// way a process's own cwd is.
+    fn physical(dir: &Path) -> String {
+        without_verbatim_prefix(&std::fs::canonicalize(dir).unwrap().to_string_lossy())
+    }
+
+    fn record_path(home: &Path, root: &str) -> PathBuf {
+        home.join(".kimi-code").join("workspace-trust").join(kimi_trust_key(root))
+    }
+
+    /// The first three rows are keys kimi 2.1.1 wrote itself, on the
+    /// machine it was verified on -- the reproduction that mattered is
+    /// that they come out byte for byte. (The same check also passed for
+    /// two more, longer-path entries, and for a key gavin computed that a
+    /// live `kimi -p` then honoured; those paths name a person and a
+    /// session, so they are not carried here.) The Windows rows come from
+    /// kimi's source (`workspaceRootKey`), not from a Windows run -- K16.
+    #[test]
+    fn kimi_trust_keys_match_the_ones_kimi_wrote() {
+        for (root, key) in [
+            ("/private/tmp", "wd_tmp_11fe14a563f7"),
+            ("/private/tmp/kimi-spike", "wd_kimi-spike_7f16626aeb0a"),
+            ("/private/tmp/kimi-spike2", "wd_kimi-spike2_d612afd43a8e"),
+            // A trailing separator is not part of the identity.
+            ("/private/tmp/kimi-spike/", "wd_kimi-spike_7f16626aeb0a"),
+            // A drive path is lowercased and slashed before it is hashed,
+            // and `std::fs::canonicalize`'s verbatim spelling is stripped.
+            (r"C:\Users\Ada\Repo\", "wd_repo_dbf5f7ee08cf"),
+            (r"\\?\C:\Users\Ada\Repo", "wd_repo_dbf5f7ee08cf"),
+            (r"\\?\UNC\Server\Share\Proj", "wd_proj_49ea924784e1"),
+        ] {
+            assert_eq!(kimi_trust_key(&without_verbatim_prefix(root)), key, "{root}");
+        }
+        // Trust does not inherit: a trusted parent left its child's warning
+        // standing when run against kimi 2.1.1 (2026-10-06). A worktree is
+        // its own workspace, so it gets its own key and needs its own record.
+        assert_ne!(
+            kimi_trust_key("/work/repo"),
+            kimi_trust_key("/work/repo/.gavin-worktrees/wt")
+        );
+    }
+
+    #[test]
+    fn kimi_slugs_follow_its_rule() {
+        let long = "x".repeat(60);
+        let dashed = format!("ab{}cd", "-".repeat(50));
+        let cut_on_a_dash = format!("{} b", "a".repeat(39));
+        for (name, slug) in [
+            ("My Project (v2)", "my-project-v2"),
+            ("UPPER_case.Name", "upper_case.name"),
+            ("a é b", "a-b"),
+            ("Çafé-ñ", "af"),
+            // Nothing usable left: kimi's own fallback.
+            ("..", "workspace"),
+            (".", "workspace"),
+            ("", "workspace"),
+            ("---", "workspace"),
+            ("é", "workspace"),
+            // Cut at 40, then trimmed again -- so a cut that lands on a
+            // dash does not leave one behind.
+            (long.as_str(), &"x".repeat(40)),
+            (dashed.as_str(), "ab"),
+            (cut_on_a_dash.as_str(), &"a".repeat(39)),
+        ] {
+            assert_eq!(kimi_slug(name), slug, "{name:?}");
+        }
+    }
+
+    /// Byte for byte what kimi 2.1.1 wrote for `/private/tmp/kimi-spike`.
+    #[test]
+    fn a_trust_record_has_kimis_own_shape() {
+        assert_eq!(
+            kimi_trust_record("/private/tmp/kimi-spike", 1791219481952),
+            r#"{"root":"/private/tmp/kimi-spike","trustedAt":1791219481952}"#
+        );
+    }
+
+    #[test]
+    fn kimi_home_takes_an_absolute_override_and_nothing_else() {
+        let home = Path::new("home").join("ada");
+        let default = home.join(".kimi-code");
+        let scratch = std::env::temp_dir().join("kimi-scratch");
+        assert_eq!(kimi_home_from(&home, None), default);
+        assert_eq!(kimi_home_from(&home, Some(scratch.clone().into_os_string())), scratch);
+        // Relative, or blank: kimi would resolve it against a cwd gavin
+        // does not know, so it is not guessed at.
+        assert_eq!(kimi_home_from(&home, Some("relative/kimi".into())), default);
+        assert_eq!(kimi_home_from(&home, Some("".into())), default);
+    }
+
+    /// The column's whole population: kimi is the only agent whose CLI
+    /// gates a repository's own MCP servers behind a record gavin knows
+    /// how to write, and a row added without the store verified is the
+    /// unverified convention this table does not take.
+    #[test]
+    fn only_kimi_has_a_folder_trust_gate() {
+        let gated: Vec<&str> =
+            AGENT_PROFILES.iter().filter(|p| p.folder_trust.is_some()).map(|p| p.id).collect();
+        assert_eq!(gated, ["kimi-code"]);
+    }
+
+    /// `LocalFiles` is this machine, so its home is this machine's -- the
+    /// reason `HomedFiles` exists.
+    #[test]
+    fn the_local_disk_answers_with_this_machines_home() {
+        assert_eq!(LocalFiles.agent_home(), crate::home::home_dir());
+    }
+
+    #[test]
+    fn a_kimi_run_trusts_its_folder_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "kimi-code");
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+
+        let root = physical(dir.path());
+        let record = record_path(home.path(), &root);
+        assert_eq!(result.written.last().unwrap(), &protocol::wire_path(&record), "reported, last");
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        let body = std::fs::read_to_string(&record).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(doc["root"], root.as_str(), "the PHYSICAL path -- kimi's cwd");
+        assert!(doc["trustedAt"].as_u64().unwrap() > 1_700_000_000_000, "{body}");
+
+        // Owner-only, as kimi keeps its own store.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&record), 0o600);
+            assert_eq!(mode(record.parent().unwrap()), 0o700);
+        }
+
+        // A re-run neither rewrites it nor reports it again.
+        let again = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        assert!(!again.written.iter().any(|w| w.contains("workspace-trust")), "{:?}", again.written);
+        assert_eq!(std::fs::read_to_string(&record).unwrap(), body);
+        assert_eq!(trust_records(home.path()).len(), 1);
+    }
+
+    /// A record that is already there is the human's own answer to kimi's
+    /// prompt, or an earlier run's -- not this run's to rewrite.
+    #[test]
+    fn an_existing_trust_record_is_left_exactly_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "kimi-code");
+        let record = record_path(home.path(), &physical(dir.path()));
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, r#"{"root":"theirs","trustedAt":1}"#).unwrap();
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&record).unwrap(), r#"{"root":"theirs","trustedAt":1}"#);
+        assert!(!result.written.iter().any(|w| w.contains("workspace-trust")));
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+    }
+
+    /// Trusting a folder starts every server the repository declares, so
+    /// the grant waits on the same disclosure that decides whether gavin
+    /// may write its own entry next to them: pending, or refused, enables
+    /// nothing; "keep" is the human saying they have seen them.
+    #[test]
+    fn trust_waits_for_the_foreign_server_disclosure() {
+        let foreign = r#"{"mcpServers":{"other":{"command":"/bin/other"}}}"#;
+        for (choice, granted) in
+            [(None, false), (Some(McpForeignChoice::Isolate), false), (Some(McpForeignChoice::Keep), true)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            rooted_with_profile(dir.path(), "kimi-code");
+            std::fs::write(dir.path().join(".mcp.json"), foreign).unwrap();
+            let fs = HomedFiles { home: home.path().to_path_buf() };
+
+            let result = run_integration(&fs, dir.path(), fake_binary(), None, choice, None, None).unwrap();
+
+            let label = format!("{choice:?}");
+            assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
+            let says = result.skipped.iter().find(|(what, _)| what == "folder trust");
+            assert_eq!(says.is_some(), !granted, "{label}: {:?}", result.skipped);
+            if let Some((_, why)) = says {
+                assert!(why.contains("MCP entry was not written"), "{label}: {why}");
+            }
+        }
+    }
+
+    /// kimi gates `.kimi-code/mcp.json` behind the same record as
+    /// `.mcp.json`, and the disclosure only reads the latter.
+    #[test]
+    fn trust_is_withheld_when_kimis_own_project_mcp_file_declares_servers() {
+        for (body, granted) in [
+            (None, true),
+            (Some(""), true),
+            (Some("{}"), true),
+            (Some(r#"{"mcpServers":{}}"#), true),
+            (Some(r#"{"mcpServers":{"x":{"command":"/bin/x"}}}"#), false),
+            (Some("{not json"), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            rooted_with_profile(dir.path(), "kimi-code");
+            if let Some(body) = body {
+                std::fs::create_dir_all(dir.path().join(".kimi-code")).unwrap();
+                std::fs::write(dir.path().join(".kimi-code").join("mcp.json"), body).unwrap();
+            }
+            let fs = HomedFiles { home: home.path().to_path_buf() };
+
+            let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+
+            assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{body:?}");
+            let says = result.skipped.iter().find(|(what, _)| what == "folder trust");
+            assert_eq!(says.is_some(), !granted, "{body:?}: {:?}", result.skipped);
+            if let Some((_, why)) = says {
+                assert!(why.contains(".kimi-code/mcp.json"), "{body:?}: {why}");
+            }
+        }
+    }
+
+    /// ssh: kimi's home is the host's, which nothing here can reach, so no
+    /// record is written anywhere and the report says why.
+    #[test]
+    fn a_disk_with_no_reachable_home_gets_no_trust_record() {
+        let root = PathBuf::from("/remote/repo");
+        let fs = MemoryFiles { dirs: vec![root.clone()], ..Default::default() };
+        fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"kimi-code\"\n")
+            .unwrap();
+
+        let result = run_integration(
+            &fs,
+            &root,
+            || Ok(PathBuf::from("/opt/gavin/gavin-mcp")),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (_, why) = result.skipped.iter().find(|(what, _)| what == "folder trust").expect("said so");
+        assert!(why.contains("cannot reach"), "{why}");
+        assert!(
+            !fs.files.lock().unwrap().keys().any(|p| p.to_string_lossy().contains("workspace-trust")),
+            "nothing written for a trust store"
+        );
+    }
+
+    /// Where it lands, with no disk involved: the record goes under the
+    /// account's kimi home, keyed by the canonical root.
+    #[test]
+    fn the_record_goes_where_kimi_reads_it() {
+        let root = PathBuf::from("/work/repo");
+        let home = PathBuf::from("/home/ada");
+        let fs = MemoryFiles { dirs: vec![root.clone()], home: Some(home.clone()), ..Default::default() };
+        fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"kimi-code\"\n")
+            .unwrap();
+
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
+            .unwrap();
+
+        let want = home.join(".kimi-code").join("workspace-trust").join(kimi_trust_key("/work/repo"));
+        let files = fs.files.lock().unwrap();
+        let body = String::from_utf8(files.get(&want).expect("record at kimi's path").clone()).unwrap();
+        assert!(body.starts_with(r#"{"root":"/work/repo","trustedAt":"#), "{body}");
+    }
+
+    /// `KIMI_CODE_HOME` relocates the whole kimi home, so the record has
+    /// to follow it -- a record under `~/.kimi-code` would be a grant
+    /// nothing reads. The machine's variable, not this process's.
+    #[test]
+    fn a_kimi_code_home_override_moves_the_record() {
+        let root = PathBuf::from("/work/repo");
+        let scratch = std::env::temp_dir().join("kimi-scratch");
+        let fs = MemoryFiles {
+            dirs: vec![root.clone()],
+            home: Some(PathBuf::from("/home/ada")),
+            env: vec![("KIMI_CODE_HOME".to_string(), scratch.clone().into_os_string())],
+            ..Default::default()
+        };
+        fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"kimi-code\"\n")
+            .unwrap();
+
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
+            .unwrap();
+
+        let files = fs.files.lock().unwrap();
+        assert!(files.contains_key(&scratch.join("workspace-trust").join(kimi_trust_key("/work/repo"))));
+        assert!(!files.keys().any(|p| p.starts_with("/home/ada")), "nothing under the default home");
+    }
+
+    /// Only a profile with a gate writes a record: claude-code's run
+    /// leaves the home untouched and says nothing about trust.
+    #[test]
+    fn a_profile_without_a_trust_gate_never_touches_the_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "the home stays empty");
+        assert!(!result.written.iter().any(|w| w.contains("workspace-trust")));
+        assert!(result.skipped.iter().all(|(what, _)| what != "folder trust"), "{:?}", result.skipped);
     }
 
     /// Gemini's skill root is `.gemini/skills/`, kept separate from the
@@ -4447,6 +5465,11 @@ mod tests {
             ("gemini", ".gemini/settings.json", "/mcpServers/gavin/command"),
             ("cursor", ".cursor/mcp.json", "/mcpServers/gavin/command"),
             ("opencode", "opencode.json", "/mcp/gavin/command/0"),
+            // kimi-code shares claude-code's file and dialect (K6), so
+            // this is the same committed `.mcp.json` -- pinned twice so a
+            // layout change on either row is caught against the repo's
+            // real file.
+            ("kimi-code", ".mcp.json", "/mcpServers/gavin/command"),
         ] {
             let fresh = write_mcp_config(
                 &LocalFiles,

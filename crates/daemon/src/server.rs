@@ -359,6 +359,87 @@ fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~\r")
 }
 
+/// How long a freshly spawned session's follow-up queue may wait for its
+/// agent to announce itself before ordinary idle delivery takes over.
+///
+/// The wait exists for a profile with no prompt flag at all (K3: kimi's
+/// visible run launches bare, and its card prompt rides this queue). Such
+/// an agent's only "the TUI is up" signal is its gavin-mcp presenting the
+/// session token, and a prompt delivered before that is keystrokes typed
+/// into a TUI that is not reading yet. Bounded because the handshake is
+/// not guaranteed -- an untrusted folder stops kimi at a trust screen
+/// before any MCP server starts -- and a prompt held forever is worse
+/// than one delivered on the ordinary idle rules it would have had
+/// anyway.
+///
+/// Held on the manager as an `AtomicU64` of milliseconds seeded from this
+/// constant, rather than compared against the bare constant, so a test
+/// can shorten it directly (the same seam `session_ceiling` uses) instead
+/// of sleeping the full grace out.
+const AGENT_READY_GRACE: Duration = Duration::from_secs(15);
+
+/// Whether a delivery for this session is being held for its agent's
+/// first Hello. True only inside the grace window after spawn; once the
+/// agent has announced itself (`resolve_hello`) or the window has closed,
+/// the ordinary idle rules answer instead.
+fn delivery_held_for_agent(manager: &SessionManager, id: &str) -> bool {
+    manager
+        .awaiting_agent_since
+        .lock()
+        .unwrap()
+        .get(id)
+        .is_some_and(|since| since.elapsed() < manager.agent_ready_grace())
+}
+
+/// The K3 delivery door. An agent Hello is the only startup signal a
+/// profile with no prompt flag has: its CLI was launched bare, and the
+/// gavin-mcp inside its session presenting the session token is what
+/// proves the agent's side of the PTY is alive and reading. A prompt
+/// queued for such a session (held by `deliver_next_queued` until now)
+/// goes immediately, status unchecked -- "the agent is alive" IS the
+/// readiness verdict an idle transition otherwise stands in for.
+///
+/// Only the FIRST Hello per session opens the door: the awaiting entry
+/// is removed here and never re-added, so a gavin-mcp reconnecting
+/// mid-turn cannot use it to paste a queued follow-up into an agent that
+/// is busy -- that wait is exactly what the idle path is for.
+fn note_agent_ready(manager: &SessionManager, id: &str) {
+    let was_awaiting = manager.awaiting_agent_since.lock().unwrap().remove(id).is_some();
+    if was_awaiting {
+        deliver_next_queued(manager, id);
+    }
+}
+
+/// The bounded half of the agent-ready wait: when the grace window
+/// closes without a Hello, the hold lapses and an idle session takes its
+/// queue under the ordinary rules. Spawned beside the pump (one per
+/// session, like the heuristic idle timer) because that is the one place
+/// every hosted session passes with an `Arc` in hand.
+///
+/// The fallback has to be a timer, not only a check at idle transitions:
+/// the case it exists for -- an agent that never starts its MCP servers,
+/// like kimi at a trust screen -- goes quiet and STAYS quiet, so the
+/// transition the check hangs off already happened while the hold was
+/// still on.
+fn spawn_agent_ready_fallback(manager: &Arc<SessionManager>, id: String) {
+    let remaining = {
+        let awaiting = manager.awaiting_agent_since.lock().unwrap();
+        let Some(since) = awaiting.get(&id) else { return };
+        manager.agent_ready_grace().saturating_sub(since.elapsed())
+    };
+    let manager = Arc::clone(manager);
+    std::thread::spawn(move || {
+        std::thread::sleep(remaining);
+        // A Hello that arrived during the sleep already removed the entry
+        // and delivered through its own door; taking it here is what
+        // makes the two paths mutually exclusive rather than merely
+        // unlikely to race.
+        if manager.awaiting_agent_since.lock().unwrap().remove(&id).is_some() {
+            deliver_next_queued_if_idle(&manager, &id);
+        }
+    });
+}
+
 /// Why this session cannot be handed a follow-up right now, or `None` if
 /// it can.
 ///
@@ -402,6 +483,14 @@ fn deliver_next_queued(manager: &SessionManager, id: &str) {
     // never take a follow-up (an interrupted one, most of all) does not
     // shut out a delivery that later becomes possible.
     if queue_delivery_refusal(manager, id).is_some() {
+        return;
+    }
+    // A hold, unlike the refusal above: the session is fine, but its
+    // agent has not announced itself yet and the prompt may be the one
+    // its launch is WAITING on (K3) -- delivered by `note_agent_ready`
+    // the moment the agent's gavin-mcp says hello, or by the fallback
+    // timer when the grace window closes.
+    if delivery_held_for_agent(manager, id) {
         return;
     }
     if !manager.delivering_queued.lock().unwrap().insert(id.to_string()) {
@@ -551,8 +640,9 @@ fn headroom_reason() -> String {
 /// does not make it Headroom's -- and renaming it would send auto-resume
 /// uncompressed into the login wall, or straight past a usage reset. The
 /// spec scopes the cause to the failure that "would be classified
-/// `network`". Every non-`network` row of Claude Code's `failure_causes`
-/// (`app/src-tauri/src/agent_setup.rs`) is listed, pinned by
+/// `network`". Every non-`network` row of every profile's
+/// `failure_causes` (`app/src-tauri/src/agent_setup.rs` -- Claude Code's
+/// and Kimi Code's) is listed, pinned by
 /// `headroom_not_blamed_markers_cover_every_non_network_cause` there.
 pub const NOT_HEADROOMS_MARKERS: &[&str] = &[
     "/login",
@@ -566,6 +656,11 @@ pub const NOT_HEADROOMS_MARKERS: &[&str] = &[
     "529 Overloaded",
     "Overloaded",
     "Server error mid-response",
+    // Kimi Code's own vocabulary (kimi 2.1.1, verified 2026-10-05).
+    "Model authentication failed",
+    "Model rate limit reached",
+    "Context size exceeded",
+    "Model overloaded",
 ];
 
 fn someone_elses_line(reason: &str) -> bool {
@@ -1372,6 +1467,24 @@ pub struct SessionManager {
     /// A session already in here is skipped, never queued behind:
     /// whatever the other delivery is doing ends the idleness anyway.
     delivering_queued: Mutex<std::collections::HashSet<String>>,
+    /// Sessions this daemon spawned whose agent has not yet announced
+    /// itself, keyed to when they were spawned. What
+    /// `delivery_held_for_agent` reads: a session in here and inside
+    /// `AGENT_READY_GRACE` has its queue held for the agent's first
+    /// Hello (`note_agent_ready`) instead of delivered on idle. Removed
+    /// by that Hello, by the grace fallback timer, and by
+    /// `forget_session` -- never re-added, so the hold and the door it
+    /// feeds each happen at most once per session.
+    ///
+    /// In memory rather than persisted for the same reason as
+    /// `delivering_queued`: it describes a window measured from a spawn
+    /// only this process performed, and a daemon restart ends the window
+    /// with everything else it forgets.
+    awaiting_agent_since: Mutex<HashMap<String, Instant>>,
+    /// See `AGENT_READY_GRACE`. Millis in an atomic so a test can
+    /// shorten the wait the way `session_ceiling` is lowered, instead of
+    /// sleeping the real fifteen seconds out.
+    agent_ready_grace_ms: AtomicU64,
     /// The size each session's PTY was last set to.
     ///
     /// Remembered so a resize that changes nothing can be told from one
@@ -1743,6 +1856,8 @@ impl SessionManager {
             gavin_watchers: Mutex::new(HashMap::new()),
             gavin_watch_generation: Mutex::new(HashMap::new()),
             delivering_queued: Mutex::new(std::collections::HashSet::new()),
+            awaiting_agent_since: Mutex::new(HashMap::new()),
+            agent_ready_grace_ms: AtomicU64::new(AGENT_READY_GRACE.as_millis() as u64),
             last_pty_size: Mutex::new(HashMap::new()),
             provoked_repaint_at: Mutex::new(HashMap::new()),
             session_ceiling: AtomicUsize::new(MAX_LIVE_SESSIONS),
@@ -1844,6 +1959,11 @@ impl SessionManager {
     /// the daemon token against such a manager stays `local`.
     fn daemon_token(&self) -> &str {
         self.daemon_token.get().map(String::as_str).unwrap_or("")
+    }
+
+    /// The live agent-ready grace window. See `AGENT_READY_GRACE`.
+    fn agent_ready_grace(&self) -> Duration {
+        Duration::from_millis(self.agent_ready_grace_ms.load(Ordering::SeqCst))
     }
 
     /// Hands this daemon its Headroom. Called once by `serve` before the
@@ -2881,7 +3001,14 @@ impl SessionManager {
                         .and_then(|sid| reg.get(&sid).ok().flatten())
                 };
                 match record {
-                    Some(rec) => (
+                    Some(rec) => {
+                        // The earliest moment the daemon can know this
+                        // session's agent is alive: its gavin-mcp
+                        // presented the token only the PTY's environment
+                        // holds. Releases a prompt the queue is holding
+                        // for exactly this signal (K3).
+                        note_agent_ready(self, &rec.id);
+                        (
                         ClientIdentity {
                             role: Role::Agent,
                             session_id: Some(rec.id.clone()),
@@ -2900,7 +3027,8 @@ impl SessionManager {
                             // this path so its reads hit the real board.
                             workspace_root: Some(rec.workspace_path),
                         },
-                    ),
+                    )
+                    }
                     None => local(),
                 }
             }
@@ -3232,6 +3360,11 @@ impl SessionManager {
             .set_token_hash(&id, &protocol::hash_token_hex(&session_token))?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
+        // The agent-ready window starts at spawn: until this session's
+        // gavin-mcp presents its token (or the grace lapses), its queue
+        // is held for the Hello door rather than delivered on idle --
+        // see `delivery_held_for_agent`.
+        self.awaiting_agent_since.lock().unwrap().insert(id.clone(), Instant::now());
         Ok(Created {
             id,
             compressed: compression.compressed(),
@@ -4317,6 +4450,7 @@ impl SessionManager {
         self.failure_patterns.lock().unwrap().remove(id);
         self.acknowledged_failures.lock().unwrap().remove(id);
         self.slept_mid_turn.lock().unwrap().remove(id);
+        self.awaiting_agent_since.lock().unwrap().remove(id);
         Ok(())
     }
 
@@ -4904,6 +5038,7 @@ impl SessionManager {
                 },
             });
             spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
+            spawn_agent_ready_fallback(&manager, id.clone());
 
             loop {
                 match reader.read(&mut buf) {
@@ -8363,6 +8498,10 @@ mod tests {
         // token here: the Hello tests present it to take the `app` role
         // and check the server_proof against it.
         manager.set_daemon_token("test-daemon-token".to_string());
+        // The agent-ready grace, shortened so the follow-up queue tests
+        // exercise the hold-and-fallback path in about a second rather
+        // than sleeping the real fifteen out.
+        manager.agent_ready_grace_ms.store(1500, Ordering::SeqCst);
 
         // Bound here rather than on the server thread, so this function
         // cannot return before the socket is accepting. The wait it
@@ -18006,10 +18145,13 @@ mod tests {
     }
 
     #[test]
-    fn a_follow_up_for_an_idle_session_goes_straight_through() {
-        // Queueing onto an agent that finished its turn a second ago and
-        // sending to it are the same act. The wait exists only because
-        // the agent is busy.
+    fn a_follow_up_for_a_fresh_session_waits_for_its_agent_then_falls_back_to_idle_delivery() {
+        // The bounded half of the K3 hold: a session whose agent has not
+        // announced itself keeps its queue for up to AGENT_READY_GRACE
+        // (shortened here by start_test_server), and when no Hello has
+        // arrived by then the ordinary idle rules take over. The session
+        // below never says hello -- a shell has no gavin-mcp -- so what
+        // delivers its prompt is the fallback timer, not the door.
         let (socket_path, _dir) = start_test_server();
 
         let id = {
@@ -18040,9 +18182,11 @@ mod tests {
             &mut queue_stream,
             &Request::QueueInput { id: id.clone(), text: "STRAIGHT_THROUGH_OK".to_string() },
         ) {
-            Response::QueuedInputs { queued } => {
-                assert!(queued.is_empty(), "an idle session takes it now, got {queued:?}")
-            }
+            Response::QueuedInputs { queued } => assert_eq!(
+                queued.len(),
+                1,
+                "a fresh session holds its queue for the agent's Hello, got {queued:?}"
+            ),
             other => panic!("expected QueuedInputs, got {other:?}"),
         }
 
@@ -18055,7 +18199,147 @@ mod tests {
                 delivered = rid == id && data.contains("STRAIGHT_THROUGH_OK");
             }
         }
-        assert!(delivered, "an idle session never received its follow-up");
+        assert!(delivered, "the grace window lapsed and the fallback never delivered");
+    }
+
+    #[test]
+    fn a_prompt_queued_for_a_fresh_session_is_delivered_the_moment_its_agent_says_hello() {
+        // K3, end to end: a profile with no prompt flag launches its
+        // agent bare and the card prompt rides the follow-up queue; the
+        // agent's gavin-mcp presenting the session token is what
+        // releases it. The wait for an idle transition never happens.
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, sock, _sock_dir) = serving_manager(&dir);
+        let id = manager
+            .create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell)
+            .unwrap();
+        // `create_session` mints the token and keeps only its hash; the
+        // test re-keys it to a value it can present, the way
+        // `an_agent_hello_ack_carries_the_sessions_workspace_root...`
+        // does.
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .set_token_hash(&id, &protocol::hash_token_hex("known-agent-token"))
+            .unwrap();
+
+        // Attached the way the app attaches, so the delivered bytes are
+        // observable as terminal output.
+        let (client, server_side) = Stream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server_side)));
+
+        // Queued before the agent announces itself: held, not delivered.
+        let mut queue_conn = Stream::connect(&sock).unwrap();
+        match request(
+            &mut queue_conn,
+            &Request::QueueInput { id: id.clone(), text: "INJECTED_PROMPT_OK".to_string() },
+        ) {
+            Response::QueuedInputs { queued } => {
+                assert_eq!(queued.len(), 1, "an unannounced session's prompt must wait")
+            }
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+
+        // The agent's gavin-mcp Hello, over its own connection, exactly
+        // as the eager connect makes it at MCP handshake time.
+        let mut hello = Stream::connect(&sock).unwrap();
+        match request(
+            &mut hello,
+            &Request::Hello {
+                client: "mcp".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::SessionToken { token: "known-agent-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        ) {
+            Response::HelloAck { role, session_id, .. } => {
+                assert_eq!(role, "agent");
+                assert_eq!(session_id.as_deref(), Some(id.as_str()));
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+
+        // Delivered on the Hello, seconds ahead of any idle transition.
+        await_output(&client, "INJECTED_PROMPT_OK");
+
+        let mut check = Stream::connect(&sock).unwrap();
+        match request(&mut check, &Request::ListQueuedInputs) {
+            Response::QueuedInputs { queued } => {
+                assert!(queued.is_empty(), "a delivered prompt leaves the queue, got {queued:?}")
+            }
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_agent_ready_door_opens_once_per_session() {
+        // A gavin-mcp reconnect presents the session token again, and
+        // that second Hello must not deliver a follow-up queued while
+        // the agent is busy: the door exists for the launch prompt, and
+        // the idle path owns every later wait.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager
+            .create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell)
+            .unwrap();
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .set_token_hash(&id, &protocol::hash_token_hex("tok"))
+            .unwrap();
+        let auth = protocol::HelloAuth::SessionToken { token: "tok".into() };
+
+        manager.queue_input(&id, "first").unwrap();
+        let (identity, _) = manager.resolve_hello(&auth, "n");
+        assert_eq!(identity.role, Role::Agent);
+        assert!(queued_texts(&manager, &id).is_empty(), "the first Hello delivers");
+
+        // Mid-turn now. A second Hello changes nothing: the entry the
+        // door keys on was spent by the first.
+        manager.registry.lock().unwrap().update_status(&id, SessionStatus::Working).unwrap();
+        manager.queue_input(&id, "second").unwrap();
+        let _ = manager.resolve_hello(&auth, "n");
+        assert_eq!(
+            queued_texts(&manager, &id),
+            ["second"],
+            "a reconnect Hello must not paste into a working agent"
+        );
+    }
+
+    #[test]
+    fn the_agent_ready_door_never_delivers_into_an_interrupted_session() {
+        // The refusal ordering, pinned at the door itself: even with a
+        // valid token and a Hello in hand, an interrupted session is a
+        // bare shell, and prose pasted there runs as a command.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Idle, true))
+            .unwrap();
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .set_token_hash("s1", &protocol::hash_token_hex("tok"))
+            .unwrap();
+        manager.registry.lock().unwrap().queue_input("s1", "run this").unwrap();
+        manager.awaiting_agent_since.lock().unwrap().insert("s1".to_string(), Instant::now());
+
+        let (identity, _) =
+            manager.resolve_hello(&protocol::HelloAuth::SessionToken { token: "tok".into() }, "n");
+        assert_eq!(identity.role, Role::Agent);
+        assert_eq!(
+            queued_texts(&manager, "s1"),
+            ["run this"],
+            "the door opened but the interrupted refusal held"
+        );
     }
 
     /// How long a lock-order test waits for the thread under test to reach
