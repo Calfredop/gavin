@@ -3,12 +3,12 @@ order: 14336
 kind: plan
 title: "[perf] Commands that freeze the UI: audit of every Tauri command"
 labels: bug
-status: In Progress
+status: Done
 ---
 Every host command was audited on 2026-09-26 for what it can block on, how
 long, and how often the frontend calls it. Line numbers are as of main
 880e7e3c plus the uncommitted `pr_status` fix
-([fix-ui-freezes-from-main-thread-gh-calls.md](./done/fix-ui-freezes-from-main-thread-gh-calls.md)).
+([fix-ui-freezes-from-main-thread-gh-calls.md](../archive/fix-ui-freezes-from-main-thread-gh-calls.md)).
 
 ## Why this is one family
 
@@ -58,29 +58,29 @@ HANGS = measured or routinely ≥100 ms on a common trigger. MIGHT-HANG =
 long under plausible conditions (hooks, network, big repos, a wedged
 program, ssh).
 
-- [x] [Git view refresh runs 14 git processes on the main thread](./done/perf-git-view-refresh-off-main-thread.md) — HANGS
-- [x] [The Git watcher refreshes on gitignored paths](./done/perf-git-watcher-ignores-gitignore.md) — HANGS (amplifier)
-- [x] [agent_usage probes every profile on the main thread](./done/perf-agent-usage-off-main-thread.md) — HANGS
-- [x] [get_board ships every launch prompt, on every tree push](./done/perf-get-board-payload-and-refresh-storm.md) — HANGS, and a 1 MiB cliff
-- [x] [watchman_status and watchman_forget spawn the watchman CLI on the main thread](./done/perf-watchman-off-main-thread.md) — HANGS
-- [x] [One non-reading terminal can stall every terminal's input](./done/perf-terminal-input-head-of-line.md) — MIGHT-HANG
-- [x] [Daemon command connection: move the family off the main thread as one unit](./done/perf-daemon-command-connection-off-main-thread.md) — MIGHT-HANG, prerequisite
-- [x] [superpowers_status runs `claude plugin list` on every Settings visit](./done/perf-superpowers-off-main-thread.md) — HANGS
-- [x] [Git actions run git, hooks and signing on the main thread](./done/perf-git-actions-off-main-thread.md) — HANGS / MIGHT-HANG
-- [x] [Worktree add and remove run on the main thread](./done/perf-git-worktree-add-remove-off-main-thread.md) — HANGS
-- [x] [The worktree switcher re-reads every worktree on every refresh](./done/perf-worktree-switcher-refacts-every-refresh.md) — HANGS while open
-- [x] [Conflict resolution runs ~15 git processes per click](./done/perf-git-conflict-family-off-main-thread.md) — HANGS
-- [x] [get_gavin_tree waits on a rescan that sleeps under the lock](./done/perf-gavin-tree-rescan-sleeps-under-lock.md) — MIGHT-HANG
-- [x] [Moving a plan card re-reads every card](./done/perf-plan-relocation-rereads-every-card.md) — MIGHT-HANG
-- [x] [File viewer reads whole files and lists folders uncapped](./done/perf-file-viewer-unbounded-reads.md) — MIGHT-HANG
-- [x] [card_run_tokens parses whole transcripts on the main thread](./done/perf-card-run-tokens-off-main-thread.md) — MIGHT-HANG
-- [x] [agent_model_catalog runs `opencode models` at startup](./done/perf-agent-model-catalog-off-main-thread.md) — HANGS once per launch
-- [x] [Every window runs its own pollers](./done/perf-pollers-run-once-per-app.md) — amplifier
-- [x] [The delete wizard walks the whole workspace on the main thread](./done/perf-workspace-delete-scan-off-main-thread.md) — HANGS on large roots
-- [x] [end_orphan waits 2 s per orphan on the main thread](./done/perf-end-orphan-off-main-thread.md) — MIGHT-HANG
-- [x] [Restart daemon runs the whole reconnect on the main thread](./done/perf-restart-daemon-off-main-thread.md) — MIGHT-HANG
-- [x] [On an ssh workspace every routed command is a main-thread network wait](./done/perf-ssh-routes-off-main-thread.md) — MIGHT-HANG
-- [x] [open_workspace_window deadlocks on Windows as a sync command](./done/fix-open-workspace-window-windows-deadlock.md) — MIGHT-HANG (Windows)
+- [x] [Git view refresh runs 14 git processes on the main thread](../archive/perf-git-view-refresh-off-main-thread.md) — HANGS
+- [x] [The Git watcher refreshes on gitignored paths](../archive/perf-git-watcher-ignores-gitignore.md) — HANGS (amplifier)
+- [x] [agent_usage probes every profile on the main thread](./perf-agent-usage-off-main-thread.md) — HANGS
+- [x] [get_board ships every launch prompt, on every tree push](./perf-get-board-payload-and-refresh-storm.md) — HANGS, and a 1 MiB cliff
+- [x] [watchman_status and watchman_forget spawn the watchman CLI on the main thread](./perf-watchman-off-main-thread.md) — HANGS
+- [x] [One non-reading terminal can stall every terminal's input](./perf-terminal-input-head-of-line.md) — MIGHT-HANG
+- [x] [Daemon command connection: move the family off the main thread as one unit](./perf-daemon-command-connection-off-main-thread.md) — MIGHT-HANG, prerequisite
+- [x] [superpowers_status runs `claude plugin list` on every Settings visit](./perf-superpowers-off-main-thread.md) — HANGS
+- [x] [Git actions run git, hooks and signing on the main thread](../archive/perf-git-actions-off-main-thread.md) — HANGS / MIGHT-HANG
+- [x] [Worktree add and remove run on the main thread](../archive/perf-git-worktree-add-remove-off-main-thread.md) — HANGS
+- [x] [The worktree switcher re-reads every worktree on every refresh](../archive/perf-worktree-switcher-refacts-every-refresh.md) — HANGS while open
+- [x] [Conflict resolution runs ~15 git processes per click](../archive/perf-git-conflict-family-off-main-thread.md) — HANGS
+- [x] [get_gavin_tree waits on a rescan that sleeps under the lock](./perf-gavin-tree-rescan-sleeps-under-lock.md) — MIGHT-HANG
+- [x] [Moving a plan card re-reads every card](./perf-plan-relocation-rereads-every-card.md) — MIGHT-HANG
+- [x] [File viewer reads whole files and lists folders uncapped](./perf-file-viewer-unbounded-reads.md) — MIGHT-HANG
+- [x] [card_run_tokens parses whole transcripts on the main thread](./perf-card-run-tokens-off-main-thread.md) — MIGHT-HANG
+- [x] [agent_model_catalog runs `opencode models` at startup](./perf-agent-model-catalog-off-main-thread.md) — HANGS once per launch
+- [x] [Every window runs its own pollers](./perf-pollers-run-once-per-app.md) — amplifier
+- [x] [The delete wizard walks the whole workspace on the main thread](./perf-workspace-delete-scan-off-main-thread.md) — HANGS on large roots
+- [x] [end_orphan waits 2 s per orphan on the main thread](./perf-end-orphan-off-main-thread.md) — MIGHT-HANG
+- [x] [Restart daemon runs the whole reconnect on the main thread](./perf-restart-daemon-off-main-thread.md) — MIGHT-HANG
+- [x] [On an ssh workspace every routed command is a main-thread network wait](./perf-ssh-routes-off-main-thread.md) — MIGHT-HANG
+- [x] [open_workspace_window deadlocks on Windows as a sync command](./fix-open-workspace-window-windows-deadlock.md) — MIGHT-HANG (Windows)
 
 ## Audited FINE
 
