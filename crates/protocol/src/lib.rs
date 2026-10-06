@@ -26,6 +26,10 @@ pub mod device_wire;
 pub mod relay;
 pub mod remote_commands;
 
+// Where agent CLIs install themselves. Pure -- the home directory is
+// handed in rather than read -- so it needs no `os` feature either.
+pub mod bin_dirs;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
 };

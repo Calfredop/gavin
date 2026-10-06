@@ -145,12 +145,14 @@ impl PtySession {
                 // would otherwise inherit is the one a default Git for
                 // Windows install leaves behind: `<git>\cmd` and nothing
                 // else, so the shell running an emitted POSIX line has no
-                // `bash`, `ls`, `sed` or `grep`. `path_with_posix_tools`
-                // puts back what `/etc/profile` would have, and answers
-                // None everywhere else -- in which case the PATH the line
-                // resolves against below, and the one the shell inherits
-                // by not being told otherwise, are one and the same.
-                let path = crate::shell::path_with_posix_tools(&shell);
+                // `bash`, `ls`, `sed` or `grep`. `command_path` puts back
+                // what `/etc/profile` would have, and on every platform
+                // adds the agent install directories an rc file would
+                // (`~/.kimi-code/bin`); None when there is nothing to add
+                // -- in which case the PATH the line resolves against
+                // below, and the one the shell inherits by not being told
+                // otherwise, are one and the same.
+                let path = crate::shell::command_path(&shell);
                 let resolve_against =
                     path.clone().unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
                 // Git Bash's PATH search finds a bare `agent.exe` but not

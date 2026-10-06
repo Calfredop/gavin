@@ -3232,9 +3232,10 @@ pub struct DetectedAgentDto {
 
 /// Which of gavin's built-in agent CLIs are startable on this machine.
 /// `custom` is skipped: it has no default command to probe. The sweep is
-/// PATH-only — same posture as `program::on_path` for `gh` — and does not
-/// spawn anything, so a missing license or a broken install still reads
-/// as "found" when the shim exists.
+/// `program::resolve` — PATH plus the well-known install directories the
+/// daemon also launches from — and does not spawn anything, so a missing
+/// license or a broken install still reads as "found" when the shim
+/// exists.
 #[tauri::command]
 pub fn detect_agent_binaries() -> Vec<DetectedAgentDto> {
     detect_agent_binaries_with(AGENT_PROFILES, |name| crate::program::resolve(name))
