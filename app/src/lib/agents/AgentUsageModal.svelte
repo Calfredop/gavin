@@ -4,8 +4,14 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { agentProfilesStore } from "$lib/core/layoutState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
-  import { usageProjectionIndicator } from "$lib/ui/indicators";
-  import { forecastSpan, projectWindow, projectionSentence } from "$lib/agents/usageProjection";
+  import { usageProjectionIndicator, type Indicator } from "$lib/ui/indicators";
+  import {
+    forecastSpan,
+    projectWindow,
+    projectionSentence,
+    projectionTooltip,
+    worstProjection,
+  } from "$lib/agents/usageProjection";
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import {
     profileOptionLabel,
@@ -18,6 +24,7 @@
     profilesInUse,
     refreshUsage,
     usageHistoryStore,
+    usageProjections,
     usageRefreshingStore,
   } from "$lib/agents/agentPauseState";
   import {
@@ -50,6 +57,24 @@
     }))
   );
 
+  /// One semaphore per agent that already has a projection band — the
+  /// same hourglass the sidebar footer shows for the fleet worst, scoped
+  /// to that profile so a quiet agent does not borrow a neighbour's tone.
+  const tabIndicators = $derived.by((): Record<string, Indicator | null> => {
+    const out: Record<string, Indicator | null> = {};
+    for (const profile of profiles) {
+      const worst = worstProjection(
+        $usageProjections.filter((p) => p.profileId === profile.id)
+      );
+      if (!worst?.band) continue;
+      out[profile.id] = usageProjectionIndicator(
+        worst.band,
+        projectionTooltip(worst, profile.label, $nowStore)
+      );
+    }
+    return out;
+  });
+
   let agentsTab = $state<AgentsHubTab>("");
 
   $effect(() => {
@@ -60,8 +85,6 @@
     if (tabs.some((t) => t.id === agentsTab)) return;
     agentsTab = tabs[0].id;
   });
-
-  const profile = $derived(profiles.find((p) => p.id === agentsTab) ?? null);
 
   /// Absent is NOT `unsupported`: the first read has not landed yet, and
   /// "checking…" is a different sentence from "this agent has no limits".
@@ -82,7 +105,7 @@
   }
 </script>
 
-<Modal {onClose}>
+<Modal {onClose} wide>
   <div class="agent-usage">
     <h2>Agent usage</h2>
 
@@ -93,99 +116,109 @@
         tabs={tabs}
         tab={agentsTab}
         label="Agent usage"
+        indicators={tabIndicators}
+        wrap={false}
         onTab={(t) => (agentsTab = t)}
       />
 
-      {#if profile}
-        {@const report = reportFor(profile.id)}
-        <section>
-          {#if (report?.state === "ready" && report.plan) || profile.usageProbe}
-            <header>
-              {#if report?.state === "ready" && report.plan}
-                <span class="plan">{report.plan}</span>
-              {/if}
-              {#if profile.usageProbe}
-                <IconButton
-                  icon={RefreshCw}
-                  label="Check again"
-                  size={11}
-                  spin={!!$usageRefreshingStore[profile.id]}
-                  disabled={!!$usageRefreshingStore[profile.id]}
-                  onclick={() => void refreshUsage(profile.id, true)}
-                />
-              {/if}
-            </header>
-          {/if}
-
-          {#if report == null}
-            <p class="hint">Checking…</p>
-          {:else if report.state === "ready"}
-            {#each report.windows as window (window.id)}
-              <!-- The projection for this window, computed here rather
-                   than read off a store: the panel already has the reading
-                   and the history, and a second derived store would be a
-                   copy of `usageProjections` free to fall behind it. -->
-              {@const projection = projectWindow(
-                window,
-                $usageHistoryStore[profile.id]?.[window.id],
-                profile.id,
-                $nowStore
-              )}
-              {@const indicator = usageProjectionIndicator(projection.band)}
-              {@const forecast = forecastSpan(projection)}
-              <div class="window">
-                <span class="label">{window.label}</span>
-                <div class="track">
-                  <div
-                    class="fill {usageSeverity(window.usedPercent)}"
-                    style="width: {barPercent(window.usedPercent)}%"
-                  ></div>
-                  <!-- Where this burn takes the window by the time it
-                       resets, striped so it cannot be read as spent: the
-                       solid fill is measured, this part is a forecast.
-                       Toned by the level it LANDS at rather than by the
-                       projection's band, because that is what it draws --
-                       a weekly window heading for 97% earns a red band
-                       even while the bar beside it is still amber. -->
-                  {#if forecast}
-                    <div
-                      class="forecast {usageSeverity(projection.endPercent ?? 0)}"
-                      style="left: {forecast.startPercent}%; width: {forecast.widthPercent}%"
-                    ></div>
-                  {/if}
-                </div>
-                <span class="pct">{displayPercent(window.usedPercent)}%</span>
-                <span class="resets">{formatResetsIn(window.resetsAt, $nowStore) ?? ""}</span>
-              </div>
-              <!-- Under the bar it is about: the bar says where the window
-                   stands, this says where it is going, which is the
-                   question somebody opening this panel actually has --
-                   start the big rail, or throttle. -->
-              <p class="projection">
-                {#if indicator}
-                  <StatusBadge {indicator} size={11} tip={null} />
+      <!-- Every agent panel is laid in the same grid cell so the modal
+           sizes to the tallest one and switching tabs never resizes it.
+           `visibility` keeps the inactive panels in the measure;
+           `display: none` would collapse them and the jump would come
+           back. -->
+      <div class="panels">
+        {#each profiles as profile (profile.id)}
+          {@const report = reportFor(profile.id)}
+          {@const on = agentsTab === profile.id}
+          <section class="panel" class:on aria-hidden={!on}>
+            {#if (report?.state === "ready" && report.plan) || profile.usageProbe}
+              <header>
+                {#if report?.state === "ready" && report.plan}
+                  <span class="plan">{report.plan}</span>
                 {/if}
-                <span>{projectionSentence(projection, $nowStore)}</span>
-                <!-- Only where the rate is what is talking. Beside "already
-                     at its ceiling" the measurement qualifies nothing, and
-                     a span with no claim attached reads as a claim. -->
-                {#if projection.status !== "measuring" && projection.status !== "exhausted" && projection.spanMs > 0}
-                  <span class="measured"
-                    >({measuredOver(projection.spanMs, projection.samples)})</span
-                  >
+                {#if profile.usageProbe}
+                  <IconButton
+                    icon={RefreshCw}
+                    label="Check again"
+                    size={11}
+                    spin={!!$usageRefreshingStore[profile.id]}
+                    disabled={!!$usageRefreshingStore[profile.id]}
+                    onclick={() => void refreshUsage(profile.id, true)}
+                  />
                 {/if}
-              </p>
-            {/each}
-            {#if formatObservedAge(report.observedAt, $nowStore)}
-              <!-- The codex route reports last-seen, not live. A number
-                   with an age on it is never mistaken for a live one. -->
-              <p class="hint">Last reading {formatObservedAge(report.observedAt, $nowStore)}.</p>
+              </header>
             {/if}
-          {:else}
-            <p class="hint">{unavailableReason(report, profile.label, $nowStore)}</p>
-          {/if}
-        </section>
-      {/if}
+
+            {#if report == null}
+              <p class="hint">Checking…</p>
+            {:else if report.state === "ready"}
+              {#each report.windows as window (window.id)}
+                <!-- The projection for this window, computed here rather
+                     than read off a store: the panel already has the reading
+                     and the history, and a second derived store would be a
+                     copy of `usageProjections` free to fall behind it. -->
+                {@const projection = projectWindow(
+                  window,
+                  $usageHistoryStore[profile.id]?.[window.id],
+                  profile.id,
+                  $nowStore
+                )}
+                {@const indicator = usageProjectionIndicator(projection.band)}
+                {@const forecast = forecastSpan(projection)}
+                <div class="window">
+                  <span class="label">{window.label}</span>
+                  <div class="track">
+                    <div
+                      class="fill {usageSeverity(window.usedPercent)}"
+                      style="width: {barPercent(window.usedPercent)}%"
+                    ></div>
+                    <!-- Where this burn takes the window by the time it
+                         resets, striped so it cannot be read as spent: the
+                         solid fill is measured, this part is a forecast.
+                         Toned by the level it LANDS at rather than by the
+                         projection's band, because that is what it draws --
+                         a weekly window heading for 97% earns a red band
+                         even while the bar beside it is still amber. -->
+                    {#if forecast}
+                      <div
+                        class="forecast {usageSeverity(projection.endPercent ?? 0)}"
+                        style="left: {forecast.startPercent}%; width: {forecast.widthPercent}%"
+                      ></div>
+                    {/if}
+                  </div>
+                  <span class="pct">{displayPercent(window.usedPercent)}%</span>
+                  <span class="resets">{formatResetsIn(window.resetsAt, $nowStore) ?? ""}</span>
+                </div>
+                <!-- Under the bar it is about: the bar says where the window
+                     stands, this says where it is going, which is the
+                     question somebody opening this panel actually has --
+                     start the big rail, or throttle. -->
+                <p class="projection">
+                  {#if indicator}
+                    <StatusBadge {indicator} size={11} tip={null} />
+                  {/if}
+                  <span>{projectionSentence(projection, $nowStore)}</span>
+                  <!-- Only where the rate is what is talking. Beside "already
+                       at its ceiling" the measurement qualifies nothing, and
+                       a span with no claim attached reads as a claim. -->
+                  {#if projection.status !== "measuring" && projection.status !== "exhausted" && projection.spanMs > 0}
+                    <span class="measured"
+                      >({measuredOver(projection.spanMs, projection.samples)})</span
+                    >
+                  {/if}
+                </p>
+              {/each}
+              {#if formatObservedAge(report.observedAt, $nowStore)}
+                <!-- The codex route reports last-seen, not live. A number
+                     with an age on it is never mistaken for a live one. -->
+                <p class="hint">Last reading {formatObservedAge(report.observedAt, $nowStore)}.</p>
+              {/if}
+            {:else}
+              <p class="hint">{unavailableReason(report, profile.label, $nowStore)}</p>
+            {/if}
+          </section>
+        {/each}
+      </div>
 
       <!-- Said once, at the foot, because it explains a difference a
            reader WILL notice: a 5-hour row can carry a projection while
@@ -212,13 +245,29 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    /* Grow with the nowrap tab strip so every in-use agent stays on one
+       row; the Modal `wide` cap is the outer limit. */
+    width: max-content;
     min-width: 380px;
+    max-width: 100%;
   }
   h2 {
     margin: 0;
     font-size: 1em;
     font-weight: normal;
     color: var(--text);
+  }
+  .panels {
+    display: grid;
+  }
+  .panel {
+    grid-area: 1 / 1;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .panel.on {
+    visibility: visible;
+    pointer-events: auto;
   }
   header {
     display: flex;

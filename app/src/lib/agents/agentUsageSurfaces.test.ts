@@ -43,8 +43,34 @@ describe("usage cache surfaces", () => {
     const modal = source("AgentUsageModal.svelte");
     expect(modal).toContain("AgentsHubTabs");
     expect(modal).toContain("profileOptionLabel");
-    expect(modal).not.toContain("{#each profiles as profile");
+    expect(modal).toContain("indicators={tabIndicators}");
     expect(modal).not.toContain("<h3>{profile.label}</h3>");
+  });
+
+  // Wide enough for the strip, and the strip itself does not wrap: every
+  // in-use agent stays on one row instead of stacking under a 480px cap.
+  it("widens so every agent tab stays on one row", () => {
+    const modal = source("AgentUsageModal.svelte");
+    expect(modal).toMatch(/<Modal[^>]*\bwide\b/);
+    expect(modal).toContain("wrap={false}");
+    expect(source("AgentsHubTabs.svelte")).toContain("flex-wrap: nowrap");
+  });
+
+  // Semaphores live on the tab strip (one per agent with a band), and
+  // every panel shares one grid cell so switching never resizes the modal.
+  it("puts a usage semaphore on each agent tab and locks panel height across tabs", () => {
+    const modal = source("AgentUsageModal.svelte");
+    expect(modal).toContain("worstProjection");
+    expect(modal).toContain("usageProjectionIndicator");
+    expect(modal).toContain("projectionTooltip");
+    expect(modal).toContain('class="panels"');
+    expect(modal).toMatch(/\.panels\s*\{[^}]*display:\s*grid/s);
+    expect(modal).toMatch(/\.panel\s*\{[^}]*grid-area:\s*1\s*\/\s*1/s);
+    expect(modal).toMatch(/\.panel\s*\{[^}]*visibility:\s*hidden/s);
+
+    const tabs = source("AgentsHubTabs.svelte");
+    expect(tabs).toContain("indicators");
+    expect(tabs).toContain("StatusBadge");
   });
 
   it("does not draw a fleet-wide refreshing badge on the hub or sidebar", () => {
