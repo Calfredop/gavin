@@ -86,7 +86,16 @@ libc = "0.2"
 # `daemon.rs` reaches exactly the process serving the socket instead of
 # shelling out to `taskkill /IM`. Same crate and version the daemon's
 # `proc.rs` already pins.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+# `single_instance.rs` adds the rest: a named mutex (Security, for its
+# attributes parameter), the process snapshot that names who launched a
+# refused second copy, and the window search that raises the first one.
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 # COM back on, and it is not optional. The Windows backend is
 # IFileOperation, and trash-5.2.6 src/windows.rs:278 is a deliberate

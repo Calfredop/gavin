@@ -21,6 +21,7 @@ mod program;
 mod pull_request;
 mod remote;
 mod session;
+mod single_instance;
 mod stream_writer;
 mod superpowers;
 mod trash;
@@ -47,6 +48,10 @@ fn daemon_compat(app_handle: AppHandle) -> Option<session::DaemonCompat> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything is built: a second Gavin.exe on Windows hands off
+    // to the running one and exits here (single_instance.rs).
+    single_instance::claim_or_exit();
+
     // The context is built first because one registration decision reads
     // it. `tauri_plugin_updater`'s Config makes `pubkey` REQUIRED, and
     // tauri hands a plugin whose `plugins.<name>` block is missing a
