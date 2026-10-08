@@ -2511,6 +2511,109 @@ fn try_grant_folder_trust(
     Ok(TrustGrant::Written(record))
 }
 
+// --- Kimi's fullscreen TUI ---------------------------------------------
+//
+// Kimi's default ("regular") TUI is inline: its prompt is the last lines
+// of the live screen, so scrolling the terminal up to read earlier output
+// takes the input out of view, and typing snaps the view back down. Its
+// "fullscreen" mode draws on the alternate screen, owns scrolling and
+// keeps the prompt pinned -- the same arrangement Claude Code's fullscreen
+// mode has. Only the file switches it: `KIMI_CODE_TUI_FULL_SCREEN` appears
+// in the binary but does not override a `tui_mode = "regular"` line
+// (checked against kimi 2.1.1, 2026-10-08). The file is the user's own
+// and global to kimi, so the rules below keep this to flipping the
+// shipped default and nothing else.
+
+/// What `set_kimi_fullscreen` came to, for the integration report.
+#[derive(Debug, PartialEq, Eq)]
+enum TuiModeGrant {
+    /// The file was written (or created) at this path.
+    Written(PathBuf),
+    /// Already fullscreen. Left exactly as it was.
+    Present,
+    /// Not changed, and why, in words the wizard can show as they are.
+    Withheld(String),
+}
+
+/// The text of `tui.toml` with `tui_mode = "fullscreen"`, or `None` when
+/// it already is, or `Err` when the value is one this does not recognise.
+///
+/// Only the shipped default is flipped: `"regular"` becomes `"fullscreen"`
+/// on its own line, keeping the trailing comment and every other line; no
+/// `tui_mode` line gets one prepended (a top-level key has to precede any
+/// table). Any other value -- a spelling a later kimi adds, or a line this
+/// cannot parse -- is the human's, and is not touched.
+fn with_kimi_fullscreen(text: &str) -> Result<Option<String>, String> {
+    let mut found = false;
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len() + 24);
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_start();
+        let rest = body.strip_prefix("tui_mode").map(str::trim_start).and_then(|r| r.strip_prefix('='));
+        let Some(rest) = rest.filter(|_| !found) else {
+            out.push_str(line);
+            continue;
+        };
+        found = true;
+        let eol = &line[line.trim_end_matches(['\r', '\n']).len()..];
+        let (value, comment) = match rest.find('#') {
+            Some(i) => (rest[..i].trim(), Some(rest[i..].trim_end_matches(['\r', '\n']))),
+            None => (rest.trim(), None),
+        };
+        match value {
+            "\"fullscreen\"" => out.push_str(line),
+            "\"regular\"" => {
+                changed = true;
+                let indent = &line[..line.len() - body.len()];
+                out.push_str(indent);
+                out.push_str("tui_mode = \"fullscreen\"");
+                if let Some(comment) = comment {
+                    out.push(' ');
+                    out.push_str(comment);
+                }
+                out.push_str(eol);
+            }
+            other => return Err(format!("tui_mode is {other}, which gavin leaves alone")),
+        }
+    }
+    if !found {
+        return Ok(Some(format!("tui_mode = \"fullscreen\"\n{text}")));
+    }
+    Ok(changed.then_some(out))
+}
+
+/// Switch kimi to its fullscreen TUI, in the user's own `tui.toml`.
+///
+/// Why Integration does this: the inline TUI scrolls its prompt out of
+/// view inside gavin's terminals, and there is no per-launch switch. The
+/// human chose to have it done for them (2026-10-08), so this is the
+/// second place gavin writes into the user's own agent state, beside the
+/// trust record. What keeps it modest: it flips the shipped default
+/// `"regular"` or fills an absent key, never overrides another value, and
+/// only on a disk with a home to write to (`agent_home`) -- an ssh
+/// workspace's file belongs to the host. A failure is a `Withheld`, not an
+/// error: the rest of the setup is already on disk.
+fn set_kimi_fullscreen(fs: &dyn WorkspaceFiles) -> TuiModeGrant {
+    let Some(home) = fs.agent_home() else {
+        return TuiModeGrant::Withheld(
+            "gavin cannot reach the machine kimi runs on from here — set tui_mode = \"fullscreen\" in kimi's tui.toml there for a pinned prompt".to_string(),
+        );
+    };
+    let path = kimi_home(fs, &home).join("tui.toml");
+    let current = match fs.read_to_string(&path) {
+        Ok(text) => text.unwrap_or_default(),
+        Err(e) => return TuiModeGrant::Withheld(format!("could not read kimi's tui.toml ({e})")),
+    };
+    match with_kimi_fullscreen(&current) {
+        Ok(None) => TuiModeGrant::Present,
+        Ok(Some(next)) => match fs.write_private(&path, next.as_bytes()) {
+            Ok(()) => TuiModeGrant::Written(path),
+            Err(e) => TuiModeGrant::Withheld(format!("could not write kimi's tui.toml ({e})")),
+        },
+        Err(why) => TuiModeGrant::Withheld(why),
+    }
+}
+
 /// What kimi's folder-trust launch grant needs from the MCP config files,
 /// read through whatever `WorkspaceFiles` the caller runs on.
 fn mcp_server_count(fs: &dyn WorkspaceFiles, file: &Path) -> Option<usize> {
@@ -3056,6 +3159,17 @@ fn run_integration(
                 TrustGrant::Present => {}
                 TrustGrant::Withheld(why) => skipped.push(("folder trust".to_string(), why)),
             }
+        }
+    }
+
+    // Kimi's pinned-prompt TUI. Independent of MCP, and keyed on the same
+    // column as the trust record: kimi is the one agent whose own user
+    // state gavin writes during Integration.
+    if profile.folder_trust == Some(FolderTrust::KimiRecord) {
+        match set_kimi_fullscreen(fs) {
+            TuiModeGrant::Written(path) => written.push(protocol::wire_path(&path)),
+            TuiModeGrant::Present => {}
+            TuiModeGrant::Withheld(why) => skipped.push(("kimi fullscreen".to_string(), why)),
         }
     }
 
@@ -5126,11 +5240,14 @@ mod tests {
         let fs = HomedFiles { home: home.path().to_path_buf() };
         let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
 
-        // The last entry is the folder-trust record, which lives in the
-        // account's kimi home and so cannot be made relative to the root:
-        // `a_kimi_run_trusts_its_folder_and_says_so` owns that one.
-        let (trust, in_workspace) = result.written.split_last().unwrap();
+        // The last two entries live in the account's kimi home and so
+        // cannot be made relative to the root: the folder-trust record
+        // (`a_kimi_run_trusts_its_folder_and_says_so` owns that one) and
+        // the fullscreen switch in `tui.toml`.
+        let (in_workspace, tail) = result.written.split_at(result.written.len() - 2);
+        let trust = &tail[0];
         assert!(trust.contains("workspace-trust"), "{trust}");
+        assert!(tail[1].ends_with("tui.toml"), "{}", tail[1]);
         let rel: Vec<String> = in_workspace
             .iter()
             .map(|p| {
@@ -5262,6 +5379,55 @@ mod tests {
         assert_eq!(kimi_home_from(&home, Some("".into())), default);
     }
 
+    #[test]
+    fn kimi_fullscreen_flips_only_the_shipped_default() {
+        // The file kimi ships: comment kept, other lines untouched.
+        let shipped = "theme = \"auto\"\ntui_mode = \"regular\" # \"regular\" | \"fullscreen\"\nrender_latex = true\n";
+        assert_eq!(
+            with_kimi_fullscreen(shipped).unwrap().unwrap(),
+            "theme = \"auto\"\ntui_mode = \"fullscreen\" # \"regular\" | \"fullscreen\"\nrender_latex = true\n"
+        );
+        // Already there: nothing to write.
+        assert_eq!(with_kimi_fullscreen("tui_mode = \"fullscreen\"\n").unwrap(), None);
+        // Absent key is prepended, ahead of any table.
+        assert_eq!(
+            with_kimi_fullscreen("[editor]\ncommand = \"\"\n").unwrap().unwrap(),
+            "tui_mode = \"fullscreen\"\n[editor]\ncommand = \"\"\n"
+        );
+        assert_eq!(with_kimi_fullscreen("").unwrap().unwrap(), "tui_mode = \"fullscreen\"\n");
+        // CRLF and a missing final newline survive.
+        assert_eq!(
+            with_kimi_fullscreen("tui_mode = \"regular\"\r\nx = 1\r\n").unwrap().unwrap(),
+            "tui_mode = \"fullscreen\"\r\nx = 1\r\n"
+        );
+        assert_eq!(with_kimi_fullscreen("tui_mode=\"regular\"").unwrap().unwrap(), "tui_mode = \"fullscreen\"");
+        // A value this does not know is the human's.
+        assert!(with_kimi_fullscreen("tui_mode = \"compact\"\n").is_err());
+        // A commented-out line is not the key.
+        assert_eq!(
+            with_kimi_fullscreen("# tui_mode = \"regular\"\n").unwrap().unwrap(),
+            "tui_mode = \"fullscreen\"\n# tui_mode = \"regular\"\n"
+        );
+    }
+
+    #[test]
+    fn kimi_fullscreen_writes_the_kimi_home_and_only_there() {
+        let home = tempfile::tempdir().unwrap();
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+        let file = home.path().join(".kimi-code").join("tui.toml");
+        // No file yet: created.
+        assert_eq!(set_kimi_fullscreen(&fs), TuiModeGrant::Written(file.clone()));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "tui_mode = \"fullscreen\"\n");
+        // Second run: already so.
+        assert_eq!(set_kimi_fullscreen(&fs), TuiModeGrant::Present);
+        // Another value is left alone and reported.
+        std::fs::write(&file, "tui_mode = \"compact\"\n").unwrap();
+        assert!(matches!(set_kimi_fullscreen(&fs), TuiModeGrant::Withheld(_)));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "tui_mode = \"compact\"\n");
+        // A disk with no reachable home (ssh) gets nothing.
+        assert!(matches!(set_kimi_fullscreen(&MemoryFiles::default()), TuiModeGrant::Withheld(_)));
+    }
+
     /// The column's whole population: kimi is the only agent whose CLI
     /// gates a repository's own MCP servers behind a record gavin knows
     /// how to write, and a row added without the store verified is the
@@ -5291,7 +5457,13 @@ mod tests {
 
         let root = physical(dir.path());
         let record = record_path(home.path(), &root);
-        assert_eq!(result.written.last().unwrap(), &protocol::wire_path(&record), "reported, last");
+        let n = result.written.len();
+        assert_eq!(&result.written[n - 2], &protocol::wire_path(&record), "reported, before the tui switch");
+        assert!(result.written[n - 1].ends_with("tui.toml"), "{:?}", result.written);
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(".kimi-code").join("tui.toml")).unwrap(),
+            "tui_mode = \"fullscreen\"\n"
+        );
         assert!(result.skipped.is_empty(), "{:?}", result.skipped);
         let body = std::fs::read_to_string(&record).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&body).unwrap();

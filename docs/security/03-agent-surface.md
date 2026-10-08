@@ -342,6 +342,15 @@ over an existing record, and never for an ssh workspace, whose home is the host'
 The run reports the path it wrote. Kimi does not inherit trust to subdirectories,
 so worktrees are not covered by it.
 
+**Update 2026-10-08 — and kimi's `tui.toml`.** The same Integration step also
+sets `tui_mode = "fullscreen"` in `<kimi home>/tui.toml` (`set_kimi_fullscreen`),
+because kimi's inline TUI scrolls its prompt out of view inside gavin's terminals
+and has no per-launch switch. It is cosmetic and grants no capability, but it is a
+write into the user's own file that is global to kimi, so it is held to the same
+rules as the record: it only flips the shipped `"regular"` or fills an absent key
+(any other value is left alone and reported), never on an ssh workspace, and the
+path is reported in the run's `written` list.
+
 ---
 
 ### AG-08 — State the scheduler trusts is writable over the socket for any rail/step/card
