@@ -353,7 +353,11 @@ Edit opens one rail for changing: its name, a card added as a stage of its
 own or into a stage, a group's mode, a stage moved up or down or taken off,
 a step taken off, the rail deleted. Every write is the desk's own action
 from `orchestrationState.ts` (`state/rails.ts`), with the desk's confirms
-for a delete, a group and a reset.
+for a delete, a group and a reset. The editor's selects take the column and
+cut a long card title short rather than widening the page, and draw their
+own box, since WebKit sizes a native select to its font whatever
+`min-height` says; `surfaces/railEditorFit.test.ts` holds that, the 44px
+controls and the 16px name field.
 
 **Start arms; the desk runs.** `startRail` and `resumeRail` write the rail's
 run row and then ask for a pass of the scheduler, which in the bundle is

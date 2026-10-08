@@ -307,20 +307,23 @@
                     <span class="stage-label">{stage.label}</span>
                     {#if stage.group}
                       {#if open}
-                        <select
-                          class="mode"
-                          aria-label="How {stage.label} runs"
-                          value={stage.mode}
-                          onchange={(e) =>
-                            void setStageMode(
-                              workspace.id,
-                              stage.id,
-                              e.currentTarget.value === "sequence" ? "sequence" : "parallel"
-                            ).then(report)}
-                        >
-                          <option value="sequence">one at a time</option>
-                          <option value="parallel">all at once</option>
-                        </select>
+                        <span class="choice mode">
+                          <select
+                            class="pick"
+                            aria-label="How {stage.label} runs"
+                            value={stage.mode}
+                            onchange={(e) =>
+                              void setStageMode(
+                                workspace.id,
+                                stage.id,
+                                e.currentTarget.value === "sequence" ? "sequence" : "parallel"
+                              ).then(report)}
+                          >
+                            <option value="sequence">one at a time</option>
+                            <option value="parallel">all at once</option>
+                          </select>
+                          <ChevronDown size={16} />
+                        </span>
                       {:else}
                         <span class="mode-said">{stage.mode === "sequence" ? "one at a time" : "all at once"}</span>
                       {/if}
@@ -392,18 +395,24 @@
 
             {#if open}
               <div class="adding">
-                <select class="pick" aria-label="Card to add" bind:value={picked}>
-                  <option value="">Add a card…</option>
-                  {#each choices as choice (choice.path)}
-                    <option value={choice.path}>{choice.title}{choice.column ? ` · ${choice.column}` : ""}</option>
-                  {/each}
-                </select>
-                <select class="pick" aria-label="Where it goes" bind:value={into}>
-                  <option value="">as a new stage</option>
-                  {#each row.stages as stage (stage.id)}
-                    <option value={stage.id}>into {stage.label}</option>
-                  {/each}
-                </select>
+                <span class="choice">
+                  <select class="pick" aria-label="Card to add" bind:value={picked}>
+                    <option value="">Add a card…</option>
+                    {#each choices as choice (choice.path)}
+                      <option value={choice.path}>{choice.title}{choice.column ? ` · ${choice.column}` : ""}</option>
+                    {/each}
+                  </select>
+                  <ChevronDown size={16} />
+                </span>
+                <span class="choice">
+                  <select class="pick" aria-label="Where it goes" bind:value={into}>
+                    <option value="">as a new stage</option>
+                    {#each row.stages as stage (stage.id)}
+                      <option value={stage.id}>into {stage.label}</option>
+                    {/each}
+                  </select>
+                  <ChevronDown size={16} />
+                </span>
                 <button type="button" class="action" disabled={!picked} onclick={() => void add(row)}>
                   <Plus size={16} />
                   <span>Add</span>
@@ -508,7 +517,8 @@
   }
   .action:focus-visible,
   .icon:focus-visible,
-  .step-open:focus-visible {
+  .step-open:focus-visible,
+  .pick:focus-visible {
     outline: 2px solid var(--border-focus);
     outline-offset: 2px;
   }
@@ -627,14 +637,18 @@
     white-space: nowrap;
   }
   .name-field {
-    min-height: 36px;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
     padding: 0 8px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--surface-base);
     color: var(--text);
     font: inherit;
-    font-size: 1rem;
+    font-size: 16px;
     font-weight: 600;
   }
   .said {
@@ -664,29 +678,67 @@
   }
   .stage-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     min-height: 28px;
   }
   .stage-label {
+    min-width: 0;
+    overflow: hidden;
     color: var(--text-subtle);
     font-size: 0.6875rem;
     font-weight: 600;
     letter-spacing: 0.04em;
+    text-overflow: ellipsis;
     text-transform: uppercase;
+    white-space: nowrap;
   }
   .mode-said {
     color: var(--text-subtle);
     font-size: 0.75rem;
   }
-  .mode,
+  /* A select is as wide as its longest option unless something stops
+     it, and a flex item will not shrink below that -- a card title put
+     the Add-a-card picker 92px off a 402px phone. So each one takes the
+     column and cuts its chosen text short inside it. It also draws its
+     own box: WebKit sizes a native select to its font and ignores
+     min-height, 29px on an iPhone under a 44px rule. */
+  .choice {
+    position: relative;
+    display: block;
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .choice :global(svg) {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    color: var(--text-muted);
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
   .pick {
-    min-height: 36px;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 0 40px 0 10px;
+    overflow: hidden;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--surface-base);
     color: var(--text);
     font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    appearance: none;
+  }
+  /* A group's mode goes under its label, the stage's tools beside it. */
+  .mode {
+    order: 1;
   }
   .stage-tools {
     display: inline-flex;
@@ -745,9 +797,5 @@
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 12px;
-  }
-  .pick {
-    flex: 1 1 100%;
-    min-height: 44px;
   }
 </style>
