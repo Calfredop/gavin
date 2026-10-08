@@ -1,12 +1,14 @@
 <script lang="ts">
   import { tabStripHubViews, type HubView } from "$lib/hub/workspaceViews";
-  import { hubNavigatorLabel, hubNavigatorViewIds } from "$lib/hub/hubNavigator";
+  import { hubNavigatorLabel, hubNavigatorViewIds, otherHubNavigatorSide } from "$lib/hub/hubNavigator";
   import {
     hubTabOrderByWorkspace,
     hubTabPrefsFor,
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
   } from "$lib/hub/hubTabPrefs";
+  import { ChevronLeft, ChevronRight } from "@lucide/svelte";
+  import { hubNavigatorSide } from "$lib/hub/hubNavigatorSide";
   import IconButton from "$lib/ui/IconButton.svelte";
 
   interface Props {
@@ -21,6 +23,10 @@
   }
 
   let { workspaceId, open, onselect, hasRoot, agentFileName }: Props = $props();
+
+  function flipSide(): void {
+    hubNavigatorSide.update(otherHubNavigatorSide);
+  }
 
   const prefs = $derived(
     hubTabPrefsFor(workspaceId, $hubTabOrderByWorkspace, $hubTabsHiddenByWorkspace, $hubTabsHiddenDefault)
@@ -40,7 +46,8 @@
 <!-- A column beside a page, not a row above it: the page's own tab bar
      already owns the top edge. Icon only -- the tooltip (IconButton's
      label) carries the name. -->
-<nav class="hub-navigator" aria-label="Hub sections">
+<nav class="hub-navigator" class:on-right={$hubNavigatorSide === "right"} aria-label="Hub sections">
+  <div class="items">
   {#each views as view (view.id)}
     <IconButton
       icon={view.icon}
@@ -51,20 +58,90 @@
       onclick={() => onselect(view.id)}
     />
   {/each}
+  </div>
+  <!-- A quiet notch halfway down; hovering it reveals the button that
+       moves the bar to the other edge. -->
+  <div class="flip-zone">
+    <span class="notch" aria-hidden="true"></span>
+    <IconButton
+      icon={$hubNavigatorSide === "left" ? ChevronRight : ChevronLeft}
+      label={$hubNavigatorSide === "left" ? "Move to the right" : "Move to the left"}
+      size={12}
+      variant="outlined"
+      class="flip-button"
+      onclick={flipSide}
+    />
+  </div>
 </nav>
 
 <style>
   .hub-navigator {
+    position: relative;
+    /* Starts under the page's tab bar. Above the page, so the mover that
+       straddles its edge is not clipped by it. */
+    z-index: 10;
+    margin-top: var(--header-height);
     flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    background: var(--surface-base);
+    border-right: 1px solid var(--border);
+  }
+  .hub-navigator.on-right {
+    border-right: none;
+    border-left: 1px solid var(--border);
+  }
+  .items {
+    flex: 1 1 auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 4px;
     padding: 6px 4px;
-    box-sizing: border-box;
     overflow-y: auto;
-    background: var(--surface-base);
-    border-right: 1px solid var(--border);
+  }
+  /* Centred ON the bar's inner border, half over the page: the mover
+     belongs to the edge, not to the column's content. */
+  .flip-zone {
+    position: absolute;
+    top: 50%;
+    right: -11px;
+    width: 22px;
+    height: 28px;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .on-right .flip-zone {
+    right: auto;
+    left: -11px;
+  }
+  .notch {
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    opacity: 0.6;
+  }
+  .flip-zone :global(.flip-button) {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--surface-overlay);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .flip-zone:hover .notch {
+    opacity: 0;
+  }
+  .flip-zone:hover :global(.flip-button) {
+    opacity: 1;
+    pointer-events: auto;
   }
   .hub-navigator :global(.hub-navigator-button) {
     width: 28px;

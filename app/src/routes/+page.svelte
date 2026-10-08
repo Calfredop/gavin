@@ -21,6 +21,7 @@
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import HubNavigator from "$lib/hub/HubNavigator.svelte";
+  import { hubNavigatorSide } from "$lib/hub/hubNavigatorSide";
   import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
   import AppDialog from "$lib/core/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
@@ -532,7 +533,7 @@
             <!-- A page is inside the workspace but off the hub: the
                  navigator is how a person gets back to one of its
                  sections without going through the sidebar. -->
-            <div class="page-with-navigator">
+            <div class="page-with-navigator" class:navigator-right={$hubNavigatorSide === "right"}>
               <HubNavigator
                 workspaceId={activeWorkspace.id}
                 open={navigatorViewId}
@@ -1071,6 +1072,9 @@
     flex-direction: row;
     min-width: 0;
     min-height: 0;
+  }
+  .page-with-navigator.navigator-right {
+    flex-direction: row-reverse;
   }
   .page-with-navigator > .view {
     min-width: 0;

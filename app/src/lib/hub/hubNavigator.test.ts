@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { hubNavigatorLabel, hubNavigatorViewIds } from "$lib/hub/hubNavigator";
+import {
+  hubNavigatorLabel,
+  hubNavigatorViewIds,
+  loadHubNavigatorSide,
+  otherHubNavigatorSide,
+  saveHubNavigatorSide,
+} from "$lib/hub/hubNavigator";
 import { tabStripHubViewIds } from "$lib/hub/hubViewMeta";
 
 describe("hubNavigatorViewIds", () => {
@@ -64,5 +70,19 @@ describe("hub navigator surface", () => {
   it("is mounted beside the terminal view only", () => {
     expect(page).toMatch(/<HubNavigator[\s\S]*?<TerminalView/);
     expect(page.match(/<HubNavigator/g)).toHaveLength(1);
+  });
+});
+
+describe("navigator side", () => {
+  const mem = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+  };
+  it("defaults to left and remembers right", () => {
+    const st = mem();
+    expect(loadHubNavigatorSide(st)).toBe("left");
+    saveHubNavigatorSide("right", st);
+    expect(loadHubNavigatorSide(st)).toBe("right");
+    expect(otherHubNavigatorSide("right")).toBe("left");
   });
 });
