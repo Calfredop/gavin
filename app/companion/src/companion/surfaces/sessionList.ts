@@ -37,7 +37,18 @@ export interface SessionGroup {
   /// The workspace agent's group with no agent in it: the place to start
   /// one, as the desk's Home tab offers.
   startAgent?: true;
+  /// The started-here group once the desk has had time to place what is
+  /// in it and has not: the phone says so rather than promise a tab.
+  unplaced?: true;
+  /// While a start in it is still inside that time: when the time runs
+  /// out, epoch ms, for the list to look again.
+  placingUntil?: number;
 }
+
+/// How long the desk has to place a session this phone started before the
+/// list says it has not: a push to the desk, a layout write and the sync
+/// back, which take well under a second when the desk is listening.
+export const DESK_PLACES_WITHIN_MS = 5000;
 
 export interface SessionListInput {
   workspace: Workspace;
@@ -55,6 +66,10 @@ export interface SessionListInput {
   /// The workspace agent this Device started there, if any: the agent
   /// until the desk records one, which it does as it places the session.
   agentStartedHere?: string;
+  /// When each of `startedHere` was started, epoch ms, and the time now:
+  /// what says the desk has had long enough. Without them nothing is said.
+  startedAt?: Record<string, number>;
+  now?: number;
 }
 
 /// An indicator's words after its axis ("Agent · working" → "working").
@@ -120,8 +135,23 @@ export function sessionGroups(input: SessionListInput): SessionGroup[] {
     if (rows.length > 0) groups.push({ key: `page:${page.id}`, title: page.name, rows });
   }
   const own = take(input.startedHere.filter((id) => !pageIds.has(id) && id !== main));
-  if (own.length > 0) groups.push({ key: "started-here", title: "Started from this phone", rows: own });
+  if (own.length > 0) {
+    groups.push({ key: "started-here", title: "Started from this phone", rows: own, ...deskPlacing(input, own) });
+  }
   return groups;
+}
+
+/// Whether the desk has had its time to place the sessions this phone
+/// started and still lists as its own, and when the next one's runs out.
+function deskPlacing(input: SessionListInput, own: SessionRow[]): Pick<SessionGroup, "unplaced" | "placingUntil"> {
+  const { startedAt, now } = input;
+  if (!startedAt || now === undefined) return {};
+  const ends = own.flatMap((r) => (r.id in startedAt ? [startedAt[r.id] + DESK_PLACES_WITHIN_MS] : []));
+  const pending = ends.filter((end) => end > now);
+  return {
+    ...(ends.some((end) => end <= now) ? { unplaced: true as const } : {}),
+    ...(pending.length > 0 ? { placingUntil: Math.min(...pending) } : {}),
+  };
 }
 
 /// Every session a workspace's list can show, whatever its group.

@@ -2,7 +2,7 @@
 order: 20480
 kind: task
 title: Companion: a terminal started from the phone does not appear as a tab at the desk
-status: To Do
+status: Done
 priority: high
 complexity: complex
 ---
@@ -24,8 +24,22 @@ Found on 2026-10-08 by `companion-iphone-smoke-tests.md` (C10), on a physical iP
 - If the desk is out of the loop, the phone should say so instead of "the desk shows it too".
 - Cover the case in a test: workspace with zero pages, workspace not held, a second push.
 
+**Root cause (2026-10-08).** Not the forwarding thread: the session started, so the desk ran the forwarded `create_session`. A New terminal in a workspace with no folder (`state/sessions.ts` `startSession`) sends `create_session` with no `cwd`, no `workspaceRoot` and no workspace id, so the daemon records a start with nothing to place it by, and the desk's `workspaceForStarted` filters to workspaces WITH a root and returns null -- a silent no-op. Deterministic for every root-less workspace (Scratchpad), and the Demo's `placeAtDesk` has the same rule. Nothing found against the rooted case.
+
+**Plan.**
+- [x] Protocol: `DeviceStartedSession.workspace_id` (optional, absent from an older daemon, so no version)
+- [x] Daemon `presence.rs`: record `workspaceId` off `create_session`'s args; a `presence:` line in daemon-dev.log naming the start and how many desks were told
+- [x] Desk `devicePresence.ts`: `workspaceForStarted` takes the named workspace when held, else root, else cwd
+- [x] Desk `devicesState.ts`: console lines on a push that lists a new start, and on each decision not to place (and why)
+- [x] Phone `state/sessions.ts`: send `workspaceId` with every start; Demo `create_session` places by it too
+- [x] Phone Sessions: "Started from this phone" says the desk has not placed them once a start is overdue
+- [x] Tests: zero-page workspace, root-less workspace, not-held workspace, second push; daemon unit + device_wire; phone list note
+- [x] Companion README
+
+**Before the human test.** The daemon half (recording the workspace a start names) only runs once the dev daemon is rebuilt and restarted, and that's the owner's call. Until then, a terminal started in Scratchpad is still not placed, and the phone now says so after 5 s. Rooted workspaces place either way. When a tab doesn't show up, look at two places. `daemon-dev.log` has a `presence:` line per start: what it named, and how many desks were told. The desk window's console (opt-right-click, Inspect) has a `gavin: device … started session …` line saying whether it placed the session and, if not, why.
+
 **Acceptance.**
-- [ ] A terminal started from the phone appears as a labelled tab on the workspace's Agents page at the desk, in a workspace with a page and in one with none
-- [ ] When the desk cannot place it, the phone's Sessions screen says so
-- [ ] A test covers the zero-page and not-held cases
+- [x] A terminal started from the phone appears as a labelled tab on the workspace's Agents page at the desk, in a workspace with a page and in one with none
+- [x] When the desk cannot place it, the phone's Sessions screen says so
+- [x] A test covers the zero-page and not-held cases
 - [ ] Human test: start a terminal from the phone, see its tab at the desk, end it from the phone and see the tab go

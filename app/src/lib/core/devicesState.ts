@@ -28,6 +28,7 @@ import {
   deviceNameBySession,
   presencesFromList,
   sessionsToPlace,
+  startedWhere,
   typingBySession,
   typingChangesAt,
   workspaceForStarted,
@@ -134,15 +135,26 @@ const handledStarts = new Set<string>();
 /// started as a tab labelled with the Device. The window that places it is
 /// the one showing its workspace -- the rail rule (`runsRailsFor`), since
 /// every window holds every workspace and exactly one should add the tab.
+///
+/// Each new start, and what this window did with it, goes to the console:
+/// a tab that never appears leaves nothing else behind to read. Typing
+/// pushes (every two seconds) do not.
 function presencePushed(deviceId: string, presence: DevicePresence, sinceSeconds: number): void {
   presences.update((all) => ({ ...all, [deviceId]: presence }));
   scheduleTypingClock();
   const workspaces = get(layoutState).workspaces;
   for (const started of sessionsToPlace(presence, handledStarts, sinceSeconds)) {
     handledStarts.add(started.sessionId);
+    const said = `gavin: device ${deviceId} started session ${started.sessionId} (${startedWhere(started)})`;
     const workspaceId = workspaceForStarted(workspaces, started);
-    if (workspaceId !== null && runsRailsFor(workspaceId)) {
-      placeDeviceStartedSession(workspaceId, started.sessionId, started.workspaceAgent === true);
+    if (workspaceId === null) {
+      console.warn(`${said}: not placed, no workspace here holds it`);
+    } else if (!runsRailsFor(workspaceId)) {
+      console.info(`${said}: left to the window showing workspace ${workspaceId}`);
+    } else if (placeDeviceStartedSession(workspaceId, started.sessionId, started.workspaceAgent === true)) {
+      console.info(`${said}: placed in workspace ${workspaceId}`);
+    } else {
+      console.info(`${said}: not placed, it is already showing`);
     }
   }
   // A Device this window has not listed yet has a name nobody can show.

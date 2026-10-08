@@ -6,7 +6,8 @@
 //! what it needs to. Most workspace commands name the desk's workspace
 //! (`workspaceId`); the input commands name the session being typed into;
 //! `create_session` answers with the id of the session the Device started,
-//! and its `workspaceAgent` says whether that was the workspace's own agent.
+//! its `workspaceId` names the workspace it was started in, and its
+//! `workspaceAgent` says whether that was the workspace's own agent.
 //! Nothing here asks the Device where it is, so a Companion that never
 //! heard of presence has one all the same.
 //!
@@ -88,6 +89,7 @@ impl Presences {
                 presence.started.retain(|s| s.session_id != session_id);
                 presence.started.push(DeviceStartedSession {
                     session_id: session_id.to_string(),
+                    workspace_id: text(args, "workspaceId").map(str::to_string),
                     workspace_root: text(args, "workspaceRoot").map(str::to_string),
                     cwd: text(args, "cwd").map(str::to_string),
                     workspace_agent: args.get("workspaceAgent").and_then(Value::as_bool) == Some(true),
@@ -201,12 +203,32 @@ mod tests {
             pushed.started,
             vec![DeviceStartedSession {
                 session_id: "sess-1".into(),
+                workspace_id: None,
                 workspace_root: Some("/work/app".into()),
                 cwd: Some("/work/app/src".into()),
                 workspace_agent: false,
                 at: 200,
             }]
         );
+    }
+
+    /// A terminal in a workspace with no folder names no root and no cwd
+    /// -- it opens in the home folder -- so the workspace's id is all the
+    /// desk has to place it by.
+    #[test]
+    fn create_session_records_the_workspace_it_named() {
+        let mut p = Presences::default();
+        let args = json!({"workspaceId": "w-scratch"});
+        let pushed = p.observe("d1", "create_session", &args, Some(&json!("sess-1")), 200).unwrap();
+        let started = &pushed.started[0];
+        assert_eq!(started.workspace_id.as_deref(), Some("w-scratch"));
+        assert_eq!((started.workspace_root.as_deref(), started.cwd.as_deref()), (None, None));
+        // The Device is in that workspace too, as for any command naming it.
+        assert_eq!(pushed.workspace_id.as_deref(), Some("w-scratch"));
+        // An empty id is no id.
+        let args = json!({"workspaceId": ""});
+        let pushed = p.observe("d1", "create_session", &args, Some(&json!("sess-2")), 201).unwrap();
+        assert_eq!(pushed.started[1].workspace_id, None);
     }
 
     #[test]

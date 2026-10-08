@@ -1007,6 +1007,22 @@ fn presence_pushes_reflect_what_two_devices_are_doing_at_once() {
     assert_eq!(phone_now.started[0].workspace_root.as_deref(), Some("/work/phone"));
     assert_eq!(phone_now.started[0].cwd.as_deref(), Some("/work/phone"));
 
+    // A terminal in a workspace with no folder names nothing but the
+    // workspace: no root, and no cwd -- it opens in the home folder.
+    let scratch = invoked(
+        &mut phone_conn,
+        "create_session",
+        serde_json::json!({"workspaceId": "w-scratch"}),
+    );
+    assert_eq!(scratch, Some(serde_json::json!("started-in-?")));
+    let phone_now =
+        workstation.push.presence_of(&paired_phone.device_id, |p| p.started.len() == 2);
+    assert_eq!(phone_now.workspace_id.as_deref(), Some("w-scratch"));
+    assert_eq!(phone_now.started[1].session_id, "started-in-?");
+    assert_eq!(phone_now.started[1].workspace_id.as_deref(), Some("w-scratch"));
+    assert_eq!(phone_now.started[1].workspace_root, None);
+    assert_eq!(phone_now.started[1].cwd, None);
+
     let tablet_now = workstation.push.presence_of(&paired_tablet.device_id, |p| p.typing.is_some());
     assert_eq!(tablet_now.workspace_id.as_deref(), Some("w-tablet"));
     assert_eq!(

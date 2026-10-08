@@ -256,7 +256,11 @@ terminals in the desk's tab order, with the desk's names and badges
 the desk does (`state/sessions.ts`: the same `resolvedAgentFor`, profile and
 failure patterns). Placing that session as a tab is the desk's
 (companion-16); until it does, the phone lists what it started under
-"Started from this phone". A session is ended from its terminal, behind the
+"Started from this phone". Every start names its workspace
+(`workspaceId`), which is the only thing a workspace with no folder can be
+placed by. A desk that has not placed one within `DESK_PLACES_WITHIN_MS`
+(`surfaces/sessionList.ts`) is out of the loop, and the group says so
+rather than promise a tab. A session is ended from its terminal, behind the
 desk's own confirm (`AppDialog` is mounted on the page).
 
 The terminal is the desk's `TerminalPane` over the desk's terminal registry,

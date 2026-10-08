@@ -32,6 +32,11 @@ export type SessionKind = "terminal" | "agent" | "workspace-agent";
 const startedHereStore = writable<Record<string, string>>({});
 export const startedHere: Readable<Record<string, string>> = { subscribe: startedHereStore.subscribe };
 
+/// When this Device started each of those, epoch ms: how long the desk
+/// has had to place it (`sessionList.ts`'s `DESK_PLACES_WITHIN_MS`).
+const startedAtStore = writable<Record<string, number>>({});
+export const startedAt: Readable<Record<string, number>> = { subscribe: startedAtStore.subscribe };
+
 /// The workspace agent this Device started in each workspace, by
 /// workspace: the agent the list shows until the desk records it as the
 /// workspace's own, so a second press cannot start a second one.
@@ -77,6 +82,10 @@ export async function loadLaunchTables(): Promise<void> {
 
 /// Opens a session in a workspace: in its folder, or where a new
 /// session opens when it has none. Resolves with the session's id.
+///
+/// Every start names the workspace, which is what the desk places it by:
+/// a workspace with no folder has no root to name, and its terminal opens
+/// in the home folder, which is under none.
 export async function startSession(workspaceId: string, kind: SessionKind): Promise<string> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   if (!ws) throw new Error("this workspace is no longer on the Workstation");
@@ -84,7 +93,7 @@ export async function startSession(workspaceId: string, kind: SessionKind): Prom
   let id: string;
   if (kind === "workspace-agent" && !root) throw new Error("the workspace's agent works in its folder, and this workspace has none");
   if (kind === "terminal") {
-    id = await backend.createSession(root, undefined, root);
+    id = await backend.createSession(root, undefined, root, undefined, false, workspaceId);
   } else {
     if (get(tablesStore) !== "ready") throw new Error("the Workstation's agent settings are still being read");
     const agent = resolvedAgentFor(workspaceId);
@@ -93,7 +102,8 @@ export async function startSession(workspaceId: string, kind: SessionKind): Prom
       agent.launchCommand,
       root,
       profileIdForLaunch(agent),
-      kind === "workspace-agent"
+      kind === "workspace-agent",
+      workspaceId
     );
     void armFailureDetection(id, agent.failurePatterns);
   }
@@ -106,6 +116,7 @@ export async function startSession(workspaceId: string, kind: SessionKind): Prom
 /// a New agent or terminal, or a card's run.
 export function recordStarted(sessionId: string, workspaceId: string): void {
   startedHereStore.update((started) => ({ ...started, [sessionId]: workspaceId }));
+  startedAtStore.update((at) => ({ ...at, [sessionId]: Date.now() }));
 }
 
 /// Ends a session. What it ran stops at the Workstation; the desk closes
@@ -122,6 +133,12 @@ export function forgetSession(sessionId: string): void {
     delete rest[sessionId];
     return rest;
   });
+  startedAtStore.update((at) => {
+    if (!(sessionId in at)) return at;
+    const rest = { ...at };
+    delete rest[sessionId];
+    return rest;
+  });
   agentStartedHereStore.update((started) => {
     const kept = Object.entries(started).filter(([, id]) => id !== sessionId);
     return kept.length === Object.keys(started).length ? started : Object.fromEntries(kept);
@@ -131,6 +148,7 @@ export function forgetSession(sessionId: string): void {
 /// What this module knows belongs to one visit to one Workstation.
 export function resetSessions(): void {
   startedHereStore.set({});
+  startedAtStore.set({});
   agentStartedHereStore.set({});
   tablesStore.set("unread");
 }

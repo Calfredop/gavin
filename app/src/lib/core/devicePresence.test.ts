@@ -3,6 +3,7 @@ import {
   TYPING_FRESH_MS,
   deviceNameBySession,
   placeDeviceSession,
+  startedWhere,
   presenceLine,
   presencesFromList,
   sessionsToPlace,
@@ -98,6 +99,29 @@ describe("which workspace a Device-started session belongs in", () => {
     expect(workspaceForStarted(workspaces, { workspaceRoot: "/nowhere" })).toBeNull();
     expect(workspaceForStarted(workspaces, {})).toBeNull();
   });
+
+  // A terminal started in a workspace with no folder names no root and
+  // opens in the home folder: the workspace it named is all there is.
+  it("is the one the Device named, folder or none, before any root or cwd", () => {
+    expect(workspaceForStarted(workspaces, { workspaceId: "loose" })).toBe("loose");
+    expect(workspaceForStarted(workspaces, { workspaceId: "loose", cwd: "/Users/me" })).toBe("loose");
+    expect(workspaceForStarted(workspaces, { workspaceId: "nested", workspaceRoot: "/work/app" })).toBe("nested");
+  });
+
+  it("goes by root and cwd when the workspace named is not held here", () => {
+    expect(workspaceForStarted(workspaces, { workspaceId: "gone", workspaceRoot: "/work/app" })).toBe("app");
+    expect(workspaceForStarted(workspaces, { workspaceId: "gone", cwd: "/Users/me" })).toBeNull();
+  });
+});
+
+describe("where a Device asked for a session, as the console says it", () => {
+  it("names what it was asked by, or that nothing was", () => {
+    expect(startedWhere({ workspaceId: "w1", workspaceRoot: "/work", cwd: "/work/src" })).toBe(
+      "workspace w1, root /work, cwd /work/src"
+    );
+    expect(startedWhere({ workspaceId: "w-scratch" })).toBe("workspace w-scratch");
+    expect(startedWhere({})).toBe("no workspace, root or cwd named");
+  });
 });
 
 describe("placing a Device-started session as a tab", () => {
@@ -115,6 +139,17 @@ describe("placing a Device-started session as a tab", () => {
     expect(agents?.id).toBe("new-page");
     expect(agents?.layout).toEqual(leaf(["phone-1"]));
     expect(after.workspaces[0].activePageId).toBe("p1");
+  });
+
+  // A workspace made and never given a page: the Agents page is its first,
+  // and with nothing showing before it, the one it shows.
+  it("creates the Agents page in a workspace with no pages", () => {
+    const before = data(ws("w1", []));
+    const after = placeDeviceSession(before, "w1", "phone-1", "new-page")!;
+    expect(after.workspaces[0].pages).toEqual([
+      { id: "new-page", name: AGENTS_PAGE_NAME, layout: leaf(["phone-1"]), focusedSessionId: null },
+    ]);
+    expect(after.workspaces[0].activePageId).toBe("new-page");
   });
 
   it("does nothing for a session already showing anywhere", () => {
@@ -166,6 +201,38 @@ describe("placing a Device-started session as a tab", () => {
     expect(after.workspaces[0].pages[0]).toEqual(before.workspaces[0].pages[0]);
     expect(after.workspaces[0].pages[1].layout).toEqual(leaf(["desk-2", "phone-1"], 1));
     expect(deviceNameBySession([dev("d1", "Pixel", p)], { d1: p })).toEqual({ "phone-1": "Pixel" });
+  });
+
+  // The phone's New terminal in a Scratchpad: no folder, no pages. Its
+  // start names only the workspace, and a second push of the same presence
+  // -- the Device typing into it, say -- places nothing again.
+  it("places a terminal started in a workspace with no folder and no pages, once", () => {
+    let state = data(ws("w-app", [page("p1", "Main", ["a"])], "/work/app"), ws("w-scratch", []));
+    const handled = new Set<string>();
+    const push = (p: DevicePresence): void => {
+      for (const s of sessionsToPlace(p, handled, NOW_S - 5)) {
+        handled.add(s.sessionId);
+        const workspaceId = workspaceForStarted(state.workspaces, s);
+        const placed = workspaceId === null ? null : placeDeviceSession(state, workspaceId, s.sessionId, "agents");
+        state = placed ?? state;
+      }
+    };
+    const p: DevicePresence = { workspaceId: "w-scratch", started: [started("phone-1", { workspaceId: "w-scratch" })] };
+    push(p);
+    const scratch = () => state.workspaces.find((w) => w.id === "w-scratch")!;
+    expect(scratch().pages.map((pg) => [pg.name, pg.layout])).toEqual([[AGENTS_PAGE_NAME, leaf(["phone-1"])]]);
+    const once = state;
+    push({ ...p, typing: { sessionId: "phone-1", at: NOW_S } });
+    expect(state).toBe(once);
+    // Even a window that had not handled it leaves it: it is already showing.
+    expect(placeDeviceSession(state, "w-scratch", "phone-1", "again")).toBeNull();
+  });
+
+  it("leaves a terminal from a workspace the desk no longer holds unplaced", () => {
+    const state = data(ws("w-app", [page("p1", "Main", ["a"])], "/work/app"));
+    const s = started("phone-1", { workspaceId: "w-gone" });
+    expect(workspaceForStarted(state.workspaces, s)).toBeNull();
+    expect(placeDeviceSession(state, "w-gone", "phone-1", "agents")).toBeNull();
   });
 });
 

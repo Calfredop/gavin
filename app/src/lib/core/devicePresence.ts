@@ -57,13 +57,18 @@ export function sessionsToPlace(
 }
 
 /// Which of the desk's workspaces a Device-started session belongs in: the
-/// one whose root the Device named, else the one whose root its cwd is under
-/// (the deepest, when roots nest). Null for a session under no workspace the
-/// desk holds.
+/// one the Device named, else the one whose root it named, else the one
+/// whose root its cwd is under (the deepest, when roots nest). Null for a
+/// session under no workspace the desk holds.
+///
+/// The name comes first because it is the only thing a workspace with no
+/// folder can be found by: a terminal started there has no root to name
+/// and opens in the home folder, which is under no workspace.
 export function workspaceForStarted(
   workspaces: Pick<Workspace, "id" | "rootPath">[],
-  started: Pick<DeviceStartedSession, "workspaceRoot" | "cwd">
+  started: Pick<DeviceStartedSession, "workspaceId" | "workspaceRoot" | "cwd">
 ): string | null {
+  if (started.workspaceId && workspaces.some((w) => w.id === started.workspaceId)) return started.workspaceId;
   const rooted = workspaces.filter((w) => w.rootPath?.trim());
   const root = started.workspaceRoot;
   if (root) {
@@ -80,6 +85,18 @@ export function workspaceForStarted(
     }
   }
   return best?.id ?? null;
+}
+
+/// Where a Device asked for a session, as the desk's console says it:
+/// "workspace w1, root /work/app, cwd /work/app/src", or that it named
+/// nothing to place it by.
+export function startedWhere(started: Pick<DeviceStartedSession, "workspaceId" | "workspaceRoot" | "cwd">): string {
+  const parts = [
+    started.workspaceId ? `workspace ${started.workspaceId}` : null,
+    started.workspaceRoot ? `root ${started.workspaceRoot}` : null,
+    started.cwd ? `cwd ${started.cwd}` : null,
+  ].filter((p) => p !== null);
+  return parts.length > 0 ? parts.join(", ") : "no workspace, root or cwd named";
 }
 
 /// A Device-started session placed as a tab: on its workspace's Agents page,

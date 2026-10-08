@@ -14,6 +14,7 @@ import {
   endSession,
   launchTables,
   loadLaunchTables,
+  startedAt,
   startedHere,
   startSession,
 } from "$companion/state/sessions";
@@ -143,17 +144,24 @@ describe("opening a session", () => {
     const id = await startSession(DEMO.atlas, "terminal");
     await settle();
 
-    expect(argsOf(demo, "create_session")).toEqual([{ cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot }]);
+    expect(argsOf(demo, "create_session")).toEqual([
+      { cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot, workspaceId: DEMO.atlas },
+    ]);
     expect(get(startedHere)).toEqual({ [id]: DEMO.atlas });
     expect(get(layoutState).sessionStatusById[id]).toBe("idle");
     openTerminal(id);
     expect(get(view)).toMatchObject({ workspaceId: DEMO.atlas, sessionId: id });
   });
 
-  it("opens where a new session opens for a workspace with no folder", async () => {
+  // No root to name and a home-folder cwd under no workspace: the
+  // workspace's id is what the desk places it by.
+  it("opens where a new session opens for a workspace with no folder, naming the workspace", async () => {
     const { demo } = await visit();
-    await startSession(DEMO.scratch, "terminal");
-    expect(argsOf(demo, "create_session")).toEqual([{}]);
+    const id = await startSession(DEMO.scratch, "terminal");
+    await settle();
+    expect(argsOf(demo, "create_session")).toEqual([{ workspaceId: DEMO.scratch }]);
+    const scratch = get(layoutState).workspaces.find((w) => w.id === DEMO.scratch)!;
+    expect(allSessionIds(scratch.pages.find((p) => p.name === "Agents")!.layout)).toEqual([id]);
   });
 
   it("opens the workspace's agent only once the Workstation's agent settings are read", async () => {
@@ -166,7 +174,12 @@ describe("opening a session", () => {
     await startSession(DEMO.atlas, "agent");
 
     const [launched] = argsOf(demo, "create_session");
-    expect(launched).toMatchObject({ cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot, profileId: "claude-code" });
+    expect(launched).toMatchObject({
+      cwd: DEMO.atlasRoot,
+      workspaceRoot: DEMO.atlasRoot,
+      workspaceId: DEMO.atlas,
+      profileId: "claude-code",
+    });
     expect(String(launched.command)).toMatch(/^claude\b/);
   });
 
@@ -252,12 +265,15 @@ describe("ending a session", () => {
     expect(authPageTabs()).toEqual(["s-atlas-auth"]);
   });
 
-  it("forgets a session this phone started", async () => {
+  it("forgets a session this phone started, and when", async () => {
     await visit();
+    const before = Date.now();
     const id = await startSession(DEMO.atlas, "terminal");
+    expect(get(startedAt)[id]).toBeGreaterThanOrEqual(before);
     await endSession(id);
     await settle();
     expect(get(startedHere)).toEqual({});
+    expect(get(startedAt)).toEqual({});
   });
 
   it("leaves a terminal showing another session where it is", async () => {

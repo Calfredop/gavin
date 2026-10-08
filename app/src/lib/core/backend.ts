@@ -60,18 +60,21 @@ import { keyedQueue } from "$lib/core/keyedQueue";
 /// compression.ts); every other launch passes the bare id, and sends
 /// exactly the arguments it always did. What the daemon decided comes
 /// back as the `session-compression` event, not here.
-/// `workspaceAgent` is a Companion's ask that the desk make the session
-/// the workspace's own agent (the Home tab's). The host's command never
-/// reads it; the daemon reads it off the forwarded arguments into the
-/// Device's presence, and the desk decides (`devicePresence.ts`).
+/// `workspaceAgent` and `workspaceId` are a Companion's asks of the desk:
+/// make the session the workspace's own agent (the Home tab's), and place
+/// it in that workspace -- the only way to name one with no folder. The
+/// host's command reads neither; the daemon reads them off the forwarded
+/// arguments into the Device's presence, and the desk decides
+/// (`devicePresence.ts`).
 export function createSession(
   cwd?: string,
   command?: string,
   workspaceRoot?: string,
   profileId?: LaunchProfile,
-  workspaceAgent?: boolean
+  workspaceAgent?: boolean,
+  workspaceId?: string
 ): Promise<string> {
-  const ask = workspaceAgent ? { workspaceAgent: true } : {};
+  const ask = { ...(workspaceAgent ? { workspaceAgent: true } : {}), ...(workspaceId ? { workspaceId } : {}) };
   if (typeof profileId === "object") {
     const { profileId: id, withoutHeadroom } = profileId;
     return invoke("create_session", { cwd, command, workspaceRoot, profileId: id, withoutHeadroom, ...ask });

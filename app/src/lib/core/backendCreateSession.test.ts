@@ -49,6 +49,19 @@ describe("createSession", () => {
   });
 });
 
+// A Companion's start names the workspace it is in, which the host never
+// reads and the daemon records for the desk to place it by.
+describe("createSession from a Companion", () => {
+  it("names the workspace beside the launch, and only when asked", async () => {
+    await createSession(undefined, undefined, undefined, undefined, false, "w-scratch");
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { workspaceId: "w-scratch" }]);
+    await createSession("/ws", "claude", "/ws", "claude-code", true, "w1");
+    expect(vi.mocked(invoke).mock.calls[1][1]).toMatchObject({ workspaceAgent: true, workspaceId: "w1" });
+    await createSession("/ws", "claude", "/ws", "claude-code");
+    expect(vi.mocked(invoke).mock.calls[2][1]).not.toHaveProperty("workspaceId");
+  });
+});
+
 describe("headroomReach", () => {
   it("asks the host about one session", async () => {
     vi.mocked(invoke).mockResolvedValueOnce("unreached");

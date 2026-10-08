@@ -3417,12 +3417,20 @@ pub const DEVICE_TYPING_REPUSH_SECS: i64 = 2;
 
 /// A session a Device started (v63): the id the desktop's `create_session`
 /// answered, and where it was asked to start it. The desk places it as a
-/// tab in the workspace `workspace_root` names, or failing that the one
-/// `cwd` is under.
+/// tab in the workspace `workspace_id` names, else the one `workspace_root`
+/// names, or failing that the one `cwd` is under.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceStartedSession {
     pub session_id: String,
+    /// The desk's id of the workspace the Device started it in, when it
+    /// said (`workspaceId` on `create_session`). The only thing a session
+    /// started in a workspace with no folder can be placed by: it has no
+    /// root to name and opens in the home folder. Absent from a daemon that
+    /// predates it, and the desk then goes by root and cwd -- so neither
+    /// end needs a version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5864,6 +5872,7 @@ mod tests {
                 typing: Some(DeviceTyping { session_id: "s1".into(), at: 1_770_000_950 }),
                 started: vec![DeviceStartedSession {
                     session_id: "s2".into(),
+                    workspace_id: None,
                     workspace_root: Some("/work/app".into()),
                     cwd: None,
                     workspace_agent: false,
@@ -5881,6 +5890,13 @@ mod tests {
         assert!(v["presence"]["started"][0].get("cwd").is_none());
         // Only a workspace agent says so; a plain start says nothing.
         assert!(v["presence"]["started"][0].get("workspaceAgent").is_none());
+        // Nor does a start that named no workspace, which is every start
+        // an older daemon records.
+        assert!(v["presence"]["started"][0].get("workspaceId").is_none());
+        let named: DeviceStartedSession =
+            serde_json::from_str(r#"{"sessionId":"s4","workspaceId":"w9","at":1}"#).unwrap();
+        assert_eq!(named.workspace_id.as_deref(), Some("w9"));
+        assert_eq!(serde_json::to_value(&named).unwrap()["workspaceId"], "w9");
         let agent: DeviceStartedSession =
             serde_json::from_str(r#"{"sessionId":"s3","workspaceAgent":true,"at":1}"#).unwrap();
         assert!(agent.workspace_agent);

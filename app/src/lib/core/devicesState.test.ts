@@ -21,14 +21,16 @@ vi.mock("$lib/core/layoutState", async () => {
       workspaces: [
         { id: "w-here", name: "here", rootPath: "/work/here", pages: [], activePageId: null },
         { id: "w-there", name: "there", rootPath: "/work/there", pages: [], activePageId: null },
+        // A Scratchpad: no folder, no pages.
+        { id: "w-scratch", name: "Scratchpad", pages: [], activePageId: null },
       ],
     }),
     placeDeviceStartedSession: layoutMock.place,
   };
 });
 
-// This window shows `w-here`; another window shows `w-there`.
-vi.mock("$lib/shell/appDuty", () => ({ runsRailsFor: (id: string) => id === "w-here" }));
+// This window shows `w-here` and `w-scratch`; another window shows `w-there`.
+vi.mock("$lib/shell/appDuty", () => ({ runsRailsFor: (id: string) => id !== "w-there" }));
 
 const eventMock = vi.hoisted(() => {
   const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
@@ -62,15 +64,24 @@ const listing = (...devices: unknown[]) => ({ devices, remoteAccessEnabled: true
 
 let stop: () => void;
 
+let consoleSpies: Array<{ mockRestore(): void }> = [];
+
 beforeEach(async () => {
-  layoutMock.place.mockClear();
+  layoutMock.place.mockReset().mockReturnValue(true);
+  consoleSpies = [
+    vi.spyOn(console, "info").mockImplementation(() => {}),
+    vi.spyOn(console, "warn").mockImplementation(() => {}),
+  ];
   backendMock.listDevices.mockResolvedValue(listing(phone()));
   stop = watchDevices();
   await vi.waitFor(() => expect(backendMock.listDevices).toHaveBeenCalled());
   await Promise.resolve();
 });
 
-afterEach(() => stop());
+afterEach(() => {
+  stop();
+  for (const spy of consoleSpies) spy.mockRestore();
+});
 
 describe("a session a Device started", () => {
   it("is placed as a tab once, in the workspace it was started in", async () => {
@@ -97,6 +108,49 @@ describe("a session a Device started", () => {
       { started: [{ sessionId: "s-there", cwd: "/work/there/src", at: nowS() }] },
     ]);
     expect(layoutMock.place).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenCalledWith(
+      "gavin: device d1 started session s-there (cwd /work/there/src): left to the window showing workspace w-there"
+    );
+  });
+
+  // Scratchpad's New terminal names no root and opens in the home folder.
+  it("is placed in a workspace with no folder by the workspace it names", () => {
+    eventMock.fire("device-presence-changed", [
+      "d1",
+      { workspaceId: "w-scratch", started: [{ sessionId: "s-scratch", workspaceId: "w-scratch", at: nowS() }] },
+    ]);
+    expect(layoutMock.place).toHaveBeenCalledWith("w-scratch", "s-scratch", false);
+    expect(console.info).toHaveBeenCalledWith(
+      "gavin: device d1 started session s-scratch (workspace w-scratch): placed in workspace w-scratch"
+    );
+  });
+
+  // What an older daemon sends for that same terminal, or a phone naming a
+  // workspace since removed at the desk: nothing to place it by, said.
+  it("is not placed, and the console says why, when no workspace here holds it", () => {
+    eventMock.fire("device-presence-changed", ["d1", { started: [{ sessionId: "s-lost", at: nowS() }] }]);
+    eventMock.fire("device-presence-changed", [
+      "d1",
+      { started: [{ sessionId: "s-gone", workspaceId: "w-gone", cwd: "/Users/me", at: nowS() }] },
+    ]);
+    expect(layoutMock.place).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "gavin: device d1 started session s-lost (no workspace, root or cwd named): not placed, no workspace here holds it"
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      "gavin: device d1 started session s-gone (workspace w-gone, cwd /Users/me): not placed, no workspace here holds it"
+    );
+  });
+
+  it("is said to be showing already when the layout would not take it", () => {
+    layoutMock.place.mockReturnValue(false);
+    eventMock.fire("device-presence-changed", [
+      "d1",
+      { started: [{ sessionId: "s-shown", workspaceRoot: "/work/here", at: nowS() }] },
+    ]);
+    expect(console.info).toHaveBeenCalledWith(
+      "gavin: device d1 started session s-shown (root /work/here): not placed, it is already showing"
+    );
   });
 
   it("is not placed again when it was started before this window began listening", () => {

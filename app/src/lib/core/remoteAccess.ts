@@ -69,6 +69,9 @@ export interface DeviceTyping {
 
 export interface DeviceStartedSession {
   sessionId: string;
+  /// The desk's id of the workspace the Device started it in. Absent from
+  /// a daemon that predates it, which leaves root and cwd to place it by.
+  workspaceId?: string;
   workspaceRoot?: string;
   cwd?: string;
   /// Started as the workspace's own agent, the Home tab's. Absent for

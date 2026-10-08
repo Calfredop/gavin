@@ -3820,13 +3820,16 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
 // handleAgentSessionSpawned, a session this window cannot place is left
 // alone rather than killed: it belongs to the Device, where a human is
 // watching it.
-export function placeDeviceStartedSession(workspaceId: string, sessionId: string, asWorkspaceAgent = false): void {
+//
+// Answers whether it placed it, so the caller can say why not.
+export function placeDeviceStartedSession(workspaceId: string, sessionId: string, asWorkspaceAgent = false): boolean {
   const state = get(layoutState);
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
   const data = placeDeviceSession(base, workspaceId, sessionId, crypto.randomUUID(), asWorkspaceAgent);
-  if (!data) return;
+  if (!data) return false;
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return true;
 }
 
 // Shared by the "cwd-changed" event listener in bootstrap() and this

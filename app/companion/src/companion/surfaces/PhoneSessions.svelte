@@ -14,6 +14,7 @@
     agentStartedHere,
     launchTables,
     loadLaunchTables,
+    startedAt,
     startedHere,
     startSession,
     type SessionKind,
@@ -25,6 +26,10 @@
     workspace: Workspace;
   }
   let { workspace }: Props = $props();
+
+  /// The clock the started-here group is read against: moved when a start
+  /// runs out of the time the desk has to place it (`placingUntil`).
+  let now = $state(Date.now());
 
   const groups = $derived(
     sessionGroups({
@@ -43,8 +48,17 @@
         .filter(([, workspaceId]) => workspaceId === workspace.id)
         .map(([id]) => id),
       agentStartedHere: $agentStartedHere[workspace.id],
+      startedAt: $startedAt,
+      now,
     })
   );
+
+  $effect(() => {
+    const until = groups.find((g) => g.placingUntil !== undefined)?.placingUntil;
+    if (until === undefined) return;
+    const timer = setTimeout(() => (now = Date.now()), Math.max(until - Date.now(), 0) + 50);
+    return () => clearTimeout(timer);
+  });
 
   let starting = $state<SessionKind | null>(null);
 
@@ -94,6 +108,9 @@
     {#each groups as group (group.key)}
       <section class="group" aria-label={group.title}>
         <h2 class="group-title">{group.title}</h2>
+        {#if group.unplaced}
+          <p class="unplaced">The desk has not placed these as tabs, so only this phone lists them.</p>
+        {/if}
         {#if group.startAgent}
           <button
             type="button"
@@ -175,6 +192,13 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+  .unplaced {
+    margin: 0 0 4px;
+    padding: 0 max(14px, env(safe-area-inset-left));
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    line-height: 1.4;
   }
   .rows {
     margin: 0;

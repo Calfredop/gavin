@@ -2,7 +2,13 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "$lib/core/workspace";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
-import { detailOf, sessionGroups, workspaceSessionIds, type SessionListInput } from "$companion/surfaces/sessionList";
+import {
+  DESK_PLACES_WITHIN_MS,
+  detailOf,
+  sessionGroups,
+  workspaceSessionIds,
+  type SessionListInput,
+} from "$companion/surfaces/sessionList";
 import { agentIndicator } from "$lib/ui/indicators";
 import { allSessionIds } from "$lib/panes/layout";
 
@@ -81,6 +87,23 @@ describe("a workspace's sessions", () => {
     const groups = sessionGroups(input(atlas(), { startedHere: ["s-demo-1", "s-atlas-auth"] }));
     expect(groups.at(-1)).toMatchObject({ title: "Started from this phone", rows: [{ id: "s-demo-1" }] });
     expect(groups.flatMap((g) => g.rows.map((r) => r.id)).filter((id) => id === "s-atlas-auth")).toHaveLength(1);
+  });
+
+  // The desk places a start within moments when it is listening; past
+  // that, the phone says it has not instead of promising a tab.
+  it("say the desk has not placed what this phone started once it has had its time", () => {
+    const at = 1_000_000;
+    const started = (now: number) =>
+      sessionGroups(input(atlas(), { startedHere: ["s-demo-1"], startedAt: { "s-demo-1": at }, now })).at(-1)!;
+    expect(started(at + 1000)).toMatchObject({ key: "started-here", placingUntil: at + DESK_PLACES_WITHIN_MS });
+    expect(started(at + 1000).unplaced).toBeUndefined();
+    expect(started(at + DESK_PLACES_WITHIN_MS)).toMatchObject({ unplaced: true });
+    expect(started(at + DESK_PLACES_WITHIN_MS).placingUntil).toBeUndefined();
+    // Placed, it is not this phone's to list at all.
+    const placed = sessionGroups(
+      input(atlas(), { startedHere: ["s-atlas-auth"], startedAt: { "s-atlas-auth": at }, now: at + 60_000 })
+    );
+    expect(placed.some((g) => g.key === "started-here")).toBe(false);
   });
 
   it("offer to start the workspace agent where there is a folder and no agent", () => {

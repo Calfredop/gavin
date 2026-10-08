@@ -306,8 +306,9 @@ function commandLine(command: string): string {
 /// Every session the demo starts is a Device's -- a phone is the demo's
 /// only client -- so the desk places it as a Device-started session is
 /// placed (companion-16): as a tab on its workspace's Agents page, the
-/// page a card's run lands on, and says so. A session under no
-/// workspace's folder is left running where nobody at the desk placed it.
+/// page a card's run lands on, and says so -- in the workspace it names,
+/// else the one whose folder it is in. A session under neither is left
+/// running where nobody at the desk placed it.
 ///
 /// One started as the workspace's own agent becomes it, by the desk's rule
 /// (`placeDeviceSession`): when the workspace has a folder and no agent.
@@ -321,6 +322,7 @@ export function launch(
     cwd: string | null;
     command: string | null;
     workspaceRoot?: string | null;
+    workspaceId?: string | null;
     workspaceAgent?: boolean;
     place?: (sessionId: string) => void;
   }
@@ -344,7 +346,7 @@ export function launch(
   demo.emit("cwd-changed", [id, cwd]);
   demo.emit("session-status-changed", [id, "idle"]);
   if (options.place) options.place(id);
-  else placeAtDesk(demo, id, options.workspaceRoot || options.cwd, options.workspaceAgent === true);
+  else placeAtDesk(demo, id, options.workspaceId, options.workspaceRoot || options.cwd, options.workspaceAgent === true);
   return id;
 }
 
@@ -364,10 +366,12 @@ function workspaceHolding(demo: DemoContext, where: string | null | undefined): 
 function placeAtDesk(
   demo: DemoContext,
   sessionId: string,
+  named: string | null | undefined,
   where: string | null | undefined,
   asWorkspaceAgent: boolean
 ): void {
-  const workspaceId = workspaceHolding(demo, where);
+  const held = demo.state.workspaces.workspaces.some((w) => w.id === named);
+  const workspaceId = held ? named : workspaceHolding(demo, where);
   const ws = demo.state.workspaces.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
   if (asWorkspaceAgent) {

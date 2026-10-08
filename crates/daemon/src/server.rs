@@ -1977,6 +1977,32 @@ fn forwarding_log(line: &str) {
     eprintln!("gavin-daemon: {} forwarding: {line}", utc_stamp(std::time::SystemTime::now()));
 }
 
+/// One line about a Device's presence, stamped like the forwarding ones.
+fn presence_log(line: &str) {
+    eprintln!("gavin-daemon: {} presence: {line}", utc_stamp(std::time::SystemTime::now()));
+}
+
+/// What `presence_log` says of a session a Device started: where it asked
+/// for it, which is what the desk places it by, and how many desks heard.
+fn started_line(device_id: &str, started: &protocol::DeviceStartedSession, told: usize) -> String {
+    let field = |name: &str, value: &Option<String>| value.as_deref().map(|v| format!(" {name} {v}"));
+    let place: String = [
+        field("workspace", &started.workspace_id),
+        field("root", &started.workspace_root),
+        field("cwd", &started.cwd),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let place = if place.is_empty() { " naming no workspace, root or cwd".to_string() } else { place };
+    let heard = match told {
+        0 => "no desk is listening, so none will place it".to_string(),
+        1 => "1 desk told".to_string(),
+        n => format!("{n} desks told"),
+    };
+    format!("device {device_id} started session {}{place}; {heard}", started.session_id)
+}
+
 /// `t` as `2026-10-08T14:05:03Z`.
 fn utc_stamp(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
@@ -2636,7 +2662,8 @@ impl SessionManager {
     /// `since`. For a push that is a new `Response` variant: an older app
     /// cannot parse it, and what it cannot parse it reads as the reply to
     /// its next request.
-    fn push_to_apps_speaking(&self, since: u32, resp: &Response) {
+    /// Returns how many connections it was written to.
+    fn push_to_apps_speaking(&self, since: u32, resp: &Response) -> usize {
         let writers: Vec<Arc<Mutex<Stream>>> = self
             .app_connections
             .lock()
@@ -2645,9 +2672,10 @@ impl SessionManager {
             .filter(|(speaks, _)| *speaks >= since)
             .map(|(_, w)| Arc::clone(w))
             .collect();
-        for writer in writers {
-            let _ = write_message(&mut *writer.lock().unwrap(), resp);
-        }
+        writers
+            .iter()
+            .filter(|writer| write_message(&mut *writer.lock().unwrap(), resp).is_ok())
+            .count()
     }
 
     /// Records that `device_id` was refused a connection for `reason`, and
@@ -2706,10 +2734,20 @@ impl SessionManager {
         let changed =
             self.device_presence.lock().unwrap().observe(device_id, command, args, value, now);
         if let Some(presence) = changed {
-            self.push_to_apps_speaking(
+            // A start is worth a line: the desk places it as a tab, and
+            // when no tab shows up the first question is whether any desk
+            // was told.
+            let answered = value.and_then(serde_json::Value::as_str);
+            let started = (command == "create_session")
+                .then(|| presence.started.last().filter(|s| Some(s.session_id.as_str()) == answered).cloned())
+                .flatten();
+            let told = self.push_to_apps_speaking(
                 protocol::DEVICE_PRESENCE_MIN_VERSION,
                 &Response::DevicePresenceChanged { device_id: device_id.to_string(), presence },
             );
+            if let Some(started) = started {
+                presence_log(&started_line(device_id, &started, told));
+            }
         }
     }
 
@@ -19342,5 +19380,32 @@ mod forwarding_tests {
         assert_eq!(utc_stamp(at(1_791_468_303)), "2026-10-08T14:05:03Z");
         assert_eq!(utc_stamp(at(1_709_251_199)), "2024-02-29T23:59:59Z");
         assert_eq!(utc_stamp(at(951_868_800)), "2000-03-01T00:00:00Z");
+    }
+
+    /// The line a Device's start leaves in the log says what the desk
+    /// will place it by, and whether any desk heard -- the two halves of
+    /// "the phone started it and no tab showed up".
+    #[test]
+    fn a_started_session_is_logged_with_what_places_it_and_who_heard() {
+        let started = |workspace_id: Option<&str>, root: Option<&str>| protocol::DeviceStartedSession {
+            session_id: "s1".into(),
+            workspace_id: workspace_id.map(Into::into),
+            workspace_root: root.map(Into::into),
+            cwd: root.map(Into::into),
+            workspace_agent: false,
+            at: 1,
+        };
+        assert_eq!(
+            started_line("d1", &started(Some("w1"), Some("/work/app")), 1),
+            "device d1 started session s1 workspace w1 root /work/app cwd /work/app; 1 desk told"
+        );
+        assert_eq!(
+            started_line("d1", &started(None, None), 0),
+            "device d1 started session s1 naming no workspace, root or cwd; no desk is listening, so none will place it"
+        );
+        assert_eq!(
+            started_line("d1", &started(Some("w-scratch"), None), 2),
+            "device d1 started session s1 workspace w-scratch; 2 desks told"
+        );
     }
 }
