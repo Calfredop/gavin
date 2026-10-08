@@ -103,6 +103,15 @@ pub struct ResolvedMcp {
 }
 
 impl ResolvedMcp {
+    /// The config file, relative to the root.
+    pub(crate) fn config_file(&self) -> &str {
+        &self.config_file
+    }
+
+    pub(crate) fn format(&self) -> McpFormat {
+        self.format
+    }
+
     /// Where a step skill this profile does not already install would go:
     /// the parent every installed skill shares, and the filename they all
     /// use. Taken from the first entry because that is the shape an
@@ -326,7 +335,7 @@ fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -
 /// `custom`, which has none -- the one its config describes. None when
 /// `custom` has not been pointed at a file yet, which is what leaves MCP
 /// config named as skipped.
-fn resolved_mcp(fs: &dyn WorkspaceFiles, root: &Path, profile: &AgentProfile) -> Option<ResolvedMcp> {
+pub(crate) fn resolved_mcp(fs: &dyn WorkspaceFiles, root: &Path, profile: &AgentProfile) -> Option<ResolvedMcp> {
     if let Some(layout) = profile.mcp.as_ref() {
         return Some(layout.into());
     }
@@ -1614,7 +1623,7 @@ static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
 /// defaults -- a write must never put claude's skill file or MCP layout
 /// down for someone's own binary: a named custom (or a config still
 /// naming the retired `custom` id) gets the custom-like row above.
-fn profile_for_writes(id: &str) -> &'static AgentProfile {
+pub(crate) fn profile_for_writes(id: &str) -> &'static AgentProfile {
     if crate::config::is_stock_profile_id(id) {
         profile_by_id(id)
     } else {
@@ -1641,7 +1650,7 @@ pub fn read_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path) -> String {
 /// same order the frontend's `resolveAgentConfig` answers with, so what
 /// an integration or a prompt composer writes FOR is the agent the
 /// launch will actually run.
-fn resolved_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path, default_agent: Option<&str>) -> String {
+pub(crate) fn resolved_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path, default_agent: Option<&str>) -> String {
     root_agent_key_in(fs, root, "profile")
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
@@ -1788,7 +1797,7 @@ pub fn with_prd_path(document: &str, prd: &str) -> String {
 const PRD_SKILL_MD: &str = include_str!("gavin_prd_skill.md");
 const AGENT_FILE_SKILL_MD: &str = include_str!("gavin_agent_file_skill.md");
 
-fn resolve_mcp_binary_path() -> anyhow::Result<PathBuf> {
+pub(crate) fn resolve_mcp_binary_path() -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe()?;
     let dir = current_exe
         .parent()
@@ -1859,7 +1868,7 @@ fn launcher_file(root: &Path, windows: bool) -> PathBuf {
 /// ships the launcher gets it, resolved on the host by the host's copy,
 /// which is the same guarantee the local case gets -- and `mcp_path`'s
 /// absolute binary remains the answer for every root that ships none.
-fn mcp_command(fs: &dyn WorkspaceFiles, root: &Path, binary: &Path) -> String {
+pub(crate) fn mcp_command(fs: &dyn WorkspaceFiles, root: &Path, binary: &Path) -> String {
     let is_gavin_checkout = fs.is_file(&root.join("crates/gavin-mcp/Cargo.toml"));
     if is_gavin_checkout && fs.is_file(&launcher_file(root, fs.is_windows())) {
         MCP_LAUNCHER.to_string()
@@ -1882,12 +1891,16 @@ impl McpFormat {
         }
     }
 
-    /// Gavin's own entry, in this dialect's shape. The command is already
-    /// resolved by `mcp_command` -- an absolute binary, or the launcher.
-    fn json_entry(self, command: &str) -> serde_json::Value {
+    /// A gavin-mcp entry, in this dialect's shape: gavin's own with no
+    /// `args`, Playwright's with `["playwright"]` (`agent_playwright.rs`).
+    /// The command is already resolved by `mcp_command` -- an absolute
+    /// binary, or the launcher.
+    fn json_entry(self, command: &str, args: &[&str]) -> serde_json::Value {
         match self {
             McpFormat::JsonLocal => {
-                serde_json::json!({ "type": "local", "command": [command], "enabled": true })
+                let mut line = vec![command];
+                line.extend_from_slice(args);
+                serde_json::json!({ "type": "local", "command": line, "enabled": true })
             }
             McpFormat::JsonServersStdio => {
                 // Cursor's `${env:NAME}` interpolation reads from the
@@ -1899,7 +1912,7 @@ impl McpFormat {
                 serde_json::json!({
                     "type": "stdio",
                     "command": command,
-                    "args": [],
+                    "args": args,
                     "env": {
                         "GAVIN_MCP": "${env:GAVIN_MCP}",
                         "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
@@ -1909,7 +1922,7 @@ impl McpFormat {
                 })
             }
             McpFormat::JsonServers | McpFormat::TomlServers => {
-                serde_json::json!({ "command": command, "args": [] })
+                serde_json::json!({ "command": command, "args": args })
             }
         }
     }
@@ -1932,20 +1945,37 @@ fn write_mcp_config(
     // disk the workspace is. Doing it here would create a `.cursor/` on
     // the DESKTOP for an ssh workspace whose files live on the host.
     let command = mcp_command(fs, root, binary);
-    match layout.format {
-        McpFormat::TomlServers => write_mcp_config_toml(fs, &path, layout, &command)?,
+    write_mcp_server(fs, &path, layout.format, layout.server_key, &command, &[])?;
+    Ok(path)
+}
+
+/// One server entry, merged into `path` in `format`'s dialect: gavin's
+/// own (`write_mcp_config`), or Playwright's beside it
+/// (`agent_playwright.rs`). Exactly that key is created or replaced; the
+/// rest of the file is kept.
+pub(crate) fn write_mcp_server(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    format: McpFormat,
+    server_key: &str,
+    command: &str,
+    args: &[&str],
+) -> anyhow::Result<()> {
+    match format {
+        McpFormat::TomlServers => write_mcp_config_toml(fs, path, server_key, command, args),
         McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
-            write_mcp_config_json(fs, &path, layout, &command)?
+            write_mcp_config_json(fs, path, format, server_key, command, args)
         }
     }
-    Ok(path)
 }
 
 fn write_mcp_config_json(
     fs: &dyn WorkspaceFiles,
     path: &Path,
-    layout: &ResolvedMcp,
+    format: McpFormat,
+    server_key: &str,
     command: &str,
+    args: &[&str],
 ) -> anyhow::Result<()> {
     let mut doc: serde_json::Value = if let Some(existing) = fs.read_to_string(path)? {
         serde_json::from_str(&existing).map_err(|_| {
@@ -1954,7 +1984,7 @@ fn write_mcp_config_json(
     } else {
         serde_json::json!({})
     };
-    let container = layout.format.json_container();
+    let container = format.json_container();
     let obj = doc
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("existing {} is not a JSON object", path.display()))?;
@@ -1963,7 +1993,7 @@ fn write_mcp_config_json(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{container} is not a JSON object"))?;
-    servers.insert(layout.server_key.to_string(), layout.format.json_entry(command));
+    servers.insert(server_key.to_string(), format.json_entry(command, args));
     fs.write_bytes(path, format!("{}\n", serde_json::to_string_pretty(&doc)?).as_bytes())?;
     Ok(())
 }
@@ -1974,8 +2004,9 @@ fn write_mcp_config_json(
 fn write_mcp_config_toml(
     fs: &dyn WorkspaceFiles,
     path: &Path,
-    layout: &ResolvedMcp,
+    server_key: &str,
     command: &str,
+    args: &[&str],
 ) -> anyhow::Result<()> {
     // Absent is empty; unreadable-but-present is an error, not a reason to
     // overwrite it -- the same promise the JSON writer makes.
@@ -1987,11 +2018,11 @@ fn write_mcp_config_toml(
     // than merged into, matching the JSON writer: gavin owns its key
     // outright, including any comments someone hung inside it.
     if let Some(table) = doc.get_mut("mcp_servers").and_then(|i| i.as_table_like_mut()) {
-        table.remove(layout.server_key);
+        table.remove(server_key);
     }
-    let server = &mut doc["mcp_servers"][layout.server_key];
+    let server = &mut doc["mcp_servers"][server_key];
     server["command"] = toml_edit::value(command);
-    server["args"] = toml_edit::value(toml_edit::Array::new());
+    server["args"] = toml_edit::value(args.iter().copied().collect::<toml_edit::Array>());
     fs.write_bytes(path, doc.to_string().as_bytes())?;
     Ok(())
 }
@@ -2210,18 +2241,42 @@ impl McpForeignChoice {
 /// disclose about a file gavin is about to create -- and an unparsable
 /// one errors the same way `write_mcp_config` does, so a scan never
 /// reports "nothing here" about a file it could not actually read.
+///
+/// gavin's own entries are its key, whatever it holds (the write replaces
+/// it), and the Playwright step's entry -- but only exactly as gavin
+/// would write it here, `own_command` plus `playwright`
+/// (`agent_playwright::is_gavins_entry`). A `playwright` server running
+/// anything else is the repository's, and is disclosed like any other.
 fn foreign_mcp_servers(
     fs: &dyn WorkspaceFiles,
     path: &Path,
     layout: &ResolvedMcp,
+    own_command: &str,
 ) -> anyhow::Result<Vec<ForeignMcpServer>> {
     if !fs.is_file(path) {
         return Ok(Vec::new());
     }
-    match layout.format {
-        McpFormat::TomlServers => foreign_mcp_servers_toml(fs, path, layout.server_key),
+    let servers = mcp_servers_in(fs, path, layout.format)?;
+    Ok(servers
+        .into_iter()
+        .filter(|s| s.name != layout.server_key && !crate::agent_playwright::is_gavins_entry(s, own_command))
+        .collect())
+}
+
+/// Every server entry `path` declares, in `format`'s dialect, sorted by
+/// name. An absent file declares none; an unparsable one is an error.
+pub(crate) fn mcp_servers_in(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    format: McpFormat,
+) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    if !fs.is_file(path) {
+        return Ok(Vec::new());
+    }
+    match format {
+        McpFormat::TomlServers => foreign_mcp_servers_toml(fs, path),
         McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
-            foreign_mcp_servers_json(fs, path, layout)
+            foreign_mcp_servers_json(fs, path, format)
         }
     }
 }
@@ -2229,20 +2284,17 @@ fn foreign_mcp_servers(
 fn foreign_mcp_servers_json(
     fs: &dyn WorkspaceFiles,
     path: &Path,
-    layout: &ResolvedMcp,
+    format: McpFormat,
 ) -> anyhow::Result<Vec<ForeignMcpServer>> {
     let doc: serde_json::Value = serde_json::from_str(&fs.read_to_string(path)?.unwrap_or_default())
         .map_err(|_| {
             anyhow::anyhow!("existing {} is not valid JSON — fix or remove it first", path.display())
         })?;
-    let Some(servers) = doc.get(layout.format.json_container()).and_then(|v| v.as_object()) else {
+    let Some(servers) = doc.get(format.json_container()).and_then(|v| v.as_object()) else {
         return Ok(Vec::new());
     };
-    let mut out: Vec<ForeignMcpServer> = servers
-        .iter()
-        .filter(|(name, _)| name.as_str() != layout.server_key)
-        .map(|(name, entry)| json_foreign_entry(name, entry, layout.format))
-        .collect();
+    let mut out: Vec<ForeignMcpServer> =
+        servers.iter().map(|(name, entry)| json_foreign_entry(name, entry, format)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
@@ -2269,11 +2321,7 @@ fn json_foreign_entry(name: &str, entry: &serde_json::Value, format: McpFormat) 
     ForeignMcpServer { name: name.to_string(), command, args: json_string_array(entry.get("args")) }
 }
 
-fn foreign_mcp_servers_toml(
-    fs: &dyn WorkspaceFiles,
-    path: &Path,
-    server_key: &str,
-) -> anyhow::Result<Vec<ForeignMcpServer>> {
+fn foreign_mcp_servers_toml(fs: &dyn WorkspaceFiles, path: &Path) -> anyhow::Result<Vec<ForeignMcpServer>> {
     let doc = fs.read_to_string(path)?.unwrap_or_default().parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("existing {} is not valid TOML — fix or remove it first", path.display())
     })?;
@@ -2282,7 +2330,6 @@ fn foreign_mcp_servers_toml(
     };
     let mut out: Vec<ForeignMcpServer> = table
         .iter()
-        .filter(|(name, _)| *name != server_key)
         .map(|(name, item)| ForeignMcpServer {
             name: name.to_string(),
             command: item.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -2644,19 +2691,6 @@ fn mcp_server_count(fs: &dyn WorkspaceFiles, file: &Path) -> Option<usize> {
     Some(doc.get("mcpServers").and_then(|servers| servers.as_object()).map_or(0, |servers| servers.len()))
 }
 
-/// Every server key `<file>` declares, for the "only what gavin manages"
-/// reading a launch-time grant applies to the workspace root's `.mcp.json`.
-fn mcp_server_keys(fs: &dyn WorkspaceFiles, file: &Path) -> Option<Vec<String>> {
-    let text = fs.read_to_string(file).ok()??;
-    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-    Some(
-        doc.get("mcpServers")
-            .and_then(|servers| servers.as_object())
-            .map(|servers| servers.keys().cloned().collect())
-            .unwrap_or_default(),
-    )
-}
-
 /// Grants kimi's per-folder trust record for a session LAUNCH about to
 /// run in `cwd`, when `cwd` sits strictly inside a gavin workspace whose
 /// project MCP configuration the integration already vetted.
@@ -2682,15 +2716,25 @@ fn mcp_server_keys(fs: &dyn WorkspaceFiles, file: &Path) -> Option<Vec<String>> 
 /// - The root's own files must still say what the integration vetted:
 ///   `.kimi-code/mcp.json` declaring nothing, and `.mcp.json` (when
 ///   present) declaring no server beyond the one gavin's merge writer
-///   manages (`McpLayout::server_key`). A later-added foreign server
-///   turns the grant off, not on.
+///   manages (`McpLayout::server_key`) and the Playwright step's entry,
+///   exactly as gavin writes it (`own_command` plus `playwright`). A
+///   later-added foreign server turns the grant off, not on.
 /// - `try_grant_folder_trust` never overwrites an existing record: the
 ///   human's own answer at kimi's prompt stands.
 ///
 /// `None` means "no grant", by shape or by policy -- not an error: kimi
 /// asks once at its trust screen, exactly as it did before this
 /// function existed.
-fn grant_kimi_launch_trust(fs: &dyn WorkspaceFiles, cwd: &Path, workspace_root: &Path) -> Option<TrustGrant> {
+///
+/// `own_command` is what gavin's entries name in this root
+/// (`mcp_command`); `None` when gavin-mcp cannot be found, which leaves
+/// only the `gavin` key as gavin's.
+fn grant_kimi_launch_trust(
+    fs: &dyn WorkspaceFiles,
+    cwd: &Path,
+    workspace_root: &Path,
+    own_command: Option<&str>,
+) -> Option<TrustGrant> {
     let physical_cwd = fs.canonical_dir(cwd)?;
     let physical_root = fs.canonical_dir(workspace_root)?;
     if physical_cwd == physical_root || !physical_cwd.starts_with(&physical_root) {
@@ -2721,7 +2765,11 @@ fn grant_kimi_launch_trust(fs: &dyn WorkspaceFiles, cwd: &Path, workspace_root: 
             Some(0) => {}
             Some(_) => {
                 // Non-empty: every server must be gavin's own.
-                if mcp_server_keys(fs, &shared).unwrap_or_default().iter().any(|key| key != "gavin") {
+                let gavins = |s: &ForeignMcpServer| {
+                    s.name == "gavin"
+                        || own_command.is_some_and(|c| crate::agent_playwright::is_gavins_entry(s, c))
+                };
+                if !mcp_servers_in(fs, &shared, McpFormat::JsonServers).ok()?.iter().all(gavins) {
                     return None;
                 }
             }
@@ -2897,7 +2945,10 @@ pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home
     let fs = LocalFiles;
     let target = cwd.map(Path::new).unwrap_or_else(|| Path::new(home));
     let workspace = workspace_root.map(Path::new).unwrap_or(target);
-    if let Some(TrustGrant::Withheld(reason)) = grant_kimi_launch_trust(&fs, target, workspace) {
+    let own_command = resolve_mcp_binary_path().ok().map(|binary| mcp_command(&fs, workspace, &binary));
+    if let Some(TrustGrant::Withheld(reason)) =
+        grant_kimi_launch_trust(&fs, target, workspace, own_command.as_deref())
+    {
         eprintln!("kimi folder trust withheld for {}: {reason}", target.display());
     }
     ensure_kimi_launch_config(&fs, Path::new(home));
@@ -3017,8 +3068,10 @@ pub async fn setup_agent_integration(
     .map_err(|e| e.to_string())?
 }
 
-/// Held for the whole of an integration run (`setup_agent_integration`).
-static INTEGRATION_RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Held for the whole of an integration run (`setup_agent_integration`),
+/// and around the Playwright step's entry write, which edits the same
+/// MCP config files.
+pub(crate) static INTEGRATION_RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The command's body, with the binary lookup injected. Injected because
 /// resolve_mcp_binary_path wants gavin-mcp beside the running executable,
@@ -3107,7 +3160,8 @@ fn run_integration(
                 }
             }
             let mcp_path = root.join(&layout.config_file);
-            let foreign = foreign_mcp_servers(fs, &mcp_path, layout).map_err(|e| e.to_string())?;
+            let foreign = foreign_mcp_servers(fs, &mcp_path, layout, &mcp_command(fs, root, &binary))
+                .map_err(|e| e.to_string())?;
             if foreign.is_empty() {
                 written.push(protocol::wire_path(
                     &write_mcp_config(fs, root, layout, &binary).map_err(|e| e.to_string())?,
@@ -4720,6 +4774,63 @@ mod tests {
         assert!(v.pointer("/mcpServers/gavin").is_none(), "isolate must not merge");
     }
 
+    /// AG-07 and the Playwright step's entry: gavin's own -- exactly the
+    /// command gavin writes here, `playwright` its only argument -- is
+    /// not a foreign server, and a re-run leaves it in place. A
+    /// `playwright` key running anything else is disclosed like any other
+    /// server: a repository must not be able to hide one behind the name.
+    #[test]
+    fn integration_counts_the_playwright_entry_as_gavins_only_when_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{ "mcpServers": { "playwright": { "command": "/apps/gavin-mcp", "args": ["playwright"] } } }"#,
+        )
+        .unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        assert!(result.mcp_foreign.is_none(), "{:?}", result.mcp_foreign);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(v.pointer("/mcpServers/playwright/args/0").unwrap(), "playwright");
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+
+        for (command, args) in [("./tools/gavin-mcp", r#"["playwright"]"#), ("npx", r#"["@playwright/mcp@latest"]"#)] {
+            std::fs::write(
+                dir.path().join(".mcp.json"),
+                format!(r#"{{ "mcpServers": {{ "playwright": {{ "command": "{command}", "args": {args} }} }} }}"#),
+            )
+            .unwrap();
+            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            let foreign = result.mcp_foreign.expect("someone else's playwright server is disclosed");
+            assert_eq!(foreign.servers.len(), 1);
+            assert_eq!(foreign.servers[0].name, "playwright");
+            assert_eq!(foreign.servers[0].command, command);
+        }
+    }
+
+    /// Playwright's entry in each dialect: the shape gavin's own takes
+    /// there, with `playwright` as the argument.
+    #[test]
+    fn write_mcp_server_carries_args_in_every_dialect() {
+        let dir = tempfile::tempdir().unwrap();
+        for format in McpFormat::ALL {
+            let path = dir.path().join(format!("{}.cfg", format.id()));
+            write_mcp_server(&LocalFiles, &path, *format, "playwright", "/apps/gavin-mcp", &["playwright"]).unwrap();
+            let found = mcp_servers_in(&LocalFiles, &path, *format).unwrap();
+            assert_eq!(
+                found,
+                vec![ForeignMcpServer {
+                    name: "playwright".to_string(),
+                    command: "/apps/gavin-mcp".to_string(),
+                    args: vec!["playwright".to_string()],
+                }],
+                "{}",
+                format.id()
+            );
+        }
+    }
+
     /// The marker block goes into the file the CALLER named, and a repo's
     /// own `[agent] file` is not consulted when one is given.
     ///
@@ -5618,7 +5729,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path());
+        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
 
         let record = record_path(home.path(), &physical(&sub));
         assert!(matches!(grant, Some(TrustGrant::Written(_))), "{grant:?}");
@@ -5629,7 +5740,7 @@ mod tests {
 
         // The next launch in the same folder reads the record and leaves
         // it alone.
-        let again = grant_kimi_launch_trust(&fs, &sub, dir.path());
+        let again = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
         assert!(matches!(again, Some(TrustGrant::Present)), "{again:?}");
         assert_eq!(trust_records(home.path()).len(), 1);
     }
@@ -5677,10 +5788,40 @@ mod tests {
             }
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path());
+            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
 
             assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
             assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
+        }
+    }
+
+    /// The Playwright step's entry beside gavin's is still only what gavin
+    /// manages -- but only as gavin writes it, and only when gavin knows
+    /// its own command. Installing Playwright must not cost a kimi
+    /// workspace its launch grant.
+    #[test]
+    fn a_launch_trust_counts_the_playwright_entry_as_gavins() {
+        let with_playwright = |command: &str| {
+            format!(
+                r#"{{"mcpServers":{{"gavin":{{"command":"/apps/gavin-mcp"}},
+                   "playwright":{{"command":"{command}","args":["playwright"]}}}}}}"#
+            )
+        };
+        for (label, body, own, granted) in [
+            ("gavin's entry, gavin's command", with_playwright("/apps/gavin-mcp"), Some("/apps/gavin-mcp"), true),
+            ("gavin's command unknown", with_playwright("/apps/gavin-mcp"), None, false),
+            ("another command under the name", with_playwright("/bin/other"), Some("/apps/gavin-mcp"), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".mcp.json"), body).unwrap();
+            let sub = dir.path().join("sub");
+            std::fs::create_dir_all(&sub).unwrap();
+            let fs = HomedFiles { home: home.path().to_path_buf() };
+
+            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), own);
+
+            assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
         }
     }
 
@@ -6405,7 +6546,7 @@ mod tests {
                           "other": { "type": "local", "command": ["/bin/other", "--flag"] } } }"#,
         )
         .unwrap();
-        let found = foreign_mcp_servers(&LocalFiles, &dir.path().join("opencode.json"), &layout("opencode")).unwrap();
+        let found = foreign_mcp_servers(&LocalFiles, &dir.path().join("opencode.json"), &layout("opencode"), "/apps/gavin-mcp").unwrap();
         assert_eq!(
             found,
             vec![ForeignMcpServer {
@@ -6423,7 +6564,7 @@ mod tests {
              [mcp_servers.linty]\ncommand = \"/bin/linty\"\nargs = [\"--fix\"]\n",
         )
         .unwrap();
-        let found = foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex")).unwrap();
+        let found = foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex"), "/apps/gavin-mcp").unwrap();
         assert_eq!(
             found,
             vec![ForeignMcpServer {
@@ -6436,7 +6577,7 @@ mod tests {
         // Unparsable -> an error, the same as the writer gives, never a
         // silent "nothing foreign here".
         std::fs::write(&codex_path, "[[[not toml").unwrap();
-        assert!(foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex")).is_err());
+        assert!(foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex"), "/apps/gavin-mcp").is_err());
     }
 
     #[test]

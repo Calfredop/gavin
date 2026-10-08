@@ -9,6 +9,7 @@
     agentModelDefaultsStore,
     setHomeAgentShare,
     trustedAgentConfigs,
+    wizardWorkspaceId,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { setupProgress, SETUP_STEPS } from "$lib/workspace/setupWizard";
@@ -17,6 +18,12 @@
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
   import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
   import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
+  import {
+    loadPlaywrightMark,
+    toPlaywrightReading,
+    workspacePlaywrightReading,
+    type PlaywrightReading,
+  } from "$lib/agents/playwrightSetup";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
@@ -113,6 +120,34 @@
   $effect(() => {
     if (root && !ws?.ssh) ensureMemoryReading(root);
   });
+  // The Playwright step: the human's answer first, the three checks only
+  // without one, as the agent skills read below does. Both are taken
+  // again when the wizard opens or closes -- this panel stays mounted
+  // under it, and the step's answers are given there, so without that a
+  // "not now" would leave the banner up until the next visit. The last
+  // reading stays up while the new one is asked, so the banner does not
+  // blink; a different root drops it, since it says nothing about this one.
+  const isSsh = $derived(Boolean(ws?.ssh));
+  const playwrightMark = $derived(
+    (void $wizardWorkspaceId, root ? loadPlaywrightMark(root) : undefined)
+  );
+  let playwrightAsked = $state<PlaywrightReading | undefined>(undefined);
+  const playwright = $derived(workspacePlaywrightReading(playwrightAsked, ws));
+  let playwrightRoot: string | null = null;
+  let playwrightToken = 0;
+  $effect(() => {
+    const r = root;
+    void $wizardWorkspaceId;
+    const mine = ++playwrightToken;
+    if (r !== playwrightRoot) {
+      playwrightAsked = undefined;
+      playwrightRoot = r;
+    }
+    if (!r || isSsh || loadPlaywrightMark(r)) return;
+    void toPlaywrightReading(backend.playwrightStatus(r)).then((res) => {
+      if (mine === playwrightToken) playwrightAsked = res;
+    });
+  });
 
   const setup = $derived(
     setupProgress({
@@ -134,6 +169,8 @@
       memoryReading: memory,
       memorySkipped,
       headroomAsked: Boolean(ws?.headroomAsked),
+      playwright,
+      playwrightMark,
     })
   );
 

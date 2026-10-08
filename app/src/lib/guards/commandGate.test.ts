@@ -291,6 +291,13 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   dismiss_agent_skills_farewell: ["ordinary"],
   agent_skills_status: ["ordinary"],
   agent_skills_install: ["ordinary"],
+  // The Playwright step: three checks, and an install of the pinned
+  // browser plus a `playwright` entry merged into the agent's MCP config
+  // -- the same kind of write as setup_agent_integration's below. The
+  // install runs `npx` with fixed arguments outside the workspace, so no
+  // repository chooses what it runs.
+  playwright_status: ["ordinary"],
+  playwright_install: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.

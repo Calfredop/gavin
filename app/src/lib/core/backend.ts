@@ -11,6 +11,7 @@ import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
+import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
 import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
@@ -709,6 +710,30 @@ export function agentSkillsFarewell(rootPath: string): Promise<boolean> {
 /// Dismisses that note for one root, for good.
 export function dismissAgentSkillsFarewell(rootPath: string): Promise<void> {
   return invoke("dismiss_agent_skills_farewell", { rootPath });
+}
+
+/// Playwright's three checks for one workspace root (`agent_playwright.rs`):
+/// Node's `npx`, the pinned Chrome Headless Shell, and a `playwright`
+/// server in this agent's MCP config -- on the machine the workspace's
+/// agents run on, which for an ssh workspace is the host. Straight to
+/// Tauri, like `agentSkillsStatus`: nothing here is a daemon request.
+/// `profileId` overlays the workspace's agent, as it does there.
+export function playwrightStatus(rootPath: string, profileId?: string): Promise<PlaywrightStatus> {
+  return invoke("playwright_status", { rootPath, profileId });
+}
+
+/// Installs what is missing -- the browser, then the entry -- and returns
+/// the status that follows. A failed install is not a rejection: the
+/// status carries its output, and its state is what the checks say next.
+/// Rejects only when nothing was attempted (a custom agent, no root).
+/// `replaceForeign` answers a `conflict` the status showed: replace that
+/// `playwright` server with gavin's.
+export function playwrightInstall(
+  rootPath: string,
+  replaceForeign = false,
+  profileId?: string
+): Promise<PlaywrightStatus> {
+  return invoke("playwright_install", { rootPath, profileId, replaceForeign });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in

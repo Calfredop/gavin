@@ -6,6 +6,7 @@ import {
   type HeadroomReading,
 } from "$lib/agents/headroomSetup";
 import { memoryStepDone, memoryStepSettled, type MemoryReading } from "$lib/cards/memoryIndex";
+import type { PlaywrightMark, PlaywrightReading } from "$lib/agents/playwrightSetup";
 
 export type SetupStep =
   | "agent"
@@ -13,6 +14,7 @@ export type SetupStep =
   | "agentSkills"
   | "headroom"
   | "memory"
+  | "playwright"
   | "git"
   | "review"
   | "prd"
@@ -41,6 +43,12 @@ export interface SetupProgress {
   /// reason: compression is off by default, and off is a workspace set up
   /// the way it always was. `memory` too: a workspace with no index is
   /// one whose agents read `### Learned` the way they always did.
+  ///
+  /// `playwright` is IN, deliberately, the way agent skills is: optional,
+  /// but a step every workspace that existed before it was added is meant
+  /// to be asked once (the Playwright spec, "Init and catchup"). The
+  /// banner is how it is asked, and "not now" is an answer that ends it --
+  /// so it nags until answered, never for ever.
   configured: boolean;
   /// True while an input the derivation needs has not been read yet.
   /// Every other field then describes only the evidence seen so far and
@@ -117,12 +125,46 @@ export interface SetupInput {
   /// (`loadMemorySkipped`). Read synchronously, so it never joins
   /// `pending` on its own.
   memorySkipped: boolean;
+  /// Playwright's three checks for this root (`agent_playwright.rs`, via
+  /// `workspacePlaywrightReading`), `undefined` while the ask is out --
+  /// the file bodies' rule, for their reason.
+  playwright: PlaywrightReading | undefined;
+  /// What the human said about Playwright for this root, if anything
+  /// (`loadPlaywrightMark`): "not now", or "I've set it up" where gavin
+  /// could not check. Read synchronously.
+  playwrightMark: PlaywrightMark | undefined;
+}
+
+/// Whether the Playwright step is finished: the three checks found it
+/// set up, the human gave an answer -- "not now" or "I've set it up" --
+/// or the step cannot serve this workspace from this machine (an ssh
+/// workspace). Like agent skills, an `unavailable` reading on its own is
+/// NOT done: gavin failing to look is not the human deciding, and taking
+/// it for one would finish the step for every custom agent before its
+/// owner saw it.
+export function playwrightStepDone(
+  reading: PlaywrightReading | undefined,
+  mark: PlaywrightMark | undefined
+): boolean {
+  if (mark) return true;
+  if (reading?.kind === "elsewhere") return true;
+  return reading?.kind === "status" && reading.status.state === "verified";
+}
+
+/// Whether the step's answer is known. A recorded answer settles it on
+/// its own: no check in flight can undo the human having answered.
+export function playwrightStepSettled(
+  reading: PlaywrightReading | undefined,
+  mark: PlaywrightMark | undefined
+): boolean {
+  return Boolean(mark) || reading !== undefined;
 }
 
 /// agent skills sits third (spec S2): it is agent tooling, so it belongs
 /// beside Integration, and PRD and Launch stay last. Headroom is agent
 /// tooling too, and follows agent skills (the Headroom spec, "The switch");
-/// Memory follows Headroom, the last of the tooling. Exported because
+/// Memory follows Headroom, and Playwright follows Memory, the last of the
+/// tooling (the Playwright spec, "Init and catchup"). Exported because
 /// every surface that counts steps must count THIS list -- the Home hub's
 /// banner said "of 4" as a literal and would have gone on saying it.
 ///
@@ -138,6 +180,7 @@ export const SETUP_STEPS: SetupStep[] = [
   "agentSkills",
   "headroom",
   "memory",
+  "playwright",
   "git",
   "review",
   "prd",
@@ -168,6 +211,9 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // The model is here and the index matches `### Learned`, the human said
   // "not now", or this machine can do nothing for the workspace.
   if (memoryStepDone(input.memoryReading, input.memorySkipped)) done.push("memory");
+  // Set up, answered, or out of this machine's reach. Never on an unknown
+  // reading, and never on gavin being unable to look.
+  if (playwrightStepDone(input.playwright, input.playwrightMark)) done.push("playwright");
   // A recorded answer and nothing else -- see `gitTrackingAsked`. Both
   // answers finish the step; which one they gave lives in the repo.
   if (input.gitTrackingAsked) done.push("git");
@@ -193,12 +239,14 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // answer settles it whatever the reading.
   const headroomSettled = headroomStepSettled(input.headroomReading, input.headroomAsked);
   const memorySettled = memoryStepSettled(input.memoryReading, input.memorySkipped);
+  const playwrightSettled = playwrightStepSettled(input.playwright, input.playwrightMark);
   const pending =
     input.agentFileBody === undefined ||
     input.prdBody === undefined ||
     !agentSkillsSettled ||
     !headroomSettled ||
-    !memorySettled;
+    !memorySettled ||
+    !playwrightSettled;
   // Five steps sit outside the nag, for two different reasons. Launch's
   // evidence is a live process rather than a file or a marker, so it is
   // the one step that can un-happen, and it is optional besides (W2).
@@ -206,7 +254,8 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // yet, which is not the same as a workspace set up wrong -- see
   // `configured`. What
   // is left is what the Home banner is allowed to read; `complete` still
-  // means all of them, which is what the wizard opens on.
+  // means all of them, which is what the wizard opens on. Playwright is
+  // not on the list: it is the catch-up `configured` describes.
   const configured = ORDER.every(
     (s) =>
       s === "launch" ||

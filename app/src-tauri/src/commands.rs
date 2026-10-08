@@ -142,6 +142,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "dismiss_agent_skills_farewell",
     "agent_skills_status",
     "agent_skills_install",
+    "playwright_status",
+    "playwright_install",
     "setup_agent_integration",
     "agent_profiles",
     "detect_agent_binaries",

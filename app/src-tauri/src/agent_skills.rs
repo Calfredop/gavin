@@ -236,18 +236,21 @@ pub fn locked_skills(body: &str) -> Vec<String> {
 /// One child process, run to completion or killed at the deadline.
 /// Returns stdout and stderr separately so callers can interleave them
 /// for display while still testing an exit code.
+///
+/// Shared with `agent_playwright.rs`, whose browser install is the same
+/// shape of run: a hidden `npx` with a ceiling and a drawer to fill.
 #[derive(Debug)]
-struct Run {
-    stdout: String,
-    stderr: String,
-    code: i32,
+pub(crate) struct Run {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) code: i32,
 }
 
 impl Run {
     /// Both streams as the drawer shows them, terminal escapes resolved.
     /// stdout first: it carries the progress line Claude's install starts
     /// with, and stderr the reason it stopped.
-    fn combined(&self) -> String {
+    pub(crate) fn combined(&self) -> String {
         let mut out = String::new();
         for part in [plain_text(&self.stdout), plain_text(&self.stderr)] {
             let part = part.trim_end();
@@ -309,7 +312,7 @@ fn plain_text(raw: &str) -> String {
     out
 }
 
-fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Result<Run, String> {
+pub(crate) fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Result<Run, String> {
     if !cwd.is_dir() {
         return Err(format!("directory not found: {}", cwd.display()));
     }

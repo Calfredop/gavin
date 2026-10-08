@@ -1,4 +1,5 @@
 mod agent_models;
+mod agent_playwright;
 mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
@@ -261,6 +262,8 @@ pub fn run() {
             agent_skills::dismiss_agent_skills_farewell,
             agent_skills::agent_skills_status,
             agent_skills::agent_skills_install,
+            agent_playwright::playwright_status,
+            agent_playwright::playwright_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,

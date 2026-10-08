@@ -108,6 +108,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // Install button held the window for the whole network install.
   ["agent_skills.rs", "agent_skills_status", "`claude plugin list`, on every Settings visit"],
   ["agent_skills.rs", "agent_skills_install", "`claude plugin install` or `npx skills add` over the network, up to 180 s"],
+  // The Playwright step's three checks fire on the wizard's reads and on
+  // a Home visit with no recorded answer: a PATH walk and two file reads
+  // here, a round trip each to an ssh workspace's host. The install
+  // downloads a browser.
+  ["agent_playwright.rs", "playwright_status", "a PATH walk and file reads, or ssh round trips, on a Home visit"],
+  ["agent_playwright.rs", "playwright_install", "`npx … install-browser`, about 200 MB, up to 600 s"],
   // Once per launch, from bootstrap, in the same first seconds as the
   // first usage poll and watchman read: `opencode models`, a start that
   // alone takes 0.41-0.85 s, under a 15 s deadline.

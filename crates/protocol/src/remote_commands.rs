@@ -183,6 +183,9 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("dismiss_agent_skills_farewell", RemoteAllowance::Allowed),
     ("agent_skills_status", RemoteAllowance::Allowed),
     ("agent_skills_install", RemoteAllowance::Allowed),
+    // The Playwright setup step, like the agent skills step beside it.
+    ("playwright_status", RemoteAllowance::Allowed),
+    ("playwright_install", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),

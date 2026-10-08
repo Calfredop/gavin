@@ -16,6 +16,12 @@
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
   import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
   import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
+  import {
+    loadPlaywrightMark,
+    toPlaywrightReading,
+    workspacePlaywrightReading,
+    type PlaywrightReading,
+  } from "$lib/agents/playwrightSetup";
   import * as backend from "$lib/core/backend";
   import Modal from "$lib/core/Modal.svelte";
   import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
@@ -24,6 +30,7 @@
   import AgentSkillsStep from "$lib/wizardSteps/AgentSkillsStep.svelte";
   import HeadroomStep from "$lib/wizardSteps/HeadroomStep.svelte";
   import MemoryStep from "$lib/wizardSteps/MemoryStep.svelte";
+  import PlaywrightStep from "$lib/wizardSteps/PlaywrightStep.svelte";
   import GitStep from "$lib/wizardSteps/GitStep.svelte";
   import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
   import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
@@ -39,6 +46,7 @@
     { id: "agentSkills", label: "Matt Pocock's skills" },
     { id: "headroom", label: "Headroom" },
     { id: "memory", label: "Memory" },
+    { id: "playwright", label: "Playwright" },
     { id: "git", label: "Git" },
     { id: "review", label: "Review" },
     { id: "prd", label: "PRD" },
@@ -92,6 +100,16 @@
   $effect(() => {
     if (ws?.rootPath && !ws.ssh) ensureMemoryReading(ws.rootPath);
   });
+  // Playwright's three checks are this root's, asked with the file reads
+  // below and undefined until they answer, the same rule. An ssh
+  // workspace is not asked: the step cannot serve it from here. The
+  // human's answer is a synchronous read, re-read when the step changes it.
+  let playwrightAsked = $state<PlaywrightReading | undefined>(undefined);
+  const playwright = $derived(workspacePlaywrightReading(playwrightAsked, ws));
+  let playwrightMarkTick = $state(0);
+  const playwrightMark = $derived(
+    (void playwrightMarkTick, ws?.rootPath ? loadPlaywrightMark(ws.rootPath) : undefined)
+  );
 
   // The agent skills check answers off the main thread, so a reread can
   // land after a newer one -- and this one lands as a whole, file bodies
@@ -101,7 +119,8 @@
     const mine = ++rereadToken;
     const root = ws?.rootPath;
     if (!root) return;
-    const [agentFile, prd, sp, marks] = await Promise.all([
+    const ssh = Boolean(ws?.ssh);
+    const [agentFile, prd, sp, marks, pw] = await Promise.all([
       backend.readFileForViewer(`${root}/${agentCfg.file}`).catch(() => null),
       backend.readFileForViewer(`${root}/${prdPath}`).catch(() => null),
       // A detector that threw still has to settle the pending flag, or
@@ -109,12 +128,14 @@
       // stand-in: it offers no button and completes no step.
       backend.agentSkillsStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
       backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
+      ssh ? Promise.resolve(undefined) : toPlaywrightReading(backend.playwrightStatus(root)),
     ]);
     if (mine !== rereadToken) return;
     agentFileBody = agentFile?.exists ? agentFile.content : null;
     prdBody = prd?.exists ? prd.content : null;
     agentSkills = sp;
     agentSkillsMark = marks[root];
+    playwrightAsked = pw;
   }
 
   $effect(() => {
@@ -143,6 +164,8 @@
       headroomAsked: Boolean(ws?.headroomAsked),
       memoryReading: memory,
       memorySkipped,
+      playwright,
+      playwrightMark,
     })
   );
 
@@ -215,6 +238,17 @@
             {workspaceId}
             reading={memory}
             onChanged={() => (memorySkippedTick += 1)}
+            onDone={advance}
+          />
+        {:else if current === "playwright"}
+          <PlaywrightStep
+            {workspaceId}
+            reading={playwright}
+            mark={playwrightMark}
+            onChanged={() => {
+              playwrightMarkTick += 1;
+              void reread();
+            }}
             onDone={advance}
           />
         {:else if current === "git"}

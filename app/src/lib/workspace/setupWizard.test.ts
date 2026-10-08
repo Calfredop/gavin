@@ -4,6 +4,8 @@ import {
   applyPrdSections,
   agentFlowAvailable,
   prdHasPlaceholders,
+  playwrightStepDone,
+  playwrightStepSettled,
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
 } from "$lib/workspace/setupWizard";
@@ -16,6 +18,12 @@ import {
   type MemoryIndexStatus,
   type MemoryReading,
 } from "$lib/cards/memoryIndex";
+import {
+  SSH_PLAYWRIGHT_ELSEWHERE,
+  workspacePlaywrightReading,
+  type PlaywrightReading,
+  type PlaywrightStatus,
+} from "$lib/agents/playwrightSetup";
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
@@ -88,6 +96,24 @@ function memStatus(over: Partial<MemoryIndexStatus>): MemoryReading {
 const MEM_ABSENT = memStatus({});
 const MEM_READY = memStatus({ model: "ready", learned: 2, indexed: 2 });
 
+function pwStatus(over: Partial<PlaywrightStatus> = {}): PlaywrightReading {
+  return {
+    kind: "status",
+    status: {
+      state: "absent",
+      detail: "",
+      checks: [],
+      command: "npx -y @playwright/mcp@0.0.83 install-browser chromium-headless-shell",
+      installable: true,
+      conflict: null,
+      output: "",
+      ...over,
+    },
+  };
+}
+const PW_ABSENT = pwStatus();
+const PW_READY = pwStatus({ state: "verified", installable: false });
+
 const NOTHING_DONE = {
   hasRoot: true,
   configCommand: null,
@@ -102,6 +128,8 @@ const NOTHING_DONE = {
   headroomAsked: false,
   memoryReading: MEM_ABSENT,
   memorySkipped: false,
+  playwright: PW_ABSENT,
+  playwrightMark: undefined,
 };
 
 const ALL_DONE = {
@@ -118,6 +146,8 @@ const ALL_DONE = {
   headroomAsked: true,
   memoryReading: MEM_READY,
   memorySkipped: false,
+  playwright: PW_READY,
+  playwrightMark: undefined,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -206,10 +236,11 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts agent skills third, Headroom fourth, Memory fifth, Git sixth and Review seventh", () => {
+  it("puts agent skills third, Headroom fourth, Memory fifth, Playwright sixth, Git seventh and Review eighth", () => {
     // agent skills beside Integration because it is agent tooling (S2);
     // Headroom right after it, agent tooling too (the Headroom spec, "The
-    // switch"); Memory after Headroom, the last of the tooling; Git after those because it asks about the files gavin has
+    // switch"); Memory after Headroom; Playwright after Memory, the last of
+    // the tooling (the Playwright spec, "Init and catchup"); Git after those because it asks about the files gavin has
     // by then created; Review right after Git, the same shape of question,
     // before PRD because that step writes into a file the earlier ones
     // create.
@@ -219,6 +250,7 @@ describe("setupProgress", () => {
       "agentSkills",
       "headroom",
       "memory",
+      "playwright",
       "git",
       "review",
       "prd",
@@ -336,7 +368,7 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(9);
+    expect(SETUP_STEPS).toHaveLength(10);
   });
 
   // Both counters. The Home banner reads its total off SETUP_STEPS and
@@ -361,6 +393,14 @@ describe("setupProgress", () => {
     expect(wizard).toContain("memorySkipped,");
     expect(home).toContain("memoryReading: memory,");
     expect(home).toContain("memorySkipped,");
+    // And Playwright's, on both.
+    expect(wizard).toContain('{ id: "playwright", label: "Playwright" }');
+    expect(wizard).toContain('current === "playwright"');
+    expect(wizard).toContain("<PlaywrightStep");
+    for (const src of [wizard, home]) {
+      expect(src).toContain("playwright,");
+      expect(src).toContain("playwrightMark,");
+    }
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a
@@ -433,7 +473,7 @@ describe("setupProgress: the Memory step", () => {
   it("counts on the human's not now, whatever the reading", () => {
     const p = setupProgress({ ...upToMemory, memoryReading: MEM_ABSENT, memorySkipped: true });
     expect(p.done).toContain("memory");
-    expect(p.next).toBe("git");
+    expect(p.next).toBe("playwright");
   });
 
   it("counts on its own where the index cannot serve the workspace", () => {
@@ -467,6 +507,92 @@ describe("setupProgress: the Memory step", () => {
     const p = setupProgress({ ...ALL_DONE, memoryReading: MEM_ABSENT });
     expect(p.configured).toBe(true);
     expect(p.complete).toBe(false);
+  });
+});
+
+describe("setupProgress: the Playwright step", () => {
+  const upToPlaywright = {
+    ...NOTHING_DONE,
+    configCommand: "claude",
+    agentFileBody: "<!-- gavin:start -->",
+    agentSkills: SP_FOUND,
+    headroomAsked: true,
+    memoryReading: MEM_READY,
+  };
+
+  it("comes right after Memory", () => {
+    expect(setupProgress(upToPlaywright).next).toBe("playwright");
+  });
+
+  it("counts once the three checks found it set up", () => {
+    expect(setupProgress({ ...NOTHING_DONE, playwright: PW_READY }).done).toEqual(["playwright"]);
+  });
+
+  // gavin unable to look -- a custom agent, an unreadable MCP config -- is
+  // not the human deciding, and a failed ask is not a check that passed.
+  it("does not count on a missing piece, on gavin unable to look, or on a failed ask", () => {
+    for (const playwright of [
+      PW_ABSENT,
+      pwStatus({ state: "unavailable", installable: false }),
+      { kind: "error", message: "gone" } as PlaywrightReading,
+    ]) {
+      expect(setupProgress({ ...upToPlaywright, playwright }).done).not.toContain("playwright");
+    }
+  });
+
+  // "Not now" is a recorded answer, not a fake "installed": the reading
+  // still says absent, and only the mark finishes the step.
+  it("counts on the human's not now, whatever the reading", () => {
+    const p = setupProgress({ ...upToPlaywright, playwright: PW_ABSENT, playwrightMark: "skipped" });
+    expect(p.done).toContain("playwright");
+    expect(p.next).toBe("git");
+  });
+
+  it("counts on the human's word where gavin could not check", () => {
+    const unchecked = pwStatus({ state: "unavailable", installable: false });
+    expect(setupProgress({ ...upToPlaywright, playwright: unchecked, playwrightMark: "installed" }).done).toContain(
+      "playwright"
+    );
+  });
+
+  it("counts on its own where the step cannot serve the workspace from here", () => {
+    const ssh = workspacePlaywrightReading(PW_ABSENT, { ssh: { host: "box" } });
+    expect(ssh).toEqual({ kind: "elsewhere", reason: SSH_PLAYWRIGHT_ELSEWHERE });
+    expect(setupProgress({ ...upToPlaywright, playwright: ssh }).done).toContain("playwright");
+    expect(workspacePlaywrightReading(PW_ABSENT, null)).toBe(PW_ABSENT);
+  });
+
+  it("is pending while the checks have not answered, unless the human already did", () => {
+    expect(setupProgress({ ...upToPlaywright, playwright: undefined }).pending).toBe(true);
+    const declined = setupProgress({ ...upToPlaywright, playwright: undefined, playwrightMark: "skipped" });
+    expect(declined.pending).toBe(false);
+    expect(declined.done).toContain("playwright");
+  });
+
+  it("settles on a failed ask without counting it", () => {
+    const p = setupProgress({ ...upToPlaywright, playwright: { kind: "error", message: "gone" } });
+    expect(p.pending).toBe(false);
+    expect(p.done).not.toContain("playwright");
+  });
+
+  // Inside the nag, unlike Headroom and Memory: a workspace that existed
+  // before the step -- every other step done -- is asked once by the Home
+  // banner, and "not now" ends it.
+  it("makes the Home banner ask a workspace set up before it existed, until answered", () => {
+    const before = { ...ALL_DONE, playwright: PW_ABSENT };
+    expect(setupProgress(before).configured).toBe(false);
+    expect(setupProgress(before).next).toBe("playwright");
+    expect(setupProgress({ ...before, playwrightMark: "skipped" }).configured).toBe(true);
+    expect(setupProgress({ ...before, playwright: PW_READY }).configured).toBe(true);
+  });
+
+  it("is done and settled by the same rules on their own", () => {
+    expect(playwrightStepDone(undefined, undefined)).toBe(false);
+    expect(playwrightStepDone(undefined, "skipped")).toBe(true);
+    expect(playwrightStepDone(PW_READY, undefined)).toBe(true);
+    expect(playwrightStepSettled(undefined, undefined)).toBe(false);
+    expect(playwrightStepSettled(PW_ABSENT, undefined)).toBe(true);
+    expect(playwrightStepSettled(undefined, "installed")).toBe(true);
   });
 });
 
