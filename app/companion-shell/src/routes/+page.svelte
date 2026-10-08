@@ -203,6 +203,7 @@
   visit={$visitState}
   {native}
   onOpen={(ws) => void visits.open(ws)}
+  onTryNow={(ws) => unlocked?.tryNow(ws.id)}
   onDismiss={() => void visits.close()}
   onPair={native ? () => void pairing.start() : null}
   inbox={$unlockState && connectionsAllowed($unlockState) && paired.length > 0 ? combinedInbox(paired, $live ?? {}) : null}

@@ -15,6 +15,8 @@
     /// open a Workstation's UI in, and the hub says so rather than fail.
     native: boolean;
     onOpen: (workstation: HubWorkstation) => void;
+    /// A Workstation that offers `Try now` was tapped.
+    onTryNow?: (workstation: HubWorkstation) => void;
     onDismiss: () => void;
     /// "Pair a Workstation". Absent in a browser, which has no keys and no
     /// camera to pair with.
@@ -37,6 +39,7 @@
     visit,
     native,
     onOpen,
+    onTryNow = () => {},
     onDismiss,
     onPair = null,
     inbox = null,
@@ -97,7 +100,12 @@
     <ul class="list">
       {#each workstations as ws (ws.id)}
         <li>
-          <button type="button" class="row" disabled={opening !== null || !ws.openable} onclick={() => onOpen(ws)}>
+          <button
+            type="button"
+            class="row"
+            disabled={opening !== null || !(ws.openable || ws.tryNow)}
+            onclick={() => (ws.openable ? onOpen(ws) : onTryNow(ws))}
+          >
             <span class="head">
               <span class="name">{ws.name}</span>
               {#if ws.demo}
@@ -112,6 +120,9 @@
               <span class="summary">{openingDetail}</span>
             {:else if ws.summary}
               <span class="summary">{ws.summary}</span>
+            {/if}
+            {#if ws.tryNow}
+              <span class="try">Try now</span>
             {/if}
           </button>
         </li>
@@ -297,6 +308,16 @@
     color: var(--text-muted);
     font-size: 0.8125rem;
     line-height: 1.4;
+  }
+  /* The whole row is the button; this says what tapping it does. */
+  .try {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 6px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    font-size: 0.8125rem;
   }
   .pair {
     padding: 16px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));

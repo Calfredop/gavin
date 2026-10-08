@@ -237,6 +237,30 @@ describe("the Unlock driving the hub", () => {
     expect(get(hub.live)[LAPTOP.id].state).toBe("ready");
   });
 
+  it("tries a dropped Workstation at once, without asking, when the owner taps it or comes back with the Unlock held", async () => {
+    const { native, w, hub } = await started();
+    const dropStudio = async () => {
+      w.legsTo(STUDIO)[w.legsTo(STUDIO).length - 1].hangUp();
+      await settle();
+      expect(get(hub.live)[STUDIO.id].state).toBe("unreachable");
+    };
+
+    await dropStudio();
+    hub.tryNow(STUDIO.id);
+    await settle(); // not the 100 ms its backoff says
+    expect(w.legsTo(STUDIO)).toHaveLength(2);
+    expect(get(hub.live)[STUDIO.id].state).toBe("ready");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await dropStudio();
+    native.emit("foreground");
+    await settle();
+    expect(w.legsTo(STUDIO)).toHaveLength(3);
+    expect(get(hub.live)[STUDIO.id].state).toBe("ready");
+    expect(native.keys.unlock).toHaveBeenCalledTimes(1);
+    expect(w.legsTo(LAPTOP)).toHaveLength(1);
+  });
+
   it("lends a visit the connection to a Workstation, following drops, reconnects and the lock", async () => {
     const { native, w, hub } = await started();
     const source = hub.connectionSource(STUDIO.id);

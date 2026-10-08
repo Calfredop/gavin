@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEMO } from "$companion/demo/sampleData";
+import type { LiveState } from "$shell/hub/live";
 import { keepPairing } from "$shell/hub/paired";
 import { DEMO_WORKSTATION, hubWorkstations, isWorkstationHost } from "$shell/hub/workstations";
 
@@ -34,6 +35,7 @@ describe("the Workstations hub's list", () => {
         state: "locked",
         label: "Locked",
         openable: false,
+        tryNow: false,
       },
       DEMO_WORKSTATION,
     ]);
@@ -51,8 +53,10 @@ describe("the Workstations hub's list", () => {
       [other.id]: { state: "desktop-app-not-running" },
       [third.id]: { state: "asleep" },
     });
-    // Only a ready Workstation opens: its desktop app serves its UI.
+    // Only a ready Workstation opens: its desktop app serves its UI. The
+    // others can be tried again now.
     expect(list.slice(0, 3).map((ws) => ws.openable)).toEqual([true, false, false]);
+    expect(list.map((ws) => ws.tryNow ?? false)).toEqual([false, true, true, false]);
     expect(list.slice(0, 3).map((ws) => [ws.state, ws.label, ws.summary])).toEqual([
       ["ready", "Ready", "1 waiting on you."],
       [
@@ -63,6 +67,27 @@ describe("the Workstations hub's list", () => {
       ["asleep", "Asleep", "Its Relay has not heard from it: it is asleep, or remote access is off at the desk."],
     ]);
     expect(DEMO_WORKSTATION.label).toBe("Ready");
+  });
+
+  it("offers Try now on one waiting out its backoff or whose desktop app did not answer, and Pair again on one that refused", () => {
+    const offered = (live: LiveState) => hubWorkstations([paired], { [paired.id]: live })[0];
+    for (const live of [
+      { state: "asleep" },
+      { state: "unreachable", problem: "Could not reach its Relay." },
+      { state: "desktop-app-not-running", reason: "not-answering" },
+    ] as LiveState[]) {
+      expect(offered(live).tryNow).toBe(true);
+    }
+    for (const live of [
+      { state: "locked" },
+      { state: "connecting" },
+      { state: "ready", items: [] },
+      { state: "failed", problem: "This phone’s keys failed." },
+    ] as LiveState[]) {
+      expect(offered(live).tryNow).toBe(false);
+    }
+    const refused = offered({ state: "refused", problem: "This Device was revoked at the Workstation." });
+    expect([refused.tryNow, refused.label]).toEqual([false, "Pair again"]);
   });
 
   it("gives every listed Workstation an id that can be its bundle's host", () => {

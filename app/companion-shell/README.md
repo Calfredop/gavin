@@ -502,7 +502,12 @@ ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
   every 15 s (which also finds a connection a dead network left open),
   and reconnects a drop from 1 s, doubling to 30 s, with no prompt. A
   Workstation that refused this Device for good (revoked, removed, unseen
-  ninety days) is not tried again until the next Unlock.
+  ninety days) is not tried again until the next Unlock. The owner need
+  not wait out the 30 s: an asleep, unreachable or desktop-app-not-running
+  row offers `Try now`, and tapping it -- or coming back to the app with
+  the Unlock still held -- dials (or asks) at once. At most once in 3 s,
+  and a try that fails leaves the unattended loop where it was, so a
+  phone tapped again and again does not dial its Relay from 1 s again.
 - **The inbox** (`src/shell/hub/inbox.ts`) is every ready Workstation's
   items, each labelled with its Workstation. One that is locked,
   connecting, asleep, unreachable, or whose desktop app is not running

@@ -39,6 +39,19 @@ export function reconnectDelay(failures: number, policy = RECONNECT): number {
   return Math.min(policy.ceilingMs, policy.floorMs * 2 ** exponent);
 }
 
+/// The owner asking to try a Workstation again now (`Try now`, the app
+/// back in front) is honoured at once, but no more than once in this long:
+/// each one dials through its Relay, and a phone tapped again and again
+/// must not dial it again and again.
+export const TRY_NOW_GAP_MS = 3_000;
+
+/// Whether the hub offers `Try now`: the Workstation is waiting out its
+/// backoff, or its desktop app did not answer. One that refused this
+/// Device is not tried again by asking -- it says `Pair again` instead.
+export function tryNowOffered(live: LiveState): boolean {
+  return live.state === "asleep" || live.state === "unreachable" || live.state === "desktop-app-not-running";
+}
+
 /// How often a connected Workstation is asked again what is waiting. The
 /// answer comes from what its desktop app already holds, so asking is
 /// cheap; it is also what finds a connection a dead network left open.

@@ -78,6 +78,9 @@ export type UnlockAction =
   | "prompt"
   /// Connect every paired Workstation that is not connected.
   | "connect"
+  /// Try every Workstation now, rather than when its backoff says: the
+  /// owner is looking.
+  | "refresh"
   /// Drop every connection, and end the native Unlock if it is held.
   | "disconnect";
 
@@ -118,9 +121,11 @@ export function stepUnlock(state: UnlockState, event: UnlockEvent, context: Unlo
 
     case "foreground":
       // Launch, or back from the background: each foreground stretch
-      // asks once. Already unlocked (a foreground the native side sent
-      // twice) or already asking, nothing more.
-      return state.state === "locked" ? ask(false) : stay;
+      // asks once, and a fresh Unlock connects everything at once. Back
+      // with one still held, nothing is asked, but what was waiting out
+      // a backoff is tried now: the owner is looking at it.
+      if (state.state === "locked") return ask(false);
+      return state.state === "unlocked" ? { state, actions: ["refresh"] } : stay;
 
     case "unlock-requested":
       return state.state === "locked" ? ask(false) : stay;

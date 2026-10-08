@@ -37,7 +37,7 @@ export interface UnlockedHubDeps {
   random(length: number): Uint8Array;
   log?(line: string): void;
   /// The live hub's clock and timers, for tests.
-  hub?: Partial<Pick<LiveHubDeps, "now" | "after" | "pollMs" | "reconnect">>;
+  hub?: Partial<Pick<LiveHubDeps, "now" | "after" | "pollMs" | "reconnect" | "tryNowGapMs">>;
 }
 
 export interface UnlockedHub {
@@ -46,6 +46,8 @@ export interface UnlockedHub {
   setPaired(records: PairedWorkstation[]): void;
   /// The human pressed Unlock.
   requestUnlock(): void;
+  /// The human tapped a Workstation that is not ready: try it now.
+  tryNow(id: string): void;
   /// Where a visit to a Workstation gets its connection: the one this
   /// hub holds to it, as it comes and goes (companion-23).
   connectionSource(id: string): ConnectionSource;
@@ -88,6 +90,7 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
       }),
     pollMs: deps.hub?.pollMs,
     reconnect: deps.hub?.reconnect,
+    tryNowGapMs: deps.hub?.tryNowGapMs,
     onChange: (snapshot) => {
       for (const [id, now] of Object.entries(snapshot)) {
         const was = logged.get(id);
@@ -118,6 +121,9 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
           break;
         case "connect":
           hub.setAllowed(true);
+          break;
+        case "refresh":
+          hub.refresh();
           break;
         case "disconnect":
           hub.setAllowed(false);
@@ -165,6 +171,8 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
     },
 
     requestUnlock: () => dispatch({ type: "unlock-requested" }),
+
+    tryNow: (id) => hub.tryNow(id),
 
     connectionSource: (id) => ({
       current: () => hub.connectionOf(id),

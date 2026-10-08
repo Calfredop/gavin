@@ -10,6 +10,12 @@
 //   again**, sooner at first and then less often (`reconnectDelay`), with
 //   no prompt: it signs under the same Unlock. A Workstation that refused
 //   this Device for good is not tried again until the next Unlock.
+// - **The owner asking** (`tryNow`, `refresh`: a tap on its row, the app
+//   back in front) tries it now -- dials one that is waiting, asks one
+//   that is connected -- without waiting out the backoff. Not more often
+//   than once in `tryNowGapMs`, and without starting the count over: if
+//   it fails, the loop carries on where it was, so a Relay is not dialled
+//   from 1 s again on every tap.
 // - **Not allowed** (`setAllowed(false)`, the Unlock ended): every
 //   attempt stops, every connection is dropped, and every Workstation is
 //   locked.
@@ -20,7 +26,7 @@
 // carry a generation, and an answer from an older one is ignored.
 import type { AttentionAnswer } from "$shell/connection/attention";
 import { refusalIsFinal, type Connection, type ConnectOutcome, type ConnectTarget } from "$shell/connection/connection";
-import { ATTENTION_POLL_MS, RECONNECT, reconnectDelay, type LiveState } from "$shell/hub/live";
+import { ATTENTION_POLL_MS, RECONNECT, reconnectDelay, TRY_NOW_GAP_MS, type LiveState } from "$shell/hub/live";
 import type { PairedWorkstation } from "$shell/hub/paired";
 
 export interface LiveHubDeps {
@@ -39,6 +45,7 @@ export interface LiveHubDeps {
   onLapsed(): void;
   pollMs?: number;
   reconnect?: typeof RECONNECT;
+  tryNowGapMs?: number;
   log?(line: string): void;
 }
 
@@ -47,9 +54,11 @@ export interface LiveHub {
   /// connected, if allowed), gone ones dropped.
   setPaired(records: PairedWorkstation[]): void;
   setAllowed(allowed: boolean): void;
-  /// Asks every connected Workstation again now, and tries every waiting
-  /// one now: the app came back to the front, or the human asked.
+  /// `tryNow` for every Workstation: the app came back to the front.
   refresh(): void;
+  /// The owner asked for a Workstation now: asked again if connected,
+  /// dialled if not, without waiting out its backoff.
+  tryNow(id: string): void;
   /// The live state of each tracked Workstation, by id.
   snapshot(): Record<string, LiveState>;
   /// The connection to a Workstation, while there is one. A visit
@@ -67,8 +76,11 @@ interface Tracked {
   /// Attempts that failed in a row.
   failures: number;
   connectedAt: number | null;
-  /// The next attempt, or the next ask.
+  /// The next attempt, or the next ask, and when it is due.
   timer: (() => void) | null;
+  dueAt: number | null;
+  /// When the owner last had it tried now (`tryNow`), or will.
+  triedNowAt: number | null;
   /// Refused for good: not tried again until the next Unlock.
   final: boolean;
 }
@@ -76,6 +88,7 @@ interface Tracked {
 export function createLiveHub(deps: LiveHubDeps): LiveHub {
   const pollMs = deps.pollMs ?? ATTENTION_POLL_MS;
   const policy = deps.reconnect ?? RECONNECT;
+  const tryNowGapMs = deps.tryNowGapMs ?? TRY_NOW_GAP_MS;
   const tracked = new Map<string, Tracked>();
   let allowed = false;
   let disposed = false;
@@ -95,6 +108,18 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
   const clearTimer = (t: Tracked): void => {
     t.timer?.();
     t.timer = null;
+    t.dueAt = null;
+  };
+
+  /// Runs `fn` for `t` in `ms`, unless it has moved on by then.
+  const schedule = (t: Tracked, ms: number, fn: (t: Tracked) => void): void => {
+    const generation = t.generation;
+    t.dueAt = deps.now() + ms;
+    t.timer = deps.after(ms, () => {
+      t.timer = null;
+      t.dueAt = null;
+      if (current(t, generation)) fn(t);
+    });
   };
 
   /// Stops everything under way for `t`, and makes the next generation.
@@ -119,12 +144,8 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     if (t.final || !allowed) return;
     t.failures += 1;
     const delay = reconnectDelay(t.failures, policy);
-    const generation = t.generation;
     deps.log?.(`[gavin-hub] ${t.record.id}: trying again in ${delay} ms`);
-    t.timer = deps.after(delay, () => {
-      t.timer = null;
-      if (current(t, generation)) void open(t);
-    });
+    schedule(t, delay, (t) => void open(t));
   };
 
   /// The connection ended, or an ask failed on it: drop it, and try
@@ -151,10 +172,7 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     if (!current(t, generation)) return;
     set(t, answer);
     clearTimer(t);
-    t.timer = deps.after(pollMs, () => {
-      t.timer = null;
-      if (current(t, generation)) void ask(t);
-    });
+    schedule(t, pollMs, (t) => void ask(t));
   };
 
   const open = async (t: Tracked): Promise<void> => {
@@ -216,6 +234,25 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     void open(t);
   };
 
+  const askOrOpen = (t: Tracked): void => {
+    if (t.connection) void ask(t);
+    else void open(t);
+  };
+
+  /// At once, or once `tryNowGapMs` has passed since the owner last asked
+  /// -- unless the loop has it due by then anyway. The count of failures
+  /// is left as it is.
+  const tryNow = (t: Tracked): void => {
+    if (!allowed || t.attempt || t.final) return;
+    const now = deps.now();
+    const at = t.triedNowAt === null ? now : Math.max(now, t.triedNowAt + tryNowGapMs);
+    if (t.dueAt !== null && t.dueAt <= at) return;
+    t.triedNowAt = at;
+    clearTimer(t);
+    if (at === now) askOrOpen(t);
+    else schedule(t, at - now, askOrOpen);
+  };
+
   return {
     setPaired(records) {
       const ids = new Set(records.map((r) => r.id));
@@ -242,6 +279,8 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
           failures: 0,
           connectedAt: null,
           timer: null,
+          dueAt: null,
+          triedNowAt: null,
           final: false,
         };
         tracked.set(record.id, t);
@@ -272,16 +311,12 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
     },
 
     refresh() {
-      if (!allowed) return;
-      for (const t of tracked.values()) {
-        if (t.connection) {
-          clearTimer(t);
-          void ask(t);
-        } else if (!t.attempt && !t.final) {
-          t.failures = 0;
-          connectIdle(t);
-        }
-      }
+      for (const t of tracked.values()) tryNow(t);
+    },
+
+    tryNow(id) {
+      const t = tracked.get(id);
+      if (t) tryNow(t);
     },
 
     snapshot,

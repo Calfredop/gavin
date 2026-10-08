@@ -7,7 +7,7 @@
 // opens once it is ready: its desktop app is what serves its UI and
 // answers it (ADR 0003).
 import { DEMO } from "$companion/demo/sampleData";
-import { liveLabel, liveSummary, type LiveState, type LiveStateName } from "$shell/hub/live";
+import { liveLabel, liveSummary, tryNowOffered, type LiveState, type LiveStateName } from "$shell/hub/live";
 import type { PairedWorkstation } from "$shell/hub/paired";
 
 export type WorkstationState = LiveStateName;
@@ -25,6 +25,9 @@ export interface HubWorkstation {
   /// Whether tapping it opens its UI: the Demo always; a paired one when
   /// it is ready, since its desktop app serves the bundle and answers it.
   openable: boolean;
+  /// Whether tapping it tries it again now (`Try now`): a paired one that
+  /// is not ready, and may be by now.
+  tryNow?: boolean;
 }
 
 /// The Demo Workstation, under the identity its own end of the channel
@@ -58,6 +61,7 @@ export function hubWorkstations(
         state: state.state,
         label: liveLabel(state),
         openable: state.state === "ready",
+        tryNow: tryNowOffered(state),
       };
     }),
     DEMO_WORKSTATION,

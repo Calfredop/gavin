@@ -396,3 +396,137 @@ describe("the live hub", () => {
     expect(b.latest()[LAPTOP.id]).toEqual({ state: "ready", items: [] });
   });
 });
+
+describe("the owner asking to try again now", () => {
+  /// Every dial to STUDIO finds it asleep until `back`; returns when each
+  /// dial was made.
+  function asleepUntilBack(b: ReturnType<typeof bench>) {
+    const dials: number[] = [];
+    const state = { back: false };
+    b.connect.mockImplementation(async (): Promise<ConnectOutcome> => {
+      dials.push(Date.now());
+      if (!state.back) return { outcome: "asleep" };
+      const made = { ...fakeConnection(), key: STUDIO.workstationKey };
+      b.connections.push(made);
+      return { outcome: "connected", connection: made.connection, deviceId: STUDIO.deviceId };
+    });
+    return { dials, state, gaps: () => dials.slice(1).map((at, i) => at - dials[i]) };
+  }
+
+  it("leaves the unattended loop backing off to 30 s, and no faster", async () => {
+    const b = bench();
+    const { gaps } = asleepUntilBack(b);
+    const hub = createLiveHub(b.deps);
+    hub.setPaired([STUDIO]);
+    hub.setAllowed(true);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(gaps().slice(0, 8)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+    expect(new Set(gaps().slice(5))).toEqual(new Set([30_000]));
+  });
+
+  it("dials a Workstation at once when the owner taps it, however far its backoff had got", async () => {
+    const b = bench();
+    const { dials, state } = asleepUntilBack(b);
+    const hub = createLiveHub(b.deps);
+    hub.setPaired([STUDIO]);
+    hub.setAllowed(true);
+    await vi.advanceTimersByTimeAsync(31_000); // dials at 0, 1, 3, 7, 15 and 31 s; the next is at 61 s
+    expect(dials).toHaveLength(6);
+    expect(b.latest()[STUDIO.id]).toEqual({ state: "asleep" });
+
+    // Remote access is turned back on at the desk.
+    state.back = true;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(dials).toHaveLength(6);
+    hub.tryNow(STUDIO.id);
+    await settle();
+    expect(dials).toHaveLength(7);
+    expect(b.latest()[STUDIO.id]).toEqual({ state: "ready", items: [] });
+  });
+
+  it("rate limits the owner's tries, and a try that fails leaves the unattended loop at its ceiling", async () => {
+    const b = bench();
+    const { dials, gaps } = asleepUntilBack(b);
+    const hub = createLiveHub({ ...b.deps, tryNowGapMs: 3_000 });
+    hub.setPaired([STUDIO]);
+    hub.setAllowed(true);
+    await vi.advanceTimersByTimeAsync(32_000); // six dials, the last at 31 s
+    expect(dials).toHaveLength(6);
+
+    hub.tryNow(STUDIO.id); // at 32 s: at once, and still asleep
+    await settle();
+    expect(dials).toHaveLength(7);
+    // The loop did not start over from 1 s.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(dials).toHaveLength(7);
+
+    // Tapped again and again: one dial when the gap has passed, at 35 s.
+    hub.tryNow(STUDIO.id);
+    await vi.advanceTimersByTimeAsync(500);
+    hub.tryNow(STUDIO.id);
+    hub.tryNow(STUDIO.id);
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(dials).toHaveLength(7);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dials).toHaveLength(8);
+
+    // ...and the unattended loop carries on 30 s after the last one.
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(dials).toHaveLength(8);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dials).toHaveLength(9);
+    expect(gaps().slice(5)).toEqual([1_000, 3_000, 30_000]);
+  });
+
+  it("does not hold back a dial the unattended loop has due sooner", async () => {
+    const b = bench();
+    const { dials } = asleepUntilBack(b);
+    const hub = createLiveHub({ ...b.deps, tryNowGapMs: 3_000 });
+    hub.setPaired([STUDIO]);
+    hub.setAllowed(true);
+    await settle(); // the loop dials at 0 s
+    hub.tryNow(STUDIO.id); // the owner's first: at once; the loop's next is at 2 s
+    await vi.advanceTimersByTimeAsync(500);
+    hub.tryNow(STUDIO.id); // within the gap, which ends after the loop's next
+    await vi.advanceTimersByTimeAsync(3_499); // to 6 s less a millisecond
+    expect(dials.map((at) => at - dials[0])).toEqual([0, 0, 2_000]);
+  });
+
+  it("asks a connected Workstation again now, rather than dialling it", async () => {
+    const b = bench();
+    let answer: AttentionAnswer = { state: "desktop-app-not-running", reason: "not-answering" };
+    b.willConnect(STUDIO, async () => answer);
+    const hub = createLiveHub({ ...b.deps, pollMs: 15_000 });
+    hub.setPaired([STUDIO]);
+    hub.setAllowed(true);
+    await settle();
+    expect(b.latest()[STUDIO.id]).toEqual({ state: "desktop-app-not-running", reason: "not-answering" });
+
+    // The desktop app is opened at the desk.
+    answer = { state: "ready", items: [] };
+    hub.tryNow(STUDIO.id);
+    await settle();
+    expect(b.latest()[STUDIO.id]).toEqual({ state: "ready", items: [] });
+    expect(b.deps.ask).toHaveBeenCalledTimes(2);
+    expect(b.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries nothing while locked, nor a Workstation that refused this Device for good", async () => {
+    const b = bench();
+    b.willFail(STUDIO, { outcome: "refused", reason: "revoked", problem: "This Device was revoked at the Workstation." });
+    const hub = createLiveHub(b.deps);
+    hub.setPaired([STUDIO, LAPTOP]);
+    hub.tryNow(LAPTOP.id);
+    await settle();
+    expect(b.connect).not.toHaveBeenCalled();
+
+    hub.setAllowed(true);
+    await settle();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const before = b.connect.mock.calls.filter(([target]) => target.workstationKey === STUDIO.workstationKey).length;
+    hub.tryNow(STUDIO.id);
+    hub.tryNow("ws-unknown");
+    await settle();
+    expect(b.connect.mock.calls.filter(([target]) => target.workstationKey === STUDIO.workstationKey)).toHaveLength(before);
+  });
+});

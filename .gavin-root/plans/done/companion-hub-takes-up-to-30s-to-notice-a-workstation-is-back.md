@@ -2,7 +2,7 @@
 order: 18432
 kind: task
 title: Companion hub: a Workstation that comes back is noticed up to 30 s late, with no way to retry now
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---
@@ -16,7 +16,7 @@ Found on 2026-10-08 by `companion-iphone-smoke-tests.md` (D4), on a physical iPh
 - Keep the Relay load in check: a manual retry is rate limited (one per few seconds) and does not reset the cap's count for the background loop.
 
 **Acceptance.**
-- [ ] Tapping the row, or foregrounding the app, retries within about a second
-- [ ] The unattended loop still backs off to 30 s and does not spin
-- [ ] A test in `liveHub.test.ts` covers the reset and the rate limit
+- [x] Tapping the row, or foregrounding the app, retries within about a second
+- [x] The unattended loop still backs off to 30 s and does not spin
+- [x] A test in `liveHub.test.ts` covers the reset and the rate limit
 - [ ] Human test: turn Remote access off and on at the desk; tapping `Try now` brings the Workstation back at once
