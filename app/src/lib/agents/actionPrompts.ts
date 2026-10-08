@@ -323,6 +323,7 @@ export const ACTION_PROMPTS: ActionPrompt[] = [
   agentBuiltin(byId("builtin:merge"), "tools"),
   agentBuiltin(byId("builtin:merge-into"), "tools"),
   agentBuiltin(byId("builtin:browser-test"), "tools"),
+  agentBuiltin(byId("builtin:browser-test-playwright"), "tools"),
   {
     ...agentBuiltin(byId("builtin:code-review"), "tools"),
     // Keep the tool body’s default in sync with action:code-review’s

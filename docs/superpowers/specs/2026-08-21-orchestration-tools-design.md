@@ -369,6 +369,7 @@ three kinds. `{{param}}` defaults in brackets.
 | `builtin:run-tests` | Run tests | command | `command` [npm test] |
 | `builtin:unity-tests` | Run Unity tests | command | `unity`, `project` [.], `platform` [EditMode], `results` [TestResults.xml] |
 | `builtin:browser-test` | Browser test (Chrome) | agent | `url` [http://localhost:5173], `checks` |
+| `builtin:browser-test-playwright` | Browser test (Playwright) | agent | `url` [http://localhost:5173], `checks` |
 | `builtin:code-review` | Review this branch | agent | `base` [main] |
 | `builtin:notify` | Send a notification | script | `title` [gavin], `message` |
 | `builtin:send-email` | Send an email (Mail.app) | script | `to`, `subject`, `body` |
