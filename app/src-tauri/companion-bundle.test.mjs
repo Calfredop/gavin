@@ -76,9 +76,9 @@ describe("the dev key", () => {
     );
     expect(dataDir({ HOME: "/home/x" }, "linux")).toBe("/home/x/.local/share/gavin");
     expect(dataDir({ HOME: "/home/x", XDG_DATA_HOME: "/xdg" }, "linux")).toBe("/xdg/gavin");
-    expect(dataDir({ LOCALAPPDATA: "C:\\Users\\x\\AppData\\Local" }, "win32")).toBe(
-      join("C:\\Users\\x\\AppData\\Local", "gavin")
-    );
+    expect(dataDir({ LOCALAPPDATA: "C:\\Users\\x\\AppData\\Local" }, "win32")).toBe("C:\\Users\\x\\AppData\\Local\\gavin");
+    expect(devKeyPath({ HOME: "/home/x" }, "linux")).toBe("/home/x/.local/share/gavin/companion-dev-bundle-key.json");
+    expect(devKeyPath({ LOCALAPPDATA: "C:\\L" }, "win32")).toBe("C:\\L\\gavin\\companion-dev-bundle-key.json");
     expect(devKeyPath({ HOME: "/home/x", GAVIN_DEV_BUNDLE_KEY_FILE: "/k.json" }, "linux")).toBe("/k.json");
   });
 
