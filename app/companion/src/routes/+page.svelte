@@ -144,9 +144,7 @@
               <PhoneSessions workspace={open} />
             </div>
           {:else if $view.surface === "rails"}
-            <div class="scroll">
-              <PhoneRails workspace={open} />
-            </div>
+            <PhoneRails workspace={open} />
           {:else if $view.surface === "git"}
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}

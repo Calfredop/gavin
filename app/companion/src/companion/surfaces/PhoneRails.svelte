@@ -1,9 +1,11 @@
 <script lang="ts">
-  // One workspace's rails: each one's state and the press that moves it,
-  // and, a tap on Edit away, its stages and steps to change. A thin
-  // template over phoneRails.ts (what each rail says) and state/rails.ts
-  // (what each press does). Start and Resume arm a rail; the desk runs it.
-  import { onMount } from "svelte";
+  // One workspace's rails, side by side as the desk lays them out: a
+  // swipe apart, one to a page, with a strip of their names above. Each
+  // says its state and the press that moves it, and, a tap on Edit away,
+  // its stages and steps to change. A thin template over phoneRails.ts
+  // (what each rail says) and state/rails.ts (what each press does).
+  // Start and Resume arm a rail; the desk runs it.
+  import { onMount, tick, untrack } from "svelte";
   import { ChevronDown, ChevronUp, Pause, Pencil, Play, Plus, RotateCcw, Trash2, X } from "@lucide/svelte";
   import { kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -27,7 +29,15 @@
   } from "$companion/state/rails";
   import { onReconnect, reachability, shownError } from "$companion/state/reachability";
   import { openCard, openTerminal } from "$companion/state/workstation";
-  import { cardsToPlace, PRESS_LABEL, railRows, railStateText, type RailRow } from "$companion/surfaces/phoneRails";
+  import { columnAt, scrollBehaviour } from "$companion/surfaces/phoneBoard";
+  import {
+    cardsToPlace,
+    openingRail,
+    PRESS_LABEL,
+    railRows,
+    railStateText,
+    type RailRow,
+  } from "$companion/surfaces/phoneRails";
 
   interface Props {
     workspace: Workspace;
@@ -80,7 +90,66 @@
   }
 
   async function makeRail(): Promise<void> {
-    edit(await newRail(workspace.id));
+    const id = await newRail(workspace.id);
+    edit(id);
+    await tick();
+    show(id);
+  }
+
+  // ---- the pager ------------------------------------------------------------
+  let pager = $state<HTMLElement | null>(null);
+  let shown = $state<string | null>(null);
+  // The rail a tap is on its way to. While it is set the strip already
+  // names it, and the pages the pager passes on the way are not the
+  // human's choice to follow.
+  let heading: string | null = null;
+
+  // The rail the surface opens on, once its rails first arrive, and again
+  // only when the one shown is deleted: every push redraws the rails, and
+  // a rail the human swiped to must not be taken from under their thumb.
+  $effect(() => {
+    if (!pager || rails.length === 0) return;
+    untrack(() => {
+      if (shown !== null && rails.some((r) => r.id === shown)) return;
+      shown = openingRail(rails);
+      const index = rails.findIndex((r) => r.id === shown);
+      if (pager) pager.scrollLeft = Math.max(0, index) * pager.clientWidth;
+    });
+  });
+
+  function show(railId: string): void {
+    const index = rails.findIndex((r) => r.id === railId);
+    if (!pager || index === -1) return;
+    shown = railId;
+    heading = railId;
+    pager.scrollTo({
+      left: index * pager.clientWidth,
+      behavior: scrollBehaviour({
+        reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        visible: document.visibilityState === "visible",
+      }),
+    });
+  }
+
+  // A swipe settles on a page; the strip above follows it.
+  function followSwipe(): void {
+    if (!pager) return;
+    const at = columnAt(
+      rails.map((r) => r.id),
+      pager.scrollLeft,
+      pager.clientWidth
+    );
+    if (at === null) return;
+    if (heading !== null) {
+      if (at === heading) heading = null;
+      return;
+    }
+    if (at !== shown) shown = at;
+  }
+
+  // A finger on the pager takes over from a tap still on its way.
+  function takeOver(): void {
+    heading = null;
   }
 
   async function add(row: RailRow): Promise<void> {
@@ -91,212 +160,248 @@
 </script>
 
 <div class="rails">
-  <div class="bar">
-    <button type="button" class="action" onclick={() => void makeRail()} disabled={!orch}>
-      <Plus size={16} />
-      <span>New rail</span>
-    </button>
-    <p class="hint">Starting a rail arms it. The desk runs it.</p>
-  </div>
-
-  {#if saveError || failed}
-    <div class="error" role="alert">
-      <span>{saveError ?? failed}</span>
-      <button
-        type="button"
-        class="icon"
-        aria-label="Dismiss"
-        onclick={() => {
-          dismissSaveError(workspace.id);
-          failed = null;
-        }}><X size={16} /></button
-      >
+  <div class="top">
+    <div class="bar">
+      <button type="button" class="action" onclick={() => void makeRail()} disabled={!orch}>
+        <Plus size={16} />
+        <span>New rail</span>
+      </button>
+      <p class="hint">Starting a rail arms it. The desk runs it.</p>
     </div>
-  {/if}
+
+    {#if saveError || failed}
+      <div class="error" role="alert">
+        <span>{saveError ?? failed}</span>
+        <button
+          type="button"
+          class="icon"
+          aria-label="Dismiss"
+          onclick={() => {
+            dismissSaveError(workspace.id);
+            failed = null;
+          }}><X size={16} /></button
+        >
+      </div>
+    {/if}
+  </div>
 
   {#if !orch}
     <p class="empty">Loading the rails…</p>
   {:else if rails.length === 0}
     <p class="empty">No rails in this workspace yet. A rail runs its cards one stage after another.</p>
   {:else}
-    {#each rails as row (row.id)}
-      {@const open = editing === row.id}
-      <section class="rail" aria-label="Rail {row.name}">
-        <header class="head">
-          <StatusBadge indicator={railIndicator(row.state)} size={16} tip={null} />
-          <span class="title">
-            {#if open}
-              <input
-                class="name-field"
-                aria-label="Rail name"
-                value={row.name}
-                onchange={(e) => void renameRail(workspace.id, row.id, e.currentTarget.value).then(report)}
-              />
-            {:else}
-              <span class="name">{row.name}</span>
-            {/if}
-            <span class="said">{railStateText(row)}{#if row.trigger}<span class="trigger">{` · ${row.trigger}`}</span>{/if}</span>
-          </span>
-        </header>
+    <div class="strip" role="tablist" aria-label="Rails">
+      {#each rails as row (row.id)}
+        <button
+          type="button"
+          role="tab"
+          class="tab"
+          class:shown={row.id === shown}
+          aria-selected={row.id === shown}
+          onclick={() => show(row.id)}
+        >
+          <StatusBadge indicator={railIndicator(row.state)} size={14} tip={null} />
+          <span class="tab-name">{row.name}</span>
+        </button>
+      {/each}
+    </div>
 
-        <div class="presses">
-          {#if row.press}
-            <button
-              type="button"
-              class="action primary"
-              disabled={pressing !== null}
-              onclick={() => void press(row)}
-            >
-              {#if row.press === "pause"}<Pause size={16} />{:else}<Play size={16} />{/if}
-              <span>{PRESS_LABEL[row.press]}</span>
-            </button>
-          {/if}
-          {#if row.state !== "running" && (row.state === "paused" || row.finished)}
-            <button type="button" class="action" onclick={() => void resetRailAsked(workspace.id, row.id)}>
-              <RotateCcw size={16} />
-              <span>Reset</span>
-            </button>
-          {/if}
-          <button type="button" class="action" aria-pressed={open} onclick={() => edit(open ? null : row.id)}>
-            <Pencil size={16} />
-            <span>{open ? "Done" : "Edit"}</span>
-          </button>
-        </div>
-
-        {#if row.stages.length === 0}
-          <p class="empty small">Nothing on this rail yet.</p>
-        {/if}
-        <ol class="stages">
-          {#each row.stages as stage (stage.id)}
-            <li class="stage" class:current={stage.current}>
-              <div class="stage-head">
-                <span class="stage-label">{stage.label}</span>
-                {#if stage.group}
-                  {#if open}
-                    <select
-                      class="mode"
-                      aria-label="How {stage.label} runs"
-                      value={stage.mode}
-                      onchange={(e) =>
-                        void setStageMode(
-                          workspace.id,
-                          stage.id,
-                          e.currentTarget.value === "sequence" ? "sequence" : "parallel"
-                        ).then(report)}
-                    >
-                      <option value="sequence">one at a time</option>
-                      <option value="parallel">all at once</option>
-                    </select>
-                  {:else}
-                    <span class="mode-said">{stage.mode === "sequence" ? "one at a time" : "all at once"}</span>
-                  {/if}
-                {/if}
+    <div
+      class="pager"
+      role="group"
+      aria-label="Rails, one at a time"
+      bind:this={pager}
+      onscroll={followSwipe}
+      ontouchstart={takeOver}
+      onpointerdown={takeOver}
+    >
+      {#each rails as row (row.id)}
+        {@const open = editing === row.id}
+        <div class="page">
+          <section class="rail" aria-label="Rail {row.name}">
+            <header class="head">
+              <StatusBadge indicator={railIndicator(row.state)} size={16} tip={null} />
+              <span class="title">
                 {#if open}
-                  <span class="stage-tools">
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Move {stage.label} up"
-                      disabled={stage.first}
-                      onclick={() => void moveStage(workspace.id, row.id, stage.id, -1).then(report)}
-                      ><ChevronUp size={18} /></button
-                    >
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Move {stage.label} down"
-                      disabled={stage.last}
-                      onclick={() => void moveStage(workspace.id, row.id, stage.id, 1).then(report)}
-                      ><ChevronDown size={18} /></button
-                    >
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Remove {stage.label}"
-                      onclick={() => void removeStageAsked(workspace.id, stage.id).then(report)}
-                      ><Trash2 size={16} /></button
-                    >
-                  </span>
+                  <input
+                    class="name-field"
+                    aria-label="Rail name"
+                    value={row.name}
+                    onchange={(e) => void renameRail(workspace.id, row.id, e.currentTarget.value).then(report)}
+                  />
+                {:else}
+                  <span class="name">{row.name}</span>
                 {/if}
-              </div>
-              <ul class="steps">
-                {#each stage.steps as step (step.id)}
-                  <li class="step">
-                    <button
-                      type="button"
-                      class="step-open"
-                      disabled={!step.sessionId && !step.cardPath}
-                      onclick={() => {
-                        if (step.sessionId) openTerminal(step.sessionId);
-                        else if (step.cardPath) openCard(step.cardPath);
-                      }}
-                    >
-                      <StatusBadge indicator={stepIndicator(step.state)} size={14} tip={null} />
-                      <span class="step-text">
-                        <span class="step-title">{step.title}</span>
-                        {#if step.reason}
-                          <span class="step-said problem">{step.reason}</span>
-                        {:else if step.column}
-                          <span class="step-said">{step.column}</span>
-                        {/if}
-                      </span>
-                    </button>
-                    {#if open}
-                      <button
-                        type="button"
-                        class="icon"
-                        aria-label="Take {step.title} off the rail"
-                        onclick={() => void removeStep(workspace.id, step.id).then(report)}><X size={16} /></button
-                      >
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            </li>
-          {/each}
-        </ol>
+                <span class="said">{railStateText(row)}{#if row.trigger}<span class="trigger">{` · ${row.trigger}`}</span>{/if}</span>
+              </span>
+            </header>
 
-        {#if open}
-          <div class="adding">
-            <select class="pick" aria-label="Card to add" bind:value={picked}>
-              <option value="">Add a card…</option>
-              {#each choices as choice (choice.path)}
-                <option value={choice.path}>{choice.title}{choice.column ? ` · ${choice.column}` : ""}</option>
-              {/each}
-            </select>
-            <select class="pick" aria-label="Where it goes" bind:value={into}>
-              <option value="">as a new stage</option>
+            <div class="presses">
+              {#if row.press}
+                <button
+                  type="button"
+                  class="action primary"
+                  disabled={pressing !== null}
+                  onclick={() => void press(row)}
+                >
+                  {#if row.press === "pause"}<Pause size={16} />{:else}<Play size={16} />{/if}
+                  <span>{PRESS_LABEL[row.press]}</span>
+                </button>
+              {/if}
+              {#if row.state !== "running" && (row.state === "paused" || row.finished)}
+                <button type="button" class="action" onclick={() => void resetRailAsked(workspace.id, row.id)}>
+                  <RotateCcw size={16} />
+                  <span>Reset</span>
+                </button>
+              {/if}
+              <button type="button" class="action" aria-pressed={open} onclick={() => edit(open ? null : row.id)}>
+                <Pencil size={16} />
+                <span>{open ? "Done" : "Edit"}</span>
+              </button>
+            </div>
+
+            {#if row.stages.length === 0}
+              <p class="empty small">Nothing on this rail yet.</p>
+            {/if}
+            <ol class="stages">
               {#each row.stages as stage (stage.id)}
-                <option value={stage.id}>into {stage.label}</option>
+                <li class="stage" class:current={stage.current}>
+                  <div class="stage-head">
+                    <span class="stage-label">{stage.label}</span>
+                    {#if stage.group}
+                      {#if open}
+                        <select
+                          class="mode"
+                          aria-label="How {stage.label} runs"
+                          value={stage.mode}
+                          onchange={(e) =>
+                            void setStageMode(
+                              workspace.id,
+                              stage.id,
+                              e.currentTarget.value === "sequence" ? "sequence" : "parallel"
+                            ).then(report)}
+                        >
+                          <option value="sequence">one at a time</option>
+                          <option value="parallel">all at once</option>
+                        </select>
+                      {:else}
+                        <span class="mode-said">{stage.mode === "sequence" ? "one at a time" : "all at once"}</span>
+                      {/if}
+                    {/if}
+                    {#if open}
+                      <span class="stage-tools">
+                        <button
+                          type="button"
+                          class="icon"
+                          aria-label="Move {stage.label} up"
+                          disabled={stage.first}
+                          onclick={() => void moveStage(workspace.id, row.id, stage.id, -1).then(report)}
+                          ><ChevronUp size={18} /></button
+                        >
+                        <button
+                          type="button"
+                          class="icon"
+                          aria-label="Move {stage.label} down"
+                          disabled={stage.last}
+                          onclick={() => void moveStage(workspace.id, row.id, stage.id, 1).then(report)}
+                          ><ChevronDown size={18} /></button
+                        >
+                        <button
+                          type="button"
+                          class="icon"
+                          aria-label="Remove {stage.label}"
+                          onclick={() => void removeStageAsked(workspace.id, stage.id).then(report)}
+                          ><Trash2 size={16} /></button
+                        >
+                      </span>
+                    {/if}
+                  </div>
+                  <ul class="steps">
+                    {#each stage.steps as step (step.id)}
+                      <li class="step">
+                        <button
+                          type="button"
+                          class="step-open"
+                          disabled={!step.sessionId && !step.cardPath}
+                          onclick={() => {
+                            if (step.sessionId) openTerminal(step.sessionId);
+                            else if (step.cardPath) openCard(step.cardPath);
+                          }}
+                        >
+                          <StatusBadge indicator={stepIndicator(step.state)} size={14} tip={null} />
+                          <span class="step-text">
+                            <span class="step-title">{step.title}</span>
+                            {#if step.reason}
+                              <span class="step-said problem">{step.reason}</span>
+                            {:else if step.column}
+                              <span class="step-said">{step.column}</span>
+                            {/if}
+                          </span>
+                        </button>
+                        {#if open}
+                          <button
+                            type="button"
+                            class="icon"
+                            aria-label="Take {step.title} off the rail"
+                            onclick={() => void removeStep(workspace.id, step.id).then(report)}><X size={16} /></button
+                          >
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </li>
               {/each}
-            </select>
-            <button type="button" class="action" disabled={!picked} onclick={() => void add(row)}>
-              <Plus size={16} />
-              <span>Add</span>
-            </button>
-          </div>
-          <button
-            type="button"
-            class="action danger"
-            onclick={() =>
-              void deleteRailAsked(workspace.id, row.id).then((error) => {
-                report(error);
-                if (!error && !$orchestrations[workspace.id]?.rails.some((r) => r.id === row.id)) edit(null);
-              })}
-          >
-            <Trash2 size={16} />
-            <span>Delete rail</span>
-          </button>
-        {/if}
-      </section>
-    {/each}
+            </ol>
+
+            {#if open}
+              <div class="adding">
+                <select class="pick" aria-label="Card to add" bind:value={picked}>
+                  <option value="">Add a card…</option>
+                  {#each choices as choice (choice.path)}
+                    <option value={choice.path}>{choice.title}{choice.column ? ` · ${choice.column}` : ""}</option>
+                  {/each}
+                </select>
+                <select class="pick" aria-label="Where it goes" bind:value={into}>
+                  <option value="">as a new stage</option>
+                  {#each row.stages as stage (stage.id)}
+                    <option value={stage.id}>into {stage.label}</option>
+                  {/each}
+                </select>
+                <button type="button" class="action" disabled={!picked} onclick={() => void add(row)}>
+                  <Plus size={16} />
+                  <span>Add</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="action danger"
+                onclick={() =>
+                  void deleteRailAsked(workspace.id, row.id).then((error) => {
+                    report(error);
+                    if (!error && !$orchestrations[workspace.id]?.rails.some((r) => r.id === row.id)) edit(null);
+                  })}
+              >
+                <Trash2 size={16} />
+                <span>Delete rail</span>
+              </button>
+            {/if}
+          </section>
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 
 <style>
   .rails {
-    padding: 0 max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
-      max(12px, env(safe-area-inset-left));
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .top {
+    flex: 0 0 auto;
+    padding: 0 max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
   }
   .bar {
     display: flex;
@@ -373,7 +478,7 @@
   }
   .empty {
     margin: 0;
-    padding: 20px 4px;
+    padding: 20px max(16px, env(safe-area-inset-right)) 20px max(16px, env(safe-area-inset-left));
     color: var(--text-muted);
     font-size: 0.875rem;
     line-height: 1.5;
@@ -381,8 +486,70 @@
   .empty.small {
     padding: 8px 0 0;
   }
+  /* The strip is the rails at a glance -- each one's name and state --
+     and the way between them for a thumb that would rather tap than
+     swipe. The board's, so the two surfaces page alike. */
+  .strip {
+    display: flex;
+    flex: 0 0 auto;
+    overflow-x: auto;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-sunken);
+    scrollbar-width: none;
+  }
+  .tab {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    max-width: 60vw;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+  .tab-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab.shown {
+    border-bottom-color: var(--accent);
+    color: var(--text);
+  }
+  .tab:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: -2px;
+  }
+  /* One rail to a page, a swipe to the next: the desk's rails stand
+     side by side, and on a phone that row is this. Each page scrolls its
+     own rail down. */
+  .pager {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+  .page {
+    flex: 0 0 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 12px max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+    overflow-y: auto;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
   .rail {
-    margin-top: 12px;
     padding: 12px;
     border: 1px solid var(--border);
     border-radius: 8px;

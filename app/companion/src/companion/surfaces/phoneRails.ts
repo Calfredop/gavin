@@ -175,3 +175,9 @@ export function railStateText(row: RailRow): string {
 
 /// The words on a rail's press.
 export const PRESS_LABEL: Record<RailPress, string> = { start: "Start", resume: "Resume", pause: "Pause" };
+
+/// The rail the surface opens on, once its rails first arrive: the one
+/// running, else one paused on the human, else the first.
+export function openingRail(rows: RailRow[]): string | null {
+  return (rows.find((r) => r.state === "running") ?? rows.find((r) => r.state === "paused") ?? rows[0])?.id ?? null;
+}

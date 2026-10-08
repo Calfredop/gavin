@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
-import { cardsToPlace, railRows, railStateText, type RailsInput } from "$companion/surfaces/phoneRails";
+import { cardsToPlace, openingRail, railRows, railStateText, type RailRow, type RailsInput } from "$companion/surfaces/phoneRails";
 
 function atlas(edit?: (orch: Orchestration) => void): RailsInput {
   const state = sampleState();
@@ -91,5 +91,35 @@ describe("the cards a rail can take on", () => {
     expect(titles).not.toContain("Audit log export");
     expect(titles).toContain("Upgrade the OAuth library");
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
+  });
+});
+
+describe("the rail the surface opens on", () => {
+  const row = (id: string, state: RailRow["state"]): RailRow => ({
+    id,
+    name: id,
+    state,
+    finished: false,
+    press: null,
+    trigger: null,
+    stages: [],
+    stepCount: 0,
+  });
+
+  it("is the one running, wherever it sits", () => {
+    expect(openingRail([row("a", "idle"), row("b", "paused"), row("c", "running")])).toBe("c");
+  });
+
+  it("is one paused on the human when none runs", () => {
+    expect(openingRail([row("a", "idle"), row("b", "paused")])).toBe("b");
+  });
+
+  it("is the first when nothing moves, and none without rails", () => {
+    expect(openingRail([row("a", "idle"), row("b", "idle")])).toBe("a");
+    expect(openingRail([])).toBeNull();
+  });
+
+  it("is the demo's running rail", () => {
+    expect(openingRail(railRows(atlas()))).toBe(railRows(atlas())[0].id);
   });
 });
