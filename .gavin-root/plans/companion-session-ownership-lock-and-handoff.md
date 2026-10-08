@@ -1,4 +1,5 @@
 ---
+order: 25600
 title: Sessions worked by a Device lock for everyone else, with a take-over CTA and Device-to-Device hand-off
 status: To Do
 priority: high

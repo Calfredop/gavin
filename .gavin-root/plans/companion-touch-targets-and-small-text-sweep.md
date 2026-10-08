@@ -1,4 +1,5 @@
 ---
+order: 27648
 kind: task
 title: Companion: sweep touch targets under 44 px and text under 11 px
 status: To Do
@@ -15,6 +16,10 @@ Found on a physical iPhone 16 Pro (iOS 27.0, 402x874 CSS px, DPR 3), debug build
 - Git: every stage and unstage button 40x32, `Stage all` 79x36, `Unstage all` 91x36, the commit `Summary` field 378x37.
 - Files, file page: `Formatted` 106x34, `Plain` 72x34, `Edit` 64x34.
 - Settings: the eight colour swatches 32x32, number inputs 44x32.
+- Every confirm dialog (`AppDialog`): `Cancel` and the action button are 26 px tall: seen on End session and on Reset rail. Checklist rows are fine (the whole `label` is 374x45; only the 22 px box itself is small).
+- Rail editor and New card sheet selects: 29 to 37 px tall.
+- End-session confirm (terminal, a destructive choice): `Cancel` and `End session` are both 26 px tall, side by side.
+- Git commit box: the `Amend` checkbox input is 20x20 (check the label around it).
 - Add a workspace: breadcrumb `/` 18x44, `demo` 37x44.
 
 The bundle README says `GitFileRow` actions are shown "at a fingertip's size", `ColourPicker`'s swatches and `FallbackChainEditor`'s controls are "fingertip-sized" and `FileEditor`'s mode switch is "thumb-sized". They measure 32 to 40 px here, so either the media query that grows them does not match inside the bundle webview or the target is a different number. Find out which.
