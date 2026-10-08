@@ -382,9 +382,9 @@ would refuse says why rather than going dead, since a phone has no tooltip.
 ## What is here, and what is not
 
 The workspace list, with the Workstation's settings behind the gear in its
-header and **Add a workspace…** under it; and six surfaces for an open
+header and **Add a workspace…** under it; and eight surfaces for an open
 workspace, switched by the strip under the header (`SurfaceTabs`, which
-scrolls sideways where a phone is too narrow for all six, and counts the
+scrolls sideways where a phone is too narrow for all eight, and counts the
 agents waiting on the human on Sessions). The view remembers which, where
 Files was, and a settings screen left open, on the Device — never a
 half-finished add — and the next workspace opens on the surface last chosen.
@@ -392,6 +392,18 @@ half-finished add — and the next workspace opens on the surface last chosen.
 **Board**, its cards, **Rails** and **Sessions** with their terminals are
 above. An inbox item lands on its card, or on the terminal of the session it
 names.
+
+**Decisions** and **Review** (`PhoneItems.svelte` over `phoneItems.ts`): the
+cards owed a `Decision:` or a `Human test:`, each item answered in place with
+the desk's own row (`DecisionsItemRow`, `answerHumanItem`), and a card's name
+opening it over the list, which Back returns to. The lists are the desk's:
+Decisions is `decisionsList` with no sessions or rails handed in — a waiting
+agent is the Sessions surface's, a rail's gate the Rails surface's — and
+Review is `humanTestList` without the diff beside it. Each head carries the
+desk's **Clean stale decisions** / **Clean stale tests** (`requestCleanStale`,
+the same confirm and prompt), started as Organize is (`DEVICE_AGENT_HOST`):
+refused at a full machine rather than queued, the session the desk's to place,
+the run opened in the phone's terminal. A press it cannot make says why.
 
 **Git** (`PhoneGit*.svelte` over `phoneGit.ts`): the branch and where it
 stands, Fetch, Pull and Push, the op bar with its progress, the error and

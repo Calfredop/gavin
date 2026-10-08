@@ -11,7 +11,6 @@
 // its own scheduler launches the steps -- which the phone then hears the
 // same way, and draws.
 import { get } from "svelte/store";
-import { nowStore } from "$lib/agents/agentPauseState";
 import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
 import { askConfirm } from "$lib/core/dialog";
 import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
@@ -52,13 +51,11 @@ import {
   saveErrors,
   setStageModeAction,
   startRail,
-  type OrchestrationLaunchHost,
 } from "$lib/orchestration/orchestrationState";
 import { fetchTools, renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { groupRemoveConfirm, railDeleteConfirm } from "$lib/orchestration/railConfirm";
-import { DEVICE_LAUNCH_HOST } from "$companion/state/cards";
+import { DEVICE_AGENT_HOST, readyToLaunch } from "$companion/state/cards";
 import { isReachabilityError } from "$companion/state/reachability";
-import { launchTables, loadLaunchTables } from "$companion/state/sessions";
 import { openTerminal } from "$companion/state/workstation";
 import type { RailPress } from "$companion/surfaces/phoneRails";
 
@@ -188,16 +185,6 @@ export function moveStage(workspaceId: string, railId: string, stageId: string, 
 
 // ---- Organize and Reorganize -----------------------------------------
 
-/// An Organize or a rail's Reorganize as a Device starts one: the card
-/// launch's wall and placing (`DEVICE_LAUNCH_HOST`) -- refused rather than
-/// queued, the session the desk's to place -- and the run shown in the
-/// phone's own terminal rather than by moving the desk's tabs.
-const DEVICE_ORGANIZE_HOST: OrchestrationLaunchHost = {
-  hold: DEVICE_LAUNCH_HOST.hold,
-  place: DEVICE_LAUNCH_HOST.place,
-  reveal: async (sessionId) => openTerminal(sessionId),
-};
-
 /// What the desk's Orchestration tab hands either agent, read from the
 /// same stores: the cards, the tool library -- the built-ins until the
 /// workspace's own have arrived -- and the conflicts numbered as the
@@ -214,14 +201,6 @@ async function agentBrief(workspaceId: string, orch: Orchestration) {
     detectConflicts(orch, tree, refs?.worktrees ?? null, refs?.branches.map((b) => b.name) ?? null)
   );
   return { cards, tools, numbered };
-}
-
-/// The agent tables, read before a launch as a card's run reads them; the
-/// pause window judged against the time now, since a phone runs no ticker.
-async function readyToLaunch(): Promise<string | null> {
-  await loadLaunchTables();
-  nowStore.set(Date.now());
-  return get(launchTables) === "ready" ? null : "Couldn't read the Workstation's agent settings — try again";
 }
 
 /// A press on Organize or Reorganize, by what the desk's own rule says it
@@ -258,7 +237,7 @@ export function organizeRails(workspaceId: string, action: OrchestrationAgentAct
     const placed = new Set(orch.rails.flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))));
     const board = get(kanbanState)[workspaceId] ?? null;
     const unplaced = unfinishedCards(availableCards(cards, placed), planIndex(cards), board);
-    return requestOrganize(workspaceId, unplaced, conflictSummaryLines(numbered, cards, orch, tools), DEVICE_ORGANIZE_HOST);
+    return requestOrganize(workspaceId, unplaced, conflictSummaryLines(numbered, cards, orch, tools), DEVICE_AGENT_HOST);
   });
 }
 
@@ -274,6 +253,6 @@ export function reorganizeRail(
     if (!orch || !rail) return "That rail is gone";
     const { cards, tools, numbered } = await agentBrief(workspaceId, orch);
     const summary = conflictSummaryLines(conflictsForRail(numbered, rail), cards, orch, tools);
-    return requestRailReorganize(workspaceId, railId, cards, tools, summary, DEVICE_ORGANIZE_HOST);
+    return requestRailReorganize(workspaceId, railId, cards, tools, summary, DEVICE_AGENT_HOST);
   });
 }

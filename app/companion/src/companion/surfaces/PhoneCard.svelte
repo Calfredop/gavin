@@ -40,8 +40,10 @@
     workspace: Workspace;
     /// The card's path, as the view holds it.
     path: string;
+    /// The surface the card is over, which Back returns to.
+    back?: string;
   }
-  let { workspace, path }: Props = $props();
+  let { workspace, path, back = "Board" }: Props = $props();
 
   const board = $derived($kanbanState[workspace.id]);
   const tree = $derived($gavinTrees[workspace.id]);
@@ -209,7 +211,7 @@
   }
 </script>
 
-<PhoneHeader title={card?.title ?? "Card"} back="Board" onBack={closePage}>
+<PhoneHeader title={card?.title ?? "Card"} {back} onBack={closePage}>
   {#snippet status()}
     {#if badge}
       <StatusBadge indicator={badge} size={14} tip={null} />

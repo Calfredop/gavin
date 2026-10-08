@@ -196,9 +196,10 @@ export function openPrd(): void {
   show(openPageIn(get(viewStore), { kind: "prd" }));
 }
 
-/// Back from a card or the PRD to the board under it, on the card's
-/// column. An inbox item's card stays outlined there: coming back to the
-/// board from the card it landed on is not going somewhere else.
+/// Back from a card or the PRD to the surface under it: the board, on the
+/// card's column, or the Decisions or Review list. An inbox item's card
+/// stays outlined on the board: coming back to the board from the card it
+/// landed on is not going somewhere else.
 export function closePage(): void {
   show(closePageIn(get(viewStore)));
 }

@@ -94,6 +94,14 @@ describe("a page over a board", () => {
     expect(openPage(card, { kind: "prd" }).page).toEqual({ kind: "prd" });
   });
 
+  it("opens a card over the Decisions or Review list it was picked from, and closes back to that list", () => {
+    for (const surface of ["decisions", "review"] as const) {
+      const card = openPage(showSurface(openWorkspace(initialView(), "ws-1"), surface), CARD);
+      expect(card).toEqual({ workspaceId: "ws-1", surface, sessionId: null, page: CARD });
+      expect(closePage(card)).toEqual({ workspaceId: "ws-1", surface, sessionId: null, page: undefined });
+    }
+  });
+
   it("is closed by going anywhere else", () => {
     const card = openPage(openWorkspace(initialView(), "ws-1"), CARD);
     expect(showSurface(card, "sessions").page).toBeUndefined();
@@ -115,17 +123,27 @@ describe("a page over a board", () => {
     expect(loadView(stored({ kind: "prd" }), "w").page).toEqual({ kind: "prd" });
   });
 
-  it("is only ever over a workspace's board", () => {
+  it("is only ever over a workspace's board, or its Decisions or Review list", () => {
     const stored = (view: object) => memoryStorage({ [viewKey("w")]: JSON.stringify({ ...view, page: { kind: "prd" } }) });
     expect(loadView(stored({ workspaceId: null, surface: "board", sessionId: null }), "w").page).toBeUndefined();
     expect(loadView(stored({ workspaceId: "ws-1", surface: "sessions", sessionId: null }), "w").page).toBeUndefined();
+    expect(loadView(stored({ workspaceId: "ws-1", surface: "review", sessionId: null }), "w").page).toEqual({ kind: "prd" });
   });
 });
 
 describe("a workspace's surfaces", () => {
-  it("are the board, rails, sessions, Git, Files and Settings, each with its name on the strip", () => {
-    expect(SURFACES).toEqual(["board", "rails", "sessions", "git", "files", "settings"]);
-    expect(SURFACES.map((s) => SURFACE_LABELS[s])).toEqual(["Board", "Rails", "Sessions", "Git", "Files", "Settings"]);
+  it("are the board, rails, sessions, Decisions, Review, Git, Files and Settings, each with its name on the strip", () => {
+    expect(SURFACES).toEqual(["board", "rails", "sessions", "decisions", "review", "git", "files", "settings"]);
+    expect(SURFACES.map((s) => SURFACE_LABELS[s])).toEqual([
+      "Board",
+      "Rails",
+      "Sessions",
+      "Decisions",
+      "Review",
+      "Git",
+      "Files",
+      "Settings",
+    ]);
   });
 
   it("switch within the open workspace, keeping where Files was", () => {

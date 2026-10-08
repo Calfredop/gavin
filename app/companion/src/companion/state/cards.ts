@@ -35,7 +35,8 @@ import { answerHumanItem, type AnswerResult } from "$lib/decisions/decisionsActi
 import { placeCardAtColumnEnd } from "$lib/files/planDrop";
 import { executeArchive, executeUnarchive } from "$lib/files/archiveActions";
 import type { ArchiveClosables } from "$lib/files/archiveClose";
-import { loadLaunchTables, recordStarted } from "$companion/state/sessions";
+import type { OrchestrationLaunchHost } from "$lib/orchestration/orchestrationState";
+import { launchTables, loadLaunchTables, recordStarted } from "$companion/state/sessions";
 import { followCard, openTerminal } from "$companion/state/workstation";
 
 function message(e: unknown): string {
@@ -73,6 +74,25 @@ export const DEVICE_LAUNCH_HOST: CardLaunchHost = {
     recordStarted(sessionId, workspaceId);
   },
 };
+
+/// A launch with no card behind it -- Organize, a rail's Reorganize, a
+/// clean of stale decisions or tests -- as a Device starts one: the card
+/// launch's wall and placing (`DEVICE_LAUNCH_HOST`), refused rather than
+/// queued and the session the desk's to place, and the run shown in the
+/// phone's own terminal rather than by moving the desk's tabs.
+export const DEVICE_AGENT_HOST: OrchestrationLaunchHost = {
+  hold: DEVICE_LAUNCH_HOST.hold,
+  place: DEVICE_LAUNCH_HOST.place,
+  reveal: async (sessionId) => openTerminal(sessionId),
+};
+
+/// The agent tables, read before a launch as a card's run reads them; the
+/// pause window judged against the time now, since a phone runs no ticker.
+export async function readyToLaunch(): Promise<string | null> {
+  await loadLaunchTables();
+  nowStore.set(Date.now());
+  return get(launchTables) === "ready" ? null : "Couldn't read the Workstation's agent settings — try again";
+}
 
 /// The launch a card's bar offers, by the bar's own action id. Resolves
 /// with what to tell the human, or null. The agent tables are read first,

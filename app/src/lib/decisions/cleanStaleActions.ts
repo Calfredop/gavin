@@ -11,6 +11,11 @@
 // mostly tick the same boxes, and a tick written twice is still one
 // tick. The launch queue's own dedupe keeps a held press from queueing
 // twice.
+//
+// What the launch does to the DESK -- queue behind the launch wall, place
+// the session as a tab, jump the window to it -- is a host the caller
+// hands in, as card runs and Organize take theirs. The desk's is the
+// default; a Device hands in its own (companion's `state/decisions.ts`).
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
@@ -24,7 +29,7 @@ import {
   resolvedAgentFor,
   setSessionName,
 } from "$lib/core/layoutState";
-import { revealSession, sshLaunchBlocker } from "$lib/cards/cardRunActions";
+import { revealSession, sshLaunchBlocker, type CardLaunchHost } from "$lib/cards/cardRunActions";
 import { buildRunCommand, noPromptReason, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { holdOrQueue, type CleanIntent } from "$lib/agents/launchQueue";
@@ -35,6 +40,23 @@ import {
   type CleanEntry,
   type CleanKind,
 } from "$lib/decisions/cleanStale";
+
+/// Where a clean meets the surface that asked for it: a card launch's
+/// wall and placing, without the jump to a card's session -- there is no
+/// card -- and with putting the human in front of the run. The same shape
+/// as orchestrationState's `OrchestrationLaunchHost`, so one Device host
+/// serves both.
+export interface CleanLaunchHost extends Pick<CardLaunchHost, "hold" | "place"> {
+  reveal(sessionId: string): Promise<void>;
+}
+
+const DESK_CLEAN_HOST: CleanLaunchHost = {
+  hold: (intent) => (holdOrQueue(intent) ? { go: false, error: null } : { go: true }),
+  place: (workspaceId, sessionId) => handleAgentSessionSpawned(workspaceId, sessionId),
+  reveal: async (sessionId) => {
+    await revealSession(sessionId);
+  },
+};
 
 /// Asks first, then composes the request from the list the tab is
 /// showing and starts it. The error string is for the tab's own line;
@@ -47,7 +69,8 @@ import {
 export async function requestCleanStale(
   workspaceId: string,
   kind: CleanKind,
-  entries: readonly CleanEntry[]
+  entries: readonly CleanEntry[],
+  host: CleanLaunchHost = DESK_CLEAN_HOST
 ): Promise<string | null> {
   if (!(await askConfirm(cleanConfirm(kind, entries)))) return null;
   const prompt = composeCleanPrompt(
@@ -56,19 +79,20 @@ export async function requestCleanStale(
     mustPromptBody("action:clean-stale", workspaceId),
     mustPromptBody("action:name-tab-first", workspaceId)
   );
-  return launchClean(workspaceId, CLEAN_LABEL[kind], prompt);
+  return launchClean(workspaceId, CLEAN_LABEL[kind], prompt, host);
 }
 
 /// The queue's way back in. The prompt is the one composed at the press,
 /// not recomposed: it is the list the human asked about.
 export async function launchQueuedClean(intent: CleanIntent): Promise<void> {
-  await launchClean(intent.workspaceId, intent.label, intent.prompt, true);
+  await launchClean(intent.workspaceId, intent.label, intent.prompt, DESK_CLEAN_HOST, true);
 }
 
 async function launchClean(
   workspaceId: string,
   label: string,
   prompt: string,
+  host: CleanLaunchHost,
   /// The drain calling back in with an intent that has already cleared
   /// the launch wall. Asking again there would re-queue it for ever.
   queued = false
@@ -80,7 +104,10 @@ async function launchClean(
   const remote = sshLaunchBlocker(workspaceId);
   if (remote) return remote;
 
-  if (!queued && holdOrQueue({ kind: "clean", workspaceId, label, prompt })) return null;
+  if (!queued) {
+    const held = host.hold({ kind: "clean", workspaceId, label, prompt });
+    if (!held.go) return held.error;
+  }
 
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(
@@ -96,10 +123,10 @@ async function launchClean(
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
   void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  host.place(workspaceId, sessionId);
   // Before the rename, so a failed rename (cosmetic) cannot swallow the
   // jump to the run the human just asked for.
-  await revealSession(sessionId);
+  await host.reveal(sessionId);
   const name = provisionalSessionName(label);
   try {
     if (name) await setSessionName(sessionId, name);

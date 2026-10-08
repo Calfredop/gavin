@@ -9,6 +9,7 @@
   import { workspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
   import { DEMO_PACE_MS, deviceStorage, openChannel } from "$companion/state/entry";
   import { reachability, reachabilityLine } from "$companion/state/reachability";
+  import { SURFACE_LABELS } from "$companion/state/viewState";
   import {
     connection,
     connectWorkstation,
@@ -28,6 +29,7 @@
   import PhoneFiles from "$companion/surfaces/PhoneFiles.svelte";
   import PhoneGit from "$companion/surfaces/PhoneGit.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import PhoneItems from "$companion/surfaces/PhoneItems.svelte";
   import PhonePrd from "$companion/surfaces/PhonePrd.svelte";
   import PhoneRails from "$companion/surfaces/PhoneRails.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
@@ -123,7 +125,7 @@
       {:else if open && $view.page}
         {#key `${open.id}:${pageKey}`}
           {#if $view.page.kind === "card"}
-            <PhoneCard workspace={open} path={$view.page.path} />
+            <PhoneCard workspace={open} path={$view.page.path} back={SURFACE_LABELS[$view.surface]} />
           {:else}
             <PhonePrd workspace={open} />
           {/if}
@@ -145,6 +147,10 @@
             </div>
           {:else if $view.surface === "rails"}
             <PhoneRails workspace={open} />
+          {:else if $view.surface === "decisions"}
+            <PhoneItems workspace={open} kind="decisions" />
+          {:else if $view.surface === "review"}
+            <PhoneItems workspace={open} kind="tests" />
           {:else if $view.surface === "git"}
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}
