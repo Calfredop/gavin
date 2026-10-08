@@ -14,6 +14,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
+import { askConfirm } from "$lib/core/dialog";
 import {
   armFailureDetection,
   handleAgentSessionSpawned,
@@ -29,19 +30,26 @@ import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { holdOrQueue, type CleanIntent } from "$lib/agents/launchQueue";
 import {
   CLEAN_LABEL,
+  cleanConfirm,
   composeCleanPrompt,
   type CleanEntry,
   type CleanKind,
 } from "$lib/decisions/cleanStale";
 
-/// Composes the request from the list the tab is showing and starts it.
-/// The error string is for the tab's own line; null means it started (or
-/// was queued behind the launch wall, whose badge says so).
-export function requestCleanStale(
+/// Asks first, then composes the request from the list the tab is
+/// showing and starts it. The error string is for the tab's own line;
+/// null means it started, was queued behind the launch wall (whose badge
+/// says so), or the human said not now.
+///
+/// The confirm lives here rather than in either tab for answerHumanItem's
+/// reason: it belongs to the ACTION, and a second surface that forgot to
+/// ask is exactly what it is there to prevent.
+export async function requestCleanStale(
   workspaceId: string,
   kind: CleanKind,
   entries: readonly CleanEntry[]
 ): Promise<string | null> {
+  if (!(await askConfirm(cleanConfirm(kind, entries)))) return null;
   const prompt = composeCleanPrompt(
     kind,
     entries,

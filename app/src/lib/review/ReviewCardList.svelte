@@ -19,6 +19,7 @@
     RefreshCw,
     Archive,
     Bot,
+    BrushCleaning,
   } from "@lucide/svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -191,7 +192,10 @@
             size={14}
             disabled={clean.blocked !== null}
             onclick={clean.onClean}
-          />
+          >
+            <!-- The rails' Clear broom beside the bot: an agent that cleans. -->
+            <BrushCleaning size={14} />
+          </IconButton>
         </span>
       {/if}
       <IconButton

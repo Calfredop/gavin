@@ -22,7 +22,7 @@
   // Review's own ReviewAgentPane, reused as-is — a card's agent and its
   // plan are the same two things to look at here as there, and a second
   // panel would be a second vocabulary for one card.
-  import { BookOpen, Bot, Check, ChevronDown, ChevronRight, SkipForward } from "@lucide/svelte";
+  import { BookOpen, Bot, BrushCleaning, Check, ChevronDown, ChevronRight, SkipForward } from "@lucide/svelte";
   import { onMount, untrack } from "svelte";
   import { cardSessionFor, fetchBoard, refreshBoard, kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -342,7 +342,10 @@
           size={14}
           disabled={cleanBlocked !== null}
           onclick={() => void clean()}
-        />
+        >
+          <!-- The rails' Clear broom beside the bot: an agent that cleans. -->
+          <BrushCleaning size={14} />
+        </IconButton>
       </span>
     </div>
     {#if cleanError}<p class="clean-error">{cleanError}</p>{/if}

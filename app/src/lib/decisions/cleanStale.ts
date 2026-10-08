@@ -84,6 +84,29 @@ export function cleanTip(kind: CleanKind, entries: readonly CleanEntry[]): strin
   return `Ask an agent to close the ${what} nothing is waiting on any more — ${items} open on ${cards}`;
 }
 
+/// The question between the press and the launch, in dialog.ts's
+/// ConfirmOptions shape. Not `danger`: nothing is lost -- a closed item
+/// stays on its card, ticked, with the reason under it -- but the run
+/// does write to every card listed, which is worth one look first.
+export function cleanConfirm(
+  kind: CleanKind,
+  entries: readonly CleanEntry[]
+): { title: string; lines: string[]; confirmLabel: string; cancelLabel: string } {
+  const items = cleanItemCount(entries);
+  const noun = kind === "decisions" ? "decision" : "human test";
+  const what = `${items} open ${noun}${items === 1 ? "" : "s"}`;
+  const cards = entries.length === 1 ? "1 card" : `${entries.length} cards`;
+  return {
+    title: kind === "decisions" ? "Clean stale decisions?" : "Clean stale tests?",
+    lines: [
+      `An agent reads the ${what} on ${cards} and closes the ones nothing is waiting on any more.`,
+      "A closed item is ticked on its card with a dated line saying why; the ones that still need you stay open.",
+    ],
+    confirmLabel: "Start the agent",
+    cancelLabel: "Not now",
+  };
+}
+
 /// The open items, card by card, as the agent reads them. Each item
 /// carries its last outcome line when it has one -- a failed test's
 /// note is exactly what says whether the fix it asked for has landed.

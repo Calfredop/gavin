@@ -5,6 +5,7 @@ import { actionPromptById } from "$lib/agents/actionPrompts";
 import {
   CLEAN_LABEL,
   cleanBlocker,
+  cleanConfirm,
   cleanEntries,
   cleanItemCount,
   cleanTip,
@@ -138,6 +139,22 @@ describe("composeCleanPrompt", () => {
     expect(prompt?.defaultBody).toBe(DEFAULT_CLEAN_STALE);
     const declared = new Set(prompt!.params.map((p) => p.name));
     for (const name of DEFAULT_CLEAN_STALE.matchAll(/\{\{(\w+)\}\}/g)) expect(declared.has(name[1])).toBe(true);
+  });
+});
+
+describe("cleanConfirm", () => {
+  it("says how much the agent will read, and names the action on the button", () => {
+    const entries = [card("/p/a.md", [item(), item({ lineIndex: 5 })]), card("/p/b.md", [item()])];
+    const confirm = cleanConfirm("decisions", entries);
+    expect(confirm.title).toBe("Clean stale decisions?");
+    expect(confirm.lines[0]).toContain("3 open decisions on 2 cards");
+    expect(confirm.confirmLabel).not.toBe("OK");
+  });
+
+  it("speaks of tests on the Review tab", () => {
+    const confirm = cleanConfirm("tests", [card("/p/a.md", [item({ kind: "test" })])]);
+    expect(confirm.title).toBe("Clean stale tests?");
+    expect(confirm.lines[0]).toContain("1 open human test on 1 card");
   });
 });
 
