@@ -7,6 +7,7 @@
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
   } from "$lib/hub/hubTabPrefs";
+  import { X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
 
   interface Props {
@@ -49,7 +50,12 @@
       class="hub-navigator-button"
       active={open === view.id}
       onclick={() => onselect(view.id)}
-    />
+    >
+      {#if open === view.id}
+        <!-- Says what pressing it again does. -->
+        <span class="close-badge" aria-hidden="true"><X size={8} strokeWidth={3} /></span>
+      {/if}
+    </IconButton>
   {/each}
 </nav>
 
@@ -70,5 +76,24 @@
     width: 28px;
     height: 28px;
     padding: 0;
+  }
+  /* The workspace's own colour marks the open section. */
+  .hub-navigator :global(.hub-navigator-button.active) {
+    color: var(--ws-accent, var(--text));
+    background: color-mix(in srgb, var(--ws-accent, var(--text)) 16%, transparent);
+    border-color: color-mix(in srgb, var(--ws-accent, var(--text)) 45%, transparent);
+  }
+  .close-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--surface-base);
+    background: var(--ws-accent, var(--text-muted));
   }
 </style>

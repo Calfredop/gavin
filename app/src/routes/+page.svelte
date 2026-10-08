@@ -524,12 +524,21 @@
                 hasRoot={Boolean(activeWorkspace.rootPath)}
                 agentFileName={activeAgent.file}
               />
-              <div class="view">
+              <!-- Capture, so the page's own tab closes the section even when
+                   it is the tab already selected. -->
+              <div
+                class="view"
+                role="presentation"
+                onclickcapture={(e) => {
+                  if (navigatorView && (e.target as Element).closest?.(".tab-bar .tab")) navigatorView = null;
+                }}
+              >
                 <TerminalView workspaceId={activeWorkspace.id} />
                 <!-- Over the page, not instead of it: the terminal stays
                      mounted underneath, and the workspace's view never
-                     changes. Pressing the same navigator button again
-                     closes it. -->
+                     changes. Starts under the page's tab bar so its tabs
+                     stay reachable. Pressing the same navigator button
+                     again closes it. -->
                 {#if navigatorViewDef}
                   <div class="navigator-overlay">
                     <navigatorViewDef.component workspaceId={activeWorkspace.id} />
@@ -1051,7 +1060,7 @@
   }
   .navigator-overlay {
     position: absolute;
-    inset: 0;
+    inset: var(--header-height) 0 0 0;
     z-index: 5;
     display: flex;
     flex-direction: column;
