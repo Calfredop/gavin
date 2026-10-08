@@ -56,7 +56,12 @@
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspace/workspaceOpen";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
-  import { sidebarCollapsed, sidebarPeekOnHover, scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
+  import {
+    sidebarCollapsed,
+    sidebarPeekOnHover,
+    scratchpadEnabled,
+    dimInactiveWorkspaces,
+  } from "$lib/sidebar/sidebarPrefs";
   import {
     createPeekHoverController,
     endSidebarPeek,
@@ -1412,6 +1417,7 @@
         type="button"
         class="collapsed-row"
         class:active={ws.id === $layoutState.activeWorkspaceId}
+        class:inactive={$dimInactiveWorkspaces && ws.id !== $layoutState.activeWorkspaceId}
         style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
         use:tooltip={waiting > 0
           ? `${ws.name} — ${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you`
@@ -1578,6 +1584,7 @@
         {@const wsPinned = isPinned(ws)}
         <div
           class="workspace-row-group"
+          class:inactive={$dimInactiveWorkspaces && ws.id !== $layoutState.activeWorkspaceId}
           style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
         >
           <div
@@ -2077,6 +2084,9 @@
     font-size: inherit;
     cursor: pointer;
   }
+  .collapsed-row.inactive:not(:hover) {
+    opacity: 0.3;
+  }
   .collapsed-row:hover {
     background: var(--surface-hover);
     color: var(--text);
@@ -2182,6 +2192,15 @@
        variable, always set: --ws-accent is inherited from the active
        workspace's container, which would paint every group. */
     border-left: 3px solid var(--row-accent, transparent);
+  }
+  /* Not the workspace this window is showing: stepped back so the
+     current one stands out. Still fully legible, and hover restores it. */
+  .workspace-row-group.inactive {
+    opacity: 0.3;
+    transition: opacity 0.12s;
+  }
+  .workspace-row-group.inactive:hover {
+    opacity: 1;
   }
   .workspace-row {
     /* Anchors the hold-⌘ hint badge. */

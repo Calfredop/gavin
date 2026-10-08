@@ -76,6 +76,8 @@
     setScratchpadEnabled,
     sidebarPeekOnHover,
     setSidebarPeekOnHover,
+    dimInactiveWorkspaces,
+    setDimInactiveWorkspaces,
   } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
@@ -845,6 +847,17 @@
             />
           {/each}
         </div>
+      </div>
+      <div class="row">
+        <span>Sidebar</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$dimInactiveWorkspaces}
+            onchange={(e) => setDimInactiveWorkspaces(e.currentTarget.checked)}
+          />
+          <span>Dim workspaces that are not current</span>
+        </label>
       </div>
     </section>
 

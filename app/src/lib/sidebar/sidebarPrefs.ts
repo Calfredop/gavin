@@ -184,3 +184,35 @@ export function setSidebarPeekOnHover(enabled: boolean): void {
   sidebarPeekOnHover.set(enabled);
   saveSidebarPeekOnHover(enabled);
 }
+
+export const DIM_INACTIVE_KEY = "gavin.sidebarDimInactive";
+
+/// On unless the human has said otherwise -- stepping back the
+/// workspaces this window is not showing is how the current one stands
+/// out, so the dimming is the default and plain rows are the choice.
+/// Anything but the exact string written for "off" reads as on, as above.
+export function loadDimInactiveWorkspaces(storage: MaybeStorage = defaultStorage()): boolean {
+  try {
+    return storage?.getItem(DIM_INACTIVE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function saveDimInactiveWorkspaces(
+  enabled: boolean,
+  storage: MaybeStorage = defaultStorage()
+): void {
+  try {
+    storage?.setItem(DIM_INACTIVE_KEY, enabled ? "true" : "false");
+  } catch {
+    // Best-effort, as above.
+  }
+}
+
+export const dimInactiveWorkspaces = writable<boolean>(loadDimInactiveWorkspaces());
+
+export function setDimInactiveWorkspaces(enabled: boolean): void {
+  dimInactiveWorkspaces.set(enabled);
+  saveDimInactiveWorkspaces(enabled);
+}
