@@ -24,6 +24,9 @@ vi.mock("$lib/core/backend", () => ({
   // "unknown" by default -- gavin cannot tell whether the transcript is
   // there, which is today's behaviour. The guard test drives it.
   conversationLog: vi.fn(async () => "unknown" as const),
+  // An injected-prompt launch (K3) hands its prompt to the daemon's
+  // queue after the spawn instead of putting it on the command line.
+  queueInput: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -359,6 +362,7 @@ import { appDuty } from "$lib/shell/appDuty";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
+import { noPromptReason } from "$lib/cards/cardRun";
 import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
@@ -1989,6 +1993,107 @@ describe("executeActions", () => {
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+
+  /// Kimi Code takes no prompt on its command line (K3), and a board Run
+  /// of the same card launches it bare and queues the prompt. A rail is
+  /// a different way to schedule that run, so it does exactly the same --
+  /// it used to stall every kimi card step on the no-prompt refusal.
+  describe("an agent whose prompt is injected (K3)", () => {
+    const kimi = {
+      command: "kimi",
+      launchCommand: "kimi",
+      file: "AGENTS.md",
+      profile: "kimi-code",
+      profileId: "kimi-code",
+      model: "",
+      failurePatterns: ["error: failed to run prompt:", "Model authentication failed"],
+      failureCauses: [{ pattern: "Model authentication failed", cause: "auth" }],
+      untrustedOsc133: true,
+      sessionIdArgs: "",
+      resumeArgs: "--session",
+      label: "Kimi Code",
+      promptArgs: null,
+      promptInjection: true,
+    };
+
+    beforeEach(() => {
+      vi.mocked(backend.readFileForViewer).mockResolvedValue({
+        content: "---\ntitle: Wire the API\n---\ndo the thing",
+        truncated: false,
+        exists: true,
+      });
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(backend.queueInput).mockResolvedValue([]);
+      vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    });
+
+    // `mockReturnValue` replaces the implementation, and `clearAllMocks`
+    // keeps it -- so the workspace's own agent is put back by hand, or
+    // every later test in the file would launch kimi.
+    const primary = agentMock.getMockImplementation()!;
+    afterEach(() => {
+      agentMock.mockImplementation(primary);
+    });
+
+    it("launches the agent bare and queues the card prompt for its session", async () => {
+      agentMock.mockReturnValue(kimi as never);
+
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith("ws-1", "p1", "/x/wt", "kimi", "kimi-code");
+      expect(backend.queueInput).toHaveBeenCalledWith("sess-9", expect.stringContaining("/x/a.md"));
+      expect(backend.queueInput).toHaveBeenCalledWith("sess-9", expect.stringContaining("do the thing"));
+      // The profile's own failure strings, so a dead token stalls the step
+      // with kimi's sentence and its `auth` cause rather than a generic one.
+      expect(layoutStateModule.armFailureDetection).toHaveBeenCalledWith("sess-9", kimi.failurePatterns, true);
+      expect(kanbanStateModule.linkCardSessionAction).toHaveBeenCalledWith(
+        "ws-1",
+        expect.objectContaining({ path: "/x/a.md", sessionId: "sess-9", command: "kimi" })
+      );
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
+    });
+
+    it("stalls the step when the prompt cannot be handed to the session", async () => {
+      agentMock.mockReturnValue(kimi as never);
+      vi.mocked(backend.queueInput).mockRejectedValue(new Error("daemon went away"));
+
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(backend.setStepRun).toHaveBeenCalledWith(
+        "t1",
+        "stalled",
+        null,
+        "couldn't hand the agent its prompt: daemon went away",
+        null,
+        null,
+        null,
+        "ws-1"
+      );
+      expect(backend.setStepRun).not.toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
+    });
+
+    // The refusal is still the answer for an agent that has neither a
+    // prompt argv nor injection -- a custom profile, whose argv gavin
+    // cannot know.
+    it("still refuses an agent that takes no prompt at all", async () => {
+      agentMock.mockReturnValue({ ...kimi, label: "My Agent", promptInjection: false } as never);
+
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+      expect(backend.queueInput).not.toHaveBeenCalled();
+      expect(backend.setStepRun).toHaveBeenCalledWith(
+        "t1",
+        "stalled",
+        null,
+        noPromptReason("My Agent"),
+        null,
+        null,
+        null,
+        "ws-1"
+      );
+    });
   });
 
   /// A rail step is a card run like any other, so it records the same

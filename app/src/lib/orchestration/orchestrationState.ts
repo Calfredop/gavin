@@ -151,6 +151,7 @@ import {
   buildToolCommand,
   runStatusNeeded,
   unresumableConversationReason,
+  usesPromptInjection,
   withPromptExtras,
 } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
@@ -1685,13 +1686,23 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
 
   const conversationId = conversationIdForLaunch(launchAgent);
-  const command = buildRunCommand(
-    launchAgent.launchCommand,
-    launchAgent.promptArgs,
-    prompt,
-    launchAgent.sessionIdArgs,
-    conversationId
-  );
+  // An injection launch (K3) is the board Run's: the CLI has no prompt
+  // argv, so it starts bare and the prompt goes to the daemon's queue
+  // after the spawn. Not the profile's headless `-p=` form, which a rail
+  // step was once going to take: print mode forces kimi's `auto`
+  // permission policy (never ask) where the human chose to be asked, and
+  // the process exits when it answers -- taking the tab, and the rail's
+  // whole attention model of an agent that sits at its prompt, with it.
+  const inject = usesPromptInjection(launchAgent);
+  const command = inject
+    ? launchAgent.launchCommand
+    : buildRunCommand(
+        launchAgent.launchCommand,
+        launchAgent.promptArgs,
+        prompt,
+        launchAgent.sessionIdArgs,
+        conversationId
+      );
   if (command === null) {
     await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label));
     return false;
@@ -1709,6 +1720,22 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   if (!sessionId) {
     await stallLaunch(workspaceId, stepId, "could not start the agent");
     return false;
+  }
+  if (inject) {
+    // Queued before anything else is awaited, so a fast MCP handshake
+    // can never find the queue empty. A session that never gets its
+    // prompt is an agent idling on nothing, so the step stalls rather
+    // than running.
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      await stallLaunch(
+        workspaceId,
+        stepId,
+        `couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`
+      );
+      return false;
+    }
   }
   void armFailureDetection(sessionId, launchAgent.failurePatterns, launchAgent.untrustedOsc133);
 
