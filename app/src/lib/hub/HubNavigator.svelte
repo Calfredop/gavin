@@ -76,12 +76,16 @@
 
 <style>
   .hub-navigator {
-    position: relative;
-    /* Starts under the page's tab bar. Above the page, so the mover that
+    /* Laid over the page's edge, under its tab bar: the tab bar keeps the
+       window's full width, and the page shifts clear of the bar (the
+       host reserves --hub-nav-width). Above the page, so the mover that
        straddles its edge is not clipped by it. */
+    position: absolute;
     z-index: 10;
-    margin-top: var(--header-height);
-    flex: 0 0 auto;
+    top: var(--header-height);
+    bottom: 0;
+    left: 0;
+    width: var(--hub-nav-width, 37px);
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
@@ -89,6 +93,8 @@
     border-right: 1px solid var(--border);
   }
   .hub-navigator.on-right {
+    left: auto;
+    right: 0;
     border-right: none;
     border-left: 1px solid var(--border);
   }
@@ -120,8 +126,8 @@
     left: -11px;
   }
   .notch {
-    width: 14px;
-    height: 3px;
+    width: 3px;
+    height: 14px;
     border-radius: 2px;
     background: var(--border-strong);
     opacity: 0.6;

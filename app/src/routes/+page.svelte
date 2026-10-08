@@ -1073,8 +1073,20 @@
     min-width: 0;
     min-height: 0;
   }
-  .page-with-navigator.navigator-right {
-    flex-direction: row-reverse;
+  .page-with-navigator {
+    position: relative;
+    --hub-nav-width: 37px;
+  }
+  /* The tab bar stays full width; only what is under it makes room for
+     the bar. A single pane's content shifts; in a split, the bar covers
+     the edge pane's margin. */
+  .page-with-navigator:not(.navigator-right) :global(.tree > .pane-wrapper > .content),
+  .page-with-navigator:not(.navigator-right) .navigator-overlay {
+    margin-left: var(--hub-nav-width);
+  }
+  .page-with-navigator.navigator-right :global(.tree > .pane-wrapper > .content),
+  .page-with-navigator.navigator-right .navigator-overlay {
+    margin-right: var(--hub-nav-width);
   }
   .page-with-navigator > .view {
     min-width: 0;
