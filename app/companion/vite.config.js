@@ -10,7 +10,9 @@ import { sveltekit } from "@sveltejs/kit/vite";
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
   test: {
-    include: ["src/**/*.{test,spec}.ts"],
+    // `check-install.mjs` beside this file as well: it runs before every
+    // build, and is a node script, outside what svelte-check reads.
+    include: ["src/**/*.{test,spec}.ts", "*.{test,spec}.mjs"],
   },
   clearScreen: false,
   server: {

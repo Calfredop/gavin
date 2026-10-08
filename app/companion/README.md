@@ -15,6 +15,14 @@ own svelte under the desktop's own lockfile. The two have to be one commit
 (ADR 0005), and a second dependency tree would be a second version of
 everything the desktop's components were compiled against.
 
+The lockfile is only half of that: what gets built is what is INSTALLED,
+and in a checkout shared by many sessions the two part when a commit bumps
+the lockfile and nobody reinstalls. `companion:build` and `companion:dev`
+therefore run `check-install.mjs` first, which refuses while any package in
+`app/node_modules` is not at the version `app/package-lock.json` pins
+(`npm install` in `app/` puts it right). Without it the xterm 6.1 bump that
+makes a swipe scroll the terminal on iOS shipped as 6.0.0 for eight days.
+
 `$lib` is the desktop's library (`kit.files.lib` → `../src/lib`), which is
 what lets every desktop module's `$lib/<folder>/<name>` import resolve
 unchanged. The bundle's own code is `$companion` → `src/companion`.
