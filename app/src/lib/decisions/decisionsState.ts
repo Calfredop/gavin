@@ -10,7 +10,9 @@
 // live cross-component wiring -- the tab simply reads the current store
 // when it is next shown.
 //
-// Not persisted, unlike `reviewPrefs`: a Decisions row is a question
+// The search and status filter ARE persisted across restarts (they show
+// in the list's header and have a clear button); the rest is not, unlike
+// `reviewPrefs`: a Decisions row is a question
 // that gets answered, so the selection is worth minutes rather than
 // months, and a remembered id would come back on the next launch
 // pointing at an item nobody is waiting for any more. The PANE is
@@ -20,6 +22,7 @@
 
 import { writable } from "svelte/store";
 import type { ReviewPane } from "$lib/review/reviewPrefs";
+import { HUB_DECISIONS_FILTER_KEY, isStringArray, loadRecord, mirrorRecord } from "$lib/hub/hubFilterStorage";
 
 export interface DecisionsPrefs {
   /// A `DecisionSubject.id`, or null for "nothing chosen yet" -- which
@@ -41,7 +44,23 @@ function empty(): DecisionsPrefs {
   return { selected: null, pane: "session", query: "", statuses: [], statusPickerOpen: false };
 }
 
-export const decisionsPrefs = writable<Record<string, DecisionsPrefs>>({});
+function reviveFilter(value: unknown): DecisionsPrefs | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  return {
+    ...empty(),
+    query: typeof v.query === "string" ? v.query : "",
+    statuses: isStringArray(v.statuses) ? v.statuses : [],
+  };
+}
+
+export const decisionsPrefs = writable<Record<string, DecisionsPrefs>>(
+  loadRecord(HUB_DECISIONS_FILTER_KEY, reviveFilter)
+);
+
+mirrorRecord(decisionsPrefs, HUB_DECISIONS_FILTER_KEY, (p) =>
+  p.query === "" && p.statuses.length === 0 ? null : { query: p.query, statuses: p.statuses }
+);
 
 /// This workspace's row, defaulted. Takes the stored map directly
 /// (typically `$decisionsPrefs`) so a component reads it inside its own

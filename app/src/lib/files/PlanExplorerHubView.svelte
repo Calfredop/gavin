@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { pickPath } from "$lib/workspace/picker";
   import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/core/layoutState";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
@@ -31,6 +32,7 @@
   import PlanMetadataPanel from "$lib/files/PlanMetadataPanel.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import FormatHelpModal from "$lib/files/FormatHelpModal.svelte";
+  import { hubSearchState, searchFor, setHubSearch } from "$lib/hub/hubSearchState";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import { filterExplorer, railIndex, statusFacets } from "$lib/board/planFilter";
@@ -163,9 +165,26 @@
   // rather than component `$state`, the same reason the selection above
   // is remembered outside the component: this view is destroyed on every
   // tab switch, and "shared with Kanban and Review" cannot mean that.
-  let query = $state("");
-  let statusFacet = $state<string[]>([]);
-  let statusExclude = $state<string[]>([]);
+  // Search and status also outlive the app: seeded from hubSearch.ts,
+  // written back by the effect below.
+  const remembered = untrack(() => searchFor($hubSearchState, workspaceId));
+  let query = $state(remembered.plansQuery);
+  let statusFacet = $state<string[]>(remembered.plansStatus);
+  let statusExclude = $state<string[]>(remembered.plansStatusExclude);
+  let seededFor = untrack(() => workspaceId);
+  $effect(() => {
+    if (workspaceId !== seededFor) {
+      // Shown for another workspace now: adopt ITS filters, never write
+      // this one's into it.
+      seededFor = workspaceId;
+      const next = untrack(() => searchFor($hubSearchState, workspaceId));
+      query = next.plansQuery;
+      statusFacet = next.plansStatus;
+      statusExclude = next.plansStatusExclude;
+      return;
+    }
+    setHubSearch(workspaceId, { plansQuery: query, plansStatus: statusFacet, plansStatusExclude: statusExclude });
+  });
   const hub = $derived($hubFacetState[workspaceId]);
   const sharedFacets = $derived(facetsFor(hub, "plans"));
   const facetsLinked = $derived(isTabLinked(hub, "plans"));
