@@ -30,6 +30,10 @@ pub mod remote_commands;
 // handed in rather than read -- so it needs no `os` feature either.
 pub mod bin_dirs;
 
+// The pinned `@playwright/mcp` and where its headless shell lives. Pure
+// for the same reason.
+pub mod playwright;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
     ATTENTION_API_VERSION,
