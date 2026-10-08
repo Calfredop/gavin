@@ -141,7 +141,7 @@ fn is_top_level_watch_target(entry_name: &std::ffi::OsStr) -> bool {
 /// running anyway.
 pub struct WorktreeWatch {
     root: PathBuf,
-    debouncer: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
+    debouncer: Mutex<Option<Debouncer<ChangesOnly>>>,
     armed: Mutex<HashSet<PathBuf>>,
 }
 
@@ -521,6 +521,52 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// The OS watch with reads taken out before the debouncer sees them.
+/// inotify reports a file or folder being OPENED, and closed unwritten,
+/// and `notify_debouncer_mini` keeps only an event's path, so a read
+/// arrived as a change: the `git ls-files` this watch's own filter runs
+/// opens `.git/index` and woke it, and so did every read-only git command
+/// a refresh runs -- each refresh arming the next. FSEvents and
+/// `ReadDirectoryChangesW` report no reads, so elsewhere this drops nothing.
+struct ChangesOnly(notify::RecommendedWatcher);
+
+impl notify::Watcher for ChangesOnly {
+    fn new<F: notify::EventHandler>(mut handler: F, config: notify::Config) -> notify::Result<Self> {
+        let inner = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                if event.as_ref().map_or(true, |e| is_change(&e.kind)) {
+                    handler.handle_event(event);
+                }
+            },
+            config,
+        )?;
+        Ok(ChangesOnly(inner))
+    }
+
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+        self.0.watch(path, mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.0.unwatch(path)
+    }
+
+    fn kind() -> notify::WatcherKind {
+        notify::RecommendedWatcher::kind()
+    }
+}
+
+/// Anything but a read. A close after writing stays: it ends a write.
+fn is_change(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    !matches!(kind, notify::EventKind::Access(access) if !matches!(access, AccessKind::Close(AccessMode::Write)))
+}
+
+fn new_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(on_batch: F) -> notify::Result<Debouncer<ChangesOnly>> {
+    let config = notify_debouncer_mini::Config::default().with_timeout(GIT_WATCH_DEBOUNCE);
+    notify_debouncer_mini::new_debouncer_opt(config, on_batch)
+}
+
 /// Starts the debounced watch on `root`, calling `on_change` when a
 /// relevant path moves. The returned handle owns the OS watch: drop the
 /// last one and the watch ends, which is how a closed connection takes its
@@ -541,8 +587,7 @@ where
     });
     let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
 
-    let debouncer = notify_debouncer_mini::new_debouncer(
-        GIT_WATCH_DEBOUNCE,
+    let debouncer = new_debouncer(
         move |res: notify_debouncer_mini::DebounceEventResult| {
             let Ok(events) = res else { return };
             // After the last strong Arc<WorktreeWatch> is dropped,
@@ -773,6 +818,17 @@ mod tests {
         assert!(!counts(&mut filter, &root, "node_modules/p/index.js"));
     }
 
+    #[test]
+    fn a_read_is_not_a_change() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
+        use notify::EventKind;
+        assert!(!is_change(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
+        assert!(!is_change(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        assert!(is_change(&EventKind::Access(AccessKind::Close(AccessMode::Write))));
+        assert!(is_change(&EventKind::Modify(ModifyKind::Data(DataChange::Any))));
+        assert!(is_change(&EventKind::Create(CreateKind::File)));
+    }
+
     /// The real watch, on a root resolved the way `WatchGitWorktree`
     /// resolves one.
     #[test]
@@ -857,8 +913,7 @@ mod tests {
         });
         let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
         let filter_root = root.clone();
-        let debouncer = notify_debouncer_mini::new_debouncer(
-            GIT_WATCH_DEBOUNCE,
+        let debouncer = new_debouncer(
             move |res: notify_debouncer_mini::DebounceEventResult| {
                 let Ok(events) = res else { return };
                 let Some(watch) = weak.upgrade() else { return };
