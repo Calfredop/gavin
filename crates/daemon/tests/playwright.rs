@@ -310,11 +310,186 @@ fn a_sessions_browser_launches_on_first_use_streams_frames_and_dies_with_the_ses
         assert!(Instant::now() < deadline, "the browser (pid {pid}) outlived its session by 10s");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Both after the process is gone, on the daemon's own thread.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !daemon.recorded_pids().is_empty() {
-        assert!(Instant::now() < deadline, "the run record still lists the stopped browser");
+    while !daemon.recorded_pids().is_empty() || Path::new(&output_dir).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "5s after the browser stopped: recorded {:?}, the session's folder {}",
+            daemon.recorded_pids(),
+            if Path::new(&output_dir).exists() { "still there" } else { "gone" }
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!Path::new(&output_dir).exists(), "the session's folder goes with it");
     drop(watch);
+}
+
+/// One `gavin-daemon bridge` -- what the desktop runs over ssh on a host --
+/// with its stdio as the link. Its first line is the banner; after that
+/// it is the daemon's protocol, both ways.
+struct Bridge {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    stdout: Option<BufReader<std::process::ChildStdout>>,
+}
+
+impl Bridge {
+    fn start(home: &Path, browsers: &Path) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"))
+            .arg("bridge")
+            .env("HOME", home)
+            .env("LOCALAPPDATA", home)
+            .env("USERPROFILE", home)
+            .env_remove("XDG_DATA_HOME")
+            // What the host's daemon inherits when the bridge starts it.
+            .env("PLAYWRIGHT_BROWSERS_PATH", browsers)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn gavin-daemon bridge");
+        let stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut banner = String::new();
+        std::io::BufRead::read_line(&mut stdout, &mut banner).unwrap();
+        assert!(banner.contains("BridgeReady"), "banner: {banner:?}");
+        Self { child, stdin, stdout: Some(stdout) }
+    }
+
+    fn ask(&mut self, req: Request) -> Response {
+        write_message(&mut self.stdin, &req).unwrap();
+        read_message(self.stdout.as_mut().unwrap()).unwrap().expect("a reply over the bridge")
+    }
+
+    /// The link's far end, for a reader thread of its own.
+    fn take_stdout(&mut self) -> BufReader<std::process::ChildStdout> {
+        self.stdout.take().unwrap()
+    }
+}
+
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The ssh workspace's half (parent plan, "ssh workspace" item): the
+/// browser launches on the HOST -- where the bridge's daemon and the
+/// agent run -- and its frames reach the desktop through the bridge, on a
+/// streaming connection of their own as the desktop opens one per link.
+#[test]
+fn over_an_ssh_bridge_the_browser_runs_on_the_host_and_its_frames_cross_the_link() {
+    let Some(browsers) = installed_browsers() else {
+        assert!(
+            std::env::var_os("GAVIN_REQUIRE_PLAYWRIGHT").is_none(),
+            "GAVIN_REQUIRE_PLAYWRIGHT is set and no complete Playwright headless shell is installed"
+        );
+        eprintln!("SKIPPED: no complete Playwright headless shell is installed on this machine");
+        return;
+    };
+    let temp_root = if cfg!(windows) { std::env::temp_dir() } else { PathBuf::from("/tmp") };
+    let home = tempfile::Builder::new().prefix("gavin-pw-host-").tempdir_in(&temp_root).unwrap();
+    let fake = Some(home.path().as_os_str().to_os_string());
+    let state_dir =
+        protocol::resolve_app_support_dir(fake.clone(), None, fake.clone(), fake, protocol::HostOs::current())
+            .unwrap();
+    let socket = state_dir.join(protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current()));
+    // The daemon the first bridge starts outlives it, as on a host; this
+    // stops it at the end.
+    struct Stop(PathBuf);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            if let Ok(mut stream) = Stream::connect(&self.0) {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = write_message(&mut stream, &Request::Shutdown);
+                let mut reader = BufReader::new(stream);
+                let _ = read_message::<_, Response>(&mut reader);
+            }
+        }
+    }
+    let _stop = Stop(socket);
+
+    // The command link: a session on the host, and its endpoint.
+    let mut commands = Bridge::start(home.path(), &browsers);
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().to_string_lossy().into_owned();
+    let session_id = match commands.ask(Request::CreateSession {
+        workspace_path: root.clone(),
+        cwd: root,
+        command: None,
+        profile_id: None,
+        api_family: None,
+        without_headroom: true,
+    }) {
+        Response::SessionCreated { id, .. } => id,
+        other => panic!("CreateSession over the bridge: {other:?}"),
+    };
+    let endpoint = match commands.ask(Request::PlaywrightEndpoint { session_id: session_id.clone() }) {
+        Response::PlaywrightEndpoint { endpoint, .. } => endpoint,
+        other => panic!("PlaywrightEndpoint over the bridge: {other:?}"),
+    };
+
+    // The streaming link: the desk's watch, at the ssh rate.
+    let mut frames_link = Bridge::start(home.path(), &browsers);
+    write_message(
+        &mut frames_link.stdin,
+        &Request::WatchBrowser { session_id: session_id.clone(), size: BrowserViewSize::Desk, max_fps: 4 },
+    )
+    .unwrap();
+    let mut frames_out = frames_link.take_stdout();
+    let (pushes, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(Some(push)) = read_message::<_, Response>(&mut frames_out) {
+            if pushes.send(push).is_err() {
+                return;
+            }
+        }
+    });
+
+    // The agent's MCP, on the host, through the host's proxy.
+    let mut cdp = Cdp::connect(&endpoint);
+    let targets = cdp.call("Target.getTargets", serde_json::json!({}), None);
+    let page = targets["targetInfos"].as_array().unwrap().iter().find(|t| t["type"] == "page").unwrap()["targetId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let attached = cdp.call("Target.attachToTarget", serde_json::json!({ "targetId": page, "flatten": true }), None);
+    let cdp_session = attached["sessionId"].as_str().unwrap().to_string();
+    cdp.call(
+        "Page.navigate",
+        serde_json::json!({ "url": "data:text/html,<body style='background:%233a6'><h1>over the bridge</h1></body>" }),
+        Some(&cdp_session),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Response::BrowserFrame { session_id: s, url, data, .. }) => {
+                assert_eq!(s, session_id);
+                if url.starts_with("data:text/html") {
+                    assert!(data.starts_with("/9j/"), "a JPEG crossed the link");
+                    break;
+                }
+            }
+            Ok(other) => panic!("unexpected push over the bridge: {other:?}"),
+            Err(_) => panic!("no frame of the navigated page crossed the bridge within 20s"),
+        }
+    }
+
+    // And the session's end crosses it too.
+    drop(cdp);
+    assert!(matches!(commands.ask(Request::KillSession { id: session_id.clone() }), Response::Ok));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Response::BrowserGone { session_id: s }) => {
+                assert_eq!(s, session_id);
+                break;
+            }
+            Ok(Response::BrowserFrame { .. }) => continue,
+            Ok(other) => panic!("unexpected push over the bridge: {other:?}"),
+            Err(_) => panic!("no BrowserGone crossed the bridge within 10s of the kill"),
+        }
+    }
 }
