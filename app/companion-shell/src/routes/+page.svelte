@@ -27,6 +27,7 @@
   import PairingSheet from "$shell/surfaces/PairingSheet.svelte";
   import { endpointFor } from "$shell/visit/endpoints";
   import { createVisits } from "$shell/visit/visit";
+  import { leavesVisitOnLock } from "$shell/unlock/leaveOnLock";
   import { connectionsAllowed, unlockNotice } from "$shell/unlock/unlock";
 
   const PROBE_TIMEOUT_MS = 30_000;
@@ -129,6 +130,13 @@
   const live = unlocked?.live;
   $effect(() => {
     unlocked?.setPaired($state.snapshot(paired) as PairedWorkstation[]);
+  });
+  // The Unlock gates the connection, not the screen: a paired
+  // Workstation's bundle would stay in front with its last data after
+  // Face ID is declined or the app is backgrounded. Back to the hub, where
+  // the Unlock is.
+  $effect(() => {
+    if ($unlockState && leavesVisitOnLock($unlockState, $visitState)) void visits.close();
   });
 
   function openItem(row: InboxRow): void {
