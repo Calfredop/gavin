@@ -126,6 +126,34 @@ describe("placing a Device-started session as a tab", () => {
     expect(placeDeviceSession(data(ws("w1", [page("p1", "Main", ["a"])])), "gone", "phone-1", "x")).toBeNull();
   });
 
+  it("makes one the Device started as the workspace agent that agent, on no page", () => {
+    const before = data(ws("w1", [page("p1", "Main", ["a"])], "/work"));
+    const after = placeDeviceSession(before, "w1", "phone-1", "new-page", true)!;
+    expect(after.workspaces[0].mainSessionId).toBe("phone-1");
+    expect(after.workspaces[0].pages).toEqual(before.workspaces[0].pages);
+  });
+
+  // Two phones racing, or the desk's own Start landing first: the agent
+  // already there stays, and the late one is a tab rather than lost.
+  it("places a workspace agent as a tab when the workspace already has one", () => {
+    const before = data({ ...ws("w1", [page("p1", "Main", ["a"])], "/work"), mainSessionId: "desk-main" });
+    const after = placeDeviceSession(before, "w1", "phone-1", "new-page", true)!;
+    expect(after.workspaces[0].mainSessionId).toBe("desk-main");
+    expect(after.workspaces[0].pages.find((p) => p.name === AGENTS_PAGE_NAME)?.layout).toEqual(leaf(["phone-1"]));
+  });
+
+  // The desk's Start needs a folder too: the Home agent works in the root.
+  it("places a workspace agent as a tab in a workspace with no folder", () => {
+    const after = placeDeviceSession(data(ws("w1", [page("p1", "Main", ["a"])])), "w1", "phone-1", "new-page", true)!;
+    expect(after.workspaces[0].mainSessionId).toBeUndefined();
+    expect(after.workspaces[0].pages).toHaveLength(2);
+  });
+
+  it("leaves the workspace agent where it is when a push names it again", () => {
+    const before = data({ ...ws("w1", [page("p1", "Main", ["a"])], "/work"), mainSessionId: "phone-1" });
+    expect(placeDeviceSession(before, "w1", "phone-1", "new-page", true)).toBeNull();
+  });
+
   // The desk's own launches never pass through here, so the only way one
   // could be touched is by being named in a Device's presence.
   it("leaves every session the desk launched itself where it was", () => {

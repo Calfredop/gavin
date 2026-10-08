@@ -135,6 +135,7 @@ const WORK: Record<string, DemoCommand> = {
       cwd: optionalString(args.cwd),
       command: optionalString(args.command),
       workspaceRoot: optionalString(args.workspaceRoot),
+      workspaceAgent: args.workspaceAgent === true,
     }),
   kill_session: (args, demo): Answer<"killSession"> => {
     end(demo, sessionId(args, demo));

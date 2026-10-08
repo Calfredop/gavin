@@ -9,7 +9,14 @@ import { DEMO } from "$companion/demo/sampleData";
 import { createDemoWorkstation, type DemoWorkstation } from "$companion/demo/workstation";
 import { disconnectChannel } from "$companion/remote/connection";
 import { LAYOUT_SAVING_COMMANDS } from "$companion/remote/remoteRole";
-import { endSession, launchTables, loadLaunchTables, startedHere, startSession } from "$companion/state/sessions";
+import {
+  agentStartedHere,
+  endSession,
+  launchTables,
+  loadLaunchTables,
+  startedHere,
+  startSession,
+} from "$companion/state/sessions";
 import { viewKey } from "$companion/state/viewState";
 import {
   closePage,
@@ -168,6 +175,67 @@ describe("opening a session", () => {
     await loadLaunchTables();
     await loadLaunchTables();
     expect(demo.commands().filter((cmd) => cmd === "agent_profiles")).toHaveLength(1);
+  });
+});
+
+describe("starting the workspace agent", () => {
+  function withoutAgent(): DemoWorkstation {
+    const demo = createDemoWorkstation();
+    demo.state.workspaces.workspaces = demo.state.workspaces.workspaces.map((w) =>
+      w.id === DEMO.atlas ? { ...w, mainSessionId: undefined } : w
+    );
+    return demo;
+  }
+
+  it("asks the desk for the agent as the workspace's own, and the desk records it", async () => {
+    const { demo } = await visit(withoutAgent());
+    await loadLaunchTables();
+    const id = await startSession(DEMO.atlas, "workspace-agent");
+    await settle();
+
+    const [launched] = argsOf(demo, "create_session");
+    expect(launched).toMatchObject({ cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot, workspaceAgent: true });
+    expect(String(launched.command)).toMatch(/^claude\b/);
+    expect(get(agentStartedHere)).toEqual({ [DEMO.atlas]: id });
+    const atlas = get(layoutState).workspaces.find((w) => w.id === DEMO.atlas)!;
+    expect(atlas.mainSessionId).toBe(id);
+    expect(atlas.pages.some((p) => allSessionIds(p.layout).includes(id))).toBe(false);
+  });
+
+  it("is a tab like any other where the workspace already has one", async () => {
+    const { demo } = await visit();
+    await loadLaunchTables();
+    const id = await startSession(DEMO.atlas, "workspace-agent");
+    await settle();
+    const atlas = get(layoutState).workspaces.find((w) => w.id === DEMO.atlas)!;
+    expect(atlas.mainSessionId).toBe("s-atlas-main");
+    expect(allSessionIds(atlas.pages.find((p) => p.name === "Agents")!.layout)).toContain(id);
+    expect(argsOf(demo, "create_session")).toHaveLength(1);
+  });
+
+  it("needs the workspace's folder", async () => {
+    const { demo } = await visit();
+    await loadLaunchTables();
+    await expect(startSession(DEMO.scratch, "workspace-agent")).rejects.toThrow(/folder/);
+    expect(argsOf(demo, "create_session")).toEqual([]);
+  });
+
+  it("is forgotten once it ends", async () => {
+    await visit(withoutAgent());
+    await loadLaunchTables();
+    const id = await startSession(DEMO.atlas, "workspace-agent");
+    await settle();
+    await endSession(id);
+    await settle();
+    expect(get(agentStartedHere)).toEqual({});
+  });
+
+  // A plain New agent never asks to be the workspace's own.
+  it("is not what a New agent asks for", async () => {
+    const { demo } = await visit(withoutAgent());
+    await loadLaunchTables();
+    await startSession(DEMO.atlas, "agent");
+    expect(argsOf(demo, "create_session")[0]).not.toHaveProperty("workspaceAgent");
   });
 });
 

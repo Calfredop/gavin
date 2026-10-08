@@ -34,6 +34,9 @@ export interface SessionGroup {
   key: string;
   title: string;
   rows: SessionRow[];
+  /// The workspace agent's group with no agent in it: the place to start
+  /// one, as the desk's Home tab offers.
+  startAgent?: true;
 }
 
 export interface SessionListInput {
@@ -49,6 +52,9 @@ export interface SessionListInput {
   /// Sessions this Device started in the workspace that the desk has not
   /// placed on a page (yet): the phone's own, until the desk shows them.
   startedHere: readonly string[];
+  /// The workspace agent this Device started there, if any: the agent
+  /// until the desk records one, which it does as it places the session.
+  agentStartedHere?: string;
 }
 
 /// An indicator's words after its axis ("Agent · working" → "working").
@@ -76,6 +82,11 @@ function row(input: SessionListInput, id: string): SessionRow {
 /// terminals in the order the desk's tab strip has them, then the ones
 /// this Device started and no page holds. A page of files and boards only
 /// is not a group, and no session is listed twice.
+///
+/// A workspace with a folder always has its agent's group: the agent, or
+/// with none, the place to start one -- the desk's Home tab offers the
+/// same, and only for a workspace with a folder, since that is where the
+/// agent works.
 export function sessionGroups(input: SessionListInput): SessionGroup[] {
   const { workspace } = input;
   const seen = new Set<string>();
@@ -91,9 +102,12 @@ export function sessionGroups(input: SessionListInput): SessionGroup[] {
 
   const groups: SessionGroup[] = [];
   const pageIds = new Set(workspace.pages.flatMap((p) => allSessionIds(p.layout)));
-  const main = workspace.mainSessionId;
+  const pending = input.agentStartedHere && !pageIds.has(input.agentStartedHere) ? input.agentStartedHere : undefined;
+  const main = workspace.mainSessionId ?? pending;
   if (main && !pageIds.has(main)) {
     groups.push({ key: "main", title: "Workspace agent", rows: take([main]) });
+  } else if (!main && workspace.rootPath?.trim()) {
+    groups.push({ key: "main", title: "Workspace agent", rows: [], startAgent: true });
   }
   for (const page of workspace.pages) {
     const ids = sessionTabsOnly(

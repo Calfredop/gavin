@@ -11,6 +11,7 @@
 // Every change is said the way a desk says it: the output as `pty-output`,
 // the status as `session-status-changed`, an ending as `session-exited`
 // and the tab it closes as `workspaces-synced`.
+import { placeDeviceSession } from "$lib/core/devicePresence";
 import * as workspace from "$lib/core/workspace";
 import type { SessionBaseline } from "$lib/core/backend";
 import * as layout from "$lib/panes/layout";
@@ -308,6 +309,9 @@ function commandLine(command: string): string {
 /// page a card's run lands on, and says so. A session under no
 /// workspace's folder is left running where nobody at the desk placed it.
 ///
+/// One started as the workspace's own agent becomes it, by the desk's rule
+/// (`placeDeviceSession`): when the workspace has a folder and no agent.
+///
 /// `place` is for the one session the demo starts that is NOT a Device's:
 /// a rail's step, which the desk's own scheduler places on the rail's
 /// page (railCommands.ts).
@@ -317,6 +321,7 @@ export function launch(
     cwd: string | null;
     command: string | null;
     workspaceRoot?: string | null;
+    workspaceAgent?: boolean;
     place?: (sessionId: string) => void;
   }
 ): string {
@@ -339,7 +344,7 @@ export function launch(
   demo.emit("cwd-changed", [id, cwd]);
   demo.emit("session-status-changed", [id, "idle"]);
   if (options.place) options.place(id);
-  else placeAtDesk(demo, id, options.workspaceRoot || options.cwd);
+  else placeAtDesk(demo, id, options.workspaceRoot || options.cwd, options.workspaceAgent === true);
   return id;
 }
 
@@ -356,10 +361,23 @@ function workspaceHolding(demo: DemoContext, where: string | null | undefined): 
 /// The tab the desk opens for a session a Device started, on the
 /// workspace's Agents page -- made for it, without taking the desk to it,
 /// when the workspace has none.
-function placeAtDesk(demo: DemoContext, sessionId: string, where: string | null | undefined): void {
+function placeAtDesk(
+  demo: DemoContext,
+  sessionId: string,
+  where: string | null | undefined,
+  asWorkspaceAgent: boolean
+): void {
   const workspaceId = workspaceHolding(demo, where);
   const ws = demo.state.workspaces.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
+  if (asWorkspaceAgent) {
+    const placed = placeDeviceSession(demo.state.workspaces, ws.id, sessionId, `p-demo-agents-${ws.id}`, true);
+    if (placed?.workspaces.find((w) => w.id === ws.id)?.mainSessionId === sessionId) {
+      demo.state.workspaces = placed;
+      demo.emit("workspaces-synced", { origin: "main", data: placed });
+      return;
+    }
+  }
   const agents = ws.pages.find((p) => p.name === "Agents");
   let data = demo.state.workspaces;
   if (agents) {

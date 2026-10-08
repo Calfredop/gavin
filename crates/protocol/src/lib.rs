@@ -3427,6 +3427,13 @@ pub struct DeviceStartedSession {
     pub workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Started as that workspace's own agent, the one the desk's Home tab
+    /// holds, rather than as one more tab. Only ever a request: the desk
+    /// takes it when the workspace has no agent of its own, and otherwise
+    /// places the session as a tab. Absent from a daemon that predates it,
+    /// which an older desk never reads -- so neither end needs a version.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workspace_agent: bool,
     /// Wall-clock epoch seconds.
     pub at: i64,
 }
@@ -5859,6 +5866,7 @@ mod tests {
                     session_id: "s2".into(),
                     workspace_root: Some("/work/app".into()),
                     cwd: None,
+                    workspace_agent: false,
                     at: 1_770_000_900,
                 }],
             }),
@@ -5871,6 +5879,12 @@ mod tests {
         assert_eq!(v["presence"]["started"][0]["sessionId"], "s2");
         assert_eq!(v["presence"]["started"][0]["workspaceRoot"], "/work/app");
         assert!(v["presence"]["started"][0].get("cwd").is_none());
+        // Only a workspace agent says so; a plain start says nothing.
+        assert!(v["presence"]["started"][0].get("workspaceAgent").is_none());
+        let agent: DeviceStartedSession =
+            serde_json::from_str(r#"{"sessionId":"s3","workspaceAgent":true,"at":1}"#).unwrap();
+        assert!(agent.workspace_agent);
+        assert_eq!(serde_json::to_value(&agent).unwrap()["workspaceAgent"], true);
 
         // An empty presence from a newer daemon that trims its fields
         // still parses.

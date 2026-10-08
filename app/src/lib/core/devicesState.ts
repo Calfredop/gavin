@@ -142,7 +142,7 @@ function presencePushed(deviceId: string, presence: DevicePresence, sinceSeconds
     handledStarts.add(started.sessionId);
     const workspaceId = workspaceForStarted(workspaces, started);
     if (workspaceId !== null && runsRailsFor(workspaceId)) {
-      placeDeviceStartedSession(workspaceId, started.sessionId);
+      placeDeviceStartedSession(workspaceId, started.sessionId, started.workspaceAgent === true);
     }
   }
   // A Device this window has not listed yet has a name nobody can show.

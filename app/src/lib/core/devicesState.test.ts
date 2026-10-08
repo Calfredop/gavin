@@ -79,8 +79,16 @@ describe("a session a Device started", () => {
     eventMock.fire("device-presence-changed", ["d1", { ...presence, typing: { sessionId: "x", at: nowS() } }]);
 
     expect(layoutMock.place).toHaveBeenCalledTimes(1);
-    expect(layoutMock.place).toHaveBeenCalledWith("w-here", "s-new");
+    expect(layoutMock.place).toHaveBeenCalledWith("w-here", "s-new", false);
     await vi.waitFor(() => expect(get(deviceNameBySessionId)).toEqual({ "s-new": "Pixel" }));
+  });
+
+  it("carries the Device's ask that it be the workspace agent", () => {
+    eventMock.fire("device-presence-changed", [
+      "d1",
+      { started: [{ sessionId: "s-agent", workspaceRoot: "/work/here", workspaceAgent: true, at: nowS() }] },
+    ]);
+    expect(layoutMock.place).toHaveBeenCalledWith("w-here", "s-agent", true);
   });
 
   it("is left to the window showing its workspace", () => {

@@ -5,7 +5,8 @@
 //! command is the whole of what the daemon sees it do -- and the whole of
 //! what it needs to. Most workspace commands name the desk's workspace
 //! (`workspaceId`); the input commands name the session being typed into;
-//! `create_session` answers with the id of the session the Device started.
+//! `create_session` answers with the id of the session the Device started,
+//! and its `workspaceAgent` says whether that was the workspace's own agent.
 //! Nothing here asks the Device where it is, so a Companion that never
 //! heard of presence has one all the same.
 //!
@@ -89,6 +90,7 @@ impl Presences {
                     session_id: session_id.to_string(),
                     workspace_root: text(args, "workspaceRoot").map(str::to_string),
                     cwd: text(args, "cwd").map(str::to_string),
+                    workspace_agent: args.get("workspaceAgent").and_then(Value::as_bool) == Some(true),
                     at: now,
                 });
                 let over = presence.started.len().saturating_sub(STARTED_KEPT);
@@ -201,9 +203,22 @@ mod tests {
                 session_id: "sess-1".into(),
                 workspace_root: Some("/work/app".into()),
                 cwd: Some("/work/app/src".into()),
+                workspace_agent: false,
                 at: 200,
             }]
         );
+    }
+
+    #[test]
+    fn create_session_says_when_the_device_asked_for_the_workspace_agent() {
+        let mut p = Presences::default();
+        let args = json!({"cwd": "/work/app", "workspaceRoot": "/work/app", "workspaceAgent": true});
+        let pushed = p.observe("d1", "create_session", &args, Some(&json!("sess-1")), 200).unwrap();
+        assert!(pushed.started[0].workspace_agent);
+        // Anything but a true is a plain start.
+        let args = json!({"workspaceRoot": "/work/app", "workspaceAgent": "yes"});
+        let pushed = p.observe("d1", "create_session", &args, Some(&json!("sess-2")), 201).unwrap();
+        assert!(!pushed.started[1].workspace_agent);
     }
 
     #[test]

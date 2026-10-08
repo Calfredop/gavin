@@ -71,6 +71,9 @@ export interface DeviceStartedSession {
   sessionId: string;
   workspaceRoot?: string;
   cwd?: string;
+  /// Started as the workspace's own agent, the Home tab's. Absent for
+  /// a plain start, and from a daemon that predates it.
+  workspaceAgent?: boolean;
   /// Wall-clock epoch SECONDS.
   at: number;
 }

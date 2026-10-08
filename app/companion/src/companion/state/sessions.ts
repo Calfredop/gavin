@@ -23,11 +23,20 @@ import {
   resolvedAgentFor,
 } from "$lib/core/layoutState";
 
-export type SessionKind = "terminal" | "agent";
+/// `workspace-agent` is the workspace's own agent, the one the desk's
+/// Home tab holds: the same agent a New agent starts, in the folder, asked
+/// of the desk as that agent rather than as one more tab.
+export type SessionKind = "terminal" | "agent" | "workspace-agent";
 
 /// The sessions this Device started, and the workspace each is in.
 const startedHereStore = writable<Record<string, string>>({});
 export const startedHere: Readable<Record<string, string>> = { subscribe: startedHereStore.subscribe };
+
+/// The workspace agent this Device started in each workspace, by
+/// workspace: the agent the list shows until the desk records it as the
+/// workspace's own, so a second press cannot start a second one.
+const agentStartedHereStore = writable<Record<string, string>>({});
+export const agentStartedHere: Readable<Record<string, string>> = { subscribe: agentStartedHereStore.subscribe };
 
 /// Whether the tables an agent is resolved from are in hand. An agent
 /// resolved without them would be a guess at the desk's answer, so a new
@@ -73,15 +82,23 @@ export async function startSession(workspaceId: string, kind: SessionKind): Prom
   if (!ws) throw new Error("this workspace is no longer on the Workstation");
   const root = ws.rootPath || undefined;
   let id: string;
-  if (kind === "agent") {
+  if (kind === "workspace-agent" && !root) throw new Error("the workspace's agent works in its folder, and this workspace has none");
+  if (kind === "terminal") {
+    id = await backend.createSession(root, undefined, root);
+  } else {
     if (get(tablesStore) !== "ready") throw new Error("the Workstation's agent settings are still being read");
     const agent = resolvedAgentFor(workspaceId);
-    id = await backend.createSession(root, agent.launchCommand, root, profileIdForLaunch(agent));
+    id = await backend.createSession(
+      root,
+      agent.launchCommand,
+      root,
+      profileIdForLaunch(agent),
+      kind === "workspace-agent"
+    );
     void armFailureDetection(id, agent.failurePatterns);
-  } else {
-    id = await backend.createSession(root, undefined, root);
   }
   recordStarted(id, workspaceId);
+  if (kind === "workspace-agent") agentStartedHereStore.update((started) => ({ ...started, [workspaceId]: id }));
   return id;
 }
 
@@ -105,10 +122,15 @@ export function forgetSession(sessionId: string): void {
     delete rest[sessionId];
     return rest;
   });
+  agentStartedHereStore.update((started) => {
+    const kept = Object.entries(started).filter(([, id]) => id !== sessionId);
+    return kept.length === Object.keys(started).length ? started : Object.fromEntries(kept);
+  });
 }
 
 /// What this module knows belongs to one visit to one Workstation.
 export function resetSessions(): void {
   startedHereStore.set({});
+  agentStartedHereStore.set({});
   tablesStore.set("unread");
 }

@@ -3,14 +3,21 @@
   // over sessionList.ts (what each row says) and state/sessions.ts (what
   // opening one does).
   import { onMount } from "svelte";
-  import { Bot, ChevronRight, SquareTerminal } from "@lucide/svelte";
+  import { Bot, ChevronRight, Play, SquareTerminal } from "@lucide/svelte";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { showAlert } from "$lib/core/dialog";
   import { layoutState } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { onReconnect } from "$companion/state/reachability";
-  import { launchTables, loadLaunchTables, startedHere, startSession, type SessionKind } from "$companion/state/sessions";
+  import {
+    agentStartedHere,
+    launchTables,
+    loadLaunchTables,
+    startedHere,
+    startSession,
+    type SessionKind,
+  } from "$companion/state/sessions";
   import { openTerminal } from "$companion/state/workstation";
   import { sessionGroups } from "$companion/surfaces/sessionList";
 
@@ -35,6 +42,7 @@
       startedHere: Object.entries($startedHere)
         .filter(([, workspaceId]) => workspaceId === workspace.id)
         .map(([id]) => id),
+      agentStartedHere: $agentStartedHere[workspace.id],
     })
   );
 
@@ -54,7 +62,7 @@
       openTerminal(await startSession(workspace.id, kind));
     } catch (e) {
       await showAlert({
-        title: kind === "agent" ? "The agent could not be started" : "The terminal could not be opened",
+        title: kind === "terminal" ? "The terminal could not be opened" : "The agent could not be started",
         lines: [e instanceof Error ? e.message : String(e)],
       });
     } finally {
@@ -86,6 +94,20 @@
     {#each groups as group (group.key)}
       <section class="group" aria-label={group.title}>
         <h2 class="group-title">{group.title}</h2>
+        {#if group.startAgent}
+          <button
+            type="button"
+            class="row"
+            disabled={starting !== null || $launchTables !== "ready"}
+            onclick={() => void start("workspace-agent")}
+          >
+            <Play size={16} />
+            <span class="text">
+              <span class="name">{starting === "workspace-agent" ? "Starting…" : "Start workspace agent"}</span>
+              <span class="said">Not running. It works in the workspace's folder, and the desk shows it on Home.</span>
+            </span>
+          </button>
+        {/if}
         <ul class="rows">
           {#each group.rows as row (row.id)}
             <li>
@@ -172,8 +194,11 @@
     color: var(--text-subtle);
     text-align: left;
   }
-  .row:active {
+  .row:active:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .row:disabled {
+    opacity: 0.45;
   }
   .row:focus-visible {
     outline: 2px solid var(--border-focus);

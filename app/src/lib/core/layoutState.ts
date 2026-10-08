@@ -3815,14 +3815,15 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
 
 // A session a Device started (companion-16), placed where a card run at the
 // desk lands -- the workspace's Agents page -- unless it is already showing
-// somewhere. `devicePresence.ts` decides; this applies and saves. Unlike
+// somewhere, or is the workspace agent the Device asked for, which goes to
+// the Home tab. `devicePresence.ts` decides; this applies and saves. Unlike
 // handleAgentSessionSpawned, a session this window cannot place is left
 // alone rather than killed: it belongs to the Device, where a human is
 // watching it.
-export function placeDeviceStartedSession(workspaceId: string, sessionId: string): void {
+export function placeDeviceStartedSession(workspaceId: string, sessionId: string, asWorkspaceAgent = false): void {
   const state = get(layoutState);
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
-  const data = placeDeviceSession(base, workspaceId, sessionId, crypto.randomUUID());
+  const data = placeDeviceSession(base, workspaceId, sessionId, crypto.randomUUID(), asWorkspaceAgent);
   if (!data) return;
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);

@@ -88,14 +88,28 @@ export function workspaceForStarted(
 /// or the session is already showing somewhere (a second push, or a window
 /// that placed it before a reload) -- and a null is never a kill: the session
 /// is the Device's.
+///
+/// One the Device started as the workspace's own agent (`workspaceAgent`)
+/// becomes that agent -- the Home tab's, as the desk's own Start makes one
+/// -- when the workspace has a folder and no agent yet. Otherwise it is a
+/// tab like any other: two phones racing to start it, or a desk that started
+/// one meanwhile, cost a second agent on the Agents page, never the first.
 export function placeDeviceSession(
   data: WorkspacesData,
   workspaceId: string,
   sessionId: string,
-  newPageId: string
+  newPageId: string,
+  asWorkspaceAgent = false
 ): WorkspacesData | null {
-  if (!data.workspaces.some((w) => w.id === workspaceId)) return null;
+  const ws = data.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return null;
   if (workspaceIdForSession(data, sessionId) !== null) return null;
+  if (asWorkspaceAgent && ws.rootPath?.trim() && !ws.mainSessionId) {
+    return {
+      ...data,
+      workspaces: data.workspaces.map((w) => (w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w)),
+    };
+  }
   return addToAgentsPage(data, workspaceId, sessionId, newPageId);
 }
 
