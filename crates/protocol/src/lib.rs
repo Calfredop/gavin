@@ -67,6 +67,12 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v66 is Playwright's browser installed on an ssh host by the host's own
+/// daemon (`PlaywrightMachineStatus`, `InstallPlaywrightBrowser`), which
+/// the desktop cannot do from its side of the link. Two new request
+/// TYPES, so `min_version_for` is the gate for each, and the setup step
+/// falls back to naming the command for the human against an older host.
+///
 /// v65 is a browser per agent session (`playwright-browser-broker`). The
 /// daemon runs a CDP proxy that `gavin-mcp playwright` points the pinned
 /// `@playwright/mcp` at (`PlaywrightEndpoint`), launches the session's
@@ -807,7 +813,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 65;
+pub const PROTOCOL_VERSION: u32 = 66;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -2063,6 +2069,23 @@ pub enum Request {
     /// `Response::Browsers`: the read-back for `BrowserChanged`, so a
     /// reload does not hide a live browser until its next navigation.
     ListBrowsers,
+    /// Playwright on the machine this daemon runs on (v66): whether `npx`
+    /// resolves for it, whether the pinned headless shell is installed
+    /// where its own environment puts Playwright's cache, and how its
+    /// install is going. Answered with `Response::PlaywrightMachine`.
+    ///
+    /// The ssh workspace's half of the Playwright setup step: an agent
+    /// there runs on the host, so the host's daemon is the one that can
+    /// answer -- the desktop cannot look a program up there, or read the
+    /// environment that may have moved the cache.
+    PlaywrightMachineStatus,
+    /// Starts the pinned headless shell's install on this daemon's machine
+    /// (v66), and answers at once, like `InstallHeadroom`, with the status
+    /// marked installing: the download can take minutes, and the reply
+    /// must not hold the one command connection an ssh host has. Poll
+    /// `PlaywrightMachineStatus` until it is not installing. One at a time;
+    /// asked again while one runs, it answers with that one.
+    InstallPlaywrightBrowser,
 
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
@@ -2549,6 +2572,11 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::PlaywrightEndpoint { .. }
         | Request::WatchBrowser { .. }
         | Request::ListBrowsers => 65,
+
+        // Playwright's browser on this daemon's machine (v66). New request
+        // TYPES: against an older host the lane refuses them, and the
+        // Playwright step names the install for the human instead.
+        Request::PlaywrightMachineStatus | Request::InstallPlaywrightBrowser => 66,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -3295,6 +3323,37 @@ pub enum Response {
     },
     /// The answer to `ListBrowsers` (v65).
     Browsers { browsers: Vec<LiveBrowser> },
+    /// The answer to `PlaywrightMachineStatus` and
+    /// `InstallPlaywrightBrowser` (v66): the state AFTER the request.
+    PlaywrightMachine { status: PlaywrightMachineStatus },
+}
+
+/// Playwright on one daemon's machine, as that daemon sees it (v66).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMachineStatus {
+    /// Whether `npx` resolves for this daemon, on its PATH or in the
+    /// well-known install directories (`bin_dirs`).
+    pub npx: bool,
+    /// Whether the pinned revision's `INSTALLATION_COMPLETE` is there.
+    pub browser_installed: bool,
+    /// Where that marker is, as this machine spells it.
+    pub marker: String,
+    /// An install is running now.
+    pub installing: bool,
+    /// The last install this daemon ran, once it has finished.
+    #[serde(default)]
+    pub last_install: Option<PlaywrightInstallRun>,
+}
+
+/// One finished browser install: its exit code (`-1` when it could not be
+/// started, was killed at its deadline, or died to a signal) and the end
+/// of what it printed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightInstallRun {
+    pub code: i32,
+    pub output: String,
 }
 
 /// Which screencast a `WatchBrowser` asks for. Two sizes, each its own
@@ -7534,7 +7593,12 @@ mod tests {
         // to the desk. New request TYPES, so min_version_for gates each;
         // BrowserChanged goes only to apps whose Hello speaks 65, and the
         // pane owes daemonCompat.ts's FEATURE_MIN_VERSION.playwrightBrowser.
-        assert_eq!(PROTOCOL_VERSION, 65);
+        // v66: Request::PlaywrightMachineStatus / InstallPlaywrightBrowser
+        // and Response::PlaywrightMachine -- the pinned headless shell
+        // checked and installed by an ssh host's own daemon. New request
+        // TYPES; the only sender is the app's Playwright step, which reads
+        // the gate's refusal as "an older host" and names the command.
+        assert_eq!(PROTOCOL_VERSION, 66);
     }
 
     #[test]
@@ -7858,6 +7922,8 @@ mod tests {
             Request::PlaywrightEndpoint { session_id: "s".into() },
             Request::WatchBrowser { session_id: "s".into(), size: BrowserViewSize::Desk, max_fps: 8 },
             Request::ListBrowsers,
+            Request::PlaywrightMachineStatus,
+            Request::InstallPlaywrightBrowser,
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
             Request::CreateGavinContext { parent_folder: "p".into() },
@@ -8241,6 +8307,9 @@ mod tests {
         // PlaywrightEndpoint, WatchBrowser, ListBrowsers -- a browser per
         // agent session.
         expected.insert(65, 3);
+        // PlaywrightMachineStatus, InstallPlaywrightBrowser -- the browser
+        // installed on an ssh host by its own daemon.
+        expected.insert(66, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

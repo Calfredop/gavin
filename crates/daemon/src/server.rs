@@ -6216,6 +6216,14 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::ListBrowsers => {
             manager.browsers_or_err().map(|browsers| Response::Browsers { browsers: browsers.list() })
         }
+        // Playwright on this daemon's machine (v66): an ssh workspace's
+        // setup step asks the host's daemon, which is where its agents run.
+        Request::PlaywrightMachineStatus => manager
+            .browsers_or_err()
+            .map(|browsers| Response::PlaywrightMachine { status: browsers.machine_status() }),
+        Request::InstallPlaywrightBrowser => manager
+            .browsers_or_err()
+            .map(|browsers| Response::PlaywrightMachine { status: browsers.install_browser() }),
         Request::WatchBrowser { .. } => {
             unreachable!("WatchBrowser is intercepted in handle_connection")
         }
@@ -6855,6 +6863,11 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // surveillance `SessionScreen` is refused for.
         | Request::WatchBrowser { .. }
         | Request::ListBrowsers
+        // Playwright's install on this machine (v66): the setup step's,
+        // the human's call. An agent that could start a 200 MB download
+        // is choosing what this machine runs.
+        | Request::PlaywrightMachineStatus
+        | Request::InstallPlaywrightBrowser
         // Adopted memories (v60): the index's state and its build. The
         // build can start a model download, which is the human's call at
         // setup; the state read goes with it as the setup step's half.
@@ -6991,8 +7004,10 @@ fn is_privileged(req: &Request) -> bool {
             | Request::RenameWorkspacePath { .. }
             | Request::TrashWorkspacePath { .. }
             // The door to a browser the daemon launches (v65): the same
-            // reach as starting a process.
+            // reach as starting a process. And the install that runs npx
+            // (v66); its status read stays out, like Headroom's.
             | Request::PlaywrightEndpoint { .. }
+            | Request::InstallPlaywrightBrowser
     )
 }
 

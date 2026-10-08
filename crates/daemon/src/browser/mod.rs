@@ -14,6 +14,7 @@
 //! Design and evidence:
 //! `docs/superpowers/specs/2026-10-08-playwright-integration-design.md`.
 
+mod install;
 mod launch;
 mod proxy;
 mod screencast;
@@ -60,6 +61,8 @@ struct Inner {
     proxy: Mutex<Option<SocketAddr>>,
     announce: Announce,
     find: Find,
+    /// The headless shell's install on this machine (v66).
+    installer: install::Installer,
 }
 
 struct SessionBrowser {
@@ -132,8 +135,19 @@ impl Browsers {
                 proxy: Mutex::new(None),
                 announce,
                 find,
+                installer: install::Installer::default(),
             }),
         }
+    }
+
+    /// Playwright on this daemon's machine (v66).
+    pub fn machine_status(&self) -> protocol::PlaywrightMachineStatus {
+        self.inner.installer.status()
+    }
+
+    /// Starts the pinned headless shell's install here (v66).
+    pub fn install_browser(&self) -> protocol::PlaywrightMachineStatus {
+        self.inner.installer.start()
     }
 
     /// The endpoint `gavin-mcp playwright` points the MCP at, and the

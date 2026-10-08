@@ -31,11 +31,12 @@
 //! answers live. The entry is read and written through the same
 //! `WorkspaceFiles` the integration uses, and the browser marker is
 //! stat'ed through the host's daemon, which answers for paths outside the
-//! root too (`StatWorkspacePaths`). Today's wire has no way to look a
-//! program up on the host or to run one there and wait for it, so for an
-//! ssh workspace `npx` reads "not checked", and the browser install is
-//! named for the human to run on the host; once it is there, Install
-//! writes the entry.
+//! root too (`StatWorkspacePaths`). Since v66 the host's daemon also
+//! answers the other two (`PlaywrightMachineStatus`) and runs the browser
+//! install there (`InstallPlaywrightBrowser`). Against an older host,
+//! `npx` reads "not checked", the marker is looked for at the default
+//! location, and the install is named for the human to run on the host;
+//! once it is there, Install writes the entry.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -206,6 +207,19 @@ struct HostMachine {
 }
 
 impl HostMachine {
+    /// The host daemon's own answer about its machine (v66), or `None`
+    /// from a host older than that -- which then gets the fallbacks below.
+    fn machine(&self, req: protocol::Request) -> Result<Option<protocol::PlaywrightMachineStatus>, String> {
+        let link = &self.files.link;
+        match link.command.ask(&link.compat, req) {
+            Ok(protocol::Response::PlaywrightMachine { status }) => Ok(Some(status)),
+            Ok(protocol::Response::Error { message }) => Err(message),
+            Ok(other) => Err(format!("{} answered {other:?}", link.host)),
+            Err(e) if e.is::<protocol::GatedRequest>() => Ok(None),
+            Err(e) => Err(format!("could not ask {}: {e}", link.host)),
+        }
+    }
+
     fn os(&self) -> HostOs {
         match self.files.link.host_os.as_str() {
             "macos" => HostOs::MacOs,
@@ -220,15 +234,27 @@ impl Machine for HostMachine {
         &self.files
     }
 
+    /// The host's daemon looks it up there (v66). An older host cannot,
+    /// and says so.
     fn npx(&self) -> Result<bool, String> {
-        Err(format!("Node.js (npx) not checked — gavin cannot look up programs on {} from here", self.files.link.host))
+        match self.machine(protocol::Request::PlaywrightMachineStatus)? {
+            Some(status) => Ok(status.npx),
+            None => Err(format!(
+                "Node.js (npx) not checked — gavin-daemon on {} is too old to look programs up there",
+                self.files.link.host
+            )),
+        }
     }
 
-    /// At the default location: the host's own environment, which could
-    /// move the cache (`PLAYWRIGHT_BROWSERS_PATH`, `XDG_CACHE_HOME`), is
-    /// not something this machine can read.
+    /// Where the host's own environment puts the cache, from its daemon
+    /// (v66). An older host is asked about the default location only:
+    /// `PLAYWRIGHT_BROWSERS_PATH` or `XDG_CACHE_HOME` there is not
+    /// something this machine can read.
     fn browser(&self) -> Result<(bool, String), String> {
         let link = &self.files.link;
+        if let Some(status) = self.machine(protocol::Request::PlaywrightMachineStatus)? {
+            return Ok((status.browser_installed, format!("{}:{}", link.host, status.marker)));
+        }
         let marker = protocol::wire_path(&marker_path(self.os(), Path::new(&link.home), |_| None));
         let stat = link
             .stat_paths(&self.files.root, std::slice::from_ref(&marker))
@@ -249,12 +275,34 @@ impl Machine for HostMachine {
         })
     }
 
+    /// Run by the host's daemon (v66), which answers at once; the run is
+    /// read back off its status until it finishes. An older host cannot
+    /// run it, so the human is told the command to run there.
     fn install_browser(&self) -> Result<Run, String> {
-        Err(format!(
-            "gavin cannot run programs on {} from here — run `{}` there, then install again",
-            self.files.link.host,
-            install_command()
-        ))
+        let host = &self.files.link.host;
+        if self.machine(protocol::Request::InstallPlaywrightBrowser)?.is_none() {
+            return Err(format!(
+                "gavin-daemon on {host} is too old to run the install — run `{}` there, then install again",
+                install_command()
+            ));
+        }
+        // A little past the host's own deadline, which ends the run and
+        // reports it.
+        let deadline = std::time::Instant::now() + INSTALL_TIMEOUT + Duration::from_secs(30);
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let status = self
+                .machine(protocol::Request::PlaywrightMachineStatus)?
+                .ok_or_else(|| format!("{host} stopped answering about its install"))?;
+            if !status.installing {
+                let run = status.last_install.ok_or_else(|| format!("{host} finished an install it did not report"))?;
+                // One stream: the host's daemon already joined them.
+                return Ok(Run { stdout: run.output, stderr: String::new(), code: run.code });
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("the install on {host} did not finish in {}s", INSTALL_TIMEOUT.as_secs()));
+            }
+        }
     }
 
     fn host(&self) -> Option<&str> {

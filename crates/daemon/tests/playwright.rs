@@ -493,3 +493,75 @@ fn over_an_ssh_bridge_the_browser_runs_on_the_host_and_its_frames_cross_the_link
         }
     }
 }
+
+/// The ssh workspace's setup step (v66): the host's daemon says whether
+/// its own machine has npx and the pinned browser, and runs the install
+/// there, answering at once and reporting the finished run on a later
+/// status -- all of it through the bridge. The install itself runs only
+/// where the pinned browser is already there, so a test never downloads
+/// 200 MB; CI installs it first, so there the install path runs too.
+#[test]
+fn an_ssh_hosts_daemon_checks_and_installs_playwright_on_its_own_machine() {
+    let Some(browsers) = installed_browsers() else {
+        assert!(
+            std::env::var_os("GAVIN_REQUIRE_PLAYWRIGHT").is_none(),
+            "GAVIN_REQUIRE_PLAYWRIGHT is set and no complete Playwright headless shell is installed"
+        );
+        eprintln!("SKIPPED: no complete Playwright headless shell is installed on this machine");
+        return;
+    };
+    let pinned = browsers
+        .join(protocol::playwright::headless_shell_folder(protocol::playwright::HEADLESS_SHELL_REVISION))
+        .join(protocol::playwright::INSTALLATION_COMPLETE);
+    let temp_root = if cfg!(windows) { std::env::temp_dir() } else { PathBuf::from("/tmp") };
+    let home = tempfile::Builder::new().prefix("gavin-pw-inst-").tempdir_in(&temp_root).unwrap();
+    let fake = Some(home.path().as_os_str().to_os_string());
+    let state_dir =
+        protocol::resolve_app_support_dir(fake.clone(), None, fake.clone(), fake, protocol::HostOs::current())
+            .unwrap();
+    let socket = state_dir.join(protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current()));
+    struct Stop(PathBuf);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            if let Ok(mut stream) = Stream::connect(&self.0) {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = write_message(&mut stream, &Request::Shutdown);
+                let mut reader = BufReader::new(stream);
+                let _ = read_message::<_, Response>(&mut reader);
+            }
+        }
+    }
+    let _stop = Stop(socket);
+
+    let mut link = Bridge::start(home.path(), &browsers);
+    let status = match link.ask(Request::PlaywrightMachineStatus) {
+        Response::PlaywrightMachine { status } => status,
+        other => panic!("PlaywrightMachineStatus over the bridge: {other:?}"),
+    };
+    assert_eq!(status.browser_installed, pinned.is_file(), "{status:?}");
+    assert_eq!(Path::new(&status.marker), pinned, "the host's own environment placed the cache");
+    assert!(!status.installing);
+    if !status.npx || !status.browser_installed {
+        eprintln!("SKIPPED the install: npx {} / pinned browser {} on this machine", status.npx, status.browser_installed);
+        return;
+    }
+
+    let started = match link.ask(Request::InstallPlaywrightBrowser) {
+        Response::PlaywrightMachine { status } => status,
+        other => panic!("InstallPlaywrightBrowser over the bridge: {other:?}"),
+    };
+    assert!(started.installing, "it answers at once, installing: {started:?}");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let finished = loop {
+        match link.ask(Request::PlaywrightMachineStatus) {
+            Response::PlaywrightMachine { status } if !status.installing => break status,
+            Response::PlaywrightMachine { .. } => {}
+            other => panic!("PlaywrightMachineStatus over the bridge: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "the install was still running after 300s");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let run = finished.last_install.expect("the finished run is reported");
+    assert_eq!(run.code, 0, "the install's output:\n{}", run.output);
+    assert!(finished.browser_installed);
+}
