@@ -127,6 +127,23 @@ the native side also refuses to open it outside a DEBUG build.
 Name devices by UDID or serial, never `booted`: other sessions on this Mac
 boot simulators of their own.
 
+## The touch recorder
+
+```
+scripts/touch-recorder.sh <iphone-udid> on       # in the open bundle
+# ...the human swipes the terminal...
+scripts/touch-recorder.sh <iphone-udid> report
+```
+
+What a finger on the terminal did, measured in the page of a debug build on
+a physical iPhone, one line per swipe: rows redrawn, how many after the
+finger lifted (momentum), the visible rows before and after, whether the
+page scrolled instead, and frame times. `touch-recorder.js` is the recorder
+itself, one expression any inspector can evaluate; `webview-eval.py`
+carries it over USB through the Mac's usbmuxd and opens no port. Synthetic
+`TouchEvent`s prove nothing here (they are untrusted), which is why this
+needs a finger.
+
 ## How the bundle webview is sealed
 
 | | iOS | Android |
