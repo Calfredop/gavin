@@ -21,6 +21,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "set_typesafe_change_attribution",
     "typesafe_attribution",
     "set_failure_patterns",
+    "distrust_osc133",
     "get_workspaces_state",
     "set_workspaces_state",
     "get_workspace_settings",

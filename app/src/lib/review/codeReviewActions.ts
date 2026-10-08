@@ -296,7 +296,7 @@ async function launchReview(request: {
     return `Couldn't start the review: ${e instanceof Error ? e.message : e}`;
   }
   pending.set(null);
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   handleAgentSessionSpawned(request.workspaceId, sessionId);
   // A review writes NO status and binds to NO card -- deliberately, and
   // for the reasons develop does: the card is not being worked, and a

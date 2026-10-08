@@ -511,7 +511,7 @@ export async function developCard(
   }
   // No conversation id: a develop run binds nothing, so there is no
   // record for one to outlive and nothing that could ever resume it.
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   handleAgentSessionSpawned(workspaceId, sessionId);
   // Written down BEFORE the jump, and before anything can fail after it:
   // this record is the card's only indication that it is being rewritten,
@@ -813,7 +813,7 @@ async function launchCard(
     // Its first quiet is its history being painted, not a turn: nothing
     // has been asked of the model yet (headroomMark.ts, `reachCheckDue`).
     noteReopenedConversation(resumed);
-    void armFailureDetection(resumed, agent.failurePatterns);
+    void armFailureDetection(resumed, agent.failurePatterns, agent.untrustedOsc133);
     host.place(workspaceId, resumed);
     const name = provisionalSessionName(card.title);
     if (name) await setSessionName(resumed, name);
@@ -925,7 +925,7 @@ async function launchCard(
       return `Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`;
     }
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   host.place(workspaceId, sessionId);
   // Named before the agent has drawn a frame. The agent's own
   // gavin_name_session replaces this the moment it runs -- but that call
@@ -1183,7 +1183,7 @@ export async function relaunchCard(
   } catch (e) {
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   host.place(workspaceId, sessionId);
   await linkCardSessionAction(workspaceId, {
     ...binding,

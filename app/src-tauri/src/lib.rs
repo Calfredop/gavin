@@ -140,6 +140,7 @@ pub fn run() {
             typesafe::set_typesafe_change_attribution,
             typesafe::typesafe_attribution,
             session::set_failure_patterns,
+            session::distrust_osc133,
             session::get_workspaces_state,
             session::set_workspaces_state,
             workspace_settings::get_workspace_settings,

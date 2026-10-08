@@ -73,6 +73,7 @@ const AGENT = {
   model: "",
   failurePatterns: ["API Error:"],
   failureCauses: [],
+  untrustedOsc133: false,
   sessionIdArgs: "--session-id",
   resumeArgs: "",
 };
@@ -275,7 +276,7 @@ describe("the launch", () => {
   // shell has no conversation, and its verdict is its exit code.
   it("arms failure detection and mints a conversation only for an agent tool", async () => {
     await requestToolRun("ws-1", tool({ kind: "agent", body: "do the thing" }));
-    expect(armFailureDetection).toHaveBeenCalledWith("sess-1", ["API Error:"]);
+    expect(armFailureDetection).toHaveBeenCalledWith("sess-1", ["API Error:"], false);
     expect(backend.startToolRun).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: "conv-1" })
     );

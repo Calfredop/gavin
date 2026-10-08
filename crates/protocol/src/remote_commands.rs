@@ -51,6 +51,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_typesafe_change_attribution", RemoteAllowance::Allowed),
     ("typesafe_attribution", RemoteAllowance::Allowed),
     ("set_failure_patterns", RemoteAllowance::Allowed),
+    ("distrust_osc133", RemoteAllowance::Allowed),
     ("get_workspaces_state", RemoteAllowance::Allowed),
     ("set_workspaces_state", RemoteAllowance::Refused), // layout-saving
     // A workspace's settings, apart from its layout so a Device can change

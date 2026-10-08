@@ -343,7 +343,7 @@ export async function launchCriticalReviewSessions(
 
   for (const [i, launch] of launches.entries()) {
     const sessionId = page.sessionIds[i];
-    void armFailureDetection(sessionId, launch.agent.failurePatterns);
+    void armFailureDetection(sessionId, launch.agent.failurePatterns, launch.agent.untrustedOsc133);
     const name = provisionalSessionName(launch.label);
     if (name) await setSessionName(sessionId, name);
   }

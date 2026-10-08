@@ -373,6 +373,18 @@ pub struct AgentProfile {
     /// meaningful with `prompt_args: None` (an agent that takes a prompt
     /// on its command line gets it there); kimi-code is the first row.
     pub prompt_injection: bool,
+    /// True when this agent's OSC 133 markers are NOT to be believed --
+    /// the app sends `Request::DistrustOsc133` for the session at spawn,
+    /// and the daemon drops every 133 marker for it: the quiet-timer
+    /// heuristic stays the authority and only a bare BEL raises
+    /// waiting_for_input. kimi-code is the first row: it emits A at
+    /// startup and per prompt submission amid redraw spam, wraps every
+    /// tool result in B;C pairs, and its LAST marker is always C
+    /// (Working) even sitting at its prompt -- so arming OSC-133-only
+    /// detection on any marker strands the session in `working` forever
+    /// (bug-kimi-launch-integrations, 2026-10-08, captured from a live
+    /// TUI's PTY stream).
+    pub untrusted_osc133: bool,
     /// The argv that makes this agent run ONE prompt with no TUI and
     /// then exit. Empty where the convention is unverified, which hides
     /// every background run -- a hidden session that never exits is a
@@ -910,6 +922,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // `claude "<prompt>"`: the bare positional starts the session.
         prompt_args: Some(""),
         prompt_injection: false,
+        untrusted_osc133: false,
         // `claude -p`: print/non-interactive mode (code.claude.com/docs/en/headless,
         // re-checked 2026-09-11). `--allowedTools "Bash(git *)"` auto-
         // approves git for commit-via-agent without opening the whole
@@ -1079,6 +1092,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // (2026-09-11).
         prompt_args: Some(""),
         prompt_injection: false,
+        untrusted_osc133: false,
         // `codex exec` is the non-interactive subcommand. Default sandbox
         // is read-only, so a commit run needs `workspace-write`;
         // `--ask-for-approval never` stops a hidden session stalling on
@@ -1158,6 +1172,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // geminicli.com/docs/cli/headless.
         prompt_args: Some(""),
         prompt_injection: false,
+        untrusted_osc133: false,
         // Headless is `--prompt=<value>`, not a bare positional: a
         // positional without `-p` stays interactive. `--yolo` auto-
         // accepts tool calls so a hidden commit does not stall.
@@ -1247,6 +1262,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // (`Usage: agent [options] [command] [prompt...]`).
         prompt_args: Some(""),
         prompt_injection: false,
+        untrusted_osc133: false,
         // Print mode for scripts; `--force` so a hidden run can write
         // and run tools (without it, `-p` proposes and applies nothing);
         // same MCP/trust pins as the interactive command. Trailing `--`
@@ -1326,6 +1342,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // daemon runs every session.
         prompt_args: Some("--prompt="),
         prompt_injection: false,
+        untrusted_osc133: false,
         // `run` is the non-interactive subcommand; `--agent` names the
         // gavin-owned definition below, which carries the git-only grant.
         // `--auto` (verified on current `opencode run --help` 2026-09-11)
@@ -1436,6 +1453,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // prompt_injection tells the app to do.
         prompt_args: None,
         prompt_injection: true,
+        untrusted_osc133: true,
         // `-p='<prompt>'`, ATTACHED: the separated `-p -- '<prompt>'`
         // form does not work (verified live 2026-10-05, 2.1.1). Headless
         // runs land in kimi's `auto` permission policy by default -- no
@@ -1558,6 +1576,7 @@ static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
     command: "",
     prompt_args: None,
     prompt_injection: false,
+    untrusted_osc133: false,
     headless_args: "",
     failure_patterns: &[],
     failure_causes: &[],
@@ -3351,6 +3370,11 @@ pub struct AgentProfileDto {
     /// a bare launch plus a queued prompt instead of refusing with
     /// "takes no prompt".
     pub prompt_injection: bool,
+    /// True when the app must tell the daemon to distrust this agent's
+    /// OSC 133 markers for the session (see
+    /// `AgentProfile::untrusted_osc133`): sent alongside the failure
+    /// patterns at spawn, on the same per-session arming path.
+    pub untrusted_osc133: bool,
     pub headless_args: String,
     /// The flag that selects a model, empty where the CLI takes none --
     /// which is how the settings panels decide whether to offer a model
@@ -3407,6 +3431,7 @@ pub fn agent_profile_dto_from_custom(profile: &crate::config::CustomProfile) -> 
         mcp_config_file: String::new(),
         prompt_args: None,
         prompt_injection: false,
+        untrusted_osc133: false,
         headless_args: String::new(),
         model_flag: profile.model_flag.clone(),
         models: Vec::new(),
@@ -3466,6 +3491,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
             prompt_args: p.prompt_args.map(|a| a.to_string()),
             prompt_injection: p.prompt_injection,
+            untrusted_osc133: p.untrusted_osc133,
             headless_args: p.headless_args.to_string(),
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),

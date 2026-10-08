@@ -6421,6 +6421,28 @@ pub async fn set_failure_patterns(
     expect_ok(resp)
 }
 
+/// The profile's other half of the same per-session arming: this agent's
+/// OSC 133 markers are not to be believed, so the daemon drops every one
+/// for the session and the quiet-timer heuristic stays the authority.
+///
+/// Best-effort, exactly like `set_failure_patterns`: against a daemon
+/// older than v64 the gate refuses the request and the agent keeps the
+/// old OSC 133 behaviour -- for kimi, the stuck-in-working one.
+#[tauri::command]
+pub async fn distrust_osc133(
+    session_id: String,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = lanes_for(route, &state, &compat)
+        .request(Request::DistrustOsc133 { id: session_id })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
 #[tauri::command]
 pub async fn kill_session(
     session_id: String,
@@ -8037,6 +8059,9 @@ mod gate_tests {
                 },
             },
             Request::DeleteToolByRoot { root_path: "r".into(), id: "t".into() },
+            // v64: the profile's word that a session's OSC 133 markers lie.
+            // Sent beside SetFailurePatterns for kimi-code.
+            Request::DistrustOsc133 { id: "s".into() },
             // Deserialize-only in production, but nothing stops Rust code
             // from constructing it -- and the sweep needs to, to prove it
             // is refused everywhere rather than just trusting the comment

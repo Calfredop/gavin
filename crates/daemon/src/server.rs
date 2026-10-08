@@ -884,9 +884,13 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
     let manager = Arc::clone(manager);
     std::thread::spawn(move || loop {
         std::thread::sleep(HEURISTIC_POLL_INTERVAL);
-        if heuristic.seen_osc133.load(Ordering::SeqCst) {
+        if heuristic.seen_osc133.load(Ordering::SeqCst) && !manager.osc133_is_distrusted(&id) {
             // Permanently switched to OSC-133-only detection -- nothing
             // left for this thread to ever do for this session again.
+            // Distrust overrides the switch: a session told its markers
+            // lie keeps this timer as its only turn-boundary detector,
+            // even if an early marker armed the switch before the request
+            // landed.
             return;
         }
         // Not `mut`: this binding only ever READS, and is dropped before
@@ -1418,6 +1422,16 @@ pub struct SessionManager {
     /// the agent profile, and one daemon hosts every workspace's agents
     /// at once.
     failure_patterns: Mutex<HashMap<String, Vec<String>>>,
+    /// Sessions whose OSC 133 markers the agent profile has told the daemon
+    /// not to believe (`Request::DistrustOsc133`). kimi brackets every tool
+    /// result in B;C and ends every turn with C (Working) even sitting at
+    /// its prompt, so its markers are line framing, not status -- arming
+    /// OSC-133-only detection on one (the one-way switch) strands it in
+    /// `working` forever. Under distrust the pump drops every 133 marker
+    /// before it can touch status, the quiet-timer heuristic stays the
+    /// authority, and a bare BEL still raises waiting_for_input. One-way:
+    /// a session is never re-trusted.
+    osc133_distrusted: Mutex<std::collections::HashSet<String>>,
     /// The failure line that was already on a session's screen when the
     /// human last typed into it. A failure is only ever a verdict on the
     /// turn that just ended, so an error the human has already seen --
@@ -1867,6 +1881,7 @@ impl SessionManager {
             attached_writers: Mutex::new(HashMap::new()),
             screens: Mutex::new(HashMap::new()),
             failure_patterns: Mutex::new(HashMap::new()),
+            osc133_distrusted: Mutex::new(std::collections::HashSet::new()),
             acknowledged_failures: Mutex::new(HashMap::new()),
             slept_mid_turn: Mutex::new(HashMap::new()),
             repo_pollers: Mutex::new(HashMap::new()),
@@ -4544,6 +4559,18 @@ impl SessionManager {
         Ok(())
     }
 
+    /// This session's OSC 133 markers are not to be believed
+    /// (`Request::DistrustOsc133`). One-way: idempotent, and there is no
+    /// re-trust.
+    pub fn distrust_osc133(&self, id: &str) -> anyhow::Result<()> {
+        self.osc133_distrusted.lock().unwrap().insert(id.to_string());
+        Ok(())
+    }
+
+    pub fn osc133_is_distrusted(&self, id: &str) -> bool {
+        self.osc133_distrusted.lock().unwrap().contains(id)
+    }
+
     pub fn resize_session(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
         {
             let sessions = self.sessions.lock().unwrap();
@@ -4611,6 +4638,7 @@ impl SessionManager {
         self.forget_session(id)?;
         self.screens.lock().unwrap().remove(id);
         self.failure_patterns.lock().unwrap().remove(id);
+        self.osc133_distrusted.lock().unwrap().remove(id);
         self.acknowledged_failures.lock().unwrap().remove(id);
         self.slept_mid_turn.lock().unwrap().remove(id);
         self.awaiting_agent_since.lock().unwrap().remove(id);
@@ -5261,6 +5289,12 @@ impl SessionManager {
                         let status_events = status_scanner.feed(&buf[..n]);
                         let reminded = status_events.contains(&StatusEvent::IdleReminder);
 
+                        // One snapshot for the whole chunk: distrust is
+                        // one-way, so a value a moment stale is safe, and
+                        // this map is empty for every session that was
+                        // never told anything.
+                        let osc133_distrusted = manager.osc133_is_distrusted(&id);
+
                         {
                             // Read before `inner` is locked: a different
                             // mutex, and this block's rule is that the
@@ -5269,7 +5303,7 @@ impl SessionManager {
                             let repainting = manager.repainting_for_the_terminal(&id);
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
-                            if heuristic.seen_osc133.load(Ordering::SeqCst) {
+                            if heuristic.seen_osc133.load(Ordering::SeqCst) && !osc133_distrusted {
                                 // The shell speaks for itself now, and
                                 // that is a one-way switch.
                             } else if repainting {
@@ -5329,14 +5363,60 @@ impl SessionManager {
 
                         for event in status_events {
                             match event {
-                                StatusEvent::Idle => {
-                                    heuristic.seen_osc133.store(true, Ordering::SeqCst);
-                                    persist_and_emit_status(&manager, &id, SessionStatus::Idle);
-                                    trigger_recheck_for_session(&manager, &id);
+                                StatusEvent::Idle { prompt } => {
+                                    if prompt && !osc133_distrusted {
+                                        // A or D: the marker family a real
+                                        // shell integration brackets its
+                                        // prompt with. THIS -- and only
+                                        // this -- is evidence the CLI
+                                        // speaks for itself: arm the
+                                        // permanent OSC-133 mode and read
+                                        // every marker from here on.
+                                        // Distrust overrides even this:
+                                        // kimi emits A per prompt
+                                        // submission amid its redraw spam,
+                                        // so an A is no evidence of an
+                                        // honest speaker either.
+                                        heuristic.seen_osc133.store(true, Ordering::SeqCst);
+                                        persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                        trigger_recheck_for_session(&manager, &id);
+                                    } else if heuristic.seen_osc133.load(Ordering::SeqCst) && !osc133_distrusted {
+                                        // B from a speaker already
+                                        // switched: its own word for
+                                        // "output ended".
+                                        persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                        trigger_recheck_for_session(&manager, &id);
+                                    }
+                                    // Not switched: a B with no A/D
+                                    // behind it is line framing, not a
+                                    // prompt -- kimi wraps each tool
+                                    // result in a B;C pair and never
+                                    // marks one. Treating it as idle
+                                    // would call a running turn over;
+                                    // arming OSC-133 mode on it (the old
+                                    // rule, on ANY 133 marker) left
+                                    // every tool-using kimi session
+                                    // working forever -- its last marker
+                                    // is always C. Ignore it: the quiet
+                                    // timer stays the authority.
                                 }
                                 StatusEvent::Working => {
-                                    heuristic.seen_osc133.store(true, Ordering::SeqCst);
-                                    persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                                    if heuristic.seen_osc133.load(Ordering::SeqCst) && !osc133_distrusted {
+                                        persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                                    } else {
+                                        // C before the switch: a command
+                                        // started, which fresh output
+                                        // already said -- mirror the
+                                        // heuristic branch above rather
+                                        // than trusting the marker with
+                                        // the session's whole status.
+                                        let mut inner = heuristic.inner.lock().unwrap();
+                                        if !inner.heuristic_working || inner.waiting_for_input {
+                                            inner.heuristic_working = true;
+                                            inner.waiting_for_input = false;
+                                            persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                                        }
+                                    }
                                 }
                                 StatusEvent::WaitingForInput => {
                                     heuristic.inner.lock().unwrap().waiting_for_input = true;
@@ -5587,6 +5667,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetFailurePatterns { id, patterns } => {
             manager.set_failure_patterns(&id, patterns).map(|_| Response::Ok)
         }
+        Request::DistrustOsc133 { id } => manager.distrust_osc133(&id).map(|_| Response::Ok),
         Request::SetStepRun {
             step_id,
             state,
@@ -6415,6 +6496,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // surveillance this list exists to refuse.
         | Request::SessionScreen { .. }
         | Request::SetFailurePatterns { .. }
+        | Request::DistrustOsc133 { .. }
         // Answering a human item. The app sends this one, on a press the
         // human made; an agent sending it would be signing off on its
         // own work under the human's name.
@@ -15638,8 +15720,17 @@ mod tests {
         );
     }
 
+    /// The kimi shape (bug-kimi-launch-integrations, 2026-10-07): kimi
+    /// wraps each tool result in `OSC 133 B;C` pairs and never emits a
+    /// prompt marker, so its LAST marker is always C. The old rule --
+    /// arm permanent OSC-133 mode on ANY 133 marker -- left every
+    /// tool-using kimi session `working` forever, its quiet timer
+    /// permanently disarmed. Now only A/D arm the mode; a session that
+    /// has seen only B/C stays under the heuristic, so silence after
+    /// the turn still reads as `idle` and the heuristic still speaks
+    /// afterwards.
     #[test]
-    fn heuristic_permanently_stops_once_a_real_osc_133_marker_has_been_seen() {
+    fn a_partial_osc_133_emitter_stays_under_the_heuristic() {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
@@ -15663,15 +15754,14 @@ mod tests {
 
         let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
-        // A real OSC 133 "C" marker, followed by plain output with no
-        // further markers -- once this session has seen OSC 133 once,
-        // the heuristic must never fire again, even after a full quiet
-        // period elapses.
+        // Exactly what kimi streams around one tool result: C, then a
+        // B;C pair, then nothing. The old code armed OSC-133 mode on
+        // the first C and the session never came back.
         write_message(
             &mut stream2,
             &Request::WriteInput {
                 id: id.clone(),
-                data: "printf '\\033]133;C\\007'; echo done_working\n".to_string(),
+                data: "printf '\\033]133;C\\007tool ran\\033]133;B\\007\\033]133;C\\007'\n".to_string(),
             },
         )
         .unwrap();
@@ -15689,21 +15779,219 @@ mod tests {
         }
         assert!(saw_working, "never saw the initial \"working\" from the OSC 133 C marker");
 
-        // Wait well past HEURISTIC_QUIET_PERIOD (2s) with no further OSC
-        // 133 marker -- if the heuristic incorrectly re-activated, it
-        // would fire a spurious "idle" here. Drain anything that arrives
-        // in a bounded window afterward and assert none of it is that.
+        // Silence past the quiet period must now bring `idle` -- the
+        // B and C markers were consumed without arming anything.
+        let mut saw_idle = false;
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
+        while std::time::Instant::now() < deadline && !saw_idle {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    if status == "idle" {
+                        saw_idle = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(saw_idle, "a partial OSC 133 emitter never went idle despite the silence");
+    }
+
+    /// kimi with `DistrustOsc133` armed (bug-kimi-launch-integrations,
+    /// 2026-10-08): kimi emits A at startup and per prompt submission --
+    /// amid redraw spam, so the A-gating of
+    /// `a_partial_osc_133_emitter_stays_under_the_heuristic` is not enough
+    /// on its own -- and its last marker is always C. Under distrust every
+    /// marker must be dropped, including A: the session goes idle on
+    /// silence via the quiet timer, which is only possible if A never
+    /// armed permanent OSC-133 mode.
+    #[test]
+    fn a_distrusted_osc_133_emitter_goes_idle_on_silence() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = Stream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    profile_id: None,
+                    api_family: None,
+                    without_headroom: false,
+                },
+            );
+            match created {
+                Response::SessionCreated { id, .. } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(&mut stream2, &Request::DistrustOsc133 { id: id.clone() }).unwrap();
+        // kimi's startup burst and one tool-result frame, verbatim shape:
+        // A;B;C, then B;C around the tool output. The last marker is C.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]133;A\\007\\033]133;B\\007\\033]133;C\\007'; echo start; printf 'tool\\033]133;B\\007\\033]133;C\\007'\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let mut saw_idle = false;
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
+        while std::time::Instant::now() < deadline && !saw_idle {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    if status == "idle" {
+                        saw_idle = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(
+            saw_idle,
+            "a distrusted session never went idle -- its A marker armed OSC-133 mode and the trailing C stranded it working"
+        );
+    }
+
+    /// Distrust silences only the 133 family: the bare-BEL attention
+    /// signal is the channel kimi's gavin-attention hook writes to, and a
+    /// distrusted session must still raise waiting_for_input on it.
+    #[test]
+    fn a_distrusted_session_still_raises_waiting_for_input_on_a_bell() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = Stream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    profile_id: None,
+                    api_family: None,
+                    without_headroom: false,
+                },
+            );
+            match created {
+                Response::SessionCreated { id, .. } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(&mut stream2, &Request::DistrustOsc133 { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "printf '\\a'\n".to_string() },
+        )
+        .unwrap();
+
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let mut saw_waiting = false;
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
+        while std::time::Instant::now() < deadline && !saw_waiting {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    if status == "waiting_for_input" {
+                        saw_waiting = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(saw_waiting, "a distrusted session ignored the bare-BEL attention signal");
+    }
+
+    #[test]
+    fn heuristic_permanently_stops_once_a_prompt_osc_133_marker_has_been_seen() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = Stream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    profile_id: None,
+                    api_family: None,
+                    without_headroom: false,
+                },
+            );
+            match created {
+                Response::SessionCreated { id, .. } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // A real OSC 133 "A" prompt marker, then plain output with no
+        // further markers -- once this session has seen a PROMPT
+        // marker, the heuristic must never fire again, even after a
+        // full quiet period elapses. (A "C" marker alone must NOT do
+        // this: partial emitters frame tool output in B;C pairs --
+        // see `a_partial_osc_133_emitter_stays_under_the_heuristic`.)
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]133;A\\007'; echo done\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let mut saw_idle = false;
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
+        while std::time::Instant::now() < deadline && !saw_idle {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id && status == "idle" {
+                    saw_idle = true;
+                }
+            }
+        }
+        assert!(saw_idle, "never saw the initial \"idle\" from the OSC 133 A marker");
+
+        // The very chunk that carried the A marker first trips the
+        // output heuristic (working) and then the marker itself
+        // (idle) -- one working->idle pair is the same instant
+        // arriving in order, not the heuristic having a say. Let that
+        // settle, then sit through several quiet periods: if the
+        // heuristic were still armed it would fire a spurious idle
+        // here. Assert nothing further arrives at all.
         std::thread::sleep(Duration::from_secs(3));
         reader.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let settled = std::time::Instant::now();
+        let mut late: Vec<String> = Vec::new();
         loop {
             match read_message::<_, Response>(&mut reader) {
                 Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
-                    assert_ne!(status, "idle", "heuristic fired a spurious idle after OSC 133 was already seen");
+                    // Ignore the same-chunk pair; anything past a quiet
+                    // period after it is the heuristic firing.
+                    if settled.elapsed() > HEURISTIC_QUIET_PERIOD {
+                        late.push(status);
+                    }
                 }
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
             }
         }
+        assert!(late.is_empty(), "heuristic fired after a prompt marker armed OSC 133 mode: {late:?}");
     }
 
     #[test]

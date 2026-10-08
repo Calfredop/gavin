@@ -791,7 +791,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 63;
+pub const PROTOCOL_VERSION: u32 = 64;
 
 /// The first version that pushes `DevicePresenceChanged` and carries
 /// `DeviceInfo::presence`. The daemon compares an app's `Hello` version
@@ -1050,6 +1050,21 @@ pub enum Request {
     SetFailurePatterns {
         id: String,
         patterns: Vec<String>,
+    },
+    /// The agent profile's word that this session's OSC 133 markers are not
+    /// to be believed -- its last marker is `C` (Working) even at a prompt,
+    /// so arming OSC-133-only detection on one strands the session in
+    /// `working` forever. Per SESSION, supplied by the caller at spawn,
+    /// exactly like `SetFailurePatterns` -- the flag belongs to the agent
+    /// PROFILE (`agent_setup.rs`'s `AGENT_PROFILES`) and the daemon hosts
+    /// whatever it is told to. One-way: the daemon never re-trusts a
+    /// session it was told to distrust. Under distrust every OSC 133 marker
+    /// is dropped before it can touch status, the quiet-timer heuristic
+    /// stays the authority, and the bare-BEL attention signal is
+    /// untouched. A daemon that is never sent this trusts OSC 133 exactly
+    /// as it always did.
+    DistrustOsc133 {
+        id: String,
     },
     GetBoard {
         workspace_id: String,
@@ -2465,6 +2480,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // LinkCardSession payloads, which this match structurally cannot
         // see.
         Request::SetFailurePatterns { .. } => 21,
+
+        // OSC 133 distrust (v64). A new request TYPE, so this match is the
+        // whole gate: a daemon older than 64 never receives it and keeps
+        // trusting OSC 133 for that session -- which for kimi means the old
+        // stuck-in-working behaviour, the honest degraded mode.
+        Request::DistrustOsc133 { .. } => 64,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -7307,7 +7328,14 @@ mod tests {
         // DeviceRefusalChanged push, which is gated by the app's Hello.
         // v63: no new request. DeviceInfo.presence and the
         // DevicePresenceChanged push, gated the same way.
-        assert_eq!(PROTOCOL_VERSION, 63);
+        // v64: Request::DistrustOsc133 -- the agent profile's word that a
+        // session's OSC 133 markers lie (kimi's last marker is always C,
+        // even at a prompt), so the daemon drops every marker for that
+        // session and the quiet-timer heuristic stays the authority. A new
+        // request TYPE, so min_version_for is the whole gate and no
+        // daemonCompat.ts entry is owed: an older daemon simply never
+        // receives it.
+        assert_eq!(PROTOCOL_VERSION, 64);
     }
 
     #[test]
@@ -7627,6 +7655,7 @@ mod tests {
             Request::SetQueuedInputs { id: "s".into(), queued_ids: vec!["q1".into()] },
             Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
             Request::SetFailurePatterns { id: "s".into(), patterns: vec!["API Error:".into()] },
+            Request::DistrustOsc133 { id: "s".into() },
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
             Request::CreateGavinContext { parent_folder: "p".into() },
@@ -8004,6 +8033,9 @@ mod tests {
         expected.insert(58, 1);
         // GetRelayState -- whether the daemon reached its Relay.
         expected.insert(61, 1);
+        // DistrustOsc133 -- the profile's word that this session's OSC 133
+        // markers lie.
+        expected.insert(64, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

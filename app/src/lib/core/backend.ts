@@ -1051,6 +1051,19 @@ export function setFailurePatterns(sessionId: string, patterns: string[]): Promi
   return invoke("set_failure_patterns", { sessionId, patterns });
 }
 
+/// The profile's other half of the same per-session arming: this agent's
+/// OSC 133 markers are not to be believed, so the daemon drops every one
+/// for the session and the quiet-timer heuristic stays the authority
+/// (`session::distrust_osc133`). Sent at spawn alongside the failure
+/// patterns, only for profiles whose row says so (kimi-code today).
+///
+/// Best-effort on purpose, exactly like `setFailurePatterns`: against a
+/// daemon older than v64 the request is refused and the agent keeps the
+/// old OSC 133 behaviour -- for kimi, the stuck-in-working one.
+export function distrustOsc133(sessionId: string): Promise<void> {
+  return invoke("distrust_osc133", { sessionId });
+}
+
 /// The git half of the same read-back, one answer per cwd in the order
 /// given -- `null` for a cwd inside no repository. Answered by the host
 /// itself rather than the daemon, because GitStatusChanged is both

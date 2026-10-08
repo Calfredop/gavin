@@ -2116,16 +2116,32 @@ export const newCardAutoCommit = derived(
 /// Agent sessions only. A `command` tool step is a shell whose verdict is
 /// its exit code (tools spec T5), and arming it would let a build log
 /// that happens to print an agent's error text stall a rail.
+///
+/// The `untrustedOsc133` half is the agent profile's word that this
+/// agent's OSC 133 markers lie (kimi-code: its last marker is always C,
+/// even at a prompt). Sent on the same best-effort footing -- a daemon
+/// older than v64 refuses it and the agent keeps the old OSC 133
+/// behaviour, stuck-in-working for kimi.
 export async function armFailureDetection(
   sessionId: string,
-  patterns: string[]
+  patterns: string[],
+  untrustedOsc133 = false
 ): Promise<void> {
-  if (patterns.length === 0) return;
-  try {
-    await backend.setFailurePatterns(sessionId, patterns);
-  } catch {
-    // A daemon older than v21 refuses the request; a quiet agent then
-    // reads as idle exactly as it did before any of this existed.
+  if (patterns.length > 0) {
+    try {
+      await backend.setFailurePatterns(sessionId, patterns);
+    } catch {
+      // A daemon older than v21 refuses the request; a quiet agent then
+      // reads as idle exactly as it did before any of this existed.
+    }
+  }
+  if (untrustedOsc133) {
+    try {
+      await backend.distrustOsc133(sessionId);
+    } catch {
+      // A daemon older than v64 refuses the request; the agent's markers
+      // are then trusted the way they always were.
+    }
   }
 }
 
@@ -2654,7 +2670,7 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
     setError(String(e));
     return;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -2711,7 +2727,7 @@ export async function startMainAgentWithPrompt(
     setError(String(e));
     return;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -4612,7 +4628,7 @@ export async function createPage(
     setError(String(e));
     return null;
   }
-  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns);
+  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns, agent.untrustedOsc133);
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
   const created = workspace.createPage(state, workspaceId, pageId, name, tree);

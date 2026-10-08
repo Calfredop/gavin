@@ -206,7 +206,7 @@ async function launch(
   }
 
   if (tool.kind === "agent") {
-    void armFailureDetection(sessionId, agent.failurePatterns);
+    void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   } else {
     // A shell tool's PTY can exit in under a second. Without this the
     // session-exited handler closes the tab before the human can read

@@ -248,7 +248,7 @@ export async function startBestOfN(
   }));
 
   for (const [i, candidate] of candidates.entries()) {
-    void armFailureDetection(candidate.sessionId, agents[i].failurePatterns);
+    void armFailureDetection(candidate.sessionId, agents[i].failurePatterns, agents[i].untrustedOsc133);
     // The candidate's label, not the card's title: on a page of N panes
     // running one card, the card is the one thing every tab has in
     // common and the agent is the only thing that tells them apart. The

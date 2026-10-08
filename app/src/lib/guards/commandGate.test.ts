@@ -158,6 +158,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   adopt_session: ["ordinary"],
   snapshot_session: ["ordinary"],
   set_failure_patterns: ["ordinary"],
+  distrust_osc133: ["ordinary"],
   get_workspaces_state: ["ordinary"],
   set_workspaces_state: ["ordinary"],
   get_workspace_settings: ["ordinary"],

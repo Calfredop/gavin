@@ -36,6 +36,12 @@ export interface AgentProfileInfo {
   /// `promptArgs: null`; kimi-code is the first row. Optional because a
   /// host built before K3 does not send it.
   promptInjection?: boolean;
+  /// True when the app must tell the daemon to distrust this agent's
+  /// OSC 133 markers for the session (agent_setup.rs's
+  /// `untrusted_osc133`): kimi-code is the first row, whose markers
+  /// never say "idle" truthfully. Optional because a host built before
+  /// the flag does not send it.
+  untrustedOsc133?: boolean;
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
@@ -382,6 +388,13 @@ export interface ResolvedAgent {
   /// agent alive (K3). Resolved through the same no-fallback chain as
   /// promptArgs -- false for every profile that did not say so.
   promptInjection: boolean;
+  /// This agent's OSC 133 markers are not to be believed (kimi-code):
+  /// the launcher sends Request::DistrustOsc133 for the session at
+  /// spawn so the daemon drops every marker and the quiet-timer
+  /// heuristic stays the authority. Resolved through the same
+  /// no-fallback chain as promptInjection -- false for every profile
+  /// that did not say so.
+  untrustedOsc133: boolean;
   /// The MCP config file gavin would write for this workspace, or "" when
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
@@ -554,6 +567,7 @@ export function resolveAgentConfig(
     // the app with a sentence naming an agent nobody chose.
     promptArgs: effective ? effective.promptArgs : "",
     promptInjection: effective?.promptInjection ?? false,
+    untrustedOsc133: effective?.untrustedOsc133 ?? false,
   };
 }
 

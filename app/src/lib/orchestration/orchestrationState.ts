@@ -992,7 +992,7 @@ export async function resumeStep(
   // Its first quiet is its history being painted, not a turn
   // (headroomMark.ts, `reachCheckDue`).
   noteReopenedConversation(sessionId);
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   const label = entry?.plan.title ?? step.cardPath;
@@ -1490,7 +1490,7 @@ async function executeToolLaunch(
   // exit, or the epilogue is gone before anyone can read it -- the same
   // retain a standalone Tools-tab run registers.
   if (tool.kind === "agent") {
-    void armFailureDetection(sessionId, agent.failurePatterns);
+    void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   } else {
     retainTabOnExit(sessionId);
   }
@@ -1710,7 +1710,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await stallLaunch(workspaceId, stepId, "could not start the agent");
     return false;
   }
-  void armFailureDetection(sessionId, launchAgent.failurePatterns);
+  void armFailureDetection(sessionId, launchAgent.failurePatterns, launchAgent.untrustedOsc133);
 
   // Named before the agent has drawn a frame, same as a board Run and the
   // tool step above: the agent's own gavin_name_session refines this, but
