@@ -1,4 +1,5 @@
 ---
+order: 34816
 kind: task
 title: Companion: the muted text colour fails contrast in light and dark, on top of 9 to 11 px sizes
 status: To Do

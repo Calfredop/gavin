@@ -1,5 +1,5 @@
 ---
-order: 17408
+order: 16384
 kind: task
 title: Companion Git: there is no "Commit via agent" on the phone
 status: To Do

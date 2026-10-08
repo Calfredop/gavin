@@ -1,5 +1,5 @@
 ---
-order: 13312
+order: 12288
 kind: task
 title: Companion: after Face ID is declined, an open Workstation's UI stays on screen with its data
 status: To Do

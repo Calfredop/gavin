@@ -1,5 +1,5 @@
 ---
-order: 28672
+order: 25600
 kind: task
 title: Companion: when a Workstation goes asleep while its UI is open, nothing tells you
 status: To Do

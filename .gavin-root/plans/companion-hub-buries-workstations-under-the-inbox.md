@@ -1,5 +1,5 @@
 ---
-order: 18432
+order: 17408
 kind: task
 title: Companion hub: the Workstations list and Pair a Workstation sit 35 screens below a long inbox
 status: To Do

@@ -1,4 +1,5 @@
 ---
+order: 31744
 title: [bug] kimi headless runs receive their prompt with a leading "="
 status: To Do
 priority: low

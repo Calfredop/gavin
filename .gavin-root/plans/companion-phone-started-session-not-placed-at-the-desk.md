@@ -1,5 +1,5 @@
 ---
-order: 22528
+order: 20480
 kind: task
 title: Companion: a terminal started from the phone does not appear as a tab at the desk
 status: To Do

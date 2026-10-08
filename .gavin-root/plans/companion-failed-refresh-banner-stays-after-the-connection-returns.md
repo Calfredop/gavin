@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 15360
 kind: task
 title: Companion: the "cannot be reached" banner and the stale view stay after the connection comes back
 status: To Do

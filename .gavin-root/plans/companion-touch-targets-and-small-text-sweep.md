@@ -1,5 +1,5 @@
 ---
-order: 27648
+order: 24576
 kind: task
 title: Companion: sweep touch targets under 44 px and text under 11 px
 status: To Do

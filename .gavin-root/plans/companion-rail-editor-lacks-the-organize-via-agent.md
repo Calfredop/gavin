@@ -1,5 +1,5 @@
 ---
-order: 30720
+order: 27648
 kind: task
 title: Companion rail editor lacks the organize via agent
 status: To Do

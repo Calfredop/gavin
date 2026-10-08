@@ -1,5 +1,5 @@
 ---
-order: 24576
+order: 22528
 kind: task
 title: Re-run the airplane-mode test on the iPhone from Control Center
 status: To Do

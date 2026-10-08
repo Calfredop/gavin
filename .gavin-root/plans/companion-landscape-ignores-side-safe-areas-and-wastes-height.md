@@ -1,4 +1,5 @@
 ---
+order: 33792
 kind: task
 title: Companion in landscape: content ignores the side safe areas and the chrome leaves a quarter of the screen for work
 status: To Do

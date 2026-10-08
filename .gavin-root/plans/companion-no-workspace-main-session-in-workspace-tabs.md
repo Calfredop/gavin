@@ -1,5 +1,5 @@
 ---
-order: 32768
+order: 29696
 kind: task
 title: Companion: no workspace main session in workspace tabs
 status: To Do

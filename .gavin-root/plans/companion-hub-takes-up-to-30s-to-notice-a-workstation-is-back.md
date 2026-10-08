@@ -1,5 +1,5 @@
 ---
-order: 19456
+order: 18432
 kind: task
 title: Companion hub: a Workstation that comes back is noticed up to 30 s late, with no way to retry now
 status: To Do

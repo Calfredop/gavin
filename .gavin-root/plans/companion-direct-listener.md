@@ -1,5 +1,5 @@
 ---
-order: 15360
+order: 14336
 title: Companion: direct connection, no Relay
 status: To Do
 priority: medium

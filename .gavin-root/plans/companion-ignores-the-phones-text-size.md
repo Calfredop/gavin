@@ -1,4 +1,5 @@
 ---
+order: 32768
 kind: task
 title: Companion: the phone's text size setting does nothing, and the base text is 13 px
 status: To Do

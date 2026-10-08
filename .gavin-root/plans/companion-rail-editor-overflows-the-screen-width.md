@@ -1,5 +1,5 @@
 ---
-order: 23552
+order: 21504
 kind: task
 title: Companion rail editor: the Add-a-card dropdown is wider than the screen and the page scrolls sideways
 status: To Do

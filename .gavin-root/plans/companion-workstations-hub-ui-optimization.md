@@ -1,5 +1,5 @@
 ---
-order: 29696
+order: 26624
 kind: task
 title: Companion: redesign the Workstations hub so "Waiting on you" stops crowding out everything else, and fix its spacing
 status: To Do
