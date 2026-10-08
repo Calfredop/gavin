@@ -9,6 +9,9 @@ import {
   LANE_W,
   ROW_H,
   RAIL_COLOURS,
+  DOT_R,
+  stepDot,
+  checkPath,
   type GraphEdge,
   type GraphRow,
 } from "$lib/orchestration/orchestrationNodes";
@@ -397,5 +400,29 @@ describe("trigger arrows", () => {
     const g = layoutNodeGraph(orch([first, waits]), BUILTIN_TOOLS, (id) => id !== first.id);
     expect(ofKind(g.edges, "waits")).toEqual([]);
     expect(railRows(g.rows)[0].note?.text).toBe("after “Build”");
+  });
+});
+
+describe("stepDot", () => {
+  // Where the rail is and how far it got are what a reader scans a
+  // column of dots for, so those two states never share the plain dot.
+  it("marks the running step and a done one, and leaves the rest plain", () => {
+    expect(stepDot("running")).toMatchObject({ halo: true, check: false });
+    expect(stepDot("done")).toMatchObject({ halo: false, check: true });
+    for (const s of ["pending", "skipped", "stalled"] as const) {
+      expect(stepDot(s)).toEqual({ r: DOT_R, halo: false, check: false });
+    }
+    expect(stepDot("running").r).toBeGreaterThan(DOT_R);
+    expect(stepDot("done").r).toBeGreaterThan(DOT_R);
+  });
+
+  // The check is cut out of the disc: every point of it inside the dot.
+  it("draws the check inside the dot it sits on", () => {
+    const r = stepDot("done").r;
+    const pts = checkPath(10, 20, r)
+      .match(/-?[\d.]+ -?[\d.]+/g)!
+      .map((p) => p.split(" ").map(Number));
+    expect(pts).toHaveLength(3);
+    for (const [x, y] of pts) expect(Math.hypot(x - 10, y - 20)).toBeLessThan(r);
   });
 });

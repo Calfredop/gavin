@@ -38,10 +38,11 @@
   } from "$lib/orchestration/orchestration";
   import { describeOverrides, findTool, toolKindLabel, type Tool } from "$lib/orchestration/orchestrationTools";
   import {
+    checkPath,
     layoutNodeGraph,
     laneX,
     rowY,
-    ROW_H,
+    stepDot,
     type GraphRow,
   } from "$lib/orchestration/orchestrationNodes";
 
@@ -97,8 +98,8 @@
   const graph = $derived(layoutNodeGraph(orch, tools, railShown));
 
   // The commit graph's own dots (GitGraphRow): a filled one on a commit,
-  // a larger hollow one on HEAD. A rail's head is the hollow one here.
-  const DOT_R = 3.5;
+  // a larger hollow one on HEAD. A rail's head is the hollow one here; a
+  // step's dot is stepDot's (orchestrationNodes.ts).
   const HEAD_R = 4.5;
 
   function colour(n: number): string {
@@ -293,9 +294,12 @@
                 tip={attentionTip(attention, doneColumnName ?? "the done column")}
               />
             {/if}
+            <!-- Running and done say their word as well as their glyph:
+                 they are the two a reader scans the column for. -->
             <StatusBadge
               indicator={stepIndicator(state)}
               size={12}
+              text={state === "running" || state === "done" ? state : null}
               tip={state === "stalled" && run?.reason ? `Step · stalled: ${run.reason}` : undefined}
             />
             <IconButton
@@ -335,16 +339,25 @@
               stroke-width="2"
             />
           {:else}
-            <circle
-              class="dot"
-              class:dimmed={filtering && !stepLit(r.stepId)}
-              cx={laneX(r.lane)}
-              cy={rowY(r.row)}
-              r={DOT_R}
-              style:fill={colour(r.colour)}
-              style:stroke={colour(r.colour)}
-              stroke-width="2"
-            />
+            {@const dot = stepDot(stepStateOf(orch, r.stepId))}
+            {@const cx = laneX(r.lane)}
+            {@const cy = rowY(r.row)}
+            <g class="dot" class:dimmed={filtering && !stepLit(r.stepId)}>
+              {#if dot.halo}
+                <circle class="halo" {cx} {cy} r={dot.r + 3} style:stroke={colour(r.colour)} />
+              {/if}
+              <circle
+                {cx}
+                {cy}
+                r={dot.r}
+                style:fill={colour(r.colour)}
+                style:stroke={colour(r.colour)}
+                stroke-width="2"
+              />
+              {#if dot.check}
+                <path class="check" d={checkPath(cx, cy, dot.r)} />
+              {/if}
+            </g>
           {/if}
         {/each}
       </svg>
@@ -392,6 +405,42 @@
   }
   .dot.dimmed {
     opacity: 0.32;
+  }
+  /* The running step's halo: a ring in the rail's colour that swells
+     and fades, so the step the rail is ON is the one thing moving in the
+     gutter. Twice the spinner tempo -- a pulse, not a spin. */
+  .halo {
+    fill: none;
+    stroke-width: 1.5;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: halo-pulse 1.6s ease-out infinite;
+  }
+  @keyframes halo-pulse {
+    from {
+      transform: scale(0.7);
+      opacity: 0.9;
+    }
+    to {
+      transform: scale(1.35);
+      opacity: 0;
+    }
+  }
+  /* Less motion keeps the ring, still: the dot stays marked. */
+  @media (prefers-reduced-motion: reduce) {
+    .halo {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+  /* Cut out of the dot in the page's own colour, as the head's hollow
+     centre is. */
+  .check {
+    fill: none;
+    stroke: var(--surface-base);
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .row {
     display: flex;
@@ -514,6 +563,21 @@
   .row.done,
   .row.skipped {
     color: var(--text-muted);
+  }
+  /* The step the rail is on: an accent tint and a bar at the row's edge,
+     the title at full weight. The tint gives way to a severity fill and
+     the bar stays, so a conflicted running step is still found. */
+  .row.running {
+    background: var(--surface-accent);
+    box-shadow: inset 3px 0 0 var(--border-focus);
+  }
+  .row.running .title {
+    font-weight: 700;
+  }
+  .row.running.hit {
+    box-shadow:
+      inset 3px 0 0 var(--border-focus),
+      inset 0 0 0 1px var(--border-accent);
   }
   /* Severity owns the fill, as on the chip (spec O9); a stall keeps
      its danger fill under either. */
