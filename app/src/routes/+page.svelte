@@ -544,6 +544,7 @@
                    it is the tab already selected. -->
               <div
                 class="view"
+                class:navigator-open={navigatorViewDef}
                 role="presentation"
                 onclickcapture={(e) => {
                   if (navigatorView && (e.target as Element).closest?.(".tab-bar .tab")) navigatorView = null;
@@ -1073,6 +1074,14 @@
   }
   .page-with-navigator > .view {
     min-width: 0;
+  }
+  /* The page is not what is showing: its current tab drops the
+     highlight, so only the navigator's open item reads as selected. */
+  .view.navigator-open :global(.tab-bar .tab.active) {
+    color: var(--text-muted);
+  }
+  .view.navigator-open :global(.tab-bar .tab.focused) {
+    border-bottom-color: transparent;
   }
   .navigator-overlay {
     position: absolute;
