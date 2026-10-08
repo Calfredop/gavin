@@ -20,6 +20,7 @@
   import ContextMenu from "$lib/core/ContextMenu.svelte";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
+  import HubNavigator from "$lib/hub/HubNavigator.svelte";
   import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
   import AppDialog from "$lib/core/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
@@ -501,8 +502,18 @@
               <button onclick={createFirstWorkspace}>New Workspace</button>
             </div>
           {:else if activeView === "terminal"}
-            <div class="view">
-              <TerminalView workspaceId={activeWorkspace.id} />
+            <!-- A page is inside the workspace but off the hub: the
+                 navigator is how a person gets back to one of its
+                 sections without going through the sidebar. -->
+            <div class="page-with-navigator">
+              <HubNavigator
+                workspaceId={activeWorkspace.id}
+                hasRoot={Boolean(activeWorkspace.rootPath)}
+                agentFileName={activeAgent.file}
+              />
+              <div class="view">
+                <TerminalView workspaceId={activeWorkspace.id} />
+              </div>
             </div>
           {:else}
             <div class="content">
@@ -1005,6 +1016,16 @@
     /* The workspace's accent when set; otherwise the original amber, so
        an uncoloured workspace looks exactly as it did before. */
     border-bottom-color: var(--ws-accent, #d9a648);
+  }
+  .page-with-navigator {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: row;
+    min-width: 0;
+    min-height: 0;
+  }
+  .page-with-navigator > .view {
+    min-width: 0;
   }
   .view {
     flex: 1 1 auto;
