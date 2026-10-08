@@ -2,7 +2,7 @@
 order: 21504
 kind: task
 title: Companion: pulling down the notification shade on iOS ends the Unlock and asks Face ID again
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -23,8 +23,11 @@ So on iOS 27.0 the shade reaches the web layer as a `background` phase, a second
 - Pick the signal that separates the shade from a real background (for example the scene's `activationState` / `UIApplication.applicationState`, `isProtectedDataAvailable`, whether the app is still the foreground scene), or a very short grace period for a background that returns within about a second without the screen locking. State the security trade-off of any grace period in the code comment; a grace period must never apply to the screen locking.
 - Keep `unlock.test.ts` honest: add the shade as an `interrupted` case if the fix is in the TS layer.
 
+**Fix (2026-10-08).** No public signal tells the shade from Home: both are `didEnterBackground` then `willEnterForeground`, with the app and its scene `background` alike. So `DeviceKeysPlugin.swift` believes a background only once it has lasted `briefBackground` (2 s): until then the Unlock stays held and the web layer hears nothing, neither the background nor the foreground after it. A background task keeps the app running so the Unlock ends on time, and coming back checks the elapsed time (`CLOCK_MONOTONIC`, which counts while the phone sleeps) in case the timer was starved. `protectedDataWillBecomeUnavailable` (the lock) ends it at once, grace or none. The open question is when iOS posts that: if only when the data protection keys go, some seconds after the lock, a lock gets the same 2 s, and coming back inside them means unlocking the phone first. The trade-off is in the `briefBackground` comment. Verified on an iOS 27.0 Simulator: away 0.5 s gives "back after 0.5 s; the Unlock is kept" and no web event; away 6 s ends it 2.05 s after the background. Every lifecycle notification is now logged as `[gavin-lifecycle]` (time, app and scene state, protected data, brightness), natively and, in a debug build, in the web console beside `[gavin-unlock]`. The TS rule is unchanged: the shade never reaches it. Research doc table updated.
+
 **Acceptance.**
 - [ ] The notification shade does not change the Unlock, drop a connection or ask for Face ID
 - [ ] Home, the app switcher and the screen locking still end the Unlock
 - [ ] Control Center still does not
 - [ ] Human test: pull the shade down and up three times with a Workstation open; nothing happens. Then press Home and reopen; Face ID is asked
+- [ ] Human test: On the iPhone with a debug build and a Workstation open, do Home, the app switcher, the screen lock, Control Center, the shade (a glance and a 5 s read), a call banner and the Face ID prompt; in the web console, the shade glance shows "back after … s; the Unlock is kept", Home and switching apps (away more than 2 s) end the Unlock, and the lock shows "the phone is locking" — note how long after the lock's didEnterBackground it comes
