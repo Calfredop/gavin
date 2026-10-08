@@ -2,7 +2,7 @@
 order: 21504
 kind: task
 title: Companion rail editor: the Add-a-card dropdown is wider than the screen and the page scrolls sideways
-status: To Do
+status: Done
 priority: medium
 complexity: simple
 ---
@@ -19,7 +19,9 @@ Found on a physical iPhone 16 Pro (iOS 27.0, 402 CSS px wide), Demo Workstation,
 - Add the editor to the guard tests: no horizontal overflow at 402 px, no input under 16 px.
 
 **Acceptance.**
-- [ ] The rail editor does not scroll sideways at 402 px with long card titles in the lists
-- [ ] Focusing `Rail name` does not zoom the page
-- [ ] Add, group, move and delete controls are 44 px
+- [x] The rail editor does not scroll sideways at 402 px with long card titles in the lists
+- [x] Focusing `Rail name` does not zoom the page
+- [x] Add, group, move and delete controls are 44 px
 - [ ] Human test: open Rails, Edit, add a card from the dropdown on the phone
+
+**Done (2026-10-08).** Each editor select sits in a `.choice` box that takes the column (`min-width: 0`, `max-width: 100%`) and is itself `width: 100%`, `nowrap` + `ellipsis`, and `appearance: none` with its own chevron: WebKit sizes a native select to its font and ignored the 44px `min-height` that was already there, which is why the phone measured 29px. The group's mode select drops under the stage label; the move/remove tools stay beside it. `Rail name` is 16px and 44px. Measured in WebKit at 402x874 with a 100-character title in the picker: scroller and page 402/402, both pickers 352x44, mode select 340x44, every control in the editor 44px tall. Guard: `app/companion/src/companion/surfaces/railEditorFit.test.ts` (fails 7 of 8 on the old source); the stylesheet reader it shares with `seam/fieldFontSize.test.ts` moved to `testing/styleRules.ts`.
