@@ -137,4 +137,16 @@
     -webkit-user-select: text;
     user-select: text;
   }
+  /* xterm sizes a cell by measuring a span of 32 "W"s it appends to its
+     helpers. 6.0's xterm.css hid that span; the 6.1 beta dropped the rule,
+     leaving a row of W's over every terminal's top-left corner and the
+     measurement at whatever line-height it inherits. This is 6.0's rule. */
+  .pane :global(.xterm-char-measure-element) {
+    display: inline-block;
+    visibility: hidden;
+    position: absolute;
+    top: 0;
+    left: -9999em;
+    line-height: normal;
+  }
 </style>
