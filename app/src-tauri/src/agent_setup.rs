@@ -1769,22 +1769,78 @@ development.\n\n\
   `gavin_set_plan_field`, `gavin_promote_task`.\n\
 - The files are the truth. Edit them directly; the board follows.\n";
 
+/// Appended to any of the three when this profile's MCP config carries
+/// gavin's `playwright` entry (`agent_playwright.rs`). In the block and
+/// not only the skill, because it is a fact about THIS workspace's
+/// install, and because an agent with no skill mechanism reads nothing
+/// else.
+const BLOCK_BROWSER: &str = "\n\
+Playwright is installed here: the `browser_*` tools (`browser_navigate`,\n\
+`browser_snapshot`, `browser_click`, `browser_console_messages`, …) drive a\n\
+headless browser of your session's own, which the human can watch live. When\n\
+you change something a person sees in a page, check it there before you call\n\
+the work done, and report what you saw.\n";
+
 /// Three variants for two independent capabilities. A skill file, where
 /// one can be installed, keeps the block short by pointing at it; without
 /// one the guidance is inline, and mentions the MCP tools only where a
-/// config was actually written for them.
+/// config was actually written for them. `playwright` adds the browser
+/// paragraph, to whichever variant it is.
 ///
 /// Every variant opens by naming the PRD, so all three are templates: a
 /// workspace pointed at its own `docs/PRD.md` must not hand its agents a
 /// block telling them to read a file gavin never wrote.
-fn instructions_block_for(mcp: Option<&ResolvedMcp>, prd: &str) -> String {
+fn instructions_block_for(mcp: Option<&ResolvedMcp>, prd: &str, playwright: bool) -> String {
     let skill = mcp.and_then(ResolvedMcp::workflow_skill_path);
     let template = match (mcp, skill.as_deref()) {
         (Some(_), Some(_)) => BLOCK_WITH_SKILL,
         (Some(_), None) => BLOCK_INLINE_WITH_MCP,
         (None, _) => BLOCK_INLINE,
     };
-    with_prd_path(template, prd).replace("{skill}", skill.as_deref().unwrap_or(""))
+    let mut block = with_prd_path(template, prd).replace("{skill}", skill.as_deref().unwrap_or(""));
+    if playwright && mcp.is_some() {
+        block.push_str(BLOCK_BROWSER);
+    }
+    block
+}
+
+/// Whether the browser paragraph belongs in this workspace's block: the
+/// profile's MCP config carries gavin's `playwright` entry. `false` when
+/// gavin cannot name its own command to recognise the entry by.
+fn playwright_installed(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    mcp: Option<&ResolvedMcp>,
+    own_command: Option<&str>,
+) -> bool {
+    match (mcp, own_command) {
+        (Some(layout), Some(own)) => crate::agent_playwright::installed_in(fs, root, layout, own),
+        _ => false,
+    }
+}
+
+/// Rewrites the instructions block a setup run already wrote, so it says
+/// what is installed now. `Ok(false)` when there is no block to refresh:
+/// a workspace setup has not run in gets the whole block from setup.
+pub(crate) fn refresh_instructions_block(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    profile_id: &str,
+    own_command: &str,
+) -> anyhow::Result<bool> {
+    let profile = profile_for_writes(profile_id);
+    let instructions_file = resolved_instructions_file(fs, root, profile);
+    let Some(existing) = fs.read_to_string(&root.join(&instructions_file))? else {
+        return Ok(false);
+    };
+    if !(existing.contains(MARKER_START) && existing.contains(MARKER_END)) {
+        return Ok(false);
+    }
+    let mcp = resolved_mcp(fs, root, profile);
+    let prd = prd_relative_path_in(fs, root);
+    let playwright = playwright_installed(fs, root, mcp.as_ref(), Some(own_command));
+    write_instructions_block(fs, root, &instructions_file, &instructions_block_for(mcp.as_ref(), &prd, playwright))?;
+    Ok(true)
 }
 
 /// The one substitution every authored document shares. Kept as a named
@@ -3120,12 +3176,20 @@ fn run_integration(
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
     // profile without an McpLayout errored out and got nothing at all.
+    // The browser paragraph goes in when Playwright's entry is already
+    // there; installing it later refreshes the block
+    // (`refresh_instructions_block`).
+    let own_command = mcp
+        .as_ref()
+        .and_then(|_| resolve_binary().ok())
+        .map(|binary| mcp_command(fs, root, &binary));
+    let playwright = playwright_installed(fs, root, mcp.as_ref(), own_command.as_deref());
     written.push(protocol::wire_path(
         &write_instructions_block(
             fs,
             root,
             &instructions_file,
-            &instructions_block_for(mcp.as_ref(), &prd),
+            &instructions_block_for(mcp.as_ref(), &prd, playwright),
         )
         .map_err(|e| e.to_string())?,
     ));
@@ -4042,7 +4106,7 @@ mod tests {
             ("kimi-code", ".kimi-code/skills/gavin/SKILL.md"),
         ] {
             let layout: ResolvedMcp = profile_by_id(id).mcp.as_ref().unwrap().into();
-            let block = instructions_block_for(Some(&layout), "docs/PRD.md");
+            let block = instructions_block_for(Some(&layout), "docs/PRD.md", false);
             assert!(block.contains(expected), "{id} block does not name {expected}: {block}");
             assert!(!block.contains("{skill}"), "{id} block left the placeholder in");
         }
@@ -4054,7 +4118,7 @@ mod tests {
             format: McpFormat::JsonServers,
             skills: &[],
         };
-        let block = instructions_block_for(Some(&custom_mcp), "docs/PRD.md");
+        let block = instructions_block_for(Some(&custom_mcp), "docs/PRD.md", false);
         assert!(!block.contains("{skill}"));
         assert!(block.contains("gavin_set_plan_field"), "custom-with-MCP gets tools named inline");
     }
@@ -4639,6 +4703,68 @@ mod tests {
         assert!(result.skipped[0].1.contains("Custom"), "the reason names the profile");
     }
 
+    /// The block tells agents about the `browser_*` tools only where
+    /// Playwright's entry is in the profile's MCP config, in every stock
+    /// dialect. Setup run before the entry leaves it out, and installing
+    /// Playwright afterwards refreshes the block rather than waiting for
+    /// the next setup run.
+    #[test]
+    fn the_block_names_the_browser_tools_only_where_playwright_is_installed() {
+        for (profile, instructions) in [("claude-code", "CLAUDE.md"), ("codex", "AGENTS.md"), ("opencode", "AGENTS.md")] {
+            let dir = tempfile::tempdir().unwrap();
+            rooted_with_profile(dir.path(), profile);
+            let read = || std::fs::read_to_string(dir.path().join(instructions)).unwrap();
+
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            assert!(!read().contains("browser_navigate"), "{profile}: no Playwright, no paragraph:\n{}", read());
+
+            // What the Playwright step writes: gavin's own command, with
+            // `playwright` as its argument, in this profile's dialect.
+            let layout = resolved_mcp(&LocalFiles, dir.path(), profile_for_writes(profile)).unwrap();
+            let own = mcp_command(&LocalFiles, dir.path(), &fake_binary()().unwrap());
+            write_mcp_server(
+                &LocalFiles,
+                &dir.path().join(layout.config_file()),
+                layout.format(),
+                "playwright",
+                &own,
+                &["playwright"],
+            )
+            .unwrap();
+            assert!(refresh_instructions_block(&LocalFiles, dir.path(), profile, &own).unwrap());
+            let block = read();
+            assert!(block.contains("browser_navigate"), "{profile}: refreshed after the install:\n{block}");
+            assert_eq!(block.matches(MARKER_START).count(), 1, "{profile}: one block, rewritten in place");
+
+            // And a later setup run keeps it.
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            assert!(read().contains("browser_navigate"), "{profile}: setup keeps the paragraph");
+        }
+    }
+
+    /// Someone else's `playwright` server gives tools gavin did not
+    /// install and cannot show live, so it earns no paragraph; and a
+    /// workspace setup has not run in gets no block from a refresh.
+    #[test]
+    fn a_foreign_playwright_server_or_a_missing_block_gets_no_browser_paragraph() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        let own = mcp_command(&LocalFiles, dir.path(), &fake_binary()().unwrap());
+        assert!(!refresh_instructions_block(&LocalFiles, dir.path(), "claude-code", &own).unwrap());
+        assert!(!dir.path().join("CLAUDE.md").exists(), "a refresh never creates the file");
+
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest"]}}}"#,
+        )
+        .unwrap();
+        let _ = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None)
+            .unwrap();
+        let block = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+        assert!(!block.contains("browser_navigate"), "{block}");
+        assert!(!instructions_block_for(None, protocol::DEFAULT_PRD_PATH, true).contains("browser_"));
+    }
+
     /// Fallback arming: a profile_id overlay writes THAT agent's files
     /// and leaves the workspace's active profile (and its files) alone.
     #[test]
@@ -5026,8 +5152,8 @@ mod tests {
             format: McpFormat::JsonServers,
             skills: &[],
         };
-        let with = instructions_block_for(Some(&with_mcp), protocol::DEFAULT_PRD_PATH);
-        let without = instructions_block_for(None, protocol::DEFAULT_PRD_PATH);
+        let with = instructions_block_for(Some(&with_mcp), protocol::DEFAULT_PRD_PATH, false);
+        let without = instructions_block_for(None, protocol::DEFAULT_PRD_PATH, false);
         assert!(with.contains("gavin_set_plan_field"));
         assert!(!without.contains("gavin_"), "custom has no MCP config yet: {without}");
         assert!(without.contains("`.gavin-root/plans/`"), "the rest of the guidance is the same");
@@ -5037,10 +5163,10 @@ mod tests {
     fn claude_code_keeps_the_pointer_block_and_its_layout() {
         // resolve_mcp_binary_path needs the binary beside current_exe, which
         // is not true under cargo test -- so assert on what does not need it.
-        let block = instructions_block_for(Some(&claude_layout()), protocol::DEFAULT_PRD_PATH);
+        let block = instructions_block_for(Some(&claude_layout()), protocol::DEFAULT_PRD_PATH, false);
         assert!(block.contains(".claude/skills/gavin/SKILL.md"));
         assert!(profile_by_id("claude-code").mcp.is_some());
-        assert!(instructions_block_for(Some(&layout("codex")), protocol::DEFAULT_PRD_PATH) != block);
+        assert!(instructions_block_for(Some(&layout("codex")), protocol::DEFAULT_PRD_PATH, false) != block);
     }
 
     #[test]
@@ -5055,7 +5181,7 @@ mod tests {
         assert_eq!(prd_relative_path(dir.path()), "docs/PRD.md");
 
         // The instructions block an agent reads first.
-        let block = instructions_block_for(Some(&claude_layout()), &prd_relative_path(dir.path()));
+        let block = instructions_block_for(Some(&claude_layout()), &prd_relative_path(dir.path()), false);
         assert!(block.contains("`docs/PRD.md`"), "{block}");
         assert!(!block.contains(".gavin-root/PRD.md"), "{block}");
 

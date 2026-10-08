@@ -311,6 +311,14 @@ fn read_entry(fs: &dyn WorkspaceFiles, root: &Path, layout: &ResolvedMcp, own: &
     }
 }
 
+/// Whether this profile's MCP config carries gavin's `playwright` entry,
+/// which is what gives its agents the `browser_*` tools. Read by the
+/// instructions block (`agent_setup::instructions_block_for`), which
+/// tells agents the tools are there only when they are.
+pub(crate) fn installed_in(fs: &dyn WorkspaceFiles, root: &Path, layout: &ResolvedMcp, own_command: &str) -> bool {
+    matches!(read_entry(fs, root, layout, &Ok(own_command.to_string())), Entry::Present)
+}
+
 /// Everything the three checks found, before any of it is judged.
 struct Findings {
     npx: Result<bool, String>,
@@ -538,6 +546,13 @@ fn install(machine: &dyn Machine, root: &Path, profile_id: &str, replace: bool) 
             {
                 write_error = Some(format!("Could not write {}: {e}", protocol::wire_path(&path)));
             }
+        }
+        // The instructions block tells this profile's agents the
+        // `browser_*` tools are there; setup wrote it before they were.
+        // Only a block setup already wrote is refreshed, and a failure
+        // costs nothing the next setup run does not put back.
+        if let Err(e) = crate::agent_setup::refresh_instructions_block(fs, root, profile_id, own) {
+            eprintln!("playwright: could not refresh the instructions block: {e}");
         }
     }
 

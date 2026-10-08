@@ -177,6 +177,21 @@ Looking for something a past session learned? `gavin_search_memories(query,
 topics?, limit?)` searches the adopted memories by meaning, not by words —
 ask in your own phrasing, and narrow by topic when you know one.
 
+## 9. Checking what a page does: the browser
+
+If this workspace has Playwright installed (gavin's setup has a Playwright
+step), you have `browser_*` tools: `browser_navigate`, `browser_snapshot`,
+`browser_click`, `browser_type`, `browser_console_messages`,
+`browser_take_screenshot` and the rest. They drive a headless browser that
+belongs to your session alone, and the human can watch it live beside your
+tab; it ends when your session does.
+
+When you change something a person sees in a page, use them to check it
+before you call the work done: open the page, do what a user would, and read
+the snapshot and the console. Report what you saw, not what you expected. If
+the tools are not there, Playwright is not installed for this workspace — say
+you could not check in a browser rather than implying you did.
+
 ## Notes
 
 - `gavin_get_tree` is the canonical parse of every context and card (kinds,
