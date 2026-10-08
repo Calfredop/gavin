@@ -238,7 +238,7 @@ export const fleetStripLine: Readable<FleetStrip | null> = derived(
 /// Which launch a queued intent stands for. One entry per action module
 /// that can start an agent, because re-running it means calling back
 /// into that module.
-export type LaunchIntentKind = "card" | "tool" | "review" | "commit" | "orchestration";
+export type LaunchIntentKind = "card" | "tool" | "review" | "commit" | "orchestration" | "clean";
 
 /// The card launches, in the vocabulary `cardRunActions` already uses.
 export type CardLaunchMode = "run" | "resume" | "review" | "develop" | "relaunch";
@@ -303,12 +303,21 @@ export interface OrchestrationIntent extends IntentBase {
   railId: string | null;
 }
 
+/// The Decisions / Review tabs' "Clean stale …" run. The prompt is
+/// carried for the orchestration intent's reason: it is the list the
+/// human was looking at when they asked.
+export interface CleanIntent extends IntentBase {
+  kind: "clean";
+  prompt: string;
+}
+
 export type LaunchIntent =
   | CardIntent
   | ToolIntent
   | ReviewIntent
   | CommitIntent
-  | OrchestrationIntent;
+  | OrchestrationIntent
+  | CleanIntent;
 
 /// A new intent, before the queue stamps it.
 export type NewLaunchIntent =
@@ -316,7 +325,8 @@ export type NewLaunchIntent =
   | Omit<ToolIntent, "id" | "askedAtMs">
   | Omit<ReviewIntent, "id" | "askedAtMs">
   | Omit<CommitIntent, "id" | "askedAtMs">
-  | Omit<OrchestrationIntent, "id" | "askedAtMs">;
+  | Omit<OrchestrationIntent, "id" | "askedAtMs">
+  | Omit<CleanIntent, "id" | "askedAtMs">;
 
 /// The queue, oldest first. Order is arrival order and nothing else: a
 /// priority scheme would need a rule for what outranks what, and the
@@ -368,6 +378,10 @@ function sameIntent(a: LaunchIntent, b: NewLaunchIntent): boolean {
       return true;
     case "orchestration":
       return (a as OrchestrationIntent).railId === b.railId;
+    case "clean":
+      // The label names the tab, and one queued clean per tab is the
+      // request; a second press is the same one.
+      return a.label === b.label;
   }
 }
 
@@ -448,7 +462,7 @@ export function parseLaunchQueue(raw: string | null): LaunchIntent[] {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  const kinds: LaunchIntentKind[] = ["card", "tool", "review", "commit", "orchestration"];
+  const kinds: LaunchIntentKind[] = ["card", "tool", "review", "commit", "orchestration", "clean"];
   return parsed.filter((entry): entry is LaunchIntent => {
     if (!entry || typeof entry !== "object") return false;
     const i = entry as Partial<LaunchIntent>;
@@ -464,6 +478,7 @@ export function parseLaunchQueue(raw: string | null): LaunchIntent[] {
     if (i.kind === "tool") return typeof (entry as ToolIntent).toolId === "string";
     if (i.kind === "review") return typeof (entry as ReviewIntent).cwd === "string";
     if (i.kind === "orchestration") return typeof (entry as OrchestrationIntent).prompt === "string";
+    if (i.kind === "clean") return typeof (entry as CleanIntent).prompt === "string";
     return true;
   });
 }
@@ -550,6 +565,11 @@ async function execute(intent: LaunchIntent): Promise<void> {
     case "orchestration": {
       const m = await import("$lib/orchestration/orchestrationState");
       await m.launchQueuedOrchestrationAgent(intent);
+      return;
+    }
+    case "clean": {
+      const m = await import("$lib/decisions/cleanStaleActions");
+      await m.launchQueuedClean(intent);
       return;
     }
   }

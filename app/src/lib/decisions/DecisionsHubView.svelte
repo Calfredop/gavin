@@ -22,15 +22,16 @@
   // Review's own ReviewAgentPane, reused as-is — a card's agent and its
   // plan are the same two things to look at here as there, and a second
   // panel would be a second vocabulary for one card.
-  import { BookOpen, Check, ChevronDown, ChevronRight, SkipForward } from "@lucide/svelte";
+  import { BookOpen, Bot, Check, ChevronDown, ChevronRight, SkipForward } from "@lucide/svelte";
   import { onMount, untrack } from "svelte";
   import { cardSessionFor, fetchBoard, refreshBoard, kanbanState } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { attentionState, daemonCompat } from "$lib/core/layoutState";
+  import { attentionState, daemonCompat, layoutState } from "$lib/core/layoutState";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import { tooltip } from "$lib/core/tooltip";
   import SearchInput from "$lib/ui/SearchInput.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { waitLabel, rowTip, REASON_LABEL, attentionInbox } from "$lib/agents/attentionInbox";
   import { revealWaitingSession } from "$lib/cards/cardRunActions";
   import { nowStore } from "$lib/agents/agentPauseState";
@@ -68,6 +69,8 @@
     skipGate,
   } from "$lib/decisions/decisionsActions";
   import { decisionsPrefs, prefsFor, setDecisionsPrefs } from "$lib/decisions/decisionsState";
+  import { CLEAN_LABEL, cleanBlocker, cleanEntries, cleanTip } from "$lib/decisions/cleanStale";
+  import { requestCleanStale } from "$lib/decisions/cleanStaleActions";
   import type { HumanItem, HumanItemOutcome } from "$lib/core/gavin";
 
   interface Props {
@@ -292,6 +295,30 @@
   function resetFilters(): void {
     setDecisionsPrefs(workspaceId, { query: "", statuses: [] });
   }
+
+  // "Clean stale decisions": every card's open items go to an agent that
+  // closes the ones nothing is waiting on any more (cleanStale.ts). The
+  // WHOLE list, not the filtered one — the filter narrows what the human
+  // is reading, and a decision hidden by it is just as stale.
+  const cleanable = $derived(
+    cleanEntries(
+      list.subjects.flatMap((s) =>
+        s.kind === "card" ? [{ cardPath: s.cardPath, title: s.title, items: s.items }] : []
+      )
+    )
+  );
+  const cleanBlocked = $derived(
+    cleanBlocker({
+      kind: "decisions",
+      entries: cleanable,
+      itemsBlockedReason: list.itemsBlockedReason,
+      hasRoot: !!$layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath,
+    })
+  );
+  let cleanError = $state<string | null>(null);
+  async function clean(): Promise<void> {
+    cleanError = await requestCleanStale(workspaceId, "decisions", cleanable);
+  }
 </script>
 
 <div class="decisions">
@@ -305,7 +332,20 @@
         class="grow"
       />
       {#if summary}<span class="count">{summary}</span>{/if}
+      <!-- The reason hangs on the SPAN: a disabled button fires no
+           mouseenter, so its own tooltip could never say why. -->
+      <span use:tooltip={cleanBlocked}>
+        <IconButton
+          icon={Bot}
+          label={CLEAN_LABEL.decisions}
+          tip={cleanBlocked ? null : cleanTip("decisions", cleanable)}
+          size={14}
+          disabled={cleanBlocked !== null}
+          onclick={() => void clean()}
+        />
+      </span>
     </div>
+    {#if cleanError}<p class="clean-error">{cleanError}</p>{/if}
     <!-- The status filter, drawn as the Review tab draws its column
          picker: closed it is one line the height of the head beside it,
          so the two halves of the window keep one rule. -->
@@ -802,6 +842,13 @@
     font-size: 0.78em;
     color: var(--text-muted);
     border-top: 1px solid var(--border);
+  }
+  .clean-error {
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 0.8em;
+    color: var(--danger-text);
+    border-bottom: 1px solid var(--border);
   }
   .error {
     margin: 8px 0 0;

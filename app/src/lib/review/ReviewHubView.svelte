@@ -30,6 +30,8 @@
   import type { HumanItem, HumanItemOutcome } from "$lib/core/gavin";
   import DecisionsItemRow from "$lib/decisions/DecisionsItemRow.svelte";
   import { answerHumanItem } from "$lib/decisions/decisionsActions";
+  import { CLEAN_LABEL, cleanBlocker, cleanEntries, cleanTip } from "$lib/decisions/cleanStale";
+  import { requestCleanStale } from "$lib/decisions/cleanStaleActions";
   import type { DecisionCard } from "$lib/decisions/decisions";
   import {
     humanTestList,
@@ -437,6 +439,23 @@
     if (err) criticalError = err;
   }
 
+  // "Clean stale tests": the Decisions tab's action over this tab's
+  // human tests (cleanStale.ts). The whole list, not the searched rows —
+  // a test the search hides is just as stale.
+  const cleanable = $derived(cleanEntries(testList.subjects));
+  const cleanBlocked = $derived(
+    cleanBlocker({
+      kind: "tests",
+      entries: cleanable,
+      itemsBlockedReason: testList.itemsBlockedReason,
+      hasRoot: !!$layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath,
+    })
+  );
+  let cleanError = $state<string | null>(null);
+  async function cleanTests(): Promise<void> {
+    cleanError = await requestCleanStale(workspaceId, "tests", cleanable);
+  }
+
   function openFindingsRail(pageId: string): void {
     findingsError = null;
     const err = requestFindingsRail(workspaceId, pageId);
@@ -523,6 +542,12 @@
     railSubjects={railSubjects}
     tests={testRows}
     {testsBlockedReason}
+    clean={{
+      label: CLEAN_LABEL.tests,
+      blocked: cleanBlocked,
+      tip: cleanTip("tests", cleanable),
+      onClean: () => void cleanTests(),
+    }}
     {selected}
     collapsed={prefs.listCollapsed}
     query={prefs.query}
@@ -575,6 +600,7 @@
         </button>
       {/if}
       {#if criticalError}<span class="critical-error">{criticalError}</span>{/if}
+      {#if cleanError}<span class="critical-error">{cleanError}</span>{/if}
     </div>
     {#if critiqueRuns.length > 0}
       <div class="run-summary" aria-label="Critical review runs">

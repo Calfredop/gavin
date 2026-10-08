@@ -305,6 +305,13 @@ describe("persistence", () => {
     ]);
   });
 
+  it("keeps a held clean-stale run, and drops one without its prompt", () => {
+    const clean = { kind: "clean", workspaceId: "ws", label: "Clean stale tests", id: "q1", askedAtMs: 5 };
+    expect(parseLaunchQueue(JSON.stringify([{ ...clean, prompt: "p" }, { ...clean, id: "q2" }]))).toEqual([
+      { ...clean, prompt: "p" },
+    ]);
+  });
+
   it("reads unparseable or absent state as an empty queue", () => {
     expect(parseLaunchQueue(null)).toEqual([]);
     expect(parseLaunchQueue("not json")).toEqual([]);

@@ -13,6 +13,7 @@
 import { BUILTIN_TOOLS, placeholdersIn, type Tool, type ToolParam } from "$lib/orchestration/orchestrationTools";
 import {
   DEFAULT_BEST_OF_N_SUFFIX,
+  DEFAULT_CLEAN_STALE,
   DEFAULT_CODE_REVIEW,
   DEFAULT_CRITICAL_REVIEW_SUFFIX,
   DEFAULT_DEVELOP,
@@ -30,6 +31,7 @@ import {
 
 export {
   DEFAULT_BEST_OF_N_SUFFIX,
+  DEFAULT_CLEAN_STALE,
   DEFAULT_CODE_REVIEW,
   DEFAULT_CRITICAL_REVIEW_SUFFIX,
   DEFAULT_DEVELOP,
@@ -252,6 +254,20 @@ export const ACTION_PROMPTS: ActionPrompt[] = [
       { name: "reviewer_label", label: "Reviewer label", default: "" },
       { name: "reviewer_total", label: "Reviewer count", default: "2" },
       { name: "findings_rail_note", label: "Optional findings-rail note", default: "" },
+    ],
+  },
+  {
+    id: "action:clean-stale",
+    name: "Clean stale decisions",
+    description:
+      "Decisions and Review tabs — close open Decision: / Human test: items nothing is waiting on any more.",
+    group: "review",
+    defaultBody: DEFAULT_CLEAN_STALE,
+    params: [
+      { name: "name_tab_first", label: "Name-tab opener", default: "" },
+      { name: "tab", label: "“Decisions” or “Review”", default: "Decisions" },
+      { name: "item_noun", label: "What the items are", default: "`Decision:` items" },
+      { name: "items_block", label: "Open items block", default: "" },
     ],
   },
   {

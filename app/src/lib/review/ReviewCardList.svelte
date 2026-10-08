@@ -18,6 +18,7 @@
     PanelLeftOpen,
     RefreshCw,
     Archive,
+    Bot,
   } from "@lucide/svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -39,6 +40,9 @@
     tests?: ReviewTestRow[];
     /// Why the tests cannot be listed (the daemon version gate), or null.
     testsBlockedReason?: string | null;
+    /// "Clean stale tests" (decisions/cleanStale.ts): why it cannot run
+    /// (null when it can), its tooltip, and the press. Absent, no button.
+    clean?: { label: string; blocked: string | null; tip: string; onClean: () => void } | null;
     selected: string | null;
     collapsed: boolean;
     query: string;
@@ -86,6 +90,7 @@
     railSubjects = [],
     tests = [],
     testsBlockedReason = null,
+    clean = null,
     selected,
     collapsed,
     query,
@@ -175,6 +180,20 @@
         disabled={loading}
         onclick={onRefresh}
       />
+      {#if clean}
+        <!-- The reason hangs on the SPAN: a disabled button fires no
+             mouseenter, so its own tooltip could never say why. -->
+        <span use:tooltip={clean.blocked}>
+          <IconButton
+            icon={Bot}
+            label={clean.label}
+            tip={clean.blocked ? null : clean.tip}
+            size={14}
+            disabled={clean.blocked !== null}
+            onclick={clean.onClean}
+          />
+        </span>
+      {/if}
       <IconButton
         icon={PanelLeftClose}
         label="Collapse the review list"
