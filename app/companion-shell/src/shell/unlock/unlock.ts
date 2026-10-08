@@ -16,8 +16,10 @@
 // - **Ends it:** the app going to the background (Home, the app switcher,
 //   another app, answering a call) and the phone locking.
 // - **Does not:** Control Center, the notification shade, a call banner,
-//   the Unlock's own prompt. None of them sends the app to the background;
-//   they are `interrupted` here, and change nothing.
+//   the Unlock's own prompt. They are `interrupted` here, and change
+//   nothing. On iOS the shade does send the app to the background, for as
+//   long as it is down; the native side does not report a background that
+//   is over within two seconds, so a glance at it never reaches this layer.
 // - **While the prompt is up**, the app's lifecycle is not believed: on
 //   older Android the passcode screen is an activity of its own, which
 //   stops ours. A prompt the owner really walked away from is cancelled by

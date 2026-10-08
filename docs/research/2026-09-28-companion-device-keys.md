@@ -150,7 +150,8 @@ BiometricPrompt.Builder(activity)
 | Event | iOS | Android (API 36) | Unlock |
 |---|---|---|---|
 | The Unlock's own prompt | `willResignActive` (**measured**) | window focus lost, no `onPause` (**measured**) | kept; the shell also ignores lifecycle while its prompt is up |
-| Control Center / notification shade / quick settings | `willResignActive` (**device test**) | window focus lost only (**measured**) | kept |
+| Control Center / quick settings | `willResignActive` (**measured** on an iPhone 16 Pro, iOS 27.0: no background) | window focus lost only (**measured**) | kept |
+| Notification shade | `didEnterBackground` while it is down, then `willEnterForeground` (**measured** on an iPhone 16 Pro, iOS 27.0, 2026-10-08: about a second for a glance) | window focus lost only (**measured**) | kept: the iOS side believes a background only after 2 s (`briefBackground`) |
 | Incoming-call banner | at most `willResignActive` (**device test**) | nothing at all; signing kept working during the call (**measured**) | kept |
 | Answering the call, app switch, Home | `didEnterBackground` (**measured** for app switch) | `ON_STOP` (**measured** for Home) | **ends** |
 | Lock | `didEnterBackground`, `protectedDataWillBecomeUnavailable` (**device test**) | `onStop`, `SCREEN_OFF`, `ON_STOP` (**measured**) | **ends** |
@@ -161,6 +162,7 @@ BiometricPrompt.Builder(activity)
   - **iOS:** `didEnterBackground` and `protectedDataWillBecomeUnavailable`.
   - **Android:** `ProcessLifecycleOwner` `ON_STOP` and `ACTION_SCREEN_OFF`.
 - Never end it on resign-active, `onPause` or focus loss.
+- **iOS:** never on a background over within 2 s either: that is the notification shade (found after this ticket, `companion-notification-shade-ends-the-unlock-on-ios`).
 - Ignore lifecycle events while the shell's own prompt is on screen. Older Android versions show the device-credential screen as a separate activity, which stops ours.
 
 ### What ends it

@@ -36,7 +36,9 @@ import UIKit
 /// `protectedDataWillBecomeUnavailable`), never when it merely resigns
 /// active: Control Center, a call banner and the Face ID sheet itself do
 /// that (`docs/research/2026-09-28-companion-device-keys.md`, "Brief
-/// interruptions"). Each of those is also told to the web layer as a
+/// interruptions"). A background that is over within `briefBackground` is
+/// not one: on iOS 27 the notification shade backgrounds the app for as
+/// long as it is down. Each of those is also told to the web layer as a
 /// `lifecycle` event, with coming back to the front.
 @objc(DeviceKeysPlugin)
 public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -141,6 +143,11 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
                            name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
         center.addObserver(self, selector: #selector(willEnterForeground),
                            name: UIApplication.willEnterForegroundNotification, object: nil)
+        for name in Self.traced {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                self?.trace(note.name.rawValue)
+            }
+        }
     }
 
     // MARK: the Unlock
@@ -165,20 +172,150 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         return held
     }
 
+    /// How long the app may be in the background and still not have left
+    /// the front. On iOS 27 pulling the notification shade down sends the
+    /// app to the background for as long as the shade is down (measured on
+    /// an iPhone 16 Pro: about a second for a glance), with nothing public
+    /// to tell it from Home or the app switcher. So a background is only
+    /// believed once it has lasted this long.
+    ///
+    /// The cost: Home and back within this time keeps the Unlock and its
+    /// connections, and so would someone handed the unlocked phone that
+    /// quickly. That person is already holding an unlocked phone, and two
+    /// seconds is less than it takes to go Home and tap the app again.
+    ///
+    /// The screen locking is not meant to wait: `phoneWillLock` ends it at
+    /// once, grace or none. But iOS may post that only when it discards the
+    /// data protection keys, some seconds after the lock (the lifecycle
+    /// trace says), and until then a lock looks like any background. The
+    /// most it can get is this same grace, and coming back inside it takes
+    /// unlocking the phone first -- Face ID or the passcode.
+    static let briefBackground: TimeInterval = 2
+
+    /// Where the app stands away from the front. `brief`: in the background
+    /// for less than `briefBackground` so far, the Unlock still held and the
+    /// web layer told nothing. `told`: the Unlock ended and the web layer
+    /// heard why, so coming back is news to it. Main thread only.
+    private enum Away {
+        case brief(since: UInt64, end: DispatchWorkItem, task: UIBackgroundTaskIdentifier)
+        case told
+    }
+    private var away: Away?
+
     @objc private func didEnterBackground() {
-        NSLog("[gavin-shell] DeviceKeys: the app went to the background; the Unlock ends")
+        guard away == nil else { return }
+        let end = DispatchWorkItem { [weak self] in self?.endForBackground() }
+        // Kept running long enough to end it on time: suspended, the timer
+        // would not fire, and the connections would stay up until the app
+        // came back.
+        let task = UIApplication.shared.beginBackgroundTask(withName: "gavin-unlock-brief-background") { [weak self] in
+            self?.endForBackground()
+        }
+        say(String(format: "the app went to the background; the Unlock ends unless it is back within %.0f s (background time %@)",
+                   Self.briefBackground, task == .invalid ? "refused" : "granted"))
+        away = .brief(since: Self.monotonicNanoseconds(), end: end, task: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.briefBackground, execute: end)
+    }
+
+    /// The background lasted: the Unlock ends, and the web layer hears it.
+    private func endForBackground() {
+        guard case .brief(_, let end, let task)? = away else { return }
+        settle(end, task)
+        away = .told
+        say("still in the background; the Unlock ends")
         hold(nil)
         notifyListeners("lifecycle", data: ["phase": "background"])
     }
 
+    /// Never waits: a phone that locks is not a glance at the shade.
     @objc private func phoneWillLock() {
-        NSLog("[gavin-shell] DeviceKeys: the phone is locking; the Unlock ends")
+        say("the phone is locking; the Unlock ends")
+        if case .brief(_, let end, let task)? = away { settle(end, task) }
+        away = .told
         hold(nil)
         notifyListeners("lifecycle", data: ["phase": "screen-locked"])
     }
 
     @objc private func willEnterForeground() {
+        if case .brief(let since, let end, let task)? = away {
+            let seconds = Double(Self.monotonicNanoseconds() - since) / 1e9
+            if seconds < Self.briefBackground {
+                settle(end, task)
+                away = nil
+                say(String(format: "back after %.1f s; the Unlock is kept", seconds))
+                return
+            }
+            // Suspended past its timer after all: it ends now, before the
+            // web layer hears the app is back.
+            endForBackground()
+        }
+        away = nil
         notifyListeners("lifecycle", data: ["phase": "foreground"])
+    }
+
+    private func settle(_ end: DispatchWorkItem, _ task: UIBackgroundTaskIdentifier) {
+        end.cancel()
+        if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+    }
+
+    /// Counts on while the phone sleeps, unlike `systemUptime`.
+    static func monotonicNanoseconds() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC) }
+
+    // MARK: the lifecycle trace
+
+    /// Every lifecycle notification iOS sends, app and scene, logged with
+    /// where the app stands: the evidence `briefBackground` rests on, and
+    /// what would replace it should a signal ever tell the shade from Home.
+    static let traced: [Notification.Name] = [
+        UIApplication.willResignActiveNotification,
+        UIApplication.didBecomeActiveNotification,
+        UIApplication.didEnterBackgroundNotification,
+        UIApplication.willEnterForegroundNotification,
+        UIApplication.protectedDataWillBecomeUnavailableNotification,
+        UIApplication.protectedDataDidBecomeAvailableNotification,
+        UIScene.willDeactivateNotification,
+        UIScene.didActivateNotification,
+        UIScene.didEnterBackgroundNotification,
+        UIScene.willEnterForegroundNotification,
+    ]
+
+    /// What the Unlock made of the lifecycle, told the way `trace` is.
+    private func say(_ what: String) { emit("[gavin-shell] DeviceKeys: \(what)") }
+
+    /// NSLog always; a debug build also hands the line to the web layer
+    /// (`trace`), where it lands in the console beside `[gavin-unlock]`.
+    private func emit(_ line: String) {
+        NSLog("%@", line)
+        if Self.debugBuild { notifyListeners("trace", data: ["line": line]) }
+    }
+
+    private func trace(_ name: String) {
+        let app = UIApplication.shared
+        let scenes = app.connectedScenes.map { Self.describe($0.activationState) }.joined(separator: ",")
+        let brightness = app.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen.brightness }.first ?? -1
+        let line = String(format: "[gavin-lifecycle] %.3f %@: app %@, scene %@, protected data %@, brightness %.2f",
+                          Double(Self.monotonicNanoseconds()) / 1e9, name, Self.describe(app.applicationState),
+                          scenes, app.isProtectedDataAvailable ? "available" : "unavailable", brightness)
+        emit(line)
+    }
+
+    static func describe(_ state: UIApplication.State) -> String {
+        switch state {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
+        }
+    }
+
+    static func describe(_ state: UIScene.ActivationState) -> String {
+        switch state {
+        case .foregroundActive: return "foreground-active"
+        case .foregroundInactive: return "foreground-inactive"
+        case .background: return "background"
+        case .unattached: return "unattached"
+        @unknown default: return "unknown"
+        }
     }
 
     /// Asks for the owner once, and holds that for `signUnlocked`.

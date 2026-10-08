@@ -169,6 +169,7 @@
       void DeviceKeys.status()
         .then(async (status) => {
           debugBuild = status.debugBuild;
+          if (status.debugBuild) void DeviceKeys.addListener("trace", (e) => console.log(e.line)).catch(() => {});
           const { key: devKey } = await BundleView.devPublisherKey().catch(() => ({ key: null }));
           trusted = trustedKeys({ debugBuild: status.debugBuild, devKey });
           if (status.debugBuild) console.log(`[gavin-shell] trusts ${trusted.length} bundle key(s)`);

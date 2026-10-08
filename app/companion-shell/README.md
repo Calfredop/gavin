@@ -475,7 +475,11 @@ ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
   the app's last started activity stopping, and `SCREEN_OFF`), never on
   losing the focus (Control Center, the shade, a call banner, the prompt
   itself), and tells the web layer as a `lifecycle` event, with coming
-  back to the front.
+  back to the front. On iOS 27 the shade backgrounds the app while it is
+  down, so the iOS side believes a background only once it has lasted two seconds
+  (`briefBackground`, whose comment weighs what that costs); the screen
+  locking does not wait. A debug build logs every lifecycle notification
+  as `[gavin-lifecycle]`, natively and in the web console.
 - **Android's "in front"** spans two processes: the shell's activity and a
   bundle's, in `:bundle`. `AppForeground` counts both -- the bundle's
   start and stop cross over the channel -- and decides "background" 700 ms
