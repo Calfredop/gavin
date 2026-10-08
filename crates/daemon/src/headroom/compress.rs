@@ -607,7 +607,36 @@ pub fn kimi_config(text: &str) -> KimiConfig {
 /// configuration itself derives when it names a base URL, else the
 /// only `kimi-code-env-*.json` there is; with none, or several to
 /// guess between, nothing is written, and the launch fails the way an
-/// unauthenticated kimi's does.
+/// Fills the credential slot a routed kimi will read, from the freshest
+/// of the human's own logins.
+///
+/// With `KIMI_CODE_BASE_URL` set kimi re-derives the slot it reads
+/// (`kimi_credential_slot`), and a launch whose derived slot is empty
+/// fails authentication exactly as a logged-out kimi does. The slot
+/// names the session-tagged base URL, so every session reads its own
+/// file, copied from a login slot at launch time.
+///
+/// A copied token dies fast: the managed grant lives 15 minutes
+/// (`expires_in: 900`, watched live) and refreshing rotates the
+/// refresh token, so any copy older than the newest refresh is a dead
+/// grant, and kimi WIPES a slot whose refresh is rejected -- under the
+/// old never-overwrite rule that dead grant stayed dead forever, and
+/// the launch failed with `OAuthUnauthorizedError: Stored token ... was
+/// rejected; re-login required` no matter how healthy the human's own
+/// login was (bug-kimi-compressed-auth, sessions of 2026-10-06). The
+/// rules now:
+///
+/// - The source is the freshest credential on disk (largest
+///   `expires_at`), not a guess at which slot the login flow wrote:
+///   with a slot per session there is always more than one, and the
+///   persisted configuration's slot is not necessarily the newest.
+/// - A target slot at least as fresh as every source (kimi refreshed
+///   it itself) is left alone.
+/// - Anything older -- a wiped slot above all -- is overwritten with
+///   the fresh copy. A copy, never a move or an edit: the human's
+///   file stays as it is.
+/// - With no live credential anywhere, nothing is written: the launch
+///   fails the way a genuinely logged-out kimi's does.
 pub fn provision_kimi_credential(
     credentials: &Path,
     oauth_host: &str,
@@ -615,28 +644,67 @@ pub fn provision_kimi_credential(
     persisted_base: Option<&str>,
 ) {
     let target = credentials.join(format!("{}.json", kimi_credential_slot(oauth_host, routed_base)));
-    if target.exists() {
+    let Some(source) = freshest_kimi_credential(credentials, oauth_host, persisted_base) else { return };
+    let target_freshness = kimi_credential_freshness(&target);
+    if target_freshness > 0 && target_freshness >= kimi_credential_freshness(&source) {
         return;
     }
+    let _ = std::fs::copy(&source, &target);
+}
+
+/// The freshest `kimi-code-env-*.json` in `credentials` (largest
+/// `expires_at`). The persisted configuration's slot is a candidate
+/// like any other -- it is where the login flow wrote, not necessarily
+/// where the newest token lives; on a freshness tie it wins, being the
+/// slot a fresh login would have written. `None` when no file holds a
+/// non-empty token.
+fn freshest_kimi_credential(
+    credentials: &Path,
+    oauth_host: &str,
+    persisted_base: Option<&str>,
+) -> Option<std::path::PathBuf> {
     let persisted = persisted_base
         .map(|base| credentials.join(format!("{}.json", kimi_credential_slot(oauth_host, base))))
         .filter(|path| path.is_file());
-    let Some(source) = persisted.or_else(|| only_kimi_credential(credentials)) else { return };
-    let _ = std::fs::copy(source, target);
+    let mut best: Option<(u64, std::path::PathBuf)> = None;
+    let mut consider = |path: std::path::PathBuf| {
+        let fresh = kimi_credential_freshness(&path);
+        if fresh > 0 && best.as_ref().is_none_or(|(freshest, _)| fresh > *freshest) {
+            best = Some((fresh, path));
+        }
+    };
+    if let Some(path) = persisted {
+        consider(path);
+    }
+    if let Ok(entries) = std::fs::read_dir(credentials) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                name.starts_with("kimi-code-env-") && name.ends_with(".json")
+            }) {
+                consider(path);
+            }
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
-/// The single kimi credential file in the directory, or `None` when
-/// there are none, or several to guess between.
-fn only_kimi_credential(credentials: &Path) -> Option<std::path::PathBuf> {
-    let mut files = std::fs::read_dir(credentials).ok()?.filter_map(Result::ok).map(|entry| entry.path()).filter(
-        |path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("kimi-code-env-") && name.ends_with(".json"))
-        },
-    );
-    let first = files.next()?;
-    files.next().is_none().then_some(first)
+/// How fresh the token in `path` is: its `expires_at` epoch seconds. 0
+/// for a missing, unreadable, unparseable or WIPED file (kimi empties
+/// the token fields when a refresh is rejected) -- a dead grant, the
+/// thing a fresh copy cures. A file with a token but no clock ranks 1:
+/// below any real timestamp, above a wipe.
+fn kimi_credential_freshness(path: &Path) -> u64 {
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else { return 0 };
+    if doc
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return 0;
+    }
+    doc.get("expires_at").and_then(serde_json::Value::as_u64).unwrap_or(1)
 }
 
 /// Whether `url` is the tagged URL a recipe gave `session_id`, on any
@@ -1443,15 +1511,19 @@ oauth_host = "https://auth.kimi.ai"
     }
 
     /// Kimi may have refreshed the token in a derived slot; a later
-    /// launch must not put the stale copy back over it.
+    /// launch must not put a staler copy back over it.
     #[test]
-    fn an_existing_derived_slot_is_never_overwritten() {
+    fn a_refreshed_target_keeps_its_token() {
         let dir = tempfile::tempdir().unwrap();
         let credentials = dir.path();
-        std::fs::write(credentials.join("kimi-code-env-0e4f99c69cc27850.json"), r#"{"access_token":"old"}"#).unwrap();
+        std::fs::write(
+            credentials.join("kimi-code-env-0e4f99c69cc27850.json"),
+            r#"{"access_token":"old","expires_at":100}"#,
+        )
+        .unwrap();
         let derived =
             credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.ai", "http://127.0.0.1:41873/p/s/v1")));
-        std::fs::write(&derived, r#"{"access_token":"refreshed"}"#).unwrap();
+        std::fs::write(&derived, r#"{"access_token":"refreshed","expires_at":200}"#).unwrap();
 
         provision_kimi_credential(
             credentials,
@@ -1460,7 +1532,54 @@ oauth_host = "https://auth.kimi.ai"
             Some("https://api.kimi.ai/coding/v1"),
         );
 
-        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"refreshed"}"#);
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"refreshed","expires_at":200}"#);
+    }
+
+    /// The failure this provisioning exists to prevent (live sessions of
+    /// 2026-10-06): the target slot's copy is older than some other slot
+    /// on disk -- refresh rotation killed it, or kimi wiped it when the
+    /// refresh was rejected. The freshest credential wins no matter
+    /// which slot it lives in; the persisted configuration's slot is a
+    /// candidate, not the answer.
+    #[test]
+    fn a_stale_or_wiped_target_gets_the_freshest_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path();
+        // The persisted configuration's slot: an OLD token.
+        std::fs::write(
+            credentials.join("kimi-code-env-0e4f99c69cc27850.json"),
+            r#"{"access_token":"old","expires_at":100}"#,
+        )
+        .unwrap();
+        // Another session's slot: the NEWEST token on disk.
+        std::fs::write(
+            credentials.join("kimi-code-env-deadbeefdeadbeef.json"),
+            r#"{"access_token":"newest","expires_at":300}"#,
+        )
+        .unwrap();
+        let derived =
+            credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.ai", "http://127.0.0.1:41873/p/s/v1")));
+
+        // A wiped slot (kimi empties the file when the refresh is
+        // rejected) is filled from the freshest credential...
+        std::fs::write(&derived, r#"{"access_token":"","expires_at":0}"#).unwrap();
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+        assert_eq!(std::fs::read_to_string(&derived).unwrap(), r#"{"access_token":"newest","expires_at":300}"#);
+
+        // ...and so is a merely stale one.
+        std::fs::write(&derived, r#"{"access_token":"old","expires_at":150}"#).unwrap();
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+        assert_eq!(std::fs::read_to_string(&derived).unwrap(), r#"{"access_token":"newest","expires_at":300}"#);
     }
 
     /// A configuration that cannot be read still leaves the one
@@ -1478,11 +1597,12 @@ oauth_host = "https://auth.kimi.ai"
         assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"a"}"#);
     }
 
-    /// With nothing to copy, or several to guess between, nothing is
-    /// written: the launch fails the way an unauthenticated kimi's
-    /// does, rather than with someone else's login.
+    /// With nothing live to copy nothing is written: the launch fails
+    /// the way an unauthenticated kimi's does, rather than with someone
+    /// else's login. Several files are no longer a reason to give up --
+    /// the freshest wins -- but several EMPTY ones copy nothing.
     #[test]
-    fn with_no_credential_to_copy_or_several_nothing_is_written() {
+    fn with_no_live_credential_nothing_is_written() {
         let empty = tempfile::tempdir().unwrap();
         provision_kimi_credential(empty.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
         assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
@@ -1492,7 +1612,14 @@ oauth_host = "https://auth.kimi.ai"
             std::fs::write(several.path().join(slot), "{}").unwrap();
         }
         provision_kimi_credential(several.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
-        assert_eq!(std::fs::read_dir(several.path()).unwrap().count(), 2, "no third file guessed");
+        assert_eq!(std::fs::read_dir(several.path()).unwrap().count(), 2, "wiped slots copy nothing");
+
+        let one_live = several.path().join("kimi-code-env-cccccccccccccccc.json");
+        std::fs::write(&one_live, r#"{"access_token":"live","expires_at":999}"#).unwrap();
+        provision_kimi_credential(several.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
+        let derived =
+            several.path().join(format!("{}.json", kimi_credential_slot("https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1")));
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"live","expires_at":999}"#);
     }
 
     #[test]
