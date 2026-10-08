@@ -77,3 +77,11 @@ export function cardTabLabel(title: string, view: "plan" | "changes"): string {
 export function followUpsTabLabel(sessionName: string): string {
   return `${sessionName} · follow-ups`;
 }
+
+// An agent's browser, live beside its terminal (`browserView.ts`): a
+// session's view like the queue above, named after that terminal the same
+// way. The page it shows changes with every navigation, so the tab does
+// not carry it; the pane's own header does.
+export function browserTabLabel(sessionName: string): string {
+  return `${sessionName} · browser`;
+}

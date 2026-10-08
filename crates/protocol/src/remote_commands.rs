@@ -186,6 +186,15 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // The Playwright setup step, like the agent skills step beside it.
     ("playwright_status", RemoteAllowance::Allowed),
     ("playwright_install", RemoteAllowance::Allowed),
+    // The desk's live view of an agent's browser. The frames go to the
+    // desk window that asked, at the desk's size; a phone asks for its own
+    // small stream (`playwright-companion-view.md`), so these two mean
+    // nothing away from the desk. The read-back and the setting do.
+    ("watch_browser", RemoteAllowance::Refused), // meaningless away from the desk
+    ("unwatch_browser", RemoteAllowance::Refused), // meaningless away from the desk
+    ("list_browsers", RemoteAllowance::Allowed),
+    ("get_playwright_pane_open", RemoteAllowance::Allowed),
+    ("set_playwright_pane_open", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),

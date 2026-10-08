@@ -237,6 +237,7 @@ const PANES: [string, string, "always" | "inline"][] = [
   ["FileViewerPane", "pane", "always"],
   ["CardTabPane", "pane", "always"],
   ["FollowUpQueuePane", "pane", "always"],
+  ["BrowserPane", "pane", "always"],
   ["BoardPane", "board-pane", "always"],
   // The wrappers below are Modal-rooted and forward `inline`, so they
   // inherit its bargain: with the flag they fill their host, without it

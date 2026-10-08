@@ -298,6 +298,13 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // repository chooses what it runs.
   playwright_status: ["ordinary"],
   playwright_install: ["ordinary"],
+  // The live view of an agent's browser: a stream to the asking window,
+  // its read-back, and the app-wide pane setting.
+  watch_browser: ["ordinary"],
+  unwatch_browser: ["ordinary"],
+  list_browsers: ["ordinary"],
+  get_playwright_pane_open: ["ordinary"],
+  set_playwright_pane_open: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.

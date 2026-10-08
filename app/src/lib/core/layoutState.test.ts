@@ -78,6 +78,7 @@ vi.mock("$lib/core/backend", () => ({
     .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, fallbackChains: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  getPlaywrightPaneOpen: vi.fn().mockResolvedValue(null),
   getCustomResumeArgs: vi.fn().mockResolvedValue(null),
   setCustomResumeArgs: vi.fn().mockResolvedValue(undefined),
   getAutoCommit: vi.fn().mockResolvedValue(null),
@@ -245,6 +246,8 @@ import {
   openBoardInSplit,
   openCardInSplit,
   openFollowUpsInSplit,
+  openBrowserInSplit,
+  setWorkspacePlaywrightPaneOpen,
   setCardTabPath,
   retargetCardTabs,
   repairUnknownTabs,
@@ -1287,6 +1290,67 @@ describe("openFollowUpsInSplit", () => {
   });
 });
 
+describe("openBrowserInSplit", () => {
+  it("splits the browser beside its session without taking the focus", async () => {
+    // The auto-open: nobody pressed anything, and a human may be typing in
+    // the terminal the pane appears beside.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    expect(await openBrowserInSplit("a", false)).toBe(true);
+
+    const state = get(layoutState);
+    const [id, tab] = Object.entries(state.cardTabsById)[0];
+    expect(tab).toEqual({ workspaceId: "ws-1", path: "", view: "browser", sessionId: "a" });
+    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a", id]);
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.setCardTabs).toHaveBeenCalledWith(state.cardTabsById);
+  });
+
+  it("finds the session on a page that is not on screen", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+
+    expect(await openBrowserInSplit("b", false)).toBe(true);
+
+    const state = get(layoutState);
+    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a"]);
+    expect(allSessionIds(state.workspaces[0].pages[1].layout)).toHaveLength(2);
+  });
+
+  it("opens one pane per session, and the chip brings it forward", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openBrowserInSplit("a", false);
+    const [first] = Object.keys(get(layoutState).cardTabsById);
+
+    expect(await openBrowserInSplit("a", true)).toBe(true);
+
+    expect(Object.keys(get(layoutState).cardTabsById)).toEqual([first]);
+    expect(get(layoutState).focusedSessionId).toBe(first);
+  });
+
+  it("opens nothing for a session no page holds", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    expect(await openBrowserInSplit("elsewhere", false)).toBe(false);
+    expect(get(layoutState).cardTabsById).toEqual({});
+  });
+});
+
+describe("setWorkspacePlaywrightPaneOpen", () => {
+  it("is a workspace setting, cleared with null", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await setWorkspacePlaywrightPaneOpen("ws-1", "chip");
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { playwrightPaneOpen: "chip" });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+
+    await setWorkspacePlaywrightPaneOpen("ws-1", null);
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { playwrightPaneOpen: null });
+  });
+});
+
 describe("handleSessionExited", () => {
   it("finds and removes a session in a non-active page", () => {
     setState(
@@ -1319,6 +1383,18 @@ describe("handleSessionExited", () => {
     await Promise.resolve();
 
     expect(get(layoutState).cardTabsById[queueTab]).toBeUndefined();
+  });
+
+  it("takes the session's browser pane with it", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openBrowserInSplit("a", false);
+    const browserTab = Object.keys(get(layoutState).cardTabsById)[0];
+
+    handleSessionExited("a");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(get(layoutState).cardTabsById[browserTab]).toBeUndefined();
   });
 
   it("reassigns focus to the active page's first session when the focused session exits", () => {

@@ -73,6 +73,7 @@ function everyKey(id: string, flavour: string): Workspace {
     requireReviewAsked: flavour === "a",
     headroom: flavour === "a",
     headroomAsked: flavour === "a",
+    playwrightPaneOpen: flavour === "a" ? "auto" : "chip",
     customResumeArgs: `--resume-${flavour}`,
     customProfiles: [
       {

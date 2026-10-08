@@ -152,6 +152,12 @@ export interface Workspace {
   /// local like the accent colour -- how big the type is on this screen is
   /// not a fact about the project.
   terminalFontSize?: number;
+  /// When an agent's browser pane opens in this workspace: "auto" on the
+  /// browser's first frame, "chip" only from the tab's chip. Absent means
+  /// inherit the app-wide setting (and, failing that, "auto"). Stored as
+  /// the host wrote it; `browserView.ts` normalizes a word it does not know
+  /// to absent. Machine-local like the font size.
+  playwrightPaneOpen?: string;
   /// Whether a card filed in this workspace starts carrying the
   /// auto-commit block; absent means inherit the app-wide setting (and,
   /// failing that, gavin's default of off). Machine-local like the accent

@@ -155,6 +155,9 @@ pub(crate) fn persist_workspaces(
     // positionals for values no save site ever changes.
     let on_disk = crate::config::load(config_dir).ok();
     let typesafe = on_disk.as_ref().and_then(|c| c.typesafe.clone());
+    // The app-wide browser pane setting travels the same way: its one
+    // writer is `browser_view.rs`'s read-modify-write.
+    let playwright_pane_open = on_disk.as_ref().and_then(|c| c.playwright_pane_open.clone());
     let (superpowers, superpowers_farewell_dismissed) = on_disk
         .map(|c| (c.superpowers, c.superpowers_farewell_dismissed))
         .unwrap_or_default();
@@ -164,6 +167,7 @@ pub(crate) fn persist_workspaces(
             typesafe,
             superpowers,
             superpowers_farewell_dismissed,
+            playwright_pane_open,
             workspaces: data.workspaces.clone(),
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
@@ -1188,6 +1192,7 @@ mod workspaces_data_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -1457,6 +1462,7 @@ mod workspace_migration_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -4436,6 +4442,7 @@ mod resolve_workspaces_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -5431,6 +5438,27 @@ pub(crate) fn attach_and_relay(
                 Response::RelayStateChanged { state } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "relay-state-changed", state);
                 }
+                // A session's browser launched, navigated, changed tab or
+                // (`None`) stopped (v65): what lights the tab's browser chip
+                // and arms the pane's auto-open (`browserView.ts`). Whole,
+                // never a delta. Only sent to an app that speaks 65.
+                Response::BrowserChanged { session_id, browser } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "browser-changed", (session_id, browser));
+                }
+                // An ssh session's browser frames (v65): the desk's
+                // `WatchBrowser` for a session on a host rides that host's
+                // streaming connection (`RemoteLink::watch_browser`), so its
+                // pushes arrive here. A local session's watch has a
+                // connection of its own (`browser_view`).
+                Response::BrowserFrame { session_id, seq, data, width, height, url, title } => {
+                    crate::browser_view::relay_frame(
+                        &reader_app_handle,
+                        crate::browser_view::BrowserFrame { session_id, seq, data, width, height, url, title },
+                    );
+                }
+                Response::BrowserGone { session_id } => {
+                    crate::browser_view::relay_gone(&reader_app_handle, &session_id);
+                }
                 Response::AgentSessionSpawned {
                     workspace_id,
                     session_id,
@@ -5589,6 +5617,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 headroom: None,
                 require_review_asked: false,
                 headroom_asked: false,
+                playwright_pane_open: None,
                 custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -7660,6 +7689,7 @@ mod main_session_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -8413,6 +8443,7 @@ mod attach_target_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,

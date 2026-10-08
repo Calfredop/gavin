@@ -7,6 +7,9 @@
   import BoardPane from "$lib/board/BoardPane.svelte";
   import CardTabPane from "$lib/cards/CardTabPane.svelte";
   import FollowUpQueuePane from "$lib/agents/FollowUpQueuePane.svelte";
+  import BrowserPane from "$lib/panes/BrowserPane.svelte";
+  import { chipFor } from "$lib/panes/browserView";
+  import { browserBlocked, browserViews } from "$lib/panes/browserViewState";
   import {
     layoutState,
     daemonCompat,
@@ -54,6 +57,7 @@
     ListChecks,
     FileDiff,
     MessageSquarePlus,
+    Globe,
     Columns2,
     Rows2,
   } from "@lucide/svelte";
@@ -78,6 +82,7 @@
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import {
+    browserSessionFor,
     followUpsSessionFor,
     isViewTab as tabIsView,
     renameSeed,
@@ -173,6 +178,18 @@
 
   function followUpsFor(tabId: string): string | null {
     return followUpsSessionFor(tabId, naming);
+  }
+
+  function browserFor(tabId: string): string | null {
+    return browserSessionFor(tabId, naming);
+  }
+
+  // The agent's browser (`browserView.ts`): a chip only while one runs,
+  // and never against a daemon that cannot show it.
+  const browserStore = browserViews.views;
+  function browserChip(sessionId: string): { tip: string } | null {
+    if (isViewTab(sessionId)) return null;
+    return chipFor($browserStore[sessionId], $browserBlocked(sessionId));
   }
 
   function isViewTab(tabId: string): boolean {
@@ -753,6 +770,20 @@
             }}
           />
         {/if}
+        {#if browserChip(active)}
+          <!-- The agent's browser. Lit while one runs; opens the live
+               pane beside this tab, or brings it forward -- the way back
+               to a pane that was closed, which only hid it. -->
+          {@const chip = browserChip(active)}
+          <IconButton
+            icon={Globe}
+            label="Show this agent's browser"
+            tip={chip?.tip}
+            tone="accent"
+            size={14}
+            onclick={() => void browserViews.openFromChip(active)}
+          />
+        {/if}
         {#if !isViewTab(active)}
           <!-- The follow-up queue. Unlike the two chips above it this one
                is not conditional on there being something to show: it is
@@ -849,6 +880,12 @@
           bind:this={paneRefs[sessionId]}
           sessionId={followUpsFor(sessionId) ?? ""}
           tabId={sessionId}
+          visible={sessionId === active}
+        />
+      {:else if browserFor(sessionId)}
+        <BrowserPane
+          bind:this={paneRefs[sessionId]}
+          sessionId={browserFor(sessionId) ?? ""}
           visible={sessionId === active}
         />
       {:else if cardTab(sessionId)}

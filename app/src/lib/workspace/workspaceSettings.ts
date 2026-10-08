@@ -69,6 +69,7 @@ export const WORKSPACE_SETTINGS_KEYS = [
   "requireReviewAsked",
   "headroom",
   "headroomAsked",
+  "playwrightPaneOpen",
   "customResumeArgs",
   "customProfiles",
   "actionPromptOverrides",

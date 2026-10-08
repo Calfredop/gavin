@@ -78,6 +78,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "requireReviewAsked",
     "headroom",
     "headroomAsked",
+    "playwrightPaneOpen",
     "customResumeArgs",
     "customProfiles",
     "actionPromptOverrides",
@@ -415,6 +416,7 @@ mod tests {
             headroom: Some(flavour == "a"),
             require_review_asked: flavour == "a",
             headroom_asked: flavour == "a",
+            playwright_pane_open: Some(if flavour == "a" { "auto" } else { "chip" }.to_string()),
             custom_resume_args: Some(s("--resume")),
             custom_profiles: vec![crate::config::CustomProfile {
                 id: format!("local:{}", s("bot")),

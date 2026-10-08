@@ -175,7 +175,7 @@ export interface BoardTab {
 
 /// Which half of a card a card tab shows: the detail panel, or the diff
 /// of what its run did to the checkout.
-export type CardTabView = "plan" | "changes" | "followups";
+export type CardTabView = "plan" | "changes" | "followups" | "browser";
 
 // One persisted view tab: something a terminal tab asked to see beside
 // itself, living in a pane rather than in a modal (mirrors config.rs's
@@ -187,6 +187,8 @@ export type CardTabView = "plan" | "changes" | "followups";
 // "followups" is keyed by `sessionId` and carries an empty `path`: an
 // agent's queue belongs to the SESSION, not to whatever card it happens
 // to be running, and two tabs on one card have two different queues.
+// "browser" -- an agent's browser, live (`browserView.ts`) -- is keyed the
+// same way and for the same reason: the browser belongs to the session.
 // Every walk of this map by path -- retargetCardTabs for a card that
 // moved, closablesForArchive for one leaving the board -- matches
 // against real card paths, so neither ever claims the empty one.

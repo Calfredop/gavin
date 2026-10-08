@@ -88,6 +88,8 @@ const WORK: Record<string, DemoCommand> = {
   }),
   get_session_names: (_args, demo): Answer<"getSessionNames"> => demo.state.sessionNames,
   list_queued_inputs: (_args, demo): Answer<"listQueuedInputs"> => demo.state.queuedInputs,
+  // No agent of the demo's drives a browser, so none is running.
+  list_browsers: (): Answer<"listBrowsers"> => [],
 
   // Each binding's launch command stays on the Workstation: the board has
   // carried none since v43, and `card_session` is what answers it.

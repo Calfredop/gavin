@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  browserSessionFor,
   followUpsSessionFor,
   isViewTab,
   renameSeed,
@@ -119,6 +120,19 @@ describe("tabLabel", () => {
     expect(tabLabel("q", c)).toContain("builder");
   });
 
+  // An agent's browser is the session's too, and named the same way.
+  it("names a browser tab after its terminal", () => {
+    const c = ctx({
+      cardTabsById: { w: { workspaceId: "ws", path: "", view: "browser", sessionId: "s1" } },
+      sessionNames: { s1: "builder" },
+    });
+    expect(tabKind("w", c)).toBe("browser");
+    expect(isViewTab("w", c)).toBe(true);
+    expect(browserSessionFor("w", c)).toBe("s1");
+    expect(followUpsSessionFor("w", c)).toBeNull();
+    expect(tabLabel("w", c)).toBe("builder · browser");
+  });
+
   it("falls back to a terminal's cwd, then to the id itself", () => {
     expect(tabLabel("s1", ctx({ sessionNames: { s1: "named" } }))).toBe("named");
     expect(tabLabel("s1", ctx({ cwdBySessionId: { s1: "/ws/project" } }))).toBe("project");
@@ -145,6 +159,14 @@ describe("tabTooltip", () => {
       cwdBySessionId: { s1: "/ws/project" },
     });
     expect(tabTooltip("q", c)).toBe("/ws/project");
+  });
+
+  it("borrows the terminal's tooltip for a browser tab", () => {
+    const c = ctx({
+      cardTabsById: { w: { workspaceId: "ws", path: "", view: "browser", sessionId: "s1" } },
+      cwdBySessionId: { s1: "/ws/project" },
+    });
+    expect(tabTooltip("w", c)).toBe("/ws/project");
   });
 
   it("falls back to the terminal's name, cwd, then the id", () => {

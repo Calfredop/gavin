@@ -19,7 +19,10 @@
     daemonCompat,
     headroomDefault,
     setHeadroomDefault,
+    playwrightPaneOpenDefault,
+    setPlaywrightPaneOpenDefault,
   } from "$lib/core/layoutState";
+  import { DEFAULT_PANE_OPEN, paneOpenFromSelect, paneOpenOptions } from "$lib/panes/browserView";
   import AgentPrimaryPanel from "$lib/agents/AgentPrimaryPanel.svelte";
   import { effectiveDefaultAgent } from "$lib/cards/complexity";
   import { withAgentEffort } from "$lib/cards/complexity";
@@ -595,6 +598,20 @@
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
     {
+      id: "browser",
+      keywords: [
+        "Agent browser",
+        "Browser",
+        "Playwright",
+        "live view",
+        "pane",
+        "Open automatically",
+        "Open from the tab chip",
+        "tab chip",
+        "screencast",
+      ],
+    },
+    {
       id: "cards",
       keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
     },
@@ -930,6 +947,27 @@
       <p class="hint">
         Every terminal in every workspace, unless the workspace sets a size of its own. Open
         terminals resize as you pick.
+      </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("browser") || selectedSection !== "browser"}>
+      <h3>Agent browser</h3>
+      <div class="row">
+        <span>Live view</span>
+        <select
+          value={$playwrightPaneOpenDefault ?? ""}
+          onchange={(e) => void setPlaywrightPaneOpenDefault(paneOpenFromSelect(e.currentTarget.value))}
+        >
+          {#each paneOpenOptions(DEFAULT_PANE_OPEN) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        When an agent drives its browser through Playwright, the pane beside its tab shows that
+        browser live. Open automatically puts the pane up on the browser's first frame; Open from the
+        tab chip waits until you press the tab's browser chip. Either way, closing the pane only hides
+        it — the chip brings it back. Every workspace follows this unless it sets its own.
       </p>
     </section>
 

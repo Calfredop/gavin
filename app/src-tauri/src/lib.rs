@@ -3,6 +3,7 @@ mod agent_playwright;
 mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
+mod browser_view;
 mod command_lane;
 mod commands;
 mod companion_bundle;
@@ -94,6 +95,7 @@ pub fn run() {
         .manage(workspace_window::DutyWindow::default())
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
+        .manage(browser_view::BrowserWatches::default())
         .manage(forwarding::Forwarding::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
@@ -264,6 +266,11 @@ pub fn run() {
             agent_skills::agent_skills_install,
             agent_playwright::playwright_status,
             agent_playwright::playwright_install,
+            browser_view::watch_browser,
+            browser_view::unwatch_browser,
+            browser_view::list_browsers,
+            browser_view::get_playwright_pane_open,
+            browser_view::set_playwright_pane_open,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,

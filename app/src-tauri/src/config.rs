@@ -515,6 +515,18 @@ pub struct Workspace {
     /// one unchanged, and every workspace in it has never been asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headroom_asked: bool,
+    /// When an agent's browser pane opens in this workspace
+    /// (`playwright-live-pane.md`): `auto` on the browser's first frame,
+    /// `chip` only when the tab's browser chip is pressed. Absent means
+    /// inherit `AppConfig::playwright_pane_open`, and failing that gavin's
+    /// own default (`auto`) -- stored as absence like `terminal_font_size`,
+    /// so absence is a real state and not a stand-in for the default.
+    /// A string the frontend normalizes (`browserView.ts`), not an enum: a
+    /// hand-edited word must read as "no setting", never fail the load of
+    /// the whole file. Machine-local (D35): how this human likes their desk
+    /// to behave is not a fact about the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playwright_pane_open: Option<String>,
     /// Legacy resume flag for the retired hard-coded `custom` profile.
     /// Kept deserializable so migration can fold it onto a
     /// `CustomProfile::resume_args`; cleared and skipped once empty.
@@ -1140,6 +1152,17 @@ pub struct AppConfig {
     /// `agent_skills::dismiss_agent_skills_farewell`'s read-modify-write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superpowers_farewell_dismissed: Vec<String>,
+    /// When an agent's browser pane opens, app-wide (`playwright-live-pane.md`):
+    /// `auto` or `chip`, for every workspace with no word of its own
+    /// (`Workspace::playwright_pane_open`). Absent means nobody chose and
+    /// gavin's own default (`auto`) applies.
+    ///
+    /// Carried forward from disk like `typesafe`, not a positional on
+    /// `persist_workspaces`: its one writer is `browser_view.rs`'s own
+    /// read-modify-write, and a fourteenth same-shaped argument on that
+    /// list is the hazard its own comments warn about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playwright_pane_open: Option<String>,
 }
 
 /// The TypeSafe features' settings: the turn verdict's switch, change
@@ -1944,6 +1967,7 @@ mod tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
             custom_profiles: Vec::new(),
             agent_fallback: None,
@@ -2621,6 +2645,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2656,6 +2681,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2705,6 +2731,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2860,6 +2887,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2915,6 +2943,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2955,6 +2984,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2998,6 +3028,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3055,6 +3086,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3087,6 +3119,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3127,6 +3160,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3278,6 +3312,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3328,6 +3363,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3373,6 +3409,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -3443,6 +3480,7 @@ mod tests {
             agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
             superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),

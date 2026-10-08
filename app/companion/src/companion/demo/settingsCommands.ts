@@ -55,6 +55,7 @@ export const SETTINGS_COMMANDS: Record<string, DemoCommand> = {
   get_agent_model_defaults: (_args, demo): Answer<"getAgentModelDefaults"> => ({ ...demo.state.settings.agentModels }),
   get_agent_defaults: (_args, demo): Answer<"getAgentDefaults"> => copy(demo.state.settings.agentDefaults),
   get_launch_config: (_args, demo): Answer<"getLaunchConfig"> => copy(demo.state.settings.launch),
+  get_playwright_pane_open: (_args, demo): Answer<"getPlaywrightPaneOpen"> => demo.state.settings.playwrightPaneOpen,
 
   // A blank theme is no theme: "System", stored as absence.
   set_theme_pref: write("theme", (args) => nullable(args, "theme", isText)?.trim() || null),
@@ -65,6 +66,10 @@ export const SETTINGS_COMMANDS: Record<string, DemoCommand> = {
   set_auto_commit: write("autoCommit", (args) => nullable(args, "enabled", isBool)),
   set_require_review: write("requireReview", (args) => nullable(args, "enabled", isBool)),
   set_git_tracking_default: write("gitTracking", (args) => nullable(args, "tracked", isBool)),
+  // Only the two words the host takes (`browser_view.rs`).
+  set_playwright_pane_open: write("playwrightPaneOpen", (args) =>
+    nullable(args, "value", (v): v is string => v === "auto" || v === "chip")
+  ),
 
   // An empty model removes the profile's entry rather than storing "",
   // so the picker's inherit row can undo a default.

@@ -13,6 +13,8 @@
     daemonCompat,
     terminalFontSizeDefault,
     setWorkspaceFontSize,
+    playwrightPaneOpenDefault,
+    setWorkspacePlaywrightPaneOpen,
     autoCommitDefault,
     setWorkspaceAutoCommit,
     requireReviewDefault,
@@ -43,6 +45,7 @@
   import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
   import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
+  import { normalizePaneOpen, paneOpenFromSelect, paneOpenOptions, resolvePaneOpen } from "$lib/panes/browserView";
   import {
     autoCommitFromSelect,
     autoCommitOptions,
@@ -284,6 +287,20 @@
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
     {
+      id: "browser",
+      keywords: [
+        "Agent browser",
+        "Browser",
+        "Playwright",
+        "live view",
+        "pane",
+        "Open automatically",
+        "Open from the tab chip",
+        "tab chip",
+        "screencast",
+      ],
+    },
+    {
       id: "cards",
       keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
     },
@@ -371,6 +388,11 @@
   /// the picker's first row so "Default" is never a number the panel
   /// leaves the reader to guess.
   const inheritedFontSize = $derived(resolveTerminalFontSize(undefined, $terminalFontSizeDefault));
+
+  // --- agent browser ----------------------------------------------------
+  /// What this workspace inherits when it sets nothing of its own, named in
+  /// the picker's first row for the font size's reason.
+  const inheritedPaneOpen = $derived(resolvePaneOpen(undefined, $playwrightPaneOpenDefault));
 
   // --- cards ------------------------------------------------------------
   /// What this workspace inherits when it sets nothing of its own: the
@@ -861,6 +883,26 @@
       <p class="hint">
         Only this workspace's terminals. Default follows the app-wide size in Settings, so leaving it
         alone is how a workspace tracks that.
+      </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("browser") || selectedSection !== "browser"}>
+      <h3>Agent browser</h3>
+      <div class="row">
+        <span>Live view</span>
+        <select
+          value={normalizePaneOpen(ws.playwrightPaneOpen) ?? ""}
+          onchange={(e) =>
+            void setWorkspacePlaywrightPaneOpen(workspaceId, paneOpenFromSelect(e.currentTarget.value))}
+        >
+          {#each paneOpenOptions(inheritedPaneOpen) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        When this workspace's agents open their browser pane beside their tab: on the browser's first
+        frame, or only from the tab's browser chip. Default follows the app-wide setting in Settings.
       </p>
     </section>
 

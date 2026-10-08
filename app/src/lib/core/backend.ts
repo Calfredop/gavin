@@ -12,6 +12,7 @@ import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$li
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
 import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
+import type { BrowserFrame, LiveBrowser } from "$lib/panes/browserView";
 import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
@@ -734,6 +735,35 @@ export function playwrightInstall(
   profileId?: string
 ): Promise<PlaywrightStatus> {
   return invoke("playwright_install", { rootPath, profileId, replaceForeign });
+}
+
+/// Streams an agent session's browser to THIS window, as
+/// `browser-desk-frame` events, until `unwatchBrowser` (`browser_view.rs`).
+/// Idempotent per window. Resolves with the newest frame the host already
+/// holds for the session, or null.
+export function watchBrowser(sessionId: string): Promise<BrowserFrame | null> {
+  return invoke("watch_browser", { sessionId });
+}
+
+export function unwatchBrowser(sessionId: string): Promise<void> {
+  return invoke("unwatch_browser", { sessionId });
+}
+
+/// Every agent browser running now, on every daemon the app talks to: the
+/// read-back for `browser-changed`. A daemon below v65 is left out.
+export function listBrowsers(): Promise<LiveBrowser[]> {
+  return invoke("list_browsers");
+}
+
+/// The app-wide browser pane setting (`browserView.ts`): `auto`, `chip`,
+/// or null when nobody chose -- absence rather than the default, the font
+/// size's convention.
+export function getPlaywrightPaneOpen(): Promise<string | null> {
+  return invoke("get_playwright_pane_open");
+}
+
+export function setPlaywrightPaneOpen(value: string | null): Promise<void> {
+  return invoke("set_playwright_pane_open", { value });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in

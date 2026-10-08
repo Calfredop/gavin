@@ -53,6 +53,7 @@ import { noteSessionCompression, seedSessionCompression } from "$lib/agents/head
 import { effectiveListForPrimary, withListForPrimary } from "$lib/agents/promptParams";
 import { workspacePatchWithoutProfile } from "$lib/agents/agentsHub";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
+import { normalizePaneOpen, type PaneOpenSetting } from "$lib/panes/browserView";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/core/gavin";
@@ -1470,6 +1471,11 @@ export async function bootstrap(): Promise<void> {
   // itself, and `fetchTools` is a load-once that would never refetch.
   const { initToolListeners } = await import("$lib/orchestration/toolsState");
   unlisteners.push(await initToolListeners());
+  // An agent's browser: the tab's chip, the pane's auto-open and its
+  // frames (`browserViewState.ts`). Dynamically imported for the cycle
+  // reason above: it opens its panes through this module.
+  const { initBrowserViews } = await import("$lib/panes/browserViewState");
+  unlisteners.push(await initBrowserViews());
   // Action-prompt overrides persist on the workspace record; bind the
   // writer so the Tools explorer can save without importing this module
   // at load time (cycle with actionPromptsState ↔ layoutState).
@@ -2008,6 +2014,15 @@ export const headroomDefault = writable<boolean | null>(null);
 /// would stop the Headroom every running agent is talking through.
 export const headroomDefaultKnown = writable(false);
 
+/// The app-wide browser pane setting from config.json (`browserView.ts`),
+/// or null when nobody has chosen -- the same three-state as
+/// `terminalFontSizeDefault`: a workspace with no word of its own falls all
+/// the way through to gavin's default, opening the pane automatically.
+///
+/// Re-fetched on every bootstrap like the others, so it is deliberately not
+/// parked across an HMR remount.
+export const playwrightPaneOpenDefault = writable<PaneOpenSetting | null>(null);
+
 /// The agent profile table: static Rust data, so one fetch is enough.
 /// Best-effort like the rest -- resolveAgentConfig falls back to
 /// claude-code's defaults if this never arrives.
@@ -2061,6 +2076,13 @@ export async function loadAppSettings(): Promise<void> {
     backend
       .getCustomResumeArgs()
       .then((args) => customResumeArgsDefault.set(args))
+      .catch(() => {}),
+
+    // Normalized on the way in, like the font size: a word this build does
+    // not know reads as "no setting", so a workspace still inherits.
+    backend
+      .getPlaywrightPaneOpen()
+      .then((value) => playwrightPaneOpenDefault.set(normalizePaneOpen(value)))
       .catch(() => {}),
 
     // Normalized on the way in for the same reason: config.json is a file
@@ -2891,6 +2913,32 @@ export async function setWorkspaceFontSize(
   await saveWorkspaceSettings(workspaceId, { terminalFontSize: normalized });
 }
 
+/// The app-wide browser pane setting (`browserView.ts`). Machine-local like
+/// the font size, so it goes straight to config.json through Tauri and
+/// never touches the daemon. Live: every workspace that inherits resolves
+/// against it when its next browser launches.
+///
+/// Null clears the setting rather than storing "auto", which is what puts
+/// every workspace that inherits back on gavin's default.
+export async function setPlaywrightPaneOpenDefault(value: PaneOpenSetting | null): Promise<void> {
+  try {
+    await backend.setPlaywrightPaneOpen(value);
+    playwrightPaneOpenDefault.set(value);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's own browser pane setting, or null to inherit the
+/// app-wide one. A workspace setting like the font size, written through
+/// `set_workspace_settings` and never the layout save.
+export async function setWorkspacePlaywrightPaneOpen(
+  workspaceId: string,
+  value: PaneOpenSetting | null
+): Promise<void> {
+  await saveWorkspaceSettings(workspaceId, { playwrightPaneOpen: value });
+}
+
 /// The app-wide `custom` resume flag. Null clears it back to "no resume
 /// for custom", the same shape `setTerminalFontSizeDefault` takes.
 export async function setCustomResumeArgsDefault(args: string | null): Promise<void> {
@@ -3524,6 +3572,55 @@ export function openFollowUpsInSplit(
   });
 }
 
+/// An agent's browser, live, split beside the terminal it belongs to
+/// (`browserView.ts`). Keyed by the session like the follow-up queue, and
+/// deduped the same way: one browser pane per session per page.
+///
+/// Unlike the chips' opens it is also reached with nobody pressing
+/// anything -- the browser's first frame, in a workspace set to open it
+/// automatically -- so it finds the page that HOLDS the session rather than
+/// assuming the active one, and takes the focus only when `focus` says a
+/// human asked: a pane appearing must not take the keyboard from someone
+/// typing in another one. Resolves whether a pane is open beside the
+/// session now: false when no page in this window holds the session (a
+/// workspace's main agent lives outside every page tree).
+export async function openBrowserInSplit(sessionId: string, focus: boolean): Promise<boolean> {
+  const state = get(layoutState);
+  const found = workspace.findSessionLocation(state, sessionId);
+  const page = found
+    ? state.workspaces.find((w) => w.id === found.workspaceId)?.pages.find((p) => p.id === found.pageId)
+    : undefined;
+  if (!found || !page) return false;
+  const existing = Object.entries(state.cardTabsById).find(
+    ([id, tab]) =>
+      tab.view === "browser" && tab.sessionId === sessionId && layout.findLeafPath(page.layout, id) !== null
+  );
+  if (existing) {
+    if (focus) await switchToTab(existing[0]);
+    return true;
+  }
+  const tabId = crypto.randomUUID();
+  const tab: CardTab = { workspaceId: found.workspaceId, path: "", view: "browser", sessionId };
+  const newTree = layout.splitLeaf(page.layout, sessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree);
+  const data = focus ? workspace.setPageFocus(withTree, found.workspaceId, found.pageId, tabId) : withTree;
+  const cardTabsById = { ...state.cardTabsById, [tabId]: tab };
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    cardTabsById,
+    ...(focus ? { focusedSessionId: tabId } : {}),
+  }));
+  try {
+    await backend.setCardTabs(cardTabsById);
+  } catch (e) {
+    setError(String(e));
+    return false;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return true;
+}
+
 /// The body both of those share: dedupe, split, record, persist.
 async function openViewTabInSplit(anchorSessionId: string, tab: CardTab): Promise<void> {
   const state = get(layoutState);
@@ -3718,15 +3815,18 @@ export function handleSessionExited(
   // sides agreeing without needing a push the daemon has no writer left
   // to send on.
   handleQueuedInputsChanged(sessionId, []);
-  // And the pane that was showing it, for the same reason: a follow-up
-  // queue tab is the one view tab whose subject is a SESSION, so once
-  // that session is gone the pane has nothing left to be about -- an
-  // empty list and a compose box that would write into a session id the
-  // daemon no longer knows. Fired rather than awaited so this function
-  // keeps its synchronous contract; closeSession re-reads the store, so
-  // it sees the tree this call is about to leave behind.
+  // And the panes that were showing it, for the same reason: a follow-up
+  // queue tab and a browser tab are the view tabs whose subject is a
+  // SESSION, so once that session is gone the pane has nothing left to be
+  // about -- an empty list and a compose box that would write into a
+  // session id the daemon no longer knows, or a browser that died with
+  // it. Fired rather than awaited so this function keeps its synchronous
+  // contract; closeSession re-reads the store, so it sees the tree this
+  // call is about to leave behind.
   for (const [tabId, tab] of Object.entries(get(layoutState).cardTabsById)) {
-    if (tab.view === "followups" && tab.sessionId === sessionId) void closeSession(tabId);
+    if ((tab.view === "followups" || tab.view === "browser") && tab.sessionId === sessionId) {
+      void closeSession(tabId);
+    }
   }
   if (!opts.force && retainedOnExit.has(sessionId)) {
     // Leave the tab and its xterm alone. The exit code is already in

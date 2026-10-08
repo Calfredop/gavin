@@ -117,6 +117,7 @@ describe("reading the settings", () => {
         "invoke get_custom_resume_args",
         "invoke get_git_tracking_default",
         "invoke get_launch_config",
+        "invoke get_playwright_pane_open",
         "invoke get_require_review",
         "invoke get_terminal_font_size",
         "invoke get_theme_pref",

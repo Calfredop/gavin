@@ -49,6 +49,9 @@ export interface DemoSettings {
   requireReview: boolean | null;
   gitTracking: boolean | null;
   headroom: boolean | null;
+  /// When an agent's browser pane opens (`browserView.ts`): "auto",
+  /// "chip", or null for gavin's default.
+  playwrightPaneOpen: string | null;
   customResumeArgs: string | null;
   agentModels: Record<string, string>;
   agentDefaults: AgentDefaults;
@@ -354,6 +357,7 @@ export function sampleSettings(): DemoSettings {
     requireReview: null,
     gitTracking: null,
     headroom: null,
+    playwrightPaneOpen: null,
     customResumeArgs: null,
     agentModels: {},
     agentDefaults: {

@@ -488,6 +488,20 @@ impl RemoteLink {
         self.tell(&Request::UnwatchGitWorktree { root_path: root.to_string(), cwd: cwd.to_string() })
     }
 
+    /// `WatchBrowser` (v65): a session's browser on the host, streamed
+    /// back as `BrowserFrame` pushes the relay hands to `browser_view`.
+    /// On the streaming connection like the git watch, at the ssh rate
+    /// (`browser_view::REMOTE_FPS`), and with the same lifetime: the host
+    /// ends it with the session or with this connection, and there is no
+    /// unwatch -- `browser_view` keeps it to one per session per link.
+    pub fn watch_browser(&self, session_id: &str) -> anyhow::Result<()> {
+        self.tell(&Request::WatchBrowser {
+            session_id: session_id.to_string(),
+            size: protocol::BrowserViewSize::Desk,
+            max_fps: crate::browser_view::REMOTE_FPS,
+        })
+    }
+
     /// `CreateWorkspacePath` (v42): an empty file, or one directory.
     pub fn create_path(&self, root: &str, path: &str, directory: bool) -> anyhow::Result<()> {
         match self.ask(Request::CreateWorkspacePath {
