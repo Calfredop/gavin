@@ -103,7 +103,10 @@ jobs:
       - name: cargo test --workspace --locked
         # Quoted: a plain YAML scalar can't end in a bare colon, and
         # "--skip gavin::" does. Unquoted, this line fails to parse.
-        run: "cargo test --workspace --locked -- --skip gavin::"
+        # `--no-fail-fast`: cargo otherwise stops at the first red test
+        # binary, and a failure in one crate hid the same failure in
+        # another for weeks -- every binary reports, then the step fails.
+        run: "cargo test --workspace --locked --no-fail-fast -- --skip gavin::"
 
       - name: npm test
         working-directory: app

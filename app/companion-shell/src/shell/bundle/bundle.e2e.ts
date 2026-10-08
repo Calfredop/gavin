@@ -27,7 +27,7 @@ import type { ChannelPort } from "$companion/channel/port";
 /// The desktop's packer and signer, as `stage-companion.mjs` runs them.
 interface Packer {
   pack(files: Array<{ path: string; data: Uint8Array }>): Uint8Array;
-  sign(archive: Uint8Array, seedHex: string, gavinVersion: string): { hash: string; signer: string; size: number };
+  sign(archive: Uint8Array, seedHex: string, gavinVersion: string): { hash: string; signature: string; signer: string; size: number };
   publicKeyOf(seedHex: string): string;
 }
 
@@ -179,7 +179,7 @@ describe("a served bundle against a real Workstation", () => {
     expect([...store.files.keys()]).toEqual([before.hash, upgraded.manifest.hash]);
 
     // A manifest whose signature is not over this archive.
-    const forged = { ...upgraded, manifest: { ...upgraded.manifest, signature: `${"0".repeat(2)}${(upgraded.manifest as { signature: string }).signature.slice(2)}` } };
+    const forged = { ...upgraded, manifest: { ...upgraded.manifest, signature: `${"0".repeat(2)}${upgraded.manifest.signature.slice(2)}` } };
     app.setBundle(forged);
     await expect(readyBundle({ connection: connection()!, store: mapStore(), core: async () => core, trusted: [devKey] })).rejects.toThrow(
       /signature/
