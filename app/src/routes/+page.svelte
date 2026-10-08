@@ -158,12 +158,18 @@
   // workspace AND page it was opened on, and cleared the moment either
   // changes (or the workspace leaves the page for the hub): coming back
   // to a page with a hub section still up front is confusing.
-  let navigatorView = $state<{ workspaceId: string; pageId: string | null; view: string } | null>(null);
+  // The tab showing in the page (its focused session): switching it,
+  // from the strip, the sidebar or the keyboard, also leaves the section.
+  const navigatorFocus = $derived(
+    activeWorkspace?.pages.find((p) => p.id === activeWorkspace.activePageId)?.focusedSessionId ?? null
+  );
+  let navigatorView = $state<{ workspaceId: string; pageId: string | null; focus: string | null; view: string } | null>(null);
   const navigatorViewId = $derived(
     navigatorView &&
       activeView === "terminal" &&
       navigatorView.workspaceId === activeWorkspace?.id &&
-      navigatorView.pageId === (activeWorkspace?.activePageId ?? null)
+      navigatorView.pageId === (activeWorkspace?.activePageId ?? null) &&
+      navigatorView.focus === navigatorFocus
       ? navigatorView.view
       : null
   );
@@ -173,7 +179,7 @@
   const navigatorViewDef = $derived(hubViews.find((v) => v.id === navigatorViewId) ?? null);
   function toggleNavigatorView(id: string): void {
     if (!activeWorkspace) return;
-    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, pageId: activeWorkspace.activePageId ?? null, view: id };
+    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, pageId: activeWorkspace.activePageId ?? null, focus: navigatorFocus, view: id };
   }
   const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
