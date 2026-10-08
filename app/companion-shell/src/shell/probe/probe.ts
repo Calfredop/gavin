@@ -21,6 +21,7 @@ export const PROBE_WORKSTATION: HubWorkstation = {
   demo: false,
   summary: "",
   state: "ready",
+  label: "Ready",
   openable: true,
 };
 

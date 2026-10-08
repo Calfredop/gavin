@@ -1,7 +1,7 @@
 // What the hub knows about each paired Workstation while the Companion is
 // unlocked: whether it can be reached, and what it answered (spec, "The
 // Workstations hub": ready, desktop app not running, or asleep).
-import type { AttentionItem } from "$shell/connection/attention";
+import type { AttentionItem, DesktopReason } from "$shell/connection/attention";
 
 export type LiveState =
   /// No Unlock: nothing is connected.
@@ -10,8 +10,9 @@ export type LiveState =
   /// Connected, and its desktop app answered what is waiting.
   | { state: "ready"; items: AttentionItem[] }
   /// Connected, and nothing answers there: the desktop app is not
-  /// running (ADR 0003).
-  | { state: "desktop-app-not-running" }
+  /// running, or not answering -- `reason` says which, when the
+  /// Workstation is new enough to (ADR 0003).
+  | { state: "desktop-app-not-running"; reason?: DesktopReason }
   /// Its Relay holds no Workstation under its key: the Mac is asleep, or
   /// remote access is off at the desk.
   | { state: "asleep" }
@@ -43,8 +44,8 @@ export function reconnectDelay(failures: number, policy = RECONNECT): number {
 /// cheap; it is also what finds a connection a dead network left open.
 export const ATTENTION_POLL_MS = 15_000;
 
-export function liveLabel(state: LiveStateName): string {
-  switch (state) {
+export function liveLabel(live: LiveState): string {
+  switch (live.state) {
     case "locked":
       return "Locked";
     case "connecting":
@@ -52,7 +53,14 @@ export function liveLabel(state: LiveStateName): string {
     case "ready":
       return "Ready";
     case "desktop-app-not-running":
-      return "Desktop app not running";
+      switch (live.reason) {
+        case "not-answering":
+          return "Desktop app not answering";
+        case "connection-lost":
+          return "Desktop app disconnected";
+        default:
+          return "Desktop app not running";
+      }
     case "asleep":
       return "Asleep";
     case "unreachable":
@@ -76,7 +84,16 @@ export function liveSummary(live: LiveState): string {
         ? "Nothing is waiting on you."
         : `${live.items.length} waiting on you.`;
     case "desktop-app-not-running":
-      return "It is on, but Gavin’s desktop app is not running there, so nothing can answer.";
+      // What to do, not only what is wrong: the three want different
+      // things of the human at the desk.
+      switch (live.reason) {
+        case "not-answering":
+          return "Gavin’s desktop app is open there but did not answer in time. If this lasts, quit and reopen it at the desk.";
+        case "connection-lost":
+          return "Gavin’s desktop app dropped its connection while answering. If it is still open, it reconnects on its own.";
+        default:
+          return "It is on, but Gavin’s desktop app is not running there. Open Gavin at the desk.";
+      }
     case "asleep":
       return "Its Relay has not heard from it: it is asleep, or remote access is off at the desk.";
     case "unreachable":

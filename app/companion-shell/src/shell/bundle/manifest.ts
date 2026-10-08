@@ -53,7 +53,8 @@ export class BundleError extends Error {
 }
 
 /// How long a Workstation has to answer one ask. The desktop answers
-/// from memory; the time is the Relay's.
+/// from memory; the time is the Relay's. The Workstation's own wait for
+/// its desktop (the daemon's `BUNDLE_BUDGET`, 25 s) sits under this.
 export const BUNDLE_ASK_TIMEOUT_MS = 30_000;
 
 const HEX_64 = /^[0-9a-f]{64}$/;

@@ -31,6 +31,18 @@ describe("the attention answer", () => {
     });
   });
 
+  it("reads why the desktop app could not answer, and passes over a reason it has not heard of", () => {
+    for (const reason of ["not-connected", "connection-lost", "not-answering"] as const) {
+      expect(readAttention({ type: "Attention", state: "desktop-app-not-running", items: [], version: 1, reason })).toEqual({
+        state: "desktop-app-not-running",
+        reason,
+      });
+    }
+    expect(readAttention({ type: "Attention", state: "desktop-app-not-running", items: [], version: 1, reason: "asleep-at-the-wheel" })).toEqual({
+      state: "desktop-app-not-running",
+    });
+  });
+
   it("grows by optional fields: an unknown field is ignored, an unknown kind kept, an unknown target dropped", () => {
     const answer = readAttention({
       type: "Attention",

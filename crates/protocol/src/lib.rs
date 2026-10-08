@@ -31,7 +31,8 @@ pub mod remote_commands;
 pub mod bin_dirs;
 
 pub use attention::{
-    AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
+    AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
+    ATTENTION_API_VERSION,
 };
 pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
@@ -3127,10 +3128,15 @@ pub enum Response {
     /// `version` is the attention API version of this answer. New optional
     /// fields may be added later; an older reader ignores ones it has
     /// never heard of.
+    ///
+    /// `reason` says why, beside `DesktopAppNotRunning`, and is absent
+    /// beside `Ready` -- and from a daemon older than it.
     Attention {
         state: WorkstationState,
         items: Vec<AttentionItem>,
         version: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<NotRunningReason>,
     },
 
     /// Push to the desktop's forwarding connection (v55): build the
@@ -3158,6 +3164,10 @@ pub enum Response {
         offset: u64,
         #[serde(default)]
         data: String,
+        /// Why nothing can serve it, beside `DesktopAppNotRunning`; as on
+        /// `Attention`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<NotRunningReason>,
     },
 
     /// Push to the desktop's forwarding connection (v56): answer with
@@ -5559,13 +5569,28 @@ mod tests {
             "priority": "high",
         });
         match serde_json::from_value::<Response>(json).unwrap() {
-            Response::Attention { state, items, version } => {
+            Response::Attention { state, items, version, reason } => {
                 assert_eq!(state, WorkstationState::Ready);
                 assert!(items.is_empty());
                 assert_eq!(version, 1);
+                assert_eq!(reason, None);
             }
             other => panic!("expected Attention, got {other:?}"),
         }
+
+        // Why the desktop could not answer rides beside the state, and
+        // only there: a Ready answer says nothing of it.
+        let absent = Response::Attention {
+            state: WorkstationState::DesktopAppNotRunning,
+            items: vec![],
+            version: 1,
+            reason: Some(NotRunningReason::NotAnswering),
+        };
+        let v = serde_json::to_value(&absent).unwrap();
+        assert_eq!(v["state"], "desktop-app-not-running");
+        assert_eq!(v["reason"], "not-answering");
+        let ready = Response::Attention { state: WorkstationState::Ready, items: vec![], version: 1, reason: None };
+        assert!(serde_json::to_value(&ready).unwrap().get("reason").is_none());
 
         let forward = Response::ForwardAttention {
             call_id: 3,
@@ -5627,13 +5652,15 @@ mod tests {
             }
             other => panic!("expected CompanionBundle, got {other:?}"),
         }
-        // With no desktop: a state, and nothing else.
+        // With no desktop: a state, and nothing else -- the reason too,
+        // from a daemon that says one.
         let json = serde_json::json!({ "type": "CompanionBundle", "version": 1, "state": "desktop-app-not-running" });
         match serde_json::from_value::<Response>(json).unwrap() {
-            Response::CompanionBundle { state, manifest, data, .. } => {
+            Response::CompanionBundle { state, manifest, data, reason, .. } => {
                 assert_eq!(state, WorkstationState::DesktopAppNotRunning);
                 assert_eq!(manifest, None);
                 assert_eq!(data, "");
+                assert_eq!(reason, None);
             }
             other => panic!("expected CompanionBundle, got {other:?}"),
         }

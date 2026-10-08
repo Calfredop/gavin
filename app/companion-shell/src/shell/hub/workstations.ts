@@ -20,6 +20,8 @@ export interface HubWorkstation {
   /// The line under the name.
   summary: string;
   state: WorkstationState;
+  /// The state, in words.
+  label: string;
   /// Whether tapping it opens its UI: the Demo always; a paired one when
   /// it is ready, since its desktop app serves the bundle and answers it.
   openable: boolean;
@@ -33,6 +35,7 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   demo: DEMO.workstation.demo,
   summary: "Sample workspaces, cards and agents to explore. Nothing to pair.",
   state: "ready",
+  label: liveLabel({ state: "ready", items: [] }),
   openable: true,
 };
 
@@ -53,15 +56,12 @@ export function hubWorkstations(
         demo: false,
         summary: liveSummary(state),
         state: state.state,
+        label: liveLabel(state),
         openable: state.state === "ready",
       };
     }),
     DEMO_WORKSTATION,
   ];
-}
-
-export function stateLabel(state: WorkstationState): string {
-  return liveLabel(state);
 }
 
 /// A Workstation's id becomes a host name in its bundle's origin. Anything

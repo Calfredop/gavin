@@ -1154,8 +1154,10 @@ fn the_attention_request_returns_the_items_the_stand_in_reports() {
             state,
             items: got,
             version,
+            reason,
         } => {
             assert_eq!(state, protocol::WorkstationState::Ready);
+            assert_eq!(reason, None);
             assert_eq!(version, protocol::ATTENTION_API_VERSION);
             assert_eq!(got, items);
         }
@@ -1196,12 +1198,78 @@ fn the_attention_request_reports_desktop_app_not_running_when_the_stand_in_is_ab
             state,
             items,
             version,
+            reason,
         } => {
             assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert_eq!(reason, Some(protocol::NotRunningReason::NotConnected));
             assert!(items.is_empty());
             assert_eq!(version, protocol::ATTENTION_API_VERSION);
         }
         other => panic!("expected Attention, got {other:?}"),
+    }
+}
+
+/// A desk whose forwarding connection drops and comes back -- the app
+/// reconnected, or its forwarding loop redialled -- is Ready again on the
+/// Device's next ask, with nothing restarted. In between, the Device is
+/// told that no desktop app is connected, and the daemon's log says when
+/// each happened.
+#[test]
+fn a_desk_whose_forwarding_connection_dropped_and_came_back_is_ready_again() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+    let mut ask = || {
+        match connection
+            .request(&Request::GetAttention { version: protocol::ATTENTION_API_VERSION }, SOON)
+            .unwrap()
+        {
+            Response::Attention { state, items, reason, .. } => (state, items, reason),
+            other => panic!("expected Attention, got {other:?}"),
+        }
+    };
+    let items = vec![protocol::AttentionItem {
+        id: "waiting:s1".into(),
+        workspace: "ws-1".into(),
+        kind: protocol::AttentionKind::Waiting,
+        text: "agent is asking".into(),
+        target: protocol::AttentionTarget::Session { id: "s1".into() },
+    }];
+
+    let first = StandIn::answering_with_attention(workstation.open_forwarding(), serde_json::json!(null), items.clone());
+    assert_eq!(ask(), (protocol::WorkstationState::Ready, items.clone(), None));
+
+    drop(first);
+    // The daemon hears the close on the connection's own thread; an ask
+    // that races it is told the connection was lost, and the next one
+    // that nothing is connected.
+    let deadline = Instant::now() + SOON;
+    loop {
+        let (state, got, reason) = ask();
+        assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+        assert!(got.is_empty());
+        if reason == Some(protocol::NotRunningReason::NotConnected) {
+            break;
+        }
+        assert_eq!(reason, Some(protocol::NotRunningReason::ConnectionLost));
+        assert!(Instant::now() < deadline, "the dropped connection was never noticed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let _second = StandIn::answering_with_attention(workstation.open_forwarding(), serde_json::json!(null), items.clone());
+    assert_eq!(ask(), (protocol::WorkstationState::Ready, items, None));
+
+    let log = workstation.log();
+    for said in [
+        "registered; the desktop app is connected",
+        "closed; no desktop app is connected now",
+        "asked for attention with no desktop app connected",
+    ] {
+        assert_eq!(log.matches(said).count(), if said.starts_with("registered") { 2 } else { 1 }, "{said:?} in:\n{log}");
     }
 }
 
@@ -1247,7 +1315,7 @@ fn the_companion_bundle_is_served_in_chunks_and_verifies() {
             )
             .unwrap()
         {
-            Response::CompanionBundle { version, state, manifest, offset, data } => {
+            Response::CompanionBundle { version, state, manifest, offset, data, .. } => {
                 assert_eq!(version, protocol::COMPANION_BUNDLE_API_VERSION);
                 assert_eq!(state, protocol::WorkstationState::Ready);
                 (manifest.expect("a manifest"), offset, companion_bundle::decode_chunk(&data).unwrap())
@@ -1326,8 +1394,9 @@ fn the_companion_bundle_says_when_there_is_none_to_serve() {
 
     // No forwarding connection.
     match ask(&mut connection) {
-        Response::CompanionBundle { state, manifest, data, .. } => {
+        Response::CompanionBundle { state, manifest, data, reason, .. } => {
             assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert_eq!(reason, Some(protocol::NotRunningReason::NotConnected));
             assert!(manifest.is_none());
             assert!(data.is_empty());
         }

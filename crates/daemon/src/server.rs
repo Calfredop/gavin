@@ -1673,16 +1673,66 @@ pub struct SessionManager {
     /// The desktop's forwarding connection (v54), if any: the one that
     /// Hello'd as `ConnectionKind::Forward`. At most one -- two desks
     /// both answering the same invoke would run every command twice.
-    forwarding: Mutex<Option<(u64, Arc<Mutex<Stream>>)>>,
+    forwarding: Mutex<Option<ForwardingDesk>>,
     next_forwarding: AtomicU64,
     /// Hands out `ForwardCommand.call_id`.
     next_forward_call: AtomicU64,
-    /// Waiters for a `ForwardResult`, keyed by that call id.
-    pending_forwards: Mutex<HashMap<u64, std::sync::mpsc::SyncSender<ForwardOutcome>>>,
+    /// Waiters for a `ForwardResult`, keyed by that call id, each beside
+    /// the token of the forwarding connection it was written to -- so a
+    /// connection that ends fails its own waiters and not a newer one's.
+    pending_forwards: Mutex<HashMap<u64, (u64, std::sync::mpsc::SyncSender<ForwardOutcome>)>>,
+    /// The longest any forwarded ask waits for the desktop's answer:
+    /// `FORWARD_BUDGET`, a command's. A field rather than a constant so
+    /// the tests need not wait a minute; the shorter budgets are capped
+    /// by it.
+    forward_budget: Duration,
+    /// Whether "no desktop app is connected" has been logged since the
+    /// last one connected: a Device asks every few seconds, and the log
+    /// wants the gap, not every ask in it.
+    said_no_desk: AtomicBool,
     /// Device connections listening for a desktop event name (v54).
     /// Each entry carries the device-connection token so a Drop clears
     /// only that connection's listens.
     event_subscribers: Mutex<HashMap<String, Vec<(u64, Arc<Mutex<Stream>>)>>>,
+}
+
+/// How long a forwarded command waits for the desktop. Generous on
+/// purpose: a command can be a git operation, and one cut short tells the
+/// Device the desk is not answering when it is only slow.
+const FORWARD_BUDGET: Duration = Duration::from_secs(60);
+
+/// How long an attention ask waits. The desk answers it from what it
+/// already holds, so this is long; and it is under the shell's own wait
+/// for the answer (`ATTENTION_TIMEOUT_MS`, 10 s), so a desk that does not
+/// answer reaches the phone as "not answering" instead of the phone
+/// giving up on the whole connection first.
+const ATTENTION_BUDGET: Duration = Duration::from_secs(8);
+
+/// How long a bundle ask waits: under the shell's 30 s for one chunk
+/// (`BUNDLE_ASK_TIMEOUT_MS`), for the same reason.
+const BUNDLE_BUDGET: Duration = Duration::from_secs(25);
+
+/// The desktop's forwarding connection, as the daemon holds it.
+struct ForwardingDesk {
+    token: u64,
+    writer: Arc<Mutex<Stream>>,
+    /// A clone held only to shut the connection when a newer one takes
+    /// its place, without waiting on `writer`'s mutex.
+    stream: Stream,
+}
+
+/// What a Device's forwarded command is told when its desktop could not
+/// be asked. The human reads it as it stands.
+fn desktop_unreachable(reason: protocol::NotRunningReason) -> &'static str {
+    match reason {
+        protocol::NotRunningReason::NotConnected => "gavin-daemon: desktop app not running",
+        protocol::NotRunningReason::ConnectionLost => {
+            "gavin-daemon: the desktop app's connection dropped before it answered"
+        }
+        protocol::NotRunningReason::NotAnswering => {
+            "gavin-daemon: the desktop app is open but did not answer in time"
+        }
+    }
 }
 
 /// What the desktop answered for one forwarded call — or that it went
@@ -1820,14 +1870,47 @@ struct ForwardingSlot<'a> {
 
 impl Drop for ForwardingSlot<'_> {
     fn drop(&mut self) {
-        {
+        let was_current = {
             let mut slot = self.manager.forwarding.lock().unwrap();
-            if slot.as_ref().is_some_and(|(t, _)| *t == self.token) {
+            let current = slot.as_ref().is_some_and(|desk| desk.token == self.token);
+            if current {
                 *slot = None;
             }
-        }
-        self.manager.fail_pending_forwards();
+            current
+        };
+        let failed = self.manager.fail_pending_forwards(self.token);
+        forwarding_log(&format!(
+            "connection {} closed{}{}",
+            self.token,
+            if was_current { "; no desktop app is connected now" } else { " (a newer one had taken its place)" },
+            if failed == 0 { String::new() } else { format!("; {failed} asks waiting on it fail") },
+        ));
     }
+}
+
+/// One line about the desktop's forwarding connection, stamped with the
+/// time: what these say is mostly WHEN -- that the desk went away at
+/// 16:00, and the phone said "not running" from then on.
+fn forwarding_log(line: &str) {
+    eprintln!("gavin-daemon: {} forwarding: {line}", utc_stamp(std::time::SystemTime::now()));
+}
+
+/// `t` as `2026-10-08T14:05:03Z`.
+fn utc_stamp(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's
+    // `civil_from_days`), which is all this needs a calendar crate for.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rest / 3_600, rest % 3_600 / 60, rest % 60)
 }
 
 /// Removes a connection's `app_connections` entry when its thread ends.
@@ -1917,6 +2000,8 @@ impl SessionManager {
             next_forwarding: AtomicU64::new(0),
             next_forward_call: AtomicU64::new(0),
             pending_forwards: Mutex::new(HashMap::new()),
+            forward_budget: FORWARD_BUDGET,
+            said_no_desk: AtomicBool::new(false),
             event_subscribers: Mutex::new(HashMap::new()),
         }
     }
@@ -2210,9 +2295,24 @@ impl SessionManager {
 
     /// Registers the desktop's forwarding connection (v54). Replaces any
     /// previous one: two desks must not both answer the same invoke.
-    fn register_forwarding(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+    ///
+    /// The one replaced is shut, not just forgotten. The desk redials a
+    /// forwarding connection that ends, so a loop from before an app's
+    /// reconnect can register over the live one; left open, the live one
+    /// would never learn it no longer answers anything, and once the old
+    /// one closed nothing would be registered at all. Shut, it redials
+    /// and takes the slot back.
+    fn register_forwarding(&self, writer: Arc<Mutex<Stream>>, stream: Stream) -> u64 {
         let token = self.next_forwarding.fetch_add(1, Ordering::SeqCst);
-        *self.forwarding.lock().unwrap() = Some((token, writer));
+        let replaced = self.forwarding.lock().unwrap().replace(ForwardingDesk { token, writer, stream });
+        self.said_no_desk.store(false, Ordering::SeqCst);
+        match replaced {
+            Some(old) => {
+                let _ = old.stream.shutdown(Shutdown::Both);
+                forwarding_log(&format!("connection {token} registered, in place of connection {}", old.token));
+            }
+            None => forwarding_log(&format!("connection {token} registered; the desktop app is connected")),
+        }
         token
     }
 
@@ -2222,11 +2322,67 @@ impl SessionManager {
         !self.app_connections.lock().unwrap().is_empty()
     }
 
-    /// Fail every forwarded call still waiting: the desktop went away.
-    fn fail_pending_forwards(&self) {
-        let pending: Vec<_> = self.pending_forwards.lock().unwrap().drain().map(|(_, tx)| tx).collect();
-        for tx in pending {
+    /// Fail every forwarded call still waiting on forwarding connection
+    /// `token`: it went away. A newer connection's calls are left alone.
+    fn fail_pending_forwards(&self, token: u64) -> usize {
+        let failed: Vec<_> = {
+            let mut pending = self.pending_forwards.lock().unwrap();
+            let calls: Vec<u64> =
+                pending.iter().filter(|(_, (to, _))| *to == token).map(|(call, _)| *call).collect();
+            calls.into_iter().filter_map(|call| pending.remove(&call)).map(|(_, tx)| tx).collect()
+        };
+        for tx in &failed {
             let _ = tx.send(ForwardOutcome::DesktopGone);
+        }
+        failed.len()
+    }
+
+    /// Hands `what` to the desktop's forwarding connection -- `push` is
+    /// given the call id -- and waits for its answer.
+    ///
+    /// Every way that fails is a reason the Device is told, and a line in
+    /// the log: the three used to read alike at both ends, and the one
+    /// time it mattered nothing said which it was.
+    fn ask_desktop(
+        &self,
+        what: &str,
+        budget: Duration,
+        push: impl FnOnce(u64) -> Response,
+    ) -> Result<ForwardOutcome, protocol::NotRunningReason> {
+        let budget = budget.min(self.forward_budget);
+        let (token, writer) = {
+            let slot = self.forwarding.lock().unwrap();
+            match slot.as_ref() {
+                Some(desk) => (desk.token, Arc::clone(&desk.writer)),
+                None => {
+                    if !self.said_no_desk.swap(true, Ordering::SeqCst) {
+                        forwarding_log(&format!(
+                            "asked for {what} with no desktop app connected; answering not running until one connects"
+                        ));
+                    }
+                    return Err(protocol::NotRunningReason::NotConnected);
+                }
+            }
+        };
+        let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.pending_forwards.lock().unwrap().insert(call_id, (token, tx));
+        if let Err(e) = write_message(&mut *writer.lock().unwrap(), &push(call_id)) {
+            self.pending_forwards.lock().unwrap().remove(&call_id);
+            forwarding_log(&format!("could not ask connection {token} for {what}: {e:#}"));
+            return Err(protocol::NotRunningReason::ConnectionLost);
+        }
+        match rx.recv_timeout(budget) {
+            Ok(ForwardOutcome::DesktopGone) => {
+                forwarding_log(&format!("connection {token} closed before answering {what}"));
+                Err(protocol::NotRunningReason::ConnectionLost)
+            }
+            Ok(outcome) => Ok(outcome),
+            Err(_) => {
+                self.pending_forwards.lock().unwrap().remove(&call_id);
+                forwarding_log(&format!("connection {token} did not answer {what} within {budget:?}"));
+                Err(protocol::NotRunningReason::NotAnswering)
+            }
         }
     }
 
@@ -2241,44 +2397,12 @@ impl SessionManager {
                 message: format!("gavin-daemon: remote role may not invoke `{command}`"),
             },
             Some(protocol::RemoteAllowance::Allowed) => {
-                let writer = {
-                    let slot = self.forwarding.lock().unwrap();
-                    match slot.as_ref() {
-                        Some((_, w)) => Arc::clone(w),
-                        None => {
-                            return Response::Error {
-                                message: "gavin-daemon: desktop app not running".into(),
-                            };
-                        }
-                    }
-                };
-                let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
-                let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                self.pending_forwards.lock().unwrap().insert(call_id, tx);
-                let push = Response::ForwardCommand {
-                    call_id,
-                    command: command.to_string(),
-                    args,
-                };
-                if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
-                    self.pending_forwards.lock().unwrap().remove(&call_id);
-                    return Response::Error {
-                        message: "gavin-daemon: desktop app not running".into(),
-                    };
-                }
-                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-                    Ok(ForwardOutcome::Done { value, error }) => {
-                        Response::DesktopResult { value, error }
-                    }
-                    Ok(ForwardOutcome::Attention { .. })
-                    | Ok(ForwardOutcome::Bundle { .. })
-                    | Ok(ForwardOutcome::DesktopGone)
-                    | Err(_) => {
-                        self.pending_forwards.lock().unwrap().remove(&call_id);
-                        Response::Error {
-                            message: "gavin-daemon: desktop app not running".into(),
-                        }
-                    }
+                let what = format!("`{command}`");
+                let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
+                match self.ask_desktop(&what, FORWARD_BUDGET, push) {
+                    Ok(ForwardOutcome::Done { value, error }) => Response::DesktopResult { value, error },
+                    Ok(_) => Response::Error { message: "gavin-daemon: the desktop app answered something else".into() },
+                    Err(reason) => Response::Error { message: desktop_unreachable(reason).into() },
                 }
             }
         }
@@ -2286,63 +2410,35 @@ impl SessionManager {
 
     /// Deliver a `ForwardResult` to the waiter that owns `call_id`.
     fn complete_forward(&self, call_id: u64, value: Option<serde_json::Value>, error: Option<String>) {
-        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+        if let Some((_, tx)) = self.pending_forwards.lock().unwrap().remove(&call_id) {
             let _ = tx.send(ForwardOutcome::Done { value, error });
         }
     }
 
     /// Deliver an `AttentionResult` to the waiter that owns `call_id`.
     fn complete_attention(&self, call_id: u64, items: Vec<protocol::AttentionItem>) {
-        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+        if let Some((_, tx)) = self.pending_forwards.lock().unwrap().remove(&call_id) {
             let _ = tx.send(ForwardOutcome::Attention { items });
         }
     }
 
     /// Ask the desktop what is waiting; with no forwarding connection,
-    /// answer the "desktop app not running" state yourself (ADR 0005).
+    /// answer the "desktop app not running" state yourself (ADR 0005),
+    /// and say why.
     fn get_attention(&self, version: u32) -> Response {
-        let writer = {
-            let slot = self.forwarding.lock().unwrap();
-            match slot.as_ref() {
-                Some((_, w)) => Arc::clone(w),
-                None => {
-                    return Response::Attention {
-                        state: protocol::WorkstationState::DesktopAppNotRunning,
-                        items: vec![],
-                        version,
-                    };
-                }
-            }
-        };
-        let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        self.pending_forwards.lock().unwrap().insert(call_id, tx);
-        let push = Response::ForwardAttention { call_id, version };
-        if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
-            self.pending_forwards.lock().unwrap().remove(&call_id);
-            return Response::Attention {
-                state: protocol::WorkstationState::DesktopAppNotRunning,
-                items: vec![],
-                version,
-            };
-        }
-        match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        match self.ask_desktop("attention", ATTENTION_BUDGET, |call_id| Response::ForwardAttention { call_id, version }) {
             Ok(ForwardOutcome::Attention { items }) => Response::Attention {
                 state: protocol::WorkstationState::Ready,
                 items,
                 version,
+                reason: None,
             },
-            Ok(ForwardOutcome::Done { .. })
-            | Ok(ForwardOutcome::Bundle { .. })
-            | Ok(ForwardOutcome::DesktopGone)
-            | Err(_) => {
-                self.pending_forwards.lock().unwrap().remove(&call_id);
-                Response::Attention {
-                    state: protocol::WorkstationState::DesktopAppNotRunning,
-                    items: vec![],
-                    version,
-                }
-            }
+            outcome => Response::Attention {
+                state: protocol::WorkstationState::DesktopAppNotRunning,
+                items: vec![],
+                version,
+                reason: Some(outcome.err().unwrap_or(protocol::NotRunningReason::NotAnswering)),
+            },
         }
     }
 
@@ -2354,7 +2450,7 @@ impl SessionManager {
         offset: u64,
         data: String,
     ) {
-        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+        if let Some((_, tx)) = self.pending_forwards.lock().unwrap().remove(&call_id) {
             let _ = tx.send(ForwardOutcome::Bundle { manifest, offset, data });
         }
     }
@@ -2368,44 +2464,25 @@ impl SessionManager {
     /// the cap is this wire's, and a Device that asks for more gets the
     /// most one answer carries.
     fn get_companion_bundle(&self, version: u32, offset: u64, length: u64) -> Response {
-        let absent = || Response::CompanionBundle {
-            version,
-            state: protocol::WorkstationState::DesktopAppNotRunning,
-            manifest: None,
-            offset: 0,
-            data: String::new(),
-        };
-        let writer = {
-            let slot = self.forwarding.lock().unwrap();
-            match slot.as_ref() {
-                Some((_, w)) => Arc::clone(w),
-                None => return absent(),
-            }
-        };
         let length = length.min(protocol::companion_bundle::BUNDLE_CHUNK_MAX);
-        let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        self.pending_forwards.lock().unwrap().insert(call_id, tx);
-        let push = Response::ForwardBundle { call_id, version, offset, length };
-        if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
-            self.pending_forwards.lock().unwrap().remove(&call_id);
-            return absent();
-        }
-        match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        let push = |call_id| Response::ForwardBundle { call_id, version, offset, length };
+        match self.ask_desktop("the Companion bundle", BUNDLE_BUDGET, push) {
             Ok(ForwardOutcome::Bundle { manifest, offset, data }) => Response::CompanionBundle {
                 version,
                 state: protocol::WorkstationState::Ready,
                 manifest,
                 offset,
                 data,
+                reason: None,
             },
-            Ok(ForwardOutcome::Done { .. })
-            | Ok(ForwardOutcome::Attention { .. })
-            | Ok(ForwardOutcome::DesktopGone)
-            | Err(_) => {
-                self.pending_forwards.lock().unwrap().remove(&call_id);
-                absent()
-            }
+            outcome => Response::CompanionBundle {
+                version,
+                state: protocol::WorkstationState::DesktopAppNotRunning,
+                manifest: None,
+                offset: 0,
+                data: String::new(),
+                reason: Some(outcome.err().unwrap_or(protocol::NotRunningReason::NotAnswering)),
+            },
         }
     }
 
@@ -7122,7 +7199,7 @@ fn serve_connection(
             // commands and it hands back results and events. Not a push
             // connection -- device pushes stay on Push.
             if identity.role == Role::App && *connection == Some(protocol::ConnectionKind::Forward) {
-                let token = manager.register_forwarding(Arc::clone(&writer));
+                let token = manager.register_forwarding(Arc::clone(&writer), reader.get_ref().try_clone()?);
                 _forwarding_slot = Some(ForwardingSlot { manager: &manager, token });
             }
             write_message(&mut *writer.lock().unwrap(), &ack)?;
@@ -19001,5 +19078,139 @@ mod tests {
             "resize_session kept the `screens` map locked while it waited for one session's \
              screen, so an Attach for any session stalls behind it"
         );
+    }
+}
+
+/// The desktop's forwarding connection as the daemon holds it: who answers
+/// a Device's ask, and what the Device is told when nobody can.
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+
+    fn manager_with_budget(dir: &tempfile::TempDir, budget: Duration) -> SessionManager {
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let orchestration =
+            crate::orchestration::OrchestrationStore::open(std::path::Path::new(":memory:")).unwrap();
+        let mut manager = SessionManager::new(registry, kanban, orchestration);
+        manager.forward_budget = budget;
+        manager
+    }
+
+    /// Registers a forwarding connection the way a desk's `Hello` does,
+    /// and hands back the desk's end of it.
+    fn desk(manager: &SessionManager) -> (u64, BufReader<Stream>) {
+        let (ours, theirs) = Stream::pair().unwrap();
+        theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let token = manager.register_forwarding(Arc::new(Mutex::new(ours.try_clone().unwrap())), ours);
+        (token, BufReader::new(theirs))
+    }
+
+    /// The call id of the attention ask `desk` was handed.
+    fn asked(desk: &mut BufReader<Stream>) -> u64 {
+        match read_message::<_, Response>(desk).unwrap() {
+            Some(Response::ForwardAttention { call_id, .. }) => call_id,
+            other => panic!("expected an attention ask, got {other:?}"),
+        }
+    }
+
+    fn reason_of(answer: Response) -> Option<protocol::NotRunningReason> {
+        match answer {
+            Response::Attention { state, reason, .. } => {
+                assert_eq!(state == protocol::WorkstationState::Ready, reason.is_none());
+                reason
+            }
+            other => panic!("expected Attention, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_no_desk_connected_the_answer_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotConnected));
+        match manager.get_companion_bundle(1, 0, 0) {
+            Response::CompanionBundle { state, reason, .. } => {
+                assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+                assert_eq!(reason, Some(protocol::NotRunningReason::NotConnected));
+            }
+            other => panic!("expected CompanionBundle, got {other:?}"),
+        }
+    }
+
+    /// A desk that is connected and silent is not "not running": it is
+    /// open and not answering, and the Device is told that instead.
+    #[test]
+    fn a_desk_that_does_not_answer_in_time_is_told_as_not_answering() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, Duration::from_millis(200));
+        let (_token, _desk) = desk(&manager);
+        assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotAnswering));
+        match manager.invoke_desktop("resize_session", serde_json::json!({})) {
+            Response::Error { message } => assert!(message.contains("did not answer in time"), "{message}"),
+            other => panic!("expected an Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_desk_that_goes_away_mid_ask_is_told_as_a_lost_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let (token, mut desk) = desk(&manager);
+        std::thread::scope(|scope| {
+            let answer = scope.spawn(|| manager.get_attention(1));
+            asked(&mut desk);
+            // What the connection's thread does as it ends.
+            drop(ForwardingSlot { manager: &manager, token });
+            assert_eq!(reason_of(answer.join().unwrap()), Some(protocol::NotRunningReason::ConnectionLost));
+        });
+        assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotConnected));
+    }
+
+    /// The desk redials a forwarding connection that ends, so a loop from
+    /// before an app's reconnect can register over the live one. The one
+    /// replaced is shut -- its desk dials again rather than serving
+    /// nothing -- and its closing fails none of the newer one's asks.
+    #[test]
+    fn a_newer_desk_takes_the_slot_and_the_older_one_is_shut_without_failing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let (old_token, mut old_desk) = desk(&manager);
+        let (_new_token, mut new_desk) = desk(&manager);
+        assert!(
+            read_message::<_, Response>(&mut old_desk).unwrap().is_none(),
+            "the replaced desk's connection was shut"
+        );
+
+        std::thread::scope(|scope| {
+            let answer = scope.spawn(|| manager.get_attention(1));
+            let call_id = asked(&mut new_desk);
+            drop(ForwardingSlot { manager: &manager, token: old_token });
+            let items = vec![protocol::AttentionItem {
+                id: "waiting:s1".into(),
+                workspace: "ws-1".into(),
+                kind: protocol::AttentionKind::Waiting,
+                text: "agent is asking".into(),
+                target: protocol::AttentionTarget::Session { id: "s1".into() },
+            }];
+            manager.complete_attention(call_id, items.clone());
+            match answer.join().unwrap() {
+                Response::Attention { state, items: got, reason, .. } => {
+                    assert_eq!(state, protocol::WorkstationState::Ready);
+                    assert_eq!(got, items);
+                    assert_eq!(reason, None);
+                }
+                other => panic!("expected Attention, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn the_log_stamp_is_utc_to_the_second() {
+        let at = |secs| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+        assert_eq!(utc_stamp(at(0)), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_stamp(at(1_791_468_303)), "2026-10-08T14:05:03Z");
+        assert_eq!(utc_stamp(at(1_709_251_199)), "2024-02-29T23:59:59Z");
+        assert_eq!(utc_stamp(at(951_868_800)), "2000-03-01T00:00:00Z");
     }
 }

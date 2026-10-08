@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEMO } from "$companion/demo/sampleData";
 import { keepPairing } from "$shell/hub/paired";
-import { DEMO_WORKSTATION, hubWorkstations, isWorkstationHost, stateLabel } from "$shell/hub/workstations";
+import { DEMO_WORKSTATION, hubWorkstations, isWorkstationHost } from "$shell/hub/workstations";
 
 const paired = keepPairing(
   {
@@ -32,11 +32,11 @@ describe("the Workstations hub's list", () => {
         demo: false,
         summary: "Unlock to connect.",
         state: "locked",
+        label: "Locked",
         openable: false,
       },
       DEMO_WORKSTATION,
     ]);
-    expect(stateLabel("locked")).toBe("Locked");
     expect(DEMO_WORKSTATION.openable).toBe(true);
   });
 
@@ -53,16 +53,16 @@ describe("the Workstations hub's list", () => {
     });
     // Only a ready Workstation opens: its desktop app serves its UI.
     expect(list.slice(0, 3).map((ws) => ws.openable)).toEqual([true, false, false]);
-    expect(list.slice(0, 3).map((ws) => [ws.state, stateLabel(ws.state), ws.summary])).toEqual([
+    expect(list.slice(0, 3).map((ws) => [ws.state, ws.label, ws.summary])).toEqual([
       ["ready", "Ready", "1 waiting on you."],
       [
         "desktop-app-not-running",
         "Desktop app not running",
-        "It is on, but Gavin’s desktop app is not running there, so nothing can answer.",
+        "It is on, but Gavin’s desktop app is not running there. Open Gavin at the desk.",
       ],
       ["asleep", "Asleep", "Its Relay has not heard from it: it is asleep, or remote access is off at the desk."],
     ]);
-    expect(stateLabel("ready")).toBe("Ready");
+    expect(DEMO_WORKSTATION.label).toBe("Ready");
   });
 
   it("gives every listed Workstation an id that can be its bundle's host", () => {

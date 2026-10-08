@@ -149,7 +149,7 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
       return;
     }
     if (!current(t, generation)) return;
-    set(t, answer.state === "ready" ? { state: "ready", items: answer.items } : { state: "desktop-app-not-running" });
+    set(t, answer);
     clearTimer(t);
     t.timer = deps.after(pollMs, () => {
       t.timer = null;

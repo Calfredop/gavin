@@ -4,7 +4,7 @@
   // the bundle's own, so the hub and a Workstation's UI read as one app.
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import { kindLabel, type InboxRow } from "$shell/hub/inbox";
-  import { stateLabel, type HubWorkstation } from "$shell/hub/workstations";
+  import type { HubWorkstation } from "$shell/hub/workstations";
   import type { Snippet } from "svelte";
   import type { VisitState } from "$shell/visit/visit";
 
@@ -105,7 +105,7 @@
               {/if}
               <span class="state state-{ws.state}">
                 <span class="dot" aria-hidden="true"></span>
-                {opening === ws.id ? "Opening…" : stateLabel(ws.state)}
+                {opening === ws.id ? "Opening…" : ws.label}
               </span>
             </span>
             {#if opening === ws.id && openingDetail}

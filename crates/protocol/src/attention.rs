@@ -26,6 +26,25 @@ pub enum WorkstationState {
     DesktopAppNotRunning,
 }
 
+/// Why the daemon could not reach its desktop app, beside a
+/// `DesktopAppNotRunning` answer.
+///
+/// The three look alike in the state, and they ask different things of
+/// the human: an app that is not running wants opening, one that is open
+/// and not answering wants a look. An optional field on the answer
+/// (`reason`), so an older shell reads the state alone, and an older
+/// daemon's answer, which carries none, reads as it always did.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotRunningReason {
+    /// No desktop app is connected to the daemon to ask.
+    NotConnected,
+    /// The desktop app's connection broke while the daemon was asking.
+    ConnectionLost,
+    /// The desktop app is connected and did not answer in time.
+    NotAnswering,
+}
+
 /// Why a waiting item is on the list.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -94,6 +113,13 @@ mod tests {
             serde_json::to_value(WorkstationState::DesktopAppNotRunning).unwrap(),
             serde_json::json!("desktop-app-not-running")
         );
+        for (reason, spelled) in [
+            (NotRunningReason::NotConnected, "not-connected"),
+            (NotRunningReason::ConnectionLost, "connection-lost"),
+            (NotRunningReason::NotAnswering, "not-answering"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), serde_json::json!(spelled));
+        }
         assert_eq!(
             serde_json::to_value(AttentionKind::HumanTest).unwrap(),
             serde_json::json!("human-test")

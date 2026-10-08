@@ -148,7 +148,7 @@ describe("the live hub", () => {
   it("shows a Workstation whose desktop app is not running, one that is asleep and one that is unreachable, and none adds to the inbox", async () => {
     const b = bench();
     const OFFICE = record(3, "Office");
-    b.willConnect(STUDIO, async () => ({ state: "desktop-app-not-running" }));
+    b.willConnect(STUDIO, async () => ({ state: "desktop-app-not-running", reason: "not-answering" }));
     b.willFail(LAPTOP, { outcome: "asleep" });
     b.willFail(OFFICE, { outcome: "unreachable", problem: "Could not reach its Relay." });
     const hub = createLiveHub(b.deps);
@@ -157,7 +157,7 @@ describe("the live hub", () => {
     await settle();
 
     expect(b.latest()).toEqual({
-      [STUDIO.id]: { state: "desktop-app-not-running" },
+      [STUDIO.id]: { state: "desktop-app-not-running", reason: "not-answering" },
       [LAPTOP.id]: { state: "asleep" },
       [OFFICE.id]: { state: "unreachable", problem: "Could not reach its Relay." },
     });
