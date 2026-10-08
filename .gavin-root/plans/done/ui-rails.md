@@ -2,7 +2,7 @@
 order: 36864
 kind: task
 title: [ui] rails
-status: In Progress
+status: Done
 ---
 Make current running step more obvious when in node view mode, and done step status too
 
