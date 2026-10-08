@@ -368,6 +368,17 @@ re-read (`rereadAfterOtherWindowWrote`), so the phone watches the desk run
 what it armed. A card added into the stage a rail is running is started the
 same way: by the desk.
 
+**Organize and Reorganize start an agent, not a rail.** Organize with agent
+sits beside New rail, and a rail's editor offers Reorganize with agent: each
+is the desk's own request (`requestOrganize`, `requestRailReorganize`), the
+same prompt and the same one run per workspace, recorded in the workspace's
+settings so a second press on either side shows the run instead of starting
+another (`agentPresses`, over `orchestrationAgent.ts`'s rules). What the desk
+does to its own tabs and queue is handed in as the phone's
+(`OrchestrationLaunchHost`): the card run's wall and placing
+(`DEVICE_LAUNCH_HOST`), and the run's terminal opened here. A press the desk
+would refuse says why rather than going dead, since a phone has no tooltip.
+
 ## What is here, and what is not
 
 The workspace list, with the Workstation's settings behind the gear in its

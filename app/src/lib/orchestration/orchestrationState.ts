@@ -178,6 +178,7 @@ import {
   resolveAttachmentsForRun,
   revealSession,
   sshLaunchBlocker,
+  type CardLaunchHost,
 } from "$lib/cards/cardRunActions";
 import { mayStartWork, nowStore, pausedWorkspaceKey, launchDecision } from "$lib/agents/agentPauseState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
@@ -3080,12 +3081,31 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 // about back exactly as it read it), so two runs at once do not divide
 // the work, they overwrite each other.
 
+/// Where an Organize or Reorganize meets the surface that asked for it:
+/// a card launch's host (`CardLaunchHost`) without the jump to a card's
+/// session, since there is no card, and with the one step a run of these
+/// adds -- putting the human in front of it. At the desk that is the
+/// desk's tab and queue; a Device hands in its own (companion's
+/// `state/rails.ts`), for the reasons the card launch gives.
+export interface OrchestrationLaunchHost extends Pick<CardLaunchHost, "hold" | "place"> {
+  reveal(sessionId: string): Promise<void>;
+}
+
+const DESK_ORCHESTRATION_HOST: OrchestrationLaunchHost = {
+  hold: (intent) => (holdOrQueue(intent) ? { go: false, error: null } : { go: true }),
+  place: (workspaceId, sessionId) => handleAgentSessionSpawned(workspaceId, sessionId),
+  reveal: async (sessionId) => {
+    await revealSession(sessionId);
+  },
+};
+
 /// Spawns the run, records it, and lands the human in its tab. The error
 /// string is for the tab's own strip; null means it started.
 async function launchOrchestrationAgent(
   workspaceId: string,
   record: Omit<OrchestrationAgentRecord, "sessionId">,
   prompt: string,
+  host: OrchestrationLaunchHost,
   /// The drain calling back in with an intent that has already cleared
   /// the launch wall. Asking again there would re-queue it for ever.
   queued = false
@@ -3117,15 +3137,16 @@ async function launchOrchestrationAgent(
   // AFTER the slot guard above, because "one of these at a time per
   // workspace" is a different rule and refusing is the right answer to
   // it, while a full machine is something to wait out.
-  if (!queued && holdOrQueue({
-    kind: "orchestration",
-    workspaceId,
-    label: record.label,
-    prompt,
-    agentLabel: record.label,
-    railId: record.railId ?? null,
-  })) {
-    return null;
+  if (!queued) {
+    const held = host.hold({
+      kind: "orchestration",
+      workspaceId,
+      label: record.label,
+      prompt,
+      agentLabel: record.label,
+      railId: record.railId ?? null,
+    });
+    if (!held.go) return held.error;
   }
 
   const agent = resolvedAgentFor(workspaceId);
@@ -3146,7 +3167,7 @@ async function launchOrchestrationAgent(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  host.place(workspaceId, sessionId);
   // Written down BEFORE the jump, because the window may not survive the
   // run: an unrecorded session is one the next window has no way to tell
   // apart from any other agent on the Agents page.
@@ -3156,7 +3177,7 @@ async function launchOrchestrationAgent(
   // finishes -- left where they were, the human would be watching a tab
   // that says nothing about the request they just made. Before the
   // rename below, so a failed rename (cosmetic) cannot swallow the jump.
-  await revealSession(sessionId);
+  await host.reveal(sessionId);
   const provisional = provisionalSessionName(record.label);
   if (provisional) await setSessionName(sessionId, provisional);
   return null;
@@ -3169,7 +3190,8 @@ async function launchOrchestrationAgent(
 export function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
-  conflictSummary: string[]
+  conflictSummary: string[],
+  host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
@@ -3181,7 +3203,8 @@ export function requestOrganize(
       conflictSummary,
       mustPromptBody("action:organize", workspaceId),
       mustPromptBody("action:name-tab-first", workspaceId)
-    )
+    ),
+    host
   );
 }
 
@@ -3194,7 +3217,8 @@ export function requestRailReorganize(
   railId: string,
   cards: Map<string, CardEntry>,
   tools: ToolSummary[],
-  conflictSummary: string[]
+  conflictSummary: string[],
+  host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
@@ -3210,7 +3234,8 @@ export function requestRailReorganize(
       conflictSummary,
       mustPromptBody("action:reorganize", workspaceId),
       mustPromptBody("action:name-tab-first", workspaceId)
-    )
+    ),
+    host
   );
 }
 
@@ -3306,6 +3331,7 @@ export async function launchQueuedOrchestrationAgent(
     intent.workspaceId,
     { label: intent.agentLabel, railId: intent.railId },
     intent.prompt,
+    DESK_ORCHESTRATION_HOST,
     true
   );
 }

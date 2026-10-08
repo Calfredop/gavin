@@ -6,9 +6,11 @@
   // (what each rail says) and state/rails.ts (what each press does).
   // Start and Resume arm a rail; the desk runs it.
   import { onMount, tick, untrack } from "svelte";
-  import { ChevronDown, ChevronUp, Pause, Pencil, Play, Plus, RotateCcw, Trash2, X } from "@lucide/svelte";
+  import { ChevronDown, ChevronUp, Pause, Pencil, Play, Plus, RotateCcw, Sparkles, Trash2, X } from "@lucide/svelte";
   import { kanbanState } from "$lib/board/kanbanState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { gavinTrees } from "$lib/core/gavinState";
+  import { daemonCompat } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import { orchestrations, saveErrors, dismissSaveError } from "$lib/orchestration/orchestrationState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -19,11 +21,13 @@
     loadRails,
     moveStage,
     newRail,
+    organizeRails,
     pressRail,
     recoverRails,
     removeStageAsked,
     removeStep,
     renameRail,
+    reorganizeRail,
     resetRailAsked,
     setStageMode,
   } from "$companion/state/rails";
@@ -31,6 +35,7 @@
   import { openCard, openTerminal } from "$companion/state/workstation";
   import { columnAt, scrollBehaviour } from "$companion/surfaces/phoneBoard";
   import {
+    agentPresses,
     cardsToPlace,
     openingRail,
     PRESS_LABEL,
@@ -51,11 +56,22 @@
   const rails = $derived(input ? railRows(input) : []);
   const choices = $derived(input ? cardsToPlace(input) : []);
   const saveError = $derived(shownError($saveErrors[workspace.id], $reachability));
+  // Organize and a rail's Reorganize, by the desk's rules: one agent run
+  // per workspace, and while it goes each press shows it.
+  const agents = $derived(
+    agentPresses({
+      workspace,
+      daemonBlocked: featureBlockedReason($daemonCompat, "orchestration"),
+      unplacedCount: choices.length,
+    })
+  );
 
   /// The rail open for editing, one at a time.
   let editing = $state<string | null>(null);
   /// A press in flight, by rail, so a second tap does not send a second.
   let pressing = $state<string | null>(null);
+  /// An Organize or Reorganize on its way, for the same reason.
+  let asking = $state(false);
   /// The add-a-card picker's two answers, for the rail being edited.
   let picked = $state("");
   let into = $state("");
@@ -79,6 +95,16 @@
       await pressRail(workspace.id, row.id, row.press);
     } finally {
       pressing = null;
+    }
+  }
+
+  async function askAgent(run: () => Promise<string | null>): Promise<void> {
+    if (asking) return;
+    asking = true;
+    try {
+      report(await run());
+    } finally {
+      asking = false;
     }
   }
 
@@ -166,6 +192,16 @@
         <Plus size={16} />
         <span>New rail</span>
       </button>
+      <button
+        type="button"
+        class="action"
+        class:primary={agents.running}
+        disabled={!orch || asking}
+        onclick={() => void askAgent(() => organizeRails(workspace.id, agents.organize))}
+      >
+        <Sparkles size={16} />
+        <span>{agents.organizeLabel}</span>
+      </button>
       <p class="hint">Starting a rail arms it. The desk runs it.</p>
     </div>
 
@@ -217,6 +253,7 @@
     >
       {#each rails as row (row.id)}
         {@const open = editing === row.id}
+        {@const reorganize = agents.reorganize(row.id)}
         <div class="page">
           <section class="rail" aria-label="Rail {row.name}">
             <header class="head">
@@ -374,6 +411,16 @@
               </div>
               <button
                 type="button"
+                class="action reorganize"
+                class:primary={reorganize.kind === "jump"}
+                disabled={asking}
+                onclick={() => void askAgent(() => reorganizeRail(workspace.id, row.id, reorganize))}
+              >
+                <Sparkles size={16} />
+                <span>{reorganize.kind === "jump" ? "Jump to the running agent" : "Reorganize with agent"}</span>
+              </button>
+              <button
+                type="button"
                 class="action danger"
                 onclick={() =>
                   void deleteRailAsked(workspace.id, row.id).then((error) => {
@@ -405,8 +452,9 @@
   }
   .bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: 8px 12px;
     padding: 12px 0 4px;
   }
   .hint {
@@ -430,6 +478,9 @@
   }
   .action.primary {
     border-color: var(--accent);
+  }
+  .action.reorganize {
+    margin-top: 12px;
   }
   .action.danger {
     margin-top: 8px;

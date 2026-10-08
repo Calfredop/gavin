@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
 import { answerDialog, dialogRequest } from "$lib/core/dialog";
+import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
 import { stepStateOf } from "$lib/orchestration/orchestration";
@@ -32,15 +33,18 @@ import {
   loadRails,
   moveStage,
   newRail,
+  organizeRails,
   pressRail,
   removeStageAsked,
   removeStep,
   renameRail,
+  reorganizeRail,
   resetRailAsked,
   setStageMode,
 } from "$companion/state/rails";
-import { connectWorkstation, openWorkspace, showSurface } from "$companion/state/workstation";
-import { railRows } from "$companion/surfaces/phoneRails";
+import { startedHere } from "$companion/state/sessions";
+import { closeTerminal, connectWorkstation, openWorkspace, showSurface, view } from "$companion/state/workstation";
+import { agentPresses, cardsToPlace, railRows } from "$companion/surfaces/phoneRails";
 import { settle } from "$companion/testing/demoBench";
 import { deviceStorage, resetDesktopStores } from "$companion/testing/desktopStores";
 
@@ -360,6 +364,78 @@ describe("editing orchestration", () => {
     const removing = removeStageAsked(DEMO.atlas, "stage-fixes-1");
     await answer(false);
     expect(await removing).toBeNull();
+    expect(wroteSince(demo, at)).toEqual([]);
+  });
+});
+
+describe("organizing with an agent from the phone", () => {
+  /// The presses as the surface reads them, from what the phone holds now.
+  function presses() {
+    const workspace = get(layoutState).workspaces.find((w) => w.id === DEMO.atlas)!;
+    const unplaced = cardsToPlace({
+      orch: plan(),
+      tree: get(gavinTrees)[DEMO.atlas],
+      board: get(kanbanState)[DEMO.atlas],
+    });
+    return agentPresses({ workspace, daemonBlocked: null, unplacedCount: unplaced.length });
+  }
+  const run = () => get(layoutState).workspaces.find((w) => w.id === DEMO.atlas)!.orchestrationAgent;
+
+  it("is the desk's Organize: an agent in the root, recorded as the workspace's run, shown here", async () => {
+    const demo = await visit();
+    const at = demo.received().length;
+    expect(await organizeRails(DEMO.atlas, presses().organize)).toBeNull();
+    await heard();
+
+    const sent = wroteSince(demo, at);
+    const created = sent.find((s) => s.cmd === "create_session")!;
+    expect(created.args).toMatchObject({ cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot });
+    expect(String(created.args.command)).toContain("UNPLACED cards on rails");
+    const sessionId = run()?.sessionId;
+    expect(run()).toEqual({ sessionId, label: "Organize", railId: null });
+    expect(sent).toContainEqual({
+      cmd: "set_workspace_settings",
+      args: { workspaceId: DEMO.atlas, patch: { orchestrationAgent: { sessionId, label: "Organize", railId: null } } },
+    });
+    // The run is the phone's to show and the desk's to place: its
+    // terminal opens here, and the phone only notes it started it.
+    expect(get(view)).toMatchObject({ workspaceId: DEMO.atlas, sessionId });
+    expect(get(startedHere)).toEqual({ [sessionId!]: DEMO.atlas });
+    // An agent was asked to change the plan; the phone changed none of it.
+    expect(sent.map((s) => s.cmd).filter((cmd) => cmd !== "create_session" && DESK_WORK.includes(cmd))).toEqual([]);
+  });
+
+  it("shows the run holding the slot instead of starting a second, from any press", async () => {
+    const demo = await visit();
+    await organizeRails(DEMO.atlas, presses().organize);
+    await heard();
+    const sessionId = run()!.sessionId;
+    closeTerminal();
+    expect(get(view).sessionId).toBeNull();
+
+    const at = demo.received().length;
+    expect(presses().reorganize("rail-fixes").kind).toBe("jump");
+    expect(await reorganizeRail(DEMO.atlas, "rail-fixes", presses().reorganize("rail-fixes"))).toBeNull();
+    expect(await organizeRails(DEMO.atlas, presses().organize)).toBeNull();
+    await heard();
+    expect(wroteSince(demo, at).map((s) => s.cmd)).not.toContain("create_session");
+    expect(get(view)).toMatchObject({ sessionId });
+  });
+
+  it("is a rail's Reorganize from its editor, the run named after the rail", async () => {
+    const demo = await visit();
+    const at = demo.received().length;
+    expect(await reorganizeRail(DEMO.atlas, "rail-fixes", presses().reorganize("rail-fixes"))).toBeNull();
+    await heard();
+    expect(run()).toMatchObject({ label: "Reorganize “fixes”", railId: "rail-fixes" });
+    expect(String(wroteSince(demo, at).find((s) => s.cmd === "create_session")!.args.command)).toContain('reorganize the rail "fixes" — that rail only');
+  });
+
+  it("says why it cannot start, and asks the Workstation nothing", async () => {
+    const demo = await visit();
+    const at = demo.received().length;
+    const blocked = { kind: "blocked", tip: "Nothing is left to place" } as const;
+    expect(await organizeRails(DEMO.atlas, blocked)).toBe("Nothing is left to place");
     expect(wroteSince(demo, at)).toEqual([]);
   });
 });

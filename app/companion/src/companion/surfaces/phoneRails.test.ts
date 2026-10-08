@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
-import { cardsToPlace, openingRail, railRows, railStateText, type RailRow, type RailsInput } from "$companion/surfaces/phoneRails";
+import type { Workspace } from "$lib/core/workspace";
+import {
+  agentPresses,
+  cardsToPlace,
+  openingRail,
+  railRows,
+  railStateText,
+  type RailRow,
+  type RailsInput,
+} from "$companion/surfaces/phoneRails";
 
 function atlas(edit?: (orch: Orchestration) => void): RailsInput {
   const state = sampleState();
@@ -121,5 +130,48 @@ describe("the rail the surface opens on", () => {
 
   it("is the demo's running rail", () => {
     expect(openingRail(railRows(atlas()))).toBe(railRows(atlas())[0].id);
+  });
+});
+
+describe("Organize and a rail's Reorganize", () => {
+  function workspace(edit?: (ws: Workspace) => void): Workspace {
+    const ws = sampleState().workspaces.workspaces.find((w) => w.id === DEMO.atlas)!;
+    edit?.(ws);
+    return ws;
+  }
+  const ready = { daemonBlocked: null, unplacedCount: 2 };
+
+  it("start an agent while no run holds the workspace's slot", () => {
+    const presses = agentPresses({ workspace: workspace(), ...ready });
+    expect(presses.organize.kind).toBe("start");
+    expect(presses.organizeLabel).toBe("Organize with agent…");
+    expect(presses.reorganize("rail-fixes").kind).toBe("start");
+    expect(presses.running).toBe(false);
+  });
+
+  it("show the run holding the slot instead of starting a second, from every press", () => {
+    const presses = agentPresses({
+      workspace: workspace((ws) => {
+        ws.orchestrationAgent = { sessionId: "s-run", label: "Reorganize “fixes”", railId: "rail-fixes" };
+      }),
+      ...ready,
+    });
+    expect(presses.organize.kind).toBe("jump");
+    expect(presses.organizeLabel).toBe("Agent running…");
+    expect(presses.reorganize("rail-fixes")).toMatchObject({ kind: "jump", tip: expect.stringContaining("This rail") });
+    expect(presses.reorganize("rail-other")).toMatchObject({ kind: "jump", tip: expect.stringContaining("fixes") });
+    expect(presses.running).toBe(true);
+  });
+
+  it("say why they cannot start: nothing to place, no root, a daemon too old", () => {
+    expect(agentPresses({ workspace: workspace(), daemonBlocked: null, unplacedCount: 0 }).organize).toMatchObject({
+      kind: "blocked",
+      tip: expect.stringContaining("Nothing is left to place"),
+    });
+    const rootless = agentPresses({ workspace: workspace((ws) => (ws.rootPath = "")), ...ready });
+    expect(rootless.organize).toMatchObject({ kind: "blocked", tip: expect.stringContaining("no root folder") });
+    expect(rootless.reorganize("rail-fixes").kind).toBe("blocked");
+    const old = agentPresses({ workspace: workspace(), daemonBlocked: "Needs a newer daemon", unplacedCount: 2 });
+    expect(old.organize).toEqual({ kind: "blocked", tip: "Needs a newer daemon" });
   });
 });

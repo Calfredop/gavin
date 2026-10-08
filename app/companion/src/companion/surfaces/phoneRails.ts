@@ -31,7 +31,14 @@ import {
   type StageMode,
   type StepState,
 } from "$lib/orchestration/orchestration";
+import {
+  organizeAction,
+  organizeButtonLabel,
+  reorganizeAction,
+  type OrchestrationAgentAction,
+} from "$lib/orchestration/orchestrationAgent";
 import { BUILTIN_TOOLS, findTool } from "$lib/orchestration/orchestrationTools";
+import type { Workspace } from "$lib/core/workspace";
 
 /// The one press that moves a rail, as the desk's header offers it:
 /// Pause while it runs, Resume once paused, Start while idle with work
@@ -180,4 +187,35 @@ export const PRESS_LABEL: Record<RailPress, string> = { start: "Start", resume: 
 /// running, else one paused on the human, else the first.
 export function openingRail(rows: RailRow[]): string | null {
   return (rows.find((r) => r.state === "running") ?? rows.find((r) => r.state === "paused") ?? rows[0])?.id ?? null;
+}
+
+export interface AgentSlotInput {
+  workspace: Workspace;
+  /// featureBlockedReason for orchestration writes, or null.
+  daemonBlocked: string | null;
+  /// The cards Organize would be handed (`cardsToPlace`).
+  unplacedCount: number;
+}
+
+/// The Organize press over the rails, and a rail editor's Reorganize, by
+/// the desk's own rules: one run per workspace, and while it goes every
+/// press shows it instead of starting a second.
+export interface AgentPresses {
+  organize: OrchestrationAgentAction;
+  organizeLabel: string;
+  reorganize: (railId: string) => OrchestrationAgentAction;
+  /// A run is holding the slot.
+  running: boolean;
+}
+
+export function agentPresses({ workspace, daemonBlocked, unplacedCount }: AgentSlotInput): AgentPresses {
+  const run = workspace.orchestrationAgent ?? null;
+  // The launch reads `rootPath || null`, so an empty one is no root.
+  const hasRoot = Boolean(workspace.rootPath);
+  return {
+    organize: organizeAction({ run, unplacedCount, hasRoot, daemonBlocked }),
+    organizeLabel: organizeButtonLabel(run),
+    reorganize: (railId) => reorganizeAction({ run, railId, hasRoot, daemonBlocked }),
+    running: run !== null,
+  };
 }
