@@ -91,10 +91,15 @@ export const NO_COMPLEXITY = "";
 /// `effort` is how hard that agent thinks. Optional because every table
 /// and card stored before it existed has none, and absent means the
 /// same as empty: whatever effort the agent would otherwise launch at.
+///
+/// `advisor` is the model the agent consults mid-task (`claude --advisor
+/// opus`), optional and absent-means-none on the same grounds. Only a
+/// profile with an `advisorFlag` can carry it to the agent.
 export interface ComplexityAgent {
   profile: string;
   model: string;
   effort?: string;
+  advisor?: string;
 }
 
 /// The stored tables. `Partial` rather than a full record because
@@ -251,10 +256,14 @@ export function withAgentEffort(
 /// back, and storing it would make the workspace table shadow the app one
 /// with nothing. An effort alone IS something -- "this workspace's agent,
 /// thinking harder" is the whole row for a hard level on a one-CLI
-/// machine.
+/// machine. An advisor alone is something for the same reason.
 export function isAttributed(entry: ComplexityAgent | undefined | null): boolean {
   return Boolean(
-    entry && (entry.profile.trim() || entry.model.trim() || (entry.effort ?? "").trim())
+    entry &&
+      (entry.profile.trim() ||
+        entry.model.trim() ||
+        (entry.effort ?? "").trim() ||
+        (entry.advisor ?? "").trim())
   );
 }
 
@@ -302,6 +311,11 @@ export function agentConfigWithAttribution(
   const profile = entry.profile.trim();
   const model = entry.model.trim() || null;
   const effort = (entry.effort ?? "").trim() || null;
+  // Never inherited from `base`: no workspace config carries an advisor,
+  // so the attribution's is the only one there is. Added only when named,
+  // so a row without one resolves to exactly what it did before advisors.
+  const advisorChosen = (entry.advisor ?? "").trim();
+  const advisor = advisorChosen ? { advisor: advisorChosen } : {};
   if (!profile) {
     // No profile: everything about the workspace's agent survives,
     // because it really is the same agent -- including whichever of
@@ -309,13 +323,27 @@ export function agentConfigWithAttribution(
     // "max effort" must not also drop the workspace's pinned model back
     // to the app-wide default.
     const own = base ?? { profile: null, file: null, command: null };
-    return { ...own, model: model ?? own.model ?? null, effort: effort ?? own.effort ?? null };
+    return {
+      ...own,
+      model: model ?? own.model ?? null,
+      effort: effort ?? own.effort ?? null,
+      ...advisor,
+    };
   }
   const sameProfile = (base?.profile ?? "").trim() === profile;
   if (!sameProfile) {
-    return { profile, file: null, command: null, mcpFile: null, mcpFormat: null, model, effort };
+    return {
+      profile,
+      file: null,
+      command: null,
+      mcpFile: null,
+      mcpFormat: null,
+      model,
+      effort,
+      ...advisor,
+    };
   }
-  return { ...(base ?? { profile, file: null, command: null }), profile, model, effort };
+  return { ...(base ?? { profile, file: null, command: null }), profile, model, effort, ...advisor };
 }
 
 /// How the level reads where it has to be said in one phrase -- a
@@ -331,7 +359,7 @@ export function complexitySummary(
   if (!entry) return `${name} — runs this workspace's agent.`;
   const agent = entry.profile.trim() ? profileLabel(entry.profile.trim()) : null;
   const model = entry.model.trim();
-  const at = effortPhrase(entry);
+  const at = effortPhrase(entry) + advisorPhrase(entry);
   if (agent && model) return `${name} — runs ${agent} on ${model}${at}.`;
   if (agent) return `${name} — runs ${agent}${at}.`;
   if (model) return `${name} — runs this workspace's agent on ${model}${at}.`;
@@ -344,6 +372,13 @@ export function complexitySummary(
 export function effortPhrase(entry: { effort?: string | null } | null | undefined): string {
   const effort = (entry?.effort ?? "").trim();
   return effort ? `, at ${effort} effort` : "";
+}
+
+/// ", advised by opus" for an attribution that names an advisor, ""
+/// otherwise -- `effortPhrase`'s twin, appended after it.
+export function advisorPhrase(entry: { advisor?: string | null } | null | undefined): string {
+  const advisor = (entry?.advisor ?? "").trim();
+  return advisor ? `, advised by ${advisor}` : "";
 }
 
 /// Whether two tables say the same thing at every level. Lets a caller
@@ -360,7 +395,8 @@ export function sameComplexityTable(a: ComplexityTable, b: ComplexityTable): boo
     return (
       x.profile.trim() === y.profile.trim() &&
       x.model.trim() === y.model.trim() &&
-      (x.effort ?? "").trim() === (y.effort ?? "").trim()
+      (x.effort ?? "").trim() === (y.effort ?? "").trim() &&
+      (x.advisor ?? "").trim() === (y.advisor ?? "").trim()
     );
   });
 }

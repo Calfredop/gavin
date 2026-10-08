@@ -24,7 +24,7 @@ import {
 } from "$lib/core/settings";
 
 const BUILT_INS: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], effortFlag: "--effort", efforts: ["low", "medium", "high", "xhigh", "max"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], effortFlag: "--effort", efforts: ["low", "medium", "high", "xhigh", "max"], advisorFlag: "--advisor", failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
   { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], effortFlag: "-c model_reasoning_effort=", efforts: ["minimal", "low", "medium", "high", "xhigh"], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
 ];
 
@@ -279,6 +279,7 @@ describe("resolveAgentConfig", () => {
       modelFlag: "--model",
       effort: "",
       effortFlag: "-c model_reasoning_effort=",
+      advisor: "",
       launchCommand: "codex --x",
       failurePatterns: [],
       failureCauses: [],
@@ -299,7 +300,8 @@ describe("resolveAgentConfig", () => {
       profileId: "claude-code", label: "Claude Code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --', promptArgs: "",
-      model: "", modelFlag: "--model", effort: "", effortFlag: "--effort", launchCommand: "claude",
+      model: "", modelFlag: "--model", effort: "", effortFlag: "--effort", advisor: "",
+      launchCommand: "claude",
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
       sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume",
@@ -486,6 +488,30 @@ describe("resolveAgentConfig", () => {
     expect(inherited.launchCommand).toBe("claude --effort max");
   });
 
+  it("composes an advisor after model and effort, only on a profile with an advisor flag", () => {
+    const claude = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null, model: "sonnet", effort: "high", advisor: "opus" },
+      PROFILES,
+      {}
+    );
+    expect(claude.advisor).toBe("opus");
+    expect(claude.launchCommand).toBe("claude --model sonnet --effort high --advisor opus");
+    // Codex has no advisor flag: the advisor is dropped, never guessed.
+    const codex = resolveAgentConfig(
+      { profile: "codex", file: null, command: null, advisor: "opus" },
+      PROFILES,
+      {}
+    );
+    expect(codex.launchCommand).toBe("codex");
+    // A hand-written command that already names one wins.
+    const own = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: "claude --advisor fable", advisor: "opus" },
+      PROFILES,
+      {}
+    );
+    expect(own.launchCommand).toBe("claude --advisor fable");
+  });
+
   it("attaches the level to a flag that ends in =", () => {
     const r = resolveAgentConfig(
       { profile: "codex", file: null, command: null, effort: "xhigh" },
@@ -552,6 +578,7 @@ describe("resolveAgentConfig", () => {
       modelFlag: "",
       effort: "",
       effortFlag: "",
+      advisor: "",
       launchCommand: "my-agent",
       failurePatterns: [],
       failureCauses: [],

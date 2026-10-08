@@ -132,6 +132,19 @@ export function composeEffort(command: string, flag: string, effort: string): st
   return usable.endsWith("=") ? `${command} ${usable}${level}` : `${command} ${usable} ${level}`;
 }
 
+/// `command` plus `<flag> <advisor>`, under `composeLaunchCommand`'s
+/// rules: nothing to add, no usable flag, or a command that already names
+/// an advisor all leave `command` untouched. The advisor is a model name,
+/// so it is quoted as one.
+export function composeAdvisor(command: string, flag: string, advisor: string): string {
+  const chosen = advisor.trim();
+  const usable = flag.trim();
+  if (!chosen || !usable || !flagIsInert(usable) || commandSpecifiesEffort(command, usable)) {
+    return command;
+  }
+  return `${command} ${usable} ${quoteModel(chosen)}`;
+}
+
 /// The rows an EFFORT picker renders: inherit (labelled with what it
 /// inherits), each level the CLI documents, then Custom. The same shape
 /// as `modelChoices`, and the same sentinel, so a panel that already
@@ -254,6 +267,28 @@ export function effortPresets(
   for (const profile of profiles) {
     for (const level of profile.efforts ?? []) {
       if (!out.includes(level)) out.push(level);
+    }
+  }
+  return out;
+}
+
+/// The advisor models to suggest for a complexity row: the named
+/// profile's own models when it takes an advisor, nothing when it does
+/// not. An unnamed row (this workspace's agent) is offered every model of
+/// every profile that takes one, for `effortPresets`' reason -- the box
+/// stays free text, and an advisor the eventual agent has no flag for is
+/// dropped at launch (`composeAdvisor`).
+export function advisorPresets(
+  profiles: readonly { id: string; models: string[]; advisorFlag?: string }[],
+  profileId: string
+): string[] {
+  const id = profileId.trim();
+  const out: string[] = [];
+  for (const profile of profiles) {
+    if (id && profile.id !== id) continue;
+    if (!profile.advisorFlag) continue;
+    for (const model of profile.models) {
+      if (!out.includes(model)) out.push(model);
     }
   }
   return out;

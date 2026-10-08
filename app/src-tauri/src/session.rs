@@ -863,6 +863,7 @@ mod workspaces_data_tests {
                 profile: "claude-code".to_string(),
                 model: "opus".to_string(),
                 effort: "max".to_string(),
+                advisor: "opus".to_string(),
             },
         );
         let defaults = crate::config::AgentDefaultsConfig {
@@ -1204,6 +1205,7 @@ mod workspaces_data_tests {
                     profile: String::new(),
                     model: "haiku".to_string(),
                     effort: String::new(),
+                    advisor: String::new(),
                 },
             )]),
         );

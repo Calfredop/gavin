@@ -1381,6 +1381,8 @@ export function agentProfiles(): Promise<
     /// them -- the same reason `AgentProfileInfo` has them optional.
     effortFlag?: string;
     efforts?: string[];
+    /// Optional for the same reason: a host built before the advisor.
+    advisorFlag?: string;
     failurePatterns: string[];
     failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;

@@ -62,6 +62,9 @@ describe("isAttributed", () => {
     // An effort alone is a whole row: the workspace's agent, harder.
     expect(isAttributed({ profile: "", model: "", effort: "max" })).toBe(true);
     expect(isAttributed({ profile: "", model: "", effort: " " })).toBe(false);
+    // So is an advisor alone: the workspace's agent, with opus to ask.
+    expect(isAttributed({ profile: "", model: "", advisor: "opus" })).toBe(true);
+    expect(isAttributed({ profile: "", model: "", advisor: " " })).toBe(false);
     expect(isAttributed(undefined)).toBe(false);
     expect(isAttributed(null)).toBe(false);
   });
@@ -147,6 +150,12 @@ describe("per-primary complexity tables", () => {
     expect(
       sameComplexityTable(claude, { intricate: { profile: "codex", model: "gpt-5.2" } })
     ).toBe(false);
+    expect(
+      sameComplexityTable(
+        { complex: { profile: "", model: "sonnet" } },
+        { complex: { profile: "", model: "sonnet", advisor: "opus" } }
+      )
+    ).toBe(false);
   });
 });
 
@@ -207,6 +216,21 @@ describe("agentConfigWithAttribution", () => {
     expect(r?.model).toBeNull();
   });
 
+  it("lays a named advisor over the config, and adds nothing without one", () => {
+    expect(agentConfigWithAttribution(base, { profile: "", model: "", advisor: "opus" })).toEqual({
+      ...base,
+      model: "sonnet",
+      effort: null,
+      advisor: "opus",
+    });
+    expect(
+      agentConfigWithAttribution(base, { profile: "codex", model: "", advisor: " fable " })?.advisor
+    ).toBe("fable");
+    expect(agentConfigWithAttribution(base, { profile: "", model: "opus", advisor: "" })).not.toHaveProperty(
+      "advisor"
+    );
+  });
+
   it("reads an empty model as the profile's own default, not as a blank", () => {
     expect(agentConfigWithAttribution(base, { profile: "codex", model: "  " })?.model).toBeNull();
   });
@@ -234,6 +258,12 @@ describe("complexitySummary", () => {
     expect(complexitySummary("complex", { profile: "", model: "", effort: "high" }, label)).toBe(
       "Complex — runs this workspace's agent, at high effort."
     );
+  });
+
+  it("names the advisor after the effort", () => {
+    expect(
+      complexitySummary("intricate", { profile: "", model: "sonnet", effort: "high", advisor: "opus" }, label)
+    ).toBe("Intricate — runs this workspace's agent on sonnet, at high effort, advised by opus.");
   });
 
   it("says so when a level is rated but attributed to nothing", () => {

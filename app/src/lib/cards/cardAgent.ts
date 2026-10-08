@@ -20,6 +20,7 @@
 
 import {
   complexityEntryFor,
+  advisorPhrase,
   effortPhrase,
   isAttributed,
   parseComplexity,
@@ -98,7 +99,7 @@ function attributionPhrase(
   if (!entry) return null;
   const agent = entry.profile.trim() ? profileLabel(entry.profile.trim()) : null;
   const model = entry.model.trim();
-  const at = effortPhrase(entry);
+  const at = effortPhrase(entry) + advisorPhrase(entry);
   if (agent && model) return `${agent} on ${model}${at}`;
   if (agent) return `${agent}${at}`;
   if (model) return `this workspace's agent on ${model}${at}`;

@@ -1,4 +1,4 @@
-import { composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
+import { composeAdvisor, composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
 import type { FailureCausePattern } from "$lib/agents/autoResume";
 import type { CustomProfile } from "$lib/cards/complexity";
 import type { AgentConfig } from "$lib/core/gavin";
@@ -60,6 +60,11 @@ export interface AgentProfileInfo {
   effortFlag?: string;
   /// The effort levels the CLI documents, lowest first.
   efforts?: string[];
+  /// The flag that names a model this agent consults as its advisor
+  /// (`--advisor`, claude-code only). Empty or absent hides the advisor
+  /// control a complexity row offers. Optional because a host built
+  /// before the advisor does not send it.
+  advisorFlag?: string;
   /// What this agent prints when it has STOPPED because something broke.
   /// Empty where nobody has verified the text -- which reads as no
   /// failure detection, never as "nothing failed"
@@ -423,7 +428,11 @@ export interface ResolvedAgent {
   /// one when the profile IS `custom`, else the table's verified flag.
   /// Empty means gavin has no way to put an effort on this command.
   effortFlag: string;
-  /// `command` with the model flag, then the effort flag, composed on.
+  /// The advisor model a complexity row asked for, or "" for none. Only
+  /// ever the row's: there is no workspace or app-wide advisor.
+  advisor: string;
+  /// `command` with the model flag, then the effort flag, then the
+  /// advisor flag, composed on.
   /// What every LAUNCHER uses. `command` above stays the raw configured value, because that
   /// is what the settings box edits and writes back to config.toml -- a
   /// flag folded into it would be persisted and then appended again.
@@ -521,6 +530,10 @@ export function resolveAgentConfig(
     nonEmpty(config?.effortFlag) ??
     nonEmpty(effective?.effortFlag) ??
     "";
+  // No fallback chain: the flag describes the BINARY, the posture
+  // `headlessArgs` takes, so a custom agent never inherits claude's.
+  const advisor = nonEmpty(config?.advisor) ?? "";
+  const advisorFlag = effective?.advisorFlag ?? "";
   return {
     profileId,
     label: effective?.label ?? profileId,
@@ -528,9 +541,15 @@ export function resolveAgentConfig(
     modelFlag,
     effort,
     effortFlag,
+    advisor,
     // Model first, then effort: the order `claude --help` lists them in,
-    // and the one a human reading "Launches as" expects.
-    launchCommand: composeEffort(composeLaunchCommand(command, modelFlag, model), effortFlag, effort),
+    // and the one a human reading "Launches as" expects. The advisor
+    // follows, being a second model rather than a setting of the first.
+    launchCommand: composeAdvisor(
+      composeEffort(composeLaunchCommand(command, modelFlag, model), effortFlag, effort),
+      advisorFlag,
+      advisor
+    ),
     // An unfilled custom profile still resolves to something openable
     // rather than an empty path.
     file:

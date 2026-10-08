@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  advisorPresets,
   commandSpecifiesEffort,
   commandSpecifiesModel,
+  composeAdvisor,
   composeEffort,
   composeLaunchCommand,
   effortOptions,
@@ -303,5 +305,42 @@ describe("effortPresets", () => {
 
   it("offers an unnamed row every level any profile documents, once each", () => {
     expect(effortPresets(profiles, "")).toEqual(["low", "medium", "high", "xhigh", "max", "minimal"]);
+  });
+});
+
+describe("composeAdvisor", () => {
+  it("separates the model from the flag, after everything else", () => {
+    expect(composeAdvisor("claude --model sonnet --effort high", "--advisor", "opus")).toBe(
+      "claude --model sonnet --effort high --advisor opus"
+    );
+  });
+
+  it("quotes an advisor a shell would read as more than itself", () => {
+    expect(composeAdvisor("claude", "--advisor", "opus[1m]")).toBe("claude --advisor 'opus[1m]'");
+  });
+
+  it("leaves the command alone with no advisor, no flag, or one already named", () => {
+    expect(composeAdvisor("claude", "--advisor", "  ")).toBe("claude");
+    expect(composeAdvisor("codex", "", "opus")).toBe("codex");
+    expect(composeAdvisor("claude --advisor fable", "--advisor", "opus")).toBe("claude --advisor fable");
+    expect(composeAdvisor("claude --advisor=fable", "--advisor", "opus")).toBe("claude --advisor=fable");
+  });
+});
+
+describe("advisorPresets", () => {
+  const profiles = [
+    { id: "claude-code", models: ["fable", "opus", "sonnet"], advisorFlag: "--advisor" },
+    { id: "codex", models: ["gpt-5.1"], advisorFlag: "" },
+    { id: "gemini", models: ["pro"] },
+  ];
+
+  it("offers a named profile its own models only when it takes an advisor", () => {
+    expect(advisorPresets(profiles, "claude-code")).toEqual(["fable", "opus", "sonnet"]);
+    expect(advisorPresets(profiles, "codex")).toEqual([]);
+    expect(advisorPresets(profiles, "gemini")).toEqual([]);
+  });
+
+  it("offers an unnamed row the models of every profile that takes one", () => {
+    expect(advisorPresets(profiles, "")).toEqual(["fable", "opus", "sonnet"]);
   });
 });

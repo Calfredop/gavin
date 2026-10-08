@@ -162,6 +162,13 @@ describe("the settings panels", () => {
     // which is the opposite of what clearing a row means.
     expect(source(TABLE)).toContain("isAttributed(next) ? next : null");
   });
+
+  it("offers an advisor beside the effort, suggesting what the row's agent can take", () => {
+    expect(source(TABLE)).toContain("typeAdvisor(level, e.currentTarget.value)");
+    expect(source(TABLE)).toContain("advisorPresets(profiles, entry.profile)");
+    // A profile with no advisor flag keeps the box clearable, not hidden.
+    expect(source(TABLE)).toContain("advisorUnsupported(level) && !(entry.advisor ?? \"\").trim()");
+  });
 });
 
 describe("the custom agent", () => {

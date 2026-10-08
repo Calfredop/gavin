@@ -488,6 +488,12 @@ pub struct AgentProfile {
     /// as picks beside "Custom…", which stays for a level a newer CLI
     /// adds before this list does. Empty wherever `effort_flag` is.
     pub efforts: &'static [&'static str],
+    /// The flag that hands this agent a second, more capable model to
+    /// consult mid-task -- the advisor. Takes the model as the next
+    /// argument. Empty where the CLI has none, which hides the advisor
+    /// control a complexity row would otherwise offer for the profile.
+    /// Only claude-code has one (checked 2026-10-08).
+    pub advisor_flag: &'static str,
     /// The text this agent prints on screen when it has STOPPED because
     /// something BROKE, rather than because its turn ended. Handed to the
     /// daemon per session (`Request::SetFailurePatterns`) and matched
@@ -916,6 +922,13 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // to its own highest, so the list is the CLI's, not the model's.
         effort_flag: "--effort",
         efforts: &["low", "medium", "high", "xhigh", "max"],
+        // Not in `claude --help` but parsed (2.1.294, 2026-10-08):
+        // `--advisor <model>`, the CLI twin of the `advisorModel`
+        // setting. `claude -p --model sonnet --advisor opus` runs, and an
+        // unknown model is refused at startup ("cannot be used as an
+        // advisor") rather than mid-run. The advisor has to be at least
+        // as capable as the main model or the CLI ignores it.
+        advisor_flag: "--advisor",
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
@@ -1083,6 +1096,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // `codex` binary was available to run.
         effort_flag: "-c model_reasoning_effort=",
         efforts: &["minimal", "low", "medium", "high", "xhigh"],
+        advisor_flag: "",
         label: "Codex CLI",
         instructions_file: "AGENTS.md",
         command: "codex",
@@ -1162,6 +1176,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_catalog: None,
         effort_flag: "",
         efforts: &[],
+        advisor_flag: "",
         label: "Gemini CLI",
         instructions_file: "GEMINI.md",
         command: "gemini",
@@ -1243,6 +1258,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_catalog: None,
         effort_flag: "",
         efforts: &[],
+        advisor_flag: "",
         label: "Cursor",
         instructions_file: "AGENTS.md",
         // The terminal agent binary (`agent`), not the IDE launcher
@@ -1327,6 +1343,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_catalog: Some(ModelCatalog::OpencodeCli),
         effort_flag: "",
         efforts: &[],
+        advisor_flag: "",
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
@@ -1440,6 +1457,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // 2026-10-05). Levels from the managed models' `supportEfforts`.
         effort_flag: "KIMI_MODEL_THINKING_EFFORT=",
         efforts: &["low", "high", "max"],
+        advisor_flag: "",
         label: "Kimi Code",
         // kimi reads AGENTS.md only -- not CLAUDE.md or KIMI.md -- so it
         // shares codex's file; the marker-block writer already merges.
@@ -1571,6 +1589,7 @@ static CUSTOM_WRITE_PROFILE: AgentProfile = AgentProfile {
     model_catalog: None,
     effort_flag: "",
     efforts: &[],
+    advisor_flag: "",
     label: "Custom…",
     instructions_file: "",
     command: "",
@@ -3506,6 +3525,9 @@ pub struct AgentProfileDto {
     pub effort_flag: String,
     /// The effort levels the CLI documents, lowest first.
     pub efforts: Vec<String>,
+    /// The flag that names an advisor model, empty where the CLI takes
+    /// none (see `AgentProfile::advisor_flag`).
+    pub advisor_flag: String,
     /// What this agent prints when it has BROKEN. Empty means no failure
     /// detection for the profile (see AgentProfile::failure_patterns);
     /// the app hands these to the daemon per session.
@@ -3551,6 +3573,7 @@ pub fn agent_profile_dto_from_custom(profile: &crate::config::CustomProfile) -> 
         models: Vec::new(),
         effort_flag: profile.effort_flag.clone(),
         efforts: Vec::new(),
+        advisor_flag: String::new(),
         failure_patterns: Vec::new(),
         failure_causes: Vec::new(),
         session_id_args: String::new(),
@@ -3611,6 +3634,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             models: p.models.iter().map(|m| m.to_string()).collect(),
             effort_flag: p.effort_flag.to_string(),
             efforts: p.efforts.iter().map(|e| e.to_string()).collect(),
+            advisor_flag: p.advisor_flag.to_string(),
             failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
             failure_causes: p
                 .failure_causes
@@ -3819,6 +3843,17 @@ mod tests {
                 profile.id
             );
         }
+    }
+
+    /// Only claude carries an advisor: no other CLI in the table takes a
+    /// second model to consult, and a guessed flag would land in argv.
+    #[test]
+    fn only_claude_code_ships_an_advisor_flag() {
+        for profile in AGENT_PROFILES {
+            let expected = if profile.id == "claude-code" { "--advisor" } else { "" };
+            assert_eq!(profile.advisor_flag, expected, "{}", profile.id);
+        }
+        assert_eq!(agent_profiles().iter().find(|p| p.id == "claude-code").unwrap().advisor_flag, "--advisor");
     }
 
     #[test]

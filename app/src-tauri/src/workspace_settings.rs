@@ -397,7 +397,12 @@ mod tests {
             complexity_agents: HashMap::new(),
             complexity_tables: HashMap::from([(s("claude-code"), HashMap::from([(
                 "complex".to_string(),
-                ComplexityAgent { profile: s("profile"), model: s("model"), effort: s("effort") },
+                ComplexityAgent {
+                    profile: s("profile"),
+                    model: s("model"),
+                    effort: s("effort"),
+                    advisor: s("advisor"),
+                },
             )]))]),
             git_tracking_asked: flavour == "a",
             trusted_config_hash: Some(s("hash")),

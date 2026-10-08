@@ -1,6 +1,6 @@
 <script lang="ts">
-  /// The five-row table that says which agent, model and effort each complexity
-  /// level runs. One component for both panels -- the app-wide Settings
+  /// The five-row table that says which agent, model, effort and advisor
+  /// each complexity level runs. One component for both panels -- the app-wide Settings
   /// modal and a workspace's Settings tab -- because they are the same
   /// table with the same vocabulary, and two copies is how the app-wide
   /// and per-workspace answers start describing different things.
@@ -18,7 +18,7 @@
     type ComplexityTable,
   } from "$lib/cards/complexity";
   import type { AgentProfileInfo } from "$lib/core/settings";
-  import { effortPresets } from "$lib/agents/agentModel";
+  import { advisorPresets, effortPresets } from "$lib/agents/agentModel";
   import { profileOptionLabel } from "$lib/agents/agentsHub";
 
   interface Props {
@@ -49,7 +49,7 @@
   };
 
   function entryFor(level: Complexity): ComplexityAgent {
-    return table[level] ?? { profile: "", model: "", effort: "" };
+    return table[level] ?? { profile: "", model: "", effort: "", advisor: "" };
   }
 
   /// What this row does if left alone, said in the option's own label so
@@ -58,7 +58,10 @@
     const shared = inherited?.[level];
     if (!isAttributed(shared)) return "This workspace's agent";
     const agent = shared!.profile.trim();
-    const what = [shared!.model.trim(), (shared!.effort ?? "").trim()].filter(Boolean).join(" · ");
+    const advisor = (shared!.advisor ?? "").trim();
+    const what = [shared!.model.trim(), (shared!.effort ?? "").trim(), advisor ? `advised by ${advisor}` : ""]
+      .filter(Boolean)
+      .join(" · ");
     const who = agent ? profileLabel(agent) : "this workspace's agent";
     return what ? `Default (${who} · ${what})` : `Default (${who})`;
   }
@@ -82,6 +85,22 @@
   /// box suggests the levels the row's agent documents (`effortPresets`).
   function typeEffort(level: Complexity, value: string): void {
     commit(level, { ...entryFor(level), effort: value.trim() });
+  }
+
+  /// Free text for `typeEffort`'s reason; suggests the models of the
+  /// agents that take an advisor (`advisorPresets`).
+  function typeAdvisor(level: Complexity, value: string): void {
+    commit(level, { ...entryFor(level), advisor: value.trim() });
+  }
+
+  /// Whether this row names a profile that takes no advisor. The box is
+  /// then disabled -- unless it already holds one, which has to stay
+  /// clearable -- rather than hidden, so the five rows keep one grid.
+  function advisorUnsupported(level: Complexity): boolean {
+    const id = entryFor(level).profile.trim();
+    if (!id) return false;
+    const profile = profiles.find((p) => p.id === id);
+    return Boolean(profile) && !profile!.advisorFlag;
   }
 
   /// Whether the effort this row names can reach the profile it names --
@@ -156,6 +175,24 @@
             <option value={effort}></option>
           {/each}
         </datalist>
+        <input
+          class="advisor"
+          spellcheck="false"
+          placeholder="advisor"
+          title="A more capable model this agent consults mid-task (claude --advisor)"
+          list="complexity-advisor-{level}"
+          disabled={readonly || (advisorUnsupported(level) && !(entry.advisor ?? "").trim())}
+          value={entry.advisor ?? ""}
+          onchange={(e) => typeAdvisor(level, e.currentTarget.value)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+        <datalist id="complexity-advisor-{level}">
+          {#each advisorPresets(profiles, entry.profile) as advisor (advisor)}
+            <option value={advisor}></option>
+          {/each}
+        </datalist>
         <button
           type="button"
           class="clear"
@@ -178,6 +215,11 @@
           <span class="warn">
             gavin knows no effort flag for {profileLabel(entry.profile.trim())}, so this effort is
             not passed on.
+          </span>
+        {/if}
+        {#if advisorUnsupported(level) && (entry.advisor ?? "").trim()}
+          <span class="warn">
+            {profileLabel(entry.profile.trim())} takes no advisor, so this one is not passed on.
           </span>
         {/if}
       </p>
@@ -229,10 +271,11 @@
   select {
     min-width: 140px;
   }
-  /* An effort is one short word -- `high`, `xhigh` -- so its box is
-     narrow on purpose: the four controls still have to read as one row
-     under a 110px label in the 380px app modal. */
-  input.effort {
+  /* An effort is one short word -- `high`, `xhigh` -- and an advisor a
+     model alias -- `opus` -- so both boxes are narrow on purpose: the
+     controls still have to read as one row beside a 110px label. */
+  input.effort,
+  input.advisor {
     flex: 0 1 90px;
     min-width: 0;
   }
@@ -268,8 +311,8 @@
   }
   /* A phone's width, on the Companion (companion-30): four controls do
      not fit one row beside a label, so the level heads its row and the
-     agent's select takes the full width under it, with model and effort
-     side by side below that. */
+     agent's select takes the full width under it, with model, effort and
+     advisor side by side below that. */
   @media (max-width: 600px) {
     .row {
       flex-wrap: wrap;
@@ -283,8 +326,9 @@
     input.model {
       flex: 1 1 0;
     }
-    input.effort {
-      flex: 0 1 110px;
+    input.effort,
+    input.advisor {
+      flex: 0 1 90px;
     }
     .row-hint {
       margin-left: 0;

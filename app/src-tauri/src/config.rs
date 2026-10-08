@@ -780,6 +780,11 @@ pub struct ComplexityAgent {
     /// older build reading it back sees nothing new.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
+    /// The model this level's agent consults as its advisor -- `opus`
+    /// beside a `sonnet` executor. Empty means no advisor. Skipped when
+    /// empty for `effort`'s reason.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub advisor: String,
 }
 
 /// The app-wide half of "which agent executes this card": named custom
@@ -2321,7 +2326,12 @@ mod tests {
             "claude-code".to_string(),
             HashMap::from([(
                 "intricate".to_string(),
-                ComplexityAgent { profile: String::new(), model: "opus".to_string(), effort: "max".to_string() },
+                ComplexityAgent {
+                    profile: String::new(),
+                    model: "sonnet".to_string(),
+                    effort: "max".to_string(),
+                    advisor: "opus".to_string(),
+                },
             )]),
         );
         save(dir.path(), &config).unwrap();
@@ -2329,18 +2339,19 @@ mod tests {
         assert_eq!(loaded.custom_profiles[0].effort_flag, "--think=");
         assert_eq!(loaded.agent_efforts.get("claude-code").map(String::as_str), Some("high"));
         assert_eq!(loaded.complexity_tables["claude-code"]["intricate"].effort, "max");
+        assert_eq!(loaded.complexity_tables["claude-code"]["intricate"].advisor, "opus");
 
         config.agent_defaults = AgentDefaultsConfig::default();
         config.agent_defaults.complexity_tables.insert(
             "claude-code".to_string(),
             HashMap::from([(
                 "simple".to_string(),
-                ComplexityAgent { profile: String::new(), model: "haiku".to_string(), effort: String::new() },
+                ComplexityAgent { model: "haiku".to_string(), ..Default::default() },
             )]),
         );
         save(dir.path(), &config).unwrap();
         let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
-        for key in ["customEffortFlag", "agentEfforts", "effort", "effortFlag"] {
+        for key in ["customEffortFlag", "agentEfforts", "effort", "effortFlag", "advisor"] {
             assert!(!written.contains(key), "{key} written while empty: {written}");
         }
 
@@ -2354,6 +2365,7 @@ mod tests {
         let old = load(dir.path()).unwrap().agent_defaults;
         assert!(old.complexity.is_empty());
         assert_eq!(old.complexity_tables["claude-code"]["complex"].effort, "");
+        assert_eq!(old.complexity_tables["claude-code"]["complex"].advisor, "");
         assert_eq!(old.complexity_tables["codex"]["complex"].model, "gpt-5.1");
         assert!(old.agent_efforts.is_empty());
         assert!(old.custom_profiles.is_empty());

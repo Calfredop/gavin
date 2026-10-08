@@ -132,6 +132,11 @@ export interface AgentConfig {
   /// over. Optional because a pre-v56 daemon never sends either.
   effort?: string | null;
   effortFlag?: string | null;
+  /// The model the agent consults as its advisor. Never sent by the
+  /// daemon -- config.toml has no such key -- only laid on by a
+  /// complexity row (`agentConfigWithAttribution`), so a launch without
+  /// one runs with no advisor.
+  advisor?: string | null;
 }
 
 export interface GavinContext {

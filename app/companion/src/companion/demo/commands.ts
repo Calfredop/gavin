@@ -168,6 +168,7 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   models: ["opus", "sonnet", "haiku"],
   effortFlag: "--effort",
   efforts: ["low", "medium", "high", "xhigh", "max"],
+  advisorFlag: "--advisor",
   failurePatterns: [],
   failureCauses: [],
   sessionIdArgs: "",
