@@ -404,6 +404,20 @@
   });
 </script>
 
+<!-- Capture, so the sidebar's session and page rows close a hub section
+     that is up over the page even when they select what is already
+     selected -- nothing the section is bound to changes then, so only the
+     click itself can say "show me the page". Buttons inside a row (the
+     chevron, a tab's close) are not a selection. -->
+<svelte:window
+  onclickcapture={(e) => {
+    if (!navigatorView) return;
+    const target = e.target as Element | null;
+    if (target?.closest?.("button")) return;
+    if (target?.closest?.(".tab-row, .page-row")) navigatorView = null;
+  }}
+/>
+
 <!-- The active workspace's accent, read by every tab indicator and drop
      marker inside (Pane.svelte's var(--ws-accent)). On .app rather than
      on the body row below it, so the strip over the sidebar is inside
