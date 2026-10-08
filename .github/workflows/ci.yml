@@ -100,7 +100,22 @@ jobs:
           echo "fs-watcher module still red after 3 attempts" >&2
           exit 1
 
+      # The headless shell the daemon launches per agent session, at the
+      # revision the pinned @playwright/mcp brings -- read from the one
+      # pin (`protocol::playwright::MCP_VERSION`) rather than repeated
+      # here. `--with-deps` installs the system libraries it needs, which
+      # is the only place a Linux machine can fail it. The daemon's
+      # `tests/playwright.rs` skips without a browser; GAVIN_REQUIRE_PLAYWRIGHT
+      # below turns that skip into a failure here.
+      - name: Install Playwright's headless shell
+        run: |
+          pin=$(sed -n 's/^pub const MCP_VERSION: &str = "\(.*\)";$/\1/p' crates/protocol/src/playwright.rs)
+          test -n "$pin"
+          npx -y "@playwright/mcp@$pin" install-browser --with-deps chromium-headless-shell
+
       - name: cargo test --workspace --locked
+        env:
+          GAVIN_REQUIRE_PLAYWRIGHT: "1"
         # Quoted: a plain YAML scalar can't end in a bare colon, and
         # "--skip gavin::" does. Unquoted, this line fails to parse.
         # `--no-fail-fast`: cargo otherwise stops at the first red test
@@ -223,6 +238,26 @@ jobs:
         # YAML scalar can't carry without being mistaken for a mapping key.
         run: "cargo test -p gavin-daemon gavin:: --locked -- --test-threads=1"
 
+      # The session browser (v65) on Windows: the launch, the proxy, a
+      # frame, and the browser gone with its session. Reports rather
+      # than gates until it has been seen green here, like every step of
+      # this job before it; `npx.cmd` and the headless shell's .exe are
+      # the parts only this runner can prove.
+      - name: Install Playwright's headless shell
+        continue-on-error: true
+        shell: bash
+        run: |
+          pin=$(sed -n 's/^pub const MCP_VERSION: &str = "\(.*\)";$/\1/p' crates/protocol/src/playwright.rs)
+          test -n "$pin"
+          npx -y "@playwright/mcp@$pin" install-browser chromium-headless-shell
+
+      - name: cargo test — the session browser
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          GAVIN_REQUIRE_PLAYWRIGHT: "1"
+        run: cargo test -p gavin-daemon --test playwright --locked
+
       # `timeout-minutes` on both, and it is not belt-and-braces:
       # `server::tests` DEADLOCKS on Windows -- observed twice on
       # 2026-09-11, stalling at ~22 failures with 200+ threads and zero
@@ -267,6 +302,39 @@ jobs:
       - name: npm run build
         working-directory: app
         run: npm run build
+
+  # The session browser (v65) on macOS: the one platform with no other
+  # job here, because it is the one exercised by hand all day -- but the
+  # headless shell's mac path and its process group are exactly what the
+  # browser module leans on, so they get a run of their own. Small on
+  # purpose: the browser's tests, not the whole suite.
+  macos-browser:
+    name: macOS (session browser)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install Playwright's headless shell
+        run: |
+          pin=$(sed -n 's/^pub const MCP_VERSION: &str = "\(.*\)";$/\1/p' crates/protocol/src/playwright.rs)
+          test -n "$pin"
+          npx -y "@playwright/mcp@$pin" install-browser chromium-headless-shell
+
+      - name: cargo test — the session browser and its shim
+        env:
+          GAVIN_REQUIRE_PLAYWRIGHT: "1"
+        run: |
+          cargo test -p protocol --locked playwright
+          cargo test -p gavin-daemon --locked --bin gavin-daemon browser::
+          cargo test -p gavin-daemon --locked --test playwright
+          cargo test -p gavin-mcp --locked playwright
 
   # The protocol crate without its operating-system parts, and the
   # Companion core, for the target the core is built to. Its own small job

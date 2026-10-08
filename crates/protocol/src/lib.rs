@@ -67,6 +67,17 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v65 is a browser per agent session (`playwright-browser-broker`). The
+/// daemon runs a CDP proxy that `gavin-mcp playwright` points the pinned
+/// `@playwright/mcp` at (`PlaywrightEndpoint`), launches the session's
+/// headless shell on the MCP's first connection, and screencasts the tab
+/// the agent is acting on to whoever asks (`WatchBrowser`, answered with
+/// `BrowserFrame`/`BrowserGone` pushes on that connection), with
+/// `BrowserChanged` to every app that speaks 65 (`BROWSER_MIN_VERSION`)
+/// and `ListBrowsers` to read it back. Three new request TYPES, so
+/// `min_version_for` is the gate for each; no existing payload widened.
+/// The pane and the chip owe `FEATURE_MIN_VERSION.playwrightBrowser`.
+///
 /// v63 is the desk seeing where each Device is and what it is doing
 /// (`companion-16`). The daemon reads a Device's presence off the commands
 /// it has the desktop run -- the workspace it last named, the session it is
@@ -796,7 +807,11 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 64;
+pub const PROTOCOL_VERSION: u32 = 65;
+
+/// The first version that pushes `BrowserChanged`. The daemon compares an
+/// app's `Hello` version with this before it writes the push (v65).
+pub const BROWSER_MIN_VERSION: u32 = 65;
 
 /// The first version that pushes `DevicePresenceChanged` and carries
 /// `DeviceInfo::presence`. The daemon compares an app's `Hello` version
@@ -2014,6 +2029,41 @@ pub enum Request {
         session_id: String,
     },
 
+    /// Where this session's Playwright MCP points its `--cdp-endpoint`
+    /// (v65), asked by `gavin-mcp playwright` before it execs the pinned
+    /// `@playwright/mcp`. Answered with `Response::PlaywrightEndpoint`: a
+    /// stable websocket on the daemon's CDP proxy, secret per session, and
+    /// the folder the MCP writes its snapshot files to.
+    ///
+    /// Nothing launches here. The session's headless shell starts when
+    /// the MCP first connects to the endpoint -- its first `browser_*`
+    /// call -- and is launched again on the next connection after it
+    /// dies. Refused with the reason when no headless shell is installed.
+    /// See `docs/superpowers/specs/2026-10-08-playwright-integration-design.md`.
+    PlaywrightEndpoint {
+        session_id: String,
+    },
+    /// Streams the session's browser as `Response::BrowserFrame` pushes
+    /// on THIS connection (v65), until the session ends
+    /// (`Response::BrowserGone`) or the connection closes -- there is no
+    /// unwatch. Intercepted in the connection loop like
+    /// `WatchGitWorktree`: nothing is replied on success, and a session
+    /// the daemon does not host is answered `Error`.
+    ///
+    /// A session whose browser has not launched yet is watched all the
+    /// same; the first frame arrives once it does. `size` picks the
+    /// stream (`desk` 1280x800, `phone` 640x400) and `max_fps` is clamped
+    /// to that size's cap.
+    WatchBrowser {
+        session_id: String,
+        size: BrowserViewSize,
+        max_fps: u32,
+    },
+    /// Every session whose browser is running now (v65), answered with
+    /// `Response::Browsers`: the read-back for `BrowserChanged`, so a
+    /// reload does not hide a live browser until its next navigation.
+    ListBrowsers,
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -2491,6 +2541,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // trusting OSC 133 for that session -- which for kimi means the old
         // stuck-in-working behaviour, the honest degraded mode.
         Request::DistrustOsc133 { .. } => 64,
+
+        // A browser per agent session (v65). Three new request TYPES, so
+        // this match is the whole gate: gavin-mcp's shim is told the
+        // daemon is too old rather than handed an endpoint nobody serves,
+        // and an app never asks an older daemon for frames it cannot send.
+        Request::PlaywrightEndpoint { .. }
+        | Request::WatchBrowser { .. }
+        | Request::ListBrowsers => 65,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -3205,6 +3263,80 @@ pub enum Response {
     /// app as written, and the app reads a word it does not know as
     /// `unknown`.
     HeadroomReach { session_id: String, reach: String },
+
+    /// The answer to `PlaywrightEndpoint` (v65).
+    PlaywrightEndpoint { endpoint: String, output_dir: String },
+    /// Push on a `WatchBrowser` connection (v65): one screencast frame of
+    /// the tab the session's agent is acting on. `data` is the JPEG,
+    /// base64, exactly as Chromium sent it; `seq` rises per frame across
+    /// every browser this session launches, so a watcher that sees it go
+    /// backwards is reading two streams. `url` and `title` are that tab's
+    /// at the moment of the frame.
+    BrowserFrame {
+        session_id: String,
+        seq: u64,
+        data: String,
+        width: u32,
+        height: u32,
+        url: String,
+        title: String,
+    },
+    /// Push on a `WatchBrowser` connection (v65): the session ended, and
+    /// with it the watch. The last thing written for that session.
+    BrowserGone { session_id: String },
+    /// Push to every live `app` connection whose `Hello` said it speaks
+    /// `BROWSER_MIN_VERSION` or more (v65): a session's browser launched,
+    /// its agent's tab navigated or changed, or (`None`) it stopped. Whole,
+    /// never a delta. This is what lights a tab's browser chip.
+    BrowserChanged {
+        session_id: String,
+        #[serde(default)]
+        browser: Option<BrowserInfo>,
+    },
+    /// The answer to `ListBrowsers` (v65).
+    Browsers { browsers: Vec<LiveBrowser> },
+}
+
+/// Which screencast a `WatchBrowser` asks for. Two sizes, each its own
+/// CDP screencast, so the phone's stream is small at the source instead
+/// of being shrunk after it has crossed the machine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserViewSize {
+    /// 1280x800, JPEG quality 60: the desktop pane.
+    Desk,
+    /// 640x400, JPEG quality 50: the Companion, through the desktop.
+    Phone,
+}
+
+impl BrowserViewSize {
+    /// The highest rate a watcher of this size may ask for. The defaults
+    /// the spec measured are these caps: 8 for a local desk (4 is what the
+    /// desk asks across ssh), 2 for a phone.
+    pub fn max_fps_cap(self) -> u32 {
+        match self {
+            BrowserViewSize::Desk => 8,
+            BrowserViewSize::Phone => 2,
+        }
+    }
+}
+
+/// What a session's browser is showing: the tab its agent is acting on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserInfo {
+    pub url: String,
+    pub title: String,
+    /// Open tabs, popups included.
+    pub tabs: u32,
+}
+
+/// One running session browser, as `ListBrowsers` reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveBrowser {
+    pub session_id: String,
+    pub browser: BrowserInfo,
 }
 
 /// Headroom on this machine, as the daemon that has to execute it sees
@@ -7396,7 +7528,13 @@ mod tests {
         // request TYPE, so min_version_for is the whole gate and no
         // daemonCompat.ts entry is owed: an older daemon simply never
         // receives it.
-        assert_eq!(PROTOCOL_VERSION, 64);
+        // v65: Request::PlaywrightEndpoint / WatchBrowser / ListBrowsers
+        // and the BrowserFrame/BrowserGone/BrowserChanged/Browsers
+        // responses -- a headless browser per agent session, screencast
+        // to the desk. New request TYPES, so min_version_for gates each;
+        // BrowserChanged goes only to apps whose Hello speaks 65, and the
+        // pane owes daemonCompat.ts's FEATURE_MIN_VERSION.playwrightBrowser.
+        assert_eq!(PROTOCOL_VERSION, 65);
     }
 
     #[test]
@@ -7717,6 +7855,9 @@ mod tests {
             Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
             Request::SetFailurePatterns { id: "s".into(), patterns: vec!["API Error:".into()] },
             Request::DistrustOsc133 { id: "s".into() },
+            Request::PlaywrightEndpoint { session_id: "s".into() },
+            Request::WatchBrowser { session_id: "s".into(), size: BrowserViewSize::Desk, max_fps: 8 },
+            Request::ListBrowsers,
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
             Request::CreateGavinContext { parent_folder: "p".into() },
@@ -8097,6 +8238,9 @@ mod tests {
         // DistrustOsc133 -- the profile's word that this session's OSC 133
         // markers lie.
         expected.insert(64, 1);
+        // PlaywrightEndpoint, WatchBrowser, ListBrowsers -- a browser per
+        // agent session.
+        expected.insert(65, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

@@ -1,4 +1,5 @@
 mod bridge;
+mod browser;
 mod connect;
 mod gavin;
 mod git_status;
@@ -139,6 +140,19 @@ fn serve() -> anyhow::Result<()> {
     // Opens nothing yet: the model loads on the first search or the
     // Memory setup step, and an index on the first root that has one.
     manager.set_memories(memory_index::Memories::open(&dir));
+    // Stops any browser a crashed daemon of this build left running, and
+    // launches nothing: a session's browser starts when its agent's
+    // Playwright MCP first connects. Weak, so the announcer does not keep
+    // the manager alive from inside it.
+    let announcer = Arc::downgrade(&manager);
+    manager.set_browsers(browser::Browsers::open(
+        &dir,
+        Arc::new(move |change| {
+            if let Some(manager) = announcer.upgrade() {
+                manager.announce_browser(change);
+            }
+        }),
+    ));
     // After the trust store, which is what it reads. It dials the Relay
     // only while that store says remote access is on, and sleeps
     // otherwise -- so on a machine that never turned it on, this starts a

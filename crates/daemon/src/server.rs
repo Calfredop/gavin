@@ -1641,6 +1641,10 @@ pub struct SessionManager {
     headroom: std::sync::OnceLock<crate::headroom::Headroom>,
     /// Adopted-memory indexes (v60, `memory_index.rs`).
     memories: std::sync::OnceLock<crate::memory_index::Memories>,
+    /// A headless browser per agent session (v65, `browser/`). Set by
+    /// `serve` like Headroom, and absent from every unit test's manager,
+    /// which then refuses the browser requests by name.
+    browsers: std::sync::OnceLock<crate::browser::Browsers>,
     /// Live connections whose identity names a paired device, keyed by a
     /// token this manager hands out, each with a socket handle that can
     /// close it.
@@ -2092,6 +2096,7 @@ impl SessionManager {
             trust: std::sync::OnceLock::new(),
             headroom: std::sync::OnceLock::new(),
             memories: std::sync::OnceLock::new(),
+            browsers: std::sync::OnceLock::new(),
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
@@ -2243,6 +2248,38 @@ impl SessionManager {
         self.memories
             .get()
             .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon was started without its memory index"))
+    }
+
+    /// Hands this daemon its session browsers. Called once by `serve`,
+    /// like `set_headroom`.
+    pub fn set_browsers(&self, browsers: crate::browser::Browsers) {
+        let _ = self.browsers.set(browsers);
+    }
+
+    /// This daemon's session browsers, or the error every browser request
+    /// answers when it has none.
+    fn browsers_or_err(&self) -> anyhow::Result<&crate::browser::Browsers> {
+        self.browsers
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon was started without its session browsers"))
+    }
+
+    /// Tells the apps that can parse it that a session's browser changed
+    /// (v65). Handed to `browser::Browsers` as its announcer.
+    pub fn announce_browser(&self, change: Response) {
+        self.push_to_apps_speaking(protocol::BROWSER_MIN_VERSION, &change);
+    }
+
+    /// Stops every session browser because the daemon itself is stopping.
+    pub fn close_browsers(&self) {
+        if let Some(browsers) = self.browsers.get() {
+            browsers.close_all();
+        }
+    }
+
+    /// Whether this daemon hosts a session by that id right now.
+    fn hosts_session(&self, id: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(id)
     }
 
     /// Stops this daemon's Headroom because the daemon itself is
@@ -4893,6 +4930,10 @@ impl SessionManager {
         if let Some(session) = session {
             session.retire();
         }
+        // Its browser ends with it, off this thread (v65).
+        if let Some(browsers) = self.browsers.get() {
+            browsers.end_session(id);
+        }
         Ok(())
     }
 
@@ -6162,6 +6203,22 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             let reach = headroom.reach(&session_id).id().to_string();
             Response::HeadroomReach { session_id, reach }
         }),
+        // A browser per agent session (v65). The endpoint is only ever
+        // for a session this daemon hosts: the folder it names and the
+        // browser it may launch both end with that session.
+        Request::PlaywrightEndpoint { session_id } => manager.browsers_or_err().and_then(|browsers| {
+            if !manager.hosts_session(&session_id) {
+                anyhow::bail!("gavin-daemon: no live session {session_id}");
+            }
+            let (endpoint, output_dir) = browsers.endpoint(&session_id).map_err(anyhow::Error::msg)?;
+            Ok(Response::PlaywrightEndpoint { endpoint, output_dir: output_dir.to_string_lossy().into_owned() })
+        }),
+        Request::ListBrowsers => {
+            manager.browsers_or_err().map(|browsers| Response::Browsers { browsers: browsers.list() })
+        }
+        Request::WatchBrowser { .. } => {
+            unreachable!("WatchBrowser is intercepted in handle_connection")
+        }
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
@@ -6669,6 +6726,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
                 && agent_owns_session(id, session_id)
         }
         Request::NameSession { session_id, .. } => agent_owns_session(id, session_id),
+        // The shim behind the agent's `browser_*` tools asks for its own
+        // session's endpoint (v65), and only its own: another session's
+        // would be that agent's browser, cookies and all.
+        Request::PlaywrightEndpoint { session_id } => agent_owns_session(id, session_id),
 
         // Everything else: denied. Starting a shell, ending the daemon,
         // ending an orphan, driving or reading another session's PTY,
@@ -6789,6 +6850,11 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // sessions it hosts; an agent asking it of another session would
         // be reading that session's traffic, however coarsely.
         | Request::HeadroomReach { .. }
+        // Watching a session's browser, or listing which run (v65): the
+        // app's, for the pane. An agent watching another's browser is the
+        // surveillance `SessionScreen` is refused for.
+        | Request::WatchBrowser { .. }
+        | Request::ListBrowsers
         // Adopted memories (v60): the index's state and its build. The
         // build can start a model download, which is the human's call at
         // setup; the state read goes with it as the setup step's half.
@@ -6924,6 +6990,9 @@ fn is_privileged(req: &Request) -> bool {
             | Request::CreateWorkspacePath { .. }
             | Request::RenameWorkspacePath { .. }
             | Request::TrashWorkspacePath { .. }
+            // The door to a browser the daemon launches (v65): the same
+            // reach as starting a process.
+            | Request::PlaywrightEndpoint { .. }
     )
 }
 
@@ -7264,6 +7333,8 @@ fn serve_connection(
     // watcher owned by the connection is then dropped by the language
     // rather than by a cleanup path that has to notice the link is gone.
     let mut git_watchers: HashMap<String, (Arc<crate::git_watch::WorktreeWatch>, usize)> = HashMap::new();
+    // This connection's `WatchBrowser`s (v65), ended with it.
+    let mut browser_watches: Vec<crate::browser::WatchGuard> = Vec::new();
 
     loop {
         let req: Option<Request> = read_message(&mut reader)?;
@@ -7562,6 +7633,29 @@ fn serve_connection(
             continue;
         }
 
+        // A session's browser, streamed to this connection (v65). Held by
+        // a guard the connection owns, for the reason the git watchers
+        // are: a link that drops ends its watches with it.
+        if let Request::WatchBrowser { session_id, size, max_fps } = req {
+            let started = manager.browsers_or_err().map_err(|e| e.to_string()).and_then(|browsers| {
+                if !manager.hosts_session(&session_id) {
+                    return Err(format!("gavin-daemon: no live session {session_id}"));
+                }
+                let push_writer = Arc::clone(&writer);
+                browsers.watch(
+                    &session_id,
+                    size,
+                    max_fps,
+                    Box::new(move |push| write_message(&mut *push_writer.lock().unwrap(), push).is_ok()),
+                )
+            });
+            match started {
+                Ok(guard) => browser_watches.push(guard),
+                Err(message) => write_message(&mut *writer.lock().unwrap(), &Response::Error { message })?,
+            }
+            continue;
+        }
+
         if let Request::UnwatchGitWorktree { cwd, .. } = req {
             let drop_it = match git_watchers.get_mut(&cwd) {
                 Some(entry) => {
@@ -7589,6 +7683,7 @@ fn serve_connection(
             // nothing else will stop it. The sessions end with this
             // process, so there is no agent left for it to serve.
             manager.close_headroom();
+            manager.close_browsers();
             std::process::exit(0);
         }
 

@@ -31,6 +31,11 @@ gavin-relay = { path = "../gavin-relay", default-features = false, features = ["
 # P-256. Already built, at this version, under the TLS the dial above
 # runs on, so naming it here adds nothing to what is compiled.
 ring = "0.17"
+# The per-session browser (`browser/`): a blocking websocket, both ends,
+# to speak CDP to the headless shell and to proxy the Playwright MCP's
+# connection to it. The version and feature gavin-relay already builds,
+# so naming it here adds nothing to what is compiled.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 # Companion notification AEAD (ChaCha20-Poly1305). Same construction the
 # phone's Notification Service Extension / Android data-message handler
 # will open; the Push gateway never holds the key (security 06 §5.6).

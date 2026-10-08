@@ -642,6 +642,15 @@ export const FEATURE_MIN_VERSION = {
   // Consumer: `devicesPanel.ts`'s `presenceBlocked`, which the Devices panel
   // reads to say so under the list.
   devicePresence: 63,
+  // A browser per agent session (`playwright-browser-broker`): the
+  // `PlaywrightEndpoint`, `WatchBrowser` and `ListBrowsers` request TYPES
+  // and the `BrowserChanged` push are v65. An older daemon has no browser
+  // to show, so an empty pane or a missing chip would read as an agent
+  // that never opened one.
+  //
+  // Consumer: the live pane and the tab's browser chip
+  // (`playwright-live-pane.md`), which say why there is no view instead.
+  playwrightBrowser: 65,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

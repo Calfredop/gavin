@@ -5,6 +5,8 @@ use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod playwright;
+
 /// How long the version probe may sit in a read before the daemon is
 /// treated as unreachable. Matches the Windows named-pipe connect budget:
 /// Cursor's MCP loader times out listing tools when this blocks, and a
@@ -1861,6 +1863,30 @@ fn reexec_command(exe: &Path, blob: &[u8]) -> std::process::Command {
 }
 
 fn main() {
+    // `gavin-mcp playwright`: not this MCP server at all, but the shim
+    // that becomes the pinned Playwright MCP for this session's browser
+    // (`playwright.rs`). Dispatched before anything else is read or said.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new(protocol::playwright::SUBCOMMAND)) {
+        let extra: Vec<std::ffi::OsString> = args.collect();
+        let mut transport = SocketTransport::new();
+        match playwright::run(&mut transport, &extra) {
+            Ok(code) => std::process::exit(code),
+            Err(why) => {
+                // A daemon that moved ahead: the binary at our path has
+                // been replaced with one that speaks it, so it is asked
+                // instead, with the same argv. One handover, as ever.
+                if transport.reexec_requested().is_some() {
+                    if let Ok(exe) = std::env::current_exe() {
+                        eprintln!("gavin-mcp playwright: re-exec failed: {}", handover_to(&exe, &[]));
+                    }
+                }
+                eprintln!("gavin-mcp playwright: {why}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
     match &root {
         Some(r) => eprintln!("gavin-mcp: workspace root {}", r.display()),
