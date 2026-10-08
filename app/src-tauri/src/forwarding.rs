@@ -11,9 +11,12 @@
 //! and bundle asks (`ForwardBundle`, v57) from the signed Companion
 //! bundle this build embeds (`companion_bundle`).
 //!
-//! One thread owns the connection: offers and results both travel through
-//! it, so an Ok reply is never mistaken for a ForwardCommand. Concurrent
-//! Device invokes queue in the socket; they are answered in order.
+//! One thread writes the connection and one reads it. The daemon's
+//! replies and its pushes share the read side in no fixed order, so each
+//! message is acted on by kind and no reply is ever waited for (`serve`).
+//! Forwarded commands run in order on a thread of their own; an Attention
+//! or bundle ask never queues behind one. When the connection ends while
+//! the app is up, it is dialled again (`keep_connected`).
 
 use protocol::transport::Stream;
 use protocol::{
@@ -24,8 +27,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::ipc::{CallbackFn, InvokeBody, InvokeError, InvokeResponse, InvokeResponseBody};
 use tauri::webview::InvokeRequest;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -101,36 +104,97 @@ pub fn attention_items<R: Runtime>(app: &AppHandle<R>) -> Vec<AttentionItem> {
 }
 
 /// Opens (or re-opens) the forwarding connection against the local
-/// daemon. No-op when the daemon is older than v54 or has no token yet.
+/// daemon, and keeps it open (`keep_connected`). No-op when the daemon is
+/// older than v54.
 ///
 /// Called from `bootstrap` and `reconnect` once the command and push
-/// connections are live. The previous loop, if any, exits when its socket
-/// closes or when it notices the epoch bump.
+/// connections are live. The epoch is bumped before anything can return,
+/// so the previous loop -- which may be redialling a daemon that is gone
+/// -- stops however this call ends.
 pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_version: u32) {
-    if daemon_version < FORWARDING_MIN_VERSION {
-        return;
-    }
-    let Some(token) = crate::session::read_daemon_token() else {
-        return;
-    };
-    let Ok(socket) = protocol::socket_path() else {
-        return;
-    };
     let epoch = FORWARDING_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
     // Drop any prior offer sender: the old loop is about to die, and a
     // stale send would only wake a thread that can no longer write.
     if let Some(state) = app.try_state::<Forwarding>() {
         *state.offer.lock().unwrap() = None;
     }
+    if daemon_version < FORWARDING_MIN_VERSION {
+        return;
+    }
+    let Ok(socket) = protocol::socket_path() else {
+        return;
+    };
     let app = app.clone();
     std::thread::Builder::new()
         .name("gavin-forwarding".into())
         .spawn(move || {
-            if let Err(e) = run_loop(app, socket, token, epoch) {
-                eprintln!("gavin forwarding connection ended: {e}");
-            }
+            keep_connected(&app, &|| FORWARDING_EPOCH.load(Ordering::SeqCst) == epoch, || dial(&socket));
         })
         .expect("spawn forwarding thread");
+}
+
+/// The first redial after the forwarding connection ends waits this long,
+/// doubling to `REDIAL_CEILING`; a connection held for `REDIAL_SETTLED`
+/// starts the count over. The daemon paces its dial to the Relay the
+/// same way (`remote.rs`).
+const REDIAL_FLOOR: Duration = Duration::from_secs(1);
+const REDIAL_CEILING: Duration = Duration::from_secs(30);
+const REDIAL_SETTLED: Duration = Duration::from_secs(30);
+
+/// How long to wait before the `failures`-th redial in a row (1 is the
+/// first).
+fn redial_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    REDIAL_FLOOR.saturating_mul(1 << doublings).min(REDIAL_CEILING)
+}
+
+/// Serves the forwarding connection for as long as `wanted` holds,
+/// dialling it again whenever it ends.
+///
+/// `start` runs only on bootstrap and reconnect, and both wait for the
+/// COMMAND connection to fail. A forwarding connection that ended on its
+/// own while the app stayed up was gone until the app restarted, and in
+/// the meantime the daemon told every Device "desktop app not running"
+/// with the window open at the desk.
+fn keep_connected<R: Runtime>(
+    app: &AppHandle<R>,
+    wanted: &dyn Fn() -> bool,
+    mut dial: impl FnMut() -> anyhow::Result<Stream>,
+) {
+    let mut failures = 0u32;
+    while wanted() {
+        let began = Instant::now();
+        let ended = dial().and_then(|stream| {
+            eprintln!("gavin forwarding: connected; {}", crate::companion_bundle::describe());
+            serve(app, stream, wanted)
+        });
+        if !wanted() {
+            return;
+        }
+        match ended {
+            Ok(()) => eprintln!("gavin forwarding: the daemon closed the connection; dialling again"),
+            Err(e) => eprintln!("gavin forwarding connection ended: {e:#}; dialling again"),
+        }
+        if began.elapsed() >= REDIAL_SETTLED {
+            failures = 0;
+        }
+        failures = failures.saturating_add(1);
+        let until = Instant::now() + redial_delay(failures);
+        while wanted() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Connects and proves this app to the daemon as its forwarding
+/// connection. The token is read afresh on every dial: a daemon that
+/// restarted wrote a new one.
+fn dial(socket: &Path) -> anyhow::Result<Stream> {
+    let token = crate::session::read_daemon_token()
+        .ok_or_else(|| anyhow::anyhow!("no daemon token to present"))?;
+    let stream = connect_forward(socket)?;
+    handshake_forward(&stream, &token)?;
+    Ok(stream)
 }
 
 /// Emit to every webview **and** offer the same event on the forwarding
@@ -255,126 +319,121 @@ fn body_to_value(body: InvokeResponseBody) -> Result<serde_json::Value, String> 
     body.deserialize::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
-fn run_loop<R: Runtime>(
-    app: AppHandle<R>,
-    socket: std::path::PathBuf,
-    token: String,
-    epoch: u64,
-) -> anyhow::Result<()> {
-    let stream = connect_forward(&socket)?;
-    handshake_forward(&stream, &token)?;
-    eprintln!("gavin forwarding: connected; {}", crate::companion_bundle::describe());
-
-    let reader_stream = stream.try_clone()?;
-    let writer_stream = stream;
-    let writer = Arc::new(Mutex::new(writer_stream));
-
-    let (offer_tx, offer_rx) = mpsc::channel::<(String, serde_json::Value)>();
-    if let Some(state) = app.try_state::<Forwarding>() {
-        // Only publish if we are still the current epoch — a faster
-        // reconnect would otherwise be overwritten by this stale loop.
-        if FORWARDING_EPOCH.load(Ordering::SeqCst) == epoch {
-            *state.offer.lock().unwrap() = Some(offer_tx);
-        } else {
-            return Ok(());
-        }
-    }
-
-    let mut reader = BufReader::new(reader_stream);
-    // Short timeout so offers are drained promptly and an epoch bump is
-    // noticed without waiting for the next ForwardCommand.
-    writer
-        .lock()
-        .unwrap()
-        .set_read_timeout(Some(Duration::from_millis(50)))
-        .ok();
-    // The reader's timeout is on the clone — set it on the reader side.
-    // BufReader wraps the stream; set via get_mut.
-    reader.get_mut().set_read_timeout(Some(Duration::from_millis(50))).ok();
-
-    loop {
-        if FORWARDING_EPOCH.load(Ordering::SeqCst) != epoch {
-            break;
-        }
-
-        while let Ok((event, payload)) = offer_rx.try_recv() {
-            write_and_ack(&writer, &mut reader, &Request::OfferDesktopEvent { event, payload })?;
-        }
-
-        match read_message::<_, Response>(&mut reader) {
-            Ok(Some(Response::ForwardCommand { call_id, command, args })) => {
-                let outcome = dispatch(&app, &command, args);
-                let (value, error) = match outcome {
-                    Ok(v) => (Some(v), None),
-                    Err(e) => (None, Some(e)),
-                };
-                write_and_ack(
-                    &writer,
-                    &mut reader,
-                    &Request::ForwardResult { call_id, value, error },
-                )?;
-            }
-            Ok(Some(Response::ForwardAttention { call_id, version: _ })) => {
-                let items = attention_items(&app);
-                write_and_ack(
-                    &writer,
-                    &mut reader,
-                    &Request::AttentionResult { call_id, items },
-                )?;
-            }
-            Ok(Some(Response::ForwardBundle { call_id, version: _, offset, length })) => {
-                // The Companion bundle this build carries (ADR 0005): the
-                // manifest and the slice the daemon asked for, which it
-                // already cut to the wire's chunk cap.
-                let (manifest, offset, data) = crate::companion_bundle::answer(offset, length);
-                write_and_ack(
-                    &writer,
-                    &mut reader,
-                    &Request::BundleResult { call_id, manifest, offset, data },
-                )?;
-            }
-            Ok(Some(Response::Ok)) => {
-                // A stray Ok (e.g. from an offer that raced a timeout
-                // drain) is harmless.
-            }
-            Ok(Some(other)) => {
-                eprintln!("gavin forwarding: unexpected push {other:?}");
-            }
-            Ok(None) => break,
-            Err(e) => {
-                let msg = format!("{e:#}");
-                if is_timeout(&msg) {
-                    continue;
-                }
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
+/// What the forwarding thread acts on next.
+enum Inbound {
+    /// A message from the daemon: a push to answer, or its reply to a
+    /// request of ours.
+    Daemon(Response),
+    /// A forwarded command's result, from the thread that dispatches them.
+    Answered(Request),
+    /// The daemon's end closed (`None`) or could not be read.
+    Ended(Option<anyhow::Error>),
 }
 
-fn write_and_ack(
-    writer: &Arc<Mutex<Stream>>,
-    reader: &mut BufReader<Stream>,
-    req: &Request,
-) -> anyhow::Result<()> {
-    write_message(&mut *writer.lock().unwrap(), req)?;
-    // Bound the wait for Ok so a wedged daemon cannot pin this thread.
-    reader
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
-    let ack = read_message::<_, Response>(reader)?;
-    reader
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(50)))
-        .ok();
-    match ack {
-        Some(Response::Ok) => Ok(()),
-        Some(Response::Error { message }) => anyhow::bail!("forwarding ack: {message}"),
-        Some(other) => anyhow::bail!("forwarding ack was {other:?}"),
-        None => anyhow::bail!("daemon closed the forwarding connection during ack"),
+/// Serves one forwarding connection until it ends or `wanted` turns
+/// false.
+///
+/// The daemon writes to this connection from more than one thread: its
+/// reply to each request this end sends, and every push a Device's ask
+/// makes, the moment the Device asks. A push can therefore land between
+/// any request and its reply, so nothing here waits for a reply: one
+/// reader thread reads every message and this loop acts on each by kind.
+/// Taking "the next message" as the reply to the request just written is
+/// what ended this connection for good -- an Attention ask arriving
+/// between an offered event and its `Ok` was read as a malformed ack.
+///
+/// Forwarded commands run in order on a thread of their own, so a slow
+/// one never holds up an Attention or bundle ask, which are answered from
+/// what this host already holds.
+pub(crate) fn serve<R: Runtime>(app: &AppHandle<R>, stream: Stream, wanted: &dyn Fn() -> bool) -> anyhow::Result<()> {
+    let (offer_tx, offers) = mpsc::channel::<(String, serde_json::Value)>();
+    if let Some(state) = app.try_state::<Forwarding>() {
+        // Only publish while still wanted -- a faster reconnect would
+        // otherwise be overwritten by this stale loop.
+        if !wanted() {
+            return Ok(());
+        }
+        *state.offer.lock().unwrap() = Some(offer_tx);
     }
+
+    // The reader blocks for as long as the daemon is quiet; the deadline
+    // the handshake read under is not this connection's.
+    stream.set_read_timeout(None)?;
+    let (inbound_tx, inbound) = mpsc::channel::<Inbound>();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let from_daemon = inbound_tx.clone();
+    std::thread::Builder::new().name("gavin-forwarding-reader".into()).spawn(move || loop {
+        let ended = match read_message::<_, Response>(&mut reader) {
+            Ok(Some(message)) => {
+                if from_daemon.send(Inbound::Daemon(message)).is_err() {
+                    return;
+                }
+                continue;
+            }
+            Ok(None) => Inbound::Ended(None),
+            Err(e) => Inbound::Ended(Some(e)),
+        };
+        let _ = from_daemon.send(ended);
+        return;
+    })?;
+
+    let (commands_tx, commands) = mpsc::channel::<(u64, String, serde_json::Value)>();
+    let dispatcher = app.clone();
+    std::thread::Builder::new().name("gavin-forwarding-dispatch".into()).spawn(move || {
+        for (call_id, command, args) in commands {
+            let (value, error) = match dispatch(&dispatcher, &command, args) {
+                Ok(v) => (Some(v), None),
+                Err(e) => (None, Some(e)),
+            };
+            if inbound_tx.send(Inbound::Answered(Request::ForwardResult { call_id, value, error })).is_err() {
+                return;
+            }
+        }
+    })?;
+
+    let mut writer = stream.try_clone()?;
+    let served = (|| -> anyhow::Result<()> {
+        while wanted() {
+            while let Ok((event, payload)) = offers.try_recv() {
+                write_message(&mut writer, &Request::OfferDesktopEvent { event, payload })?;
+            }
+            // Bounded so offers are drained promptly and a change of
+            // `wanted` is noticed without waiting for the daemon.
+            match inbound.recv_timeout(Duration::from_millis(50)) {
+                Ok(Inbound::Daemon(Response::ForwardCommand { call_id, command, args })) => {
+                    let _ = commands_tx.send((call_id, command, args));
+                }
+                Ok(Inbound::Daemon(Response::ForwardAttention { call_id, version: _ })) => {
+                    let items = attention_items(app);
+                    write_message(&mut writer, &Request::AttentionResult { call_id, items })?;
+                }
+                Ok(Inbound::Daemon(Response::ForwardBundle { call_id, version: _, offset, length })) => {
+                    // The Companion bundle this build carries (ADR 0005):
+                    // the manifest and the slice the daemon asked for,
+                    // which it already cut to the wire's chunk cap.
+                    let (manifest, offset, data) = crate::companion_bundle::answer(offset, length);
+                    write_message(&mut writer, &Request::BundleResult { call_id, manifest, offset, data })?;
+                }
+                // The daemon's reply to a request of ours. Nothing waits
+                // for it: see above.
+                Ok(Inbound::Daemon(Response::Ok)) => {}
+                Ok(Inbound::Daemon(Response::Error { message })) => {
+                    eprintln!("gavin forwarding: the daemon refused a request: {message}");
+                }
+                Ok(Inbound::Daemon(other)) => eprintln!("gavin forwarding: unexpected push {other:?}"),
+                Ok(Inbound::Answered(result)) => write_message(&mut writer, &result)?,
+                Ok(Inbound::Ended(None)) => return Ok(()),
+                Ok(Inbound::Ended(Some(e))) => return Err(e),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        }
+        Ok(())
+    })();
+    // Unblocks the reader, so it does not outlive the connection; the
+    // dispatcher ends with the command it is running, if any.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    served
 }
 
 fn connect_forward(socket: &Path) -> anyhow::Result<Stream> {
@@ -393,14 +452,6 @@ fn handshake_forward(stream: &Stream, token: &str) -> anyhow::Result<()> {
     crate::session::verify_app_ack(ack, token, &nonce)
 }
 
-fn is_timeout(msg: &str) -> bool {
-    msg.contains("timed out")
-        || msg.contains("WouldBlock")
-        || msg.contains("Resource temporarily unavailable")
-        || msg.contains("os error 35") // macOS EAGAIN
-        || msg.contains("os error 11") // Linux EAGAIN
-}
-
 /// Test-only: a Hello that claims Forward, used by the unit that pins
 /// the connection kind without opening a real daemon socket.
 #[cfg(test)]
@@ -412,6 +463,7 @@ pub(crate) fn forward_hello_for_test(token: &str, nonce: &str) -> Request {
 mod tests {
     use super::*;
     use protocol::{HelloAuth, PROTOCOL_VERSION};
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
 
@@ -605,6 +657,139 @@ mod tests {
         let (event, payload) = rx.recv_timeout(Duration::from_secs(1)).expect("offer");
         assert_eq!(event, "status-changed");
         assert_eq!(payload, serde_json::json!({"id": "s1", "status": "idle"}));
+    }
+
+    fn waiting(id: &str) -> AttentionItem {
+        AttentionItem {
+            id: id.into(),
+            workspace: "ws-1".into(),
+            kind: protocol::AttentionKind::Waiting,
+            text: "agent is asking".into(),
+            target: protocol::AttentionTarget::Session { id: "s1".into() },
+        }
+    }
+
+    /// The daemon's end of a forwarding connection `serve` is serving.
+    struct Daemon {
+        from_desk: BufReader<Stream>,
+        to_desk: Stream,
+    }
+
+    impl Daemon {
+        fn over(daemon: Stream) -> Self {
+            daemon.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            Daemon { from_desk: BufReader::new(daemon.try_clone().unwrap()), to_desk: daemon }
+        }
+
+        fn next(&mut self) -> Request {
+            read_message::<_, Request>(&mut self.from_desk)
+                .expect("the desk wrote something readable")
+                .expect("the desk kept the connection open")
+        }
+
+        fn send(&mut self, push: &Response) {
+            write_message(&mut self.to_desk, push).unwrap();
+        }
+    }
+
+    /// Serves one forwarding connection on a thread, as `run_loop` does
+    /// after its handshake, until `wanted` turns false or the daemon's end
+    /// goes away.
+    fn serving(
+        handle: &AppHandle<tauri::test::MockRuntime>,
+        wanted: Arc<std::sync::atomic::AtomicBool>,
+    ) -> (Daemon, std::thread::JoinHandle<anyhow::Result<()>>) {
+        let (desk, daemon) = Stream::pair().unwrap();
+        let handle = handle.clone();
+        let join = std::thread::spawn(move || serve(&handle, desk, &|| wanted.load(Ordering::SeqCst)));
+        (Daemon::over(daemon), join)
+    }
+
+    fn until(what: &str, check: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !check() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The daemon writes a Device's ask the moment the Device asks, from
+    /// the Device's own thread, so an ask can land between an event the
+    /// desk offered and the daemon's `Ok` for it. The desk answers it and
+    /// carries on. Read as a malformed ack, it ended the connection for
+    /// good, and every Device was told the desktop app was not running
+    /// with its window open in front of the human.
+    #[test]
+    fn an_ask_that_lands_between_an_offer_and_its_ok_is_answered_and_the_connection_lives() {
+        let (app, _webview) = mock_app_with(Arc::new(AtomicUsize::new(0)));
+        let handle = app.handle().clone();
+        *handle.state::<Forwarding>().attention.lock().unwrap() = vec![waiting("waiting:s1")];
+        let wanted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (mut daemon, join) = serving(&handle, Arc::clone(&wanted));
+        until("the connection to take offers", || handle.state::<Forwarding>().offer.lock().unwrap().is_some());
+
+        offer(&handle, "session-status-changed", serde_json::json!(["s1", "idle"]));
+        assert!(matches!(daemon.next(), Request::OfferDesktopEvent { .. }));
+        daemon.send(&Response::ForwardAttention { call_id: 7, version: 1 });
+        daemon.send(&Response::Ok);
+        match daemon.next() {
+            Request::AttentionResult { call_id, items } => {
+                assert_eq!(call_id, 7);
+                assert_eq!(items, vec![waiting("waiting:s1")]);
+            }
+            other => panic!("expected the ask answered, got {other:?}"),
+        }
+        daemon.send(&Response::Ok);
+
+        // Still serving: the next ask is answered as well.
+        daemon.send(&Response::ForwardAttention { call_id: 8, version: 1 });
+        assert!(matches!(daemon.next(), Request::AttentionResult { call_id: 8, .. }));
+        daemon.send(&Response::Ok);
+
+        wanted.store(false, Ordering::SeqCst);
+        join.join().unwrap().expect("ends cleanly once no longer wanted");
+    }
+
+    /// A forwarding connection that ends while the app is up is dialled
+    /// again, and the new one is served -- the daemon gets its desk back
+    /// without anyone restarting the app.
+    #[test]
+    fn a_connection_that_ends_is_dialled_again_and_served() {
+        let (app, _webview) = mock_app_with(Arc::new(AtomicUsize::new(0)));
+        let handle = app.handle().clone();
+        *handle.state::<Forwarding>().attention.lock().unwrap() = vec![waiting("waiting:s1")];
+        let wanted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (dialled_tx, dialled) = mpsc::channel::<Stream>();
+        let keeper = {
+            let handle = handle.clone();
+            let wanted = Arc::clone(&wanted);
+            std::thread::spawn(move || {
+                keep_connected(&handle, &|| wanted.load(Ordering::SeqCst), || {
+                    let (desk, daemon) = Stream::pair()?;
+                    dialled_tx.send(daemon).map_err(|_| anyhow::anyhow!("the test is over"))?;
+                    Ok(desk)
+                })
+            })
+        };
+
+        let first = dialled.recv_timeout(Duration::from_secs(5)).expect("dialled");
+        drop(first);
+        let second = dialled
+            .recv_timeout(REDIAL_FLOOR + Duration::from_secs(5))
+            .expect("dialled again once the first connection ended");
+        let mut daemon = Daemon::over(second);
+        daemon.send(&Response::ForwardAttention { call_id: 1, version: 1 });
+        assert!(matches!(daemon.next(), Request::AttentionResult { call_id: 1, .. }));
+
+        wanted.store(false, Ordering::SeqCst);
+        keeper.join().unwrap();
+    }
+
+    #[test]
+    fn the_redial_backs_off_to_a_ceiling() {
+        assert_eq!(redial_delay(1), REDIAL_FLOOR);
+        assert_eq!(redial_delay(2), REDIAL_FLOOR * 2);
+        assert_eq!(redial_delay(40), REDIAL_CEILING);
     }
 
     #[test]
