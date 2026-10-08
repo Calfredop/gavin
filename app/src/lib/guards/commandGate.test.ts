@@ -302,6 +302,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // its read-back, and the app-wide pane setting.
   watch_browser: ["ordinary"],
   unwatch_browser: ["ordinary"],
+  watch_browser_for_device: ["ordinary"],
+  unwatch_browser_for_device: ["ordinary"],
   list_browsers: ["ordinary"],
   get_playwright_pane_open: ["ordinary"],
   set_playwright_pane_open: ["ordinary"],

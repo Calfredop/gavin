@@ -36,6 +36,7 @@ import { adoptSettingsRecord, type WorkspaceSettingsRecord } from "$lib/workspac
 import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
+import { browserSessionEnded, reassertBrowserViews, startBrowserViews } from "$companion/state/browser";
 import { connectionChanged, onReconnect, resetReachability } from "$companion/state/reachability";
 import { forgetSession, resetSessions, startedHere } from "$companion/state/sessions";
 import { resetTurns, turnMovedOn } from "$companion/state/turn";
@@ -375,6 +376,7 @@ function adoptWorkspaces(data: WorkspacesData): void {
 /// is not the phone's -- and a view showing it goes back to the list.
 function sessionEnded(sessionId: string): void {
   forgetSession(sessionId);
+  browserSessionEnded(sessionId);
   if (get(viewStore).sessionId === sessionId) show(closeTerminalIn(get(viewStore)));
   destroyTerminal(sessionId);
 }
@@ -521,6 +523,9 @@ export async function connectWorkstation(
         layoutState.update((s) => ({ ...s, failureReasonById: { ...s.failureReasonById, [id]: reason } }));
       })
     );
+    // Which agents' browsers are running, for the button beside each
+    // terminal; their frames are listened for only while a view is up.
+    stops.push(await startBrowserViews());
 
     const data = await backend.getWorkspacesState();
     const workstationId = capabilities.workstation.id;
@@ -559,6 +564,7 @@ export async function connectWorkstation(
         .then(adoptWorkspaces)
         .catch(() => {});
       void loadSessions(true);
+      reassertBrowserViews();
     })
   );
 

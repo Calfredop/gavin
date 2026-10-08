@@ -21,6 +21,7 @@ import type { GavinContext, GavinTree } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { scanPlans } from "$companion/demo/cardFiles";
+import { sampleBrowsers, type DemoBrowser } from "$companion/demo/browser";
 import type { DemoRepo } from "$companion/demo/repo";
 import { sampleCardFiles } from "$companion/demo/sampleCards";
 import { projectFiles, sampleRepos } from "$companion/demo/sampleProjects";
@@ -83,6 +84,8 @@ export interface DemoState {
   /// Every live session's terminal: what it has written, and what it
   /// does with what is typed into it (sessions.ts).
   terminals: Record<string, DemoTerminal>;
+  /// The agents' browsers that are running, by session (browser.ts).
+  browsers: Record<string, DemoBrowser>;
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
@@ -434,6 +437,7 @@ export function sampleState(): DemoState {
     watches: { files: {}, git: {} },
     queuedInputs: [],
     terminals: sampleTerminals(DEMO.home),
+    browsers: sampleBrowsers(),
     launched: 0,
     settings: sampleSettings(),
   };

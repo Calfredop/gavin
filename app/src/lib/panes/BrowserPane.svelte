@@ -6,7 +6,7 @@
   // Deliberately thin: what to draw is `paneShows`, and the stream is the
   // module's -- this only says, while it is on screen, that it wants one.
   import { Globe } from "@lucide/svelte";
-  import { paneShows } from "$lib/panes/browserView";
+  import { PANE_NOTES, paneShows } from "$lib/panes/browserView";
   import { browserBlocked, browserViews } from "$lib/panes/browserViewState";
   import { tooltip } from "$lib/core/tooltip";
 
@@ -50,14 +50,14 @@
         draggable="false"
       />
       {#if shows.stopped}
-        <p class="note over">The browser stopped. This is the last thing it showed.</p>
+        <p class="note over">{PANE_NOTES.stopped}</p>
       {/if}
     {:else if shows.kind === "blocked"}
       <p class="note">{shows.reason}</p>
     {:else if shows.kind === "waiting"}
-      <p class="note">Waiting for the browser's first frame…</p>
+      <p class="note">{PANE_NOTES.waiting}</p>
     {:else}
-      <p class="note">This agent's browser is not running. It starts with the agent's first browser tool call.</p>
+      <p class="note">{PANE_NOTES.idle}</p>
     {/if}
   </div>
 </div>

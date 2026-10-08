@@ -25,6 +25,18 @@
 //! and a desk frame offered to the forwarding connection would cross the
 //! machine for nobody.
 //!
+//! **A Device's view** is that small stream. A Device never sends the
+//! daemon a request of its own (ADR 0003), so it asks the desk:
+//! `watch_browser_for_device` opens `WatchBrowser { size: phone, max_fps:
+//! 2 }` on a connection of the desk's, and every frame is offered to the
+//! Devices as `browser-frame`, which the daemon relays to those listening
+//! for it. Nothing tells the desk a phone has gone -- locked, out of
+//! range, its page closed -- so a Device's watch is a LEASE, renewed
+//! while its view is on screen and let go when nobody has renewed it for
+//! `DEVICE_LEASE`. Only for a session on this machine: an ssh session's
+//! frames ride the host's one streaming connection, where a phone-size
+//! stream would arrive indistinguishable from the desk-size one.
+//!
 //! Also the app-wide half of the pane's open setting, read and written
 //! straight to config.json (`AppConfig::playwright_pane_open`).
 
@@ -33,6 +45,7 @@ use std::io::BufReader;
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use protocol::transport::Stream;
 use protocol::{read_message, write_message, BrowserViewSize, ConnectionKind, LiveBrowser, Request, Response};
@@ -52,6 +65,22 @@ pub const REMOTE_FPS: u32 = 4;
 /// The event a window's pane reads its frames from.
 pub const FRAME_EVENT: &str = "browser-desk-frame";
 
+/// The rate a Device's view asks for: the phone size's cap, which keeps a
+/// view under 75 KiB/s across the Relay (spec Q4).
+pub const DEVICE_FPS: u32 = 2;
+
+/// The event a Device's view reads its frames from (spec Q6).
+pub const DEVICE_FRAME_EVENT: &str = "browser-frame";
+
+/// How long a Device's watch holds without being renewed. The bundle
+/// renews at a third of it (it is told this in every answer), so one
+/// renewal lost to a slow link costs nothing, and a phone that went away
+/// costs the daemon a screencast for half a minute at most.
+pub const DEVICE_LEASE: Duration = Duration::from_secs(30);
+
+/// How often a Device watch's keeper checks its leases.
+const LEASE_CHECK: Duration = Duration::from_secs(1);
+
 /// One frame, as the frontend reads it (`browserView.ts::BrowserFrame`):
 /// `Response::BrowserFrame` in camelCase. `data` is the JPEG, base64, as
 /// Chromium sent it.
@@ -65,6 +94,16 @@ pub struct BrowserFrame {
     pub height: u32,
     pub url: String,
     pub title: String,
+}
+
+/// What a Device's watch answers (`browserView.ts::DeviceBrowserWatch`):
+/// the newest phone-size frame the desk holds, and how long the watch
+/// holds unless it is asked again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceBrowserWatch {
+    pub frame: Option<BrowserFrame>,
+    pub lease_ms: u64,
 }
 
 /// Every session a window is watching, and how.
@@ -82,6 +121,36 @@ struct Registry {
     /// watcher on it and every frame across ssh twice. A new link has a
     /// new id, so a reconnect asks again.
     told: HashMap<String, u64>,
+    /// The phone-size streams Devices are watching, by session. Apart from
+    /// `watches`: a session can be on a desk's screen and a phone's at
+    /// once, at two sizes, on two connections.
+    devices: HashMap<String, DeviceStream>,
+}
+
+/// One session's phone-size stream, and who holds it.
+#[derive(Default)]
+struct DeviceStream {
+    /// Until when each watcher's lease holds, by the id its view minted.
+    leases: HashMap<String, Instant>,
+    /// The newest frame, for a view that joins a stream already running.
+    last: Option<BrowserFrame>,
+    /// Always the stream's own connection: `Shared` only until it dials.
+    conn: Conn,
+}
+
+impl DeviceStream {
+    fn held(&self, now: Instant) -> bool {
+        self.leases.values().any(|until| *until > now)
+    }
+}
+
+/// What a Device stream's keeper finds.
+enum Lease {
+    /// Someone renewed it in time.
+    Held,
+    /// Nobody did, or the stream is no longer the keeper's: its connection,
+    /// if there was one, to close.
+    Over(Option<Stream>),
 }
 
 #[derive(Default)]
@@ -223,6 +292,104 @@ impl Registry {
             self.watches.remove(session_id);
         }
     }
+
+    // -- a Device's watches --------------------------------------------
+
+    /// `watcher` takes, or renews, its lease on the session's phone-size
+    /// stream.
+    fn watch_device(&mut self, session_id: &str, watcher: &str, now: Instant) -> (Start, Option<BrowserFrame>) {
+        let stream = self.devices.entry(session_id.to_string()).or_default();
+        stream.leases.insert(watcher.to_string(), now + DEVICE_LEASE);
+        let start = match stream.conn {
+            Conn::Dialing(_) | Conn::Live { .. } => Start::Nothing,
+            Conn::Shared => {
+                let id = NEXT_WATCH.fetch_add(1, Ordering::Relaxed);
+                stream.conn = Conn::Dialing(id);
+                Start::Dial(id)
+            }
+        };
+        (start, stream.last.clone())
+    }
+
+    /// The dial `id` connected. Hands the stream back when it was let go
+    /// of meanwhile, for the caller to close.
+    fn device_dialed(&mut self, session_id: &str, id: u64, stream: Stream) -> Result<(), Stream> {
+        match self.devices.get_mut(session_id) {
+            Some(device) if matches!(device.conn, Conn::Dialing(d) if d == id) => {
+                device.conn = Conn::Live { id, stream };
+                Ok(())
+            }
+            _ => Err(stream),
+        }
+    }
+
+    /// The dial `id` failed: the lease taken for it goes too, so the
+    /// view's next renewal dials again rather than holding nothing.
+    fn device_dial_failed(&mut self, session_id: &str, id: u64) {
+        if matches!(self.devices.get(session_id).map(|d| &d.conn), Some(Conn::Dialing(d)) if *d == id) {
+            self.devices.remove(session_id);
+        }
+    }
+
+    /// `watcher`'s view left the screen. Answers the connection to close
+    /// when it held the last lease.
+    fn unwatch_device(&mut self, session_id: &str, watcher: &str) -> Option<Stream> {
+        let stream = self.devices.get_mut(session_id)?;
+        stream.leases.remove(watcher);
+        if !stream.leases.is_empty() {
+            return None;
+        }
+        match self.devices.remove(session_id)?.conn {
+            Conn::Live { stream, .. } => Some(stream),
+            _ => None,
+        }
+    }
+
+    /// A frame from the Device connection `id`. `None` when that
+    /// connection is no longer the session's stream, which tells its
+    /// reader to stop; otherwise whether to offer it -- a stream whose
+    /// leases have all run out is not shown to anybody while its keeper
+    /// comes round to close it.
+    fn device_frame(&mut self, frame: &BrowserFrame, id: u64, now: Instant) -> Option<bool> {
+        let stream = self.devices.get_mut(&frame.session_id)?;
+        if stream.conn.id() != Some(id) {
+            return None;
+        }
+        stream.last = Some(frame.clone());
+        Some(stream.held(now))
+    }
+
+    /// The keeper of the Device connection `id` checks its leases.
+    fn expire_device(&mut self, session_id: &str, id: u64, now: Instant) -> Lease {
+        let Some(stream) = self.devices.get_mut(session_id) else { return Lease::Over(None) };
+        if stream.conn.id() != Some(id) {
+            return Lease::Over(None);
+        }
+        stream.leases.retain(|_, until| *until > now);
+        if !stream.leases.is_empty() {
+            return Lease::Held;
+        }
+        match self.devices.remove(session_id).map(|s| s.conn) {
+            Some(Conn::Live { stream, .. }) => Lease::Over(Some(stream)),
+            _ => Lease::Over(None),
+        }
+    }
+
+    /// The Device connection `id` ended without the session ending. The
+    /// leases go with it: the views' next renewal dials afresh.
+    fn device_ended(&mut self, session_id: &str, id: u64) {
+        if self.devices.get(session_id).and_then(|d| d.conn.id()) == Some(id) {
+            self.devices.remove(session_id);
+        }
+    }
+
+    /// The session ended. Answers its Device connection, if any, to close.
+    fn device_gone(&mut self, session_id: &str) -> Option<Stream> {
+        match self.devices.remove(session_id)?.conn {
+            Conn::Live { stream, .. } => Some(stream),
+            _ => None,
+        }
+    }
 }
 
 /// Starts (or joins) the session's stream for the calling window, and
@@ -250,7 +417,7 @@ fn watch(app: &AppHandle, session_id: &str, window: &str) -> Result<Option<Brows
                 return Ok(held);
             };
             let compat = current_compat(&app.state::<DaemonCompatState>());
-            let dialled = dial(session_id, &compat).and_then(|stream| {
+            let dialled = dial(session_id, &compat, BrowserViewSize::Desk, LOCAL_FPS).and_then(|stream| {
                 let reader = stream.try_clone()?;
                 Ok((stream, reader))
             });
@@ -305,12 +472,8 @@ pub fn unwatch_browser(session_id: String, app_handle: AppHandle, window: tauri:
 /// then only reads: the daemon sends its broadcast pushes to an app's
 /// push connections (`ConnectionKind::takes_device_pushes`), and none of
 /// them belong on this one.
-fn dial(session_id: &str, compat: &DaemonCompat) -> anyhow::Result<Stream> {
-    let request = Request::WatchBrowser {
-        session_id: session_id.to_string(),
-        size: BrowserViewSize::Desk,
-        max_fps: LOCAL_FPS,
-    };
+fn dial(session_id: &str, compat: &DaemonCompat, size: BrowserViewSize, max_fps: u32) -> anyhow::Result<Stream> {
+    let request = Request::WatchBrowser { session_id: session_id.to_string(), size, max_fps };
     crate::session::gate(&request, compat).map_err(anyhow::Error::msg)?;
     let socket = protocol::socket_path()?;
     let mut stream = crate::session::connect_local(&socket)?;
@@ -382,9 +545,15 @@ fn emit_frame(app: &AppHandle, windows: &[String], frame: &BrowserFrame) {
     }
 }
 
-/// The session ended: its watch goes, and every window hears it.
+/// The session ended: its watches go -- a desk's and a Device's -- and
+/// every window and every Device hears it.
 fn gone(app: &AppHandle, session_id: &str) {
-    if let Some(stream) = app.state::<BrowserWatches>().0.lock().unwrap().gone(session_id) {
+    let watches = app.state::<BrowserWatches>();
+    let streams = {
+        let mut registry = watches.0.lock().unwrap();
+        [registry.gone(session_id), registry.device_gone(session_id)]
+    };
+    for stream in streams.into_iter().flatten() {
         let _ = stream.shutdown(Shutdown::Both);
     }
     let _ = crate::forwarding::emit(app, "browser-gone", session_id.to_string());
@@ -401,6 +570,141 @@ pub(crate) fn relay_frame(app: &AppHandle, frame: BrowserFrame) {
 /// A `BrowserGone` the relay read off a host's link.
 pub(crate) fn relay_gone(app: &AppHandle, session_id: &str) {
     gone(app, session_id);
+}
+
+// -- a Device's view -------------------------------------------------------
+
+/// A Device's view of the session's browser, on screen: takes or renews
+/// `watcher`'s lease on the session's phone-size stream, starting the
+/// stream if it is the first, and answers the newest frame the desk holds
+/// with how long the lease lasts. Frames go to the Devices as
+/// `browser-frame`.
+///
+/// Off the main thread: the first watch dials and handshakes a connection.
+#[tauri::command]
+pub async fn watch_browser_for_device(
+    session_id: String,
+    watcher: String,
+    app_handle: AppHandle,
+) -> Result<DeviceBrowserWatch, String> {
+    tauri::async_runtime::spawn_blocking(move || watch_for_device(&app_handle, &session_id, &watcher))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn watch_for_device(app: &AppHandle, session_id: &str, watcher: &str) -> Result<DeviceBrowserWatch, String> {
+    if let Route::Remote(link) = crate::remote::route_for_session(app, session_id)? {
+        return Err(format!(
+            "This agent's browser runs on {}, and a phone is shown only the browsers of this Workstation's own agents.",
+            link.host
+        ));
+    }
+    let watches = app.state::<BrowserWatches>();
+    let (start, held) = watches.0.lock().unwrap().watch_device(session_id, watcher, Instant::now());
+    if let Start::Dial(id) = start {
+        let compat = current_compat(&app.state::<DaemonCompatState>());
+        let dialled = dial(session_id, &compat, BrowserViewSize::Phone, DEVICE_FPS).and_then(|stream| {
+            let reader = stream.try_clone()?;
+            Ok((stream, reader))
+        });
+        match dialled {
+            Ok((stream, reader)) => match watches.0.lock().unwrap().device_dialed(session_id, id, stream) {
+                Ok(()) => {
+                    let (reading, session) = (app.clone(), session_id.to_string());
+                    std::thread::Builder::new()
+                        .name("browser-view-device".into())
+                        .spawn(move || {
+                            let watches = reading.state::<BrowserWatches>();
+                            let offer = |frame: &BrowserFrame| {
+                                let payload = serde_json::to_value(frame).unwrap_or(serde_json::Value::Null);
+                                crate::forwarding::offer(&reading, DEVICE_FRAME_EVENT, payload);
+                            };
+                            if let Some(gone_id) = read_device_watch(&watches, &session, id, reader, &offer) {
+                                gone(&reading, &gone_id);
+                            }
+                        })
+                        .map_err(|e| e.to_string())?;
+                    let (keeping, session) = (app.clone(), session_id.to_string());
+                    std::thread::Builder::new()
+                        .name("browser-view-lease".into())
+                        .spawn(move || keep_device_watch(&keeping.state::<BrowserWatches>(), &session, id))
+                        .map_err(|e| e.to_string())?;
+                }
+                // Let go of while it dialled.
+                Err(stream) => {
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+            },
+            Err(e) => {
+                watches.0.lock().unwrap().device_dial_failed(session_id, id);
+                return Err(e.to_string());
+            }
+        }
+    }
+    Ok(DeviceBrowserWatch { frame: held, lease_ms: DEVICE_LEASE.as_millis() as u64 })
+}
+
+/// `watcher`'s view left the screen. Closes the stream when it held the
+/// last lease; another Device's view keeps it. A plain `fn`: it only
+/// closes a socket.
+#[tauri::command]
+pub fn unwatch_browser_for_device(session_id: String, watcher: String, app_handle: AppHandle) {
+    let stream = app_handle.state::<BrowserWatches>().0.lock().unwrap().unwatch_device(&session_id, &watcher);
+    if let Some(stream) = stream {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+}
+
+/// Reads a Device stream's connection until it ends, offering each frame
+/// while a lease holds it. Answers the session when the daemon said its
+/// browser is gone, for the caller to tell everyone.
+///
+/// Reads to the end whatever is offered: a frame nobody holds is dropped
+/// here, never left in the socket, so the daemon's writer for this
+/// watcher never waits on it.
+fn read_device_watch(
+    watches: &BrowserWatches,
+    session_id: &str,
+    id: u64,
+    stream: Stream,
+    offer: &dyn Fn(&BrowserFrame),
+) -> Option<String> {
+    let mut reader = BufReader::new(stream);
+    while let Some(read) = next(&mut reader) {
+        match read {
+            Read::Frame(frame) => {
+                let shown = watches.0.lock().unwrap().device_frame(&frame, id, Instant::now());
+                match shown {
+                    Some(true) => offer(&frame),
+                    Some(false) => {}
+                    None => break,
+                }
+            }
+            Read::Gone(gone_id) => return Some(gone_id),
+            Read::Refused(message) => {
+                eprintln!("gavin browser view: the daemon refused a Device's watch of {session_id}: {message}");
+                break;
+            }
+            Read::Other => {}
+        }
+    }
+    watches.0.lock().unwrap().device_ended(session_id, id);
+    None
+}
+
+/// Closes a Device stream once nobody has renewed it for `DEVICE_LEASE`,
+/// and ends with it -- or as soon as the stream is no longer its own.
+fn keep_device_watch(watches: &BrowserWatches, session_id: &str, id: u64) {
+    loop {
+        std::thread::sleep(LEASE_CHECK);
+        let lease = watches.0.lock().unwrap().expire_device(session_id, id, Instant::now());
+        if let Lease::Over(stream) = lease {
+            if let Some(stream) = stream {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            return;
+        }
+    }
 }
 
 /// Every running browser on every daemon the app talks to (v65): the
@@ -637,6 +941,187 @@ mod tests {
         assert!(matches!(next(&mut reader), Some(Read::Frame(f)) if f.seq == 1 && f.data == "jpeg"));
         assert!(matches!(next(&mut reader), Some(Read::Gone(id)) if id == "s1"));
         assert!(next(&mut reader).is_none());
+    }
+
+    // -- a Device's view ---------------------------------------------------
+
+    fn device_live(registry: &mut Registry, session_id: &str, watcher: &str, now: Instant) -> (u64, Stream) {
+        let (start, _) = registry.watch_device(session_id, watcher, now);
+        let Start::Dial(id) = start else { panic!("expected a dial, got {start:?}") };
+        let (ours, theirs) = Stream::pair().unwrap();
+        assert!(registry.device_dialed(session_id, id, ours).is_ok());
+        (id, theirs)
+    }
+
+    fn ago(by: Duration) -> Instant {
+        Instant::now().checked_sub(by).expect("a clock that has run that long")
+    }
+
+    #[test]
+    fn a_devices_stream_dials_once_however_many_views_hold_it() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (id, _far) = device_live(&mut registry, "s1", "phone-a", now);
+        assert_eq!(registry.watch_device("s1", "phone-b", now).0, Start::Nothing);
+        // A renewal is a watch like any other, and dials nothing.
+        assert_eq!(registry.watch_device("s1", "phone-a", now).0, Start::Nothing);
+        assert_eq!(registry.device_frame(&frame("s1", 1), id, now), Some(true));
+    }
+
+    #[test]
+    fn a_device_stream_is_not_the_desks_and_the_desks_is_not_a_devices() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (desk, _far) = live(&mut registry, "s1", "main");
+        let (device, _far2) = device_live(&mut registry, "s1", "phone", now);
+        assert_ne!(desk, device);
+
+        // Each connection's frames reach only its own audience: a desk frame
+        // is never offered to a phone, nor a phone frame drawn at the desk.
+        assert_eq!(registry.device_frame(&frame("s1", 1), desk, now), None);
+        assert!(registry.frame(&frame("s1", 1), Some(device)).is_none());
+        // And a desk joining later does not take the phone's newest frame.
+        registry.device_frame(&frame("s1", 2), device, now);
+        let (_, held) = registry.watch_local("s1", "other");
+        assert_eq!(held, None);
+    }
+
+    #[test]
+    fn a_view_joining_a_device_stream_is_handed_its_newest_frame() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (id, _far) = device_live(&mut registry, "s1", "phone-a", now);
+        registry.device_frame(&frame("s1", 1), id, now);
+        registry.device_frame(&frame("s1", 2), id, now);
+
+        let (_, held) = registry.watch_device("s1", "phone-b", now);
+        assert_eq!(held.map(|f| f.seq), Some(2));
+    }
+
+    #[test]
+    fn a_device_stream_closes_when_its_last_view_lets_go_and_not_before() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (_, _far) = device_live(&mut registry, "s1", "phone-a", now);
+        registry.watch_device("s1", "phone-b", now);
+
+        assert!(registry.unwatch_device("s1", "phone-a").is_none());
+        assert!(registry.unwatch_device("s1", "phone-b").is_some());
+        assert!(matches!(registry.watch_device("s1", "phone-a", now).0, Start::Dial(_)));
+    }
+
+    #[test]
+    fn a_lease_nobody_renews_runs_out_and_closes_the_stream() {
+        let mut registry = Registry::default();
+        let taken = ago(DEVICE_LEASE + Duration::from_secs(5));
+        let (id, _far) = device_live(&mut registry, "s1", "phone", taken);
+
+        // Still held a moment before it runs out...
+        assert!(matches!(registry.expire_device("s1", id, taken + DEVICE_LEASE / 2), Lease::Held));
+        // ...not shown to anybody once it has, while the keeper comes round...
+        assert_eq!(registry.device_frame(&frame("s1", 1), id, Instant::now()), Some(false));
+        // ...and closed when it does.
+        assert!(matches!(registry.expire_device("s1", id, Instant::now()), Lease::Over(Some(_))));
+        assert!(matches!(registry.watch_device("s1", "phone", Instant::now()).0, Start::Dial(_)));
+    }
+
+    #[test]
+    fn a_renewal_keeps_the_stream_and_one_phones_silence_does_not_end_anothers() {
+        let mut registry = Registry::default();
+        let taken = ago(DEVICE_LEASE + Duration::from_secs(5));
+        let (id, _far) = device_live(&mut registry, "s1", "gone-phone", taken);
+        registry.watch_device("s1", "here-phone", Instant::now());
+
+        assert!(matches!(registry.expire_device("s1", id, Instant::now()), Lease::Held));
+        // The phone that went quiet is let go of; the one renewing keeps it.
+        assert!(registry.unwatch_device("s1", "here-phone").is_some());
+    }
+
+    #[test]
+    fn a_keeper_whose_stream_was_replaced_stops_and_leaves_the_new_one_alone() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (old, _far) = device_live(&mut registry, "s1", "phone", now);
+        registry.unwatch_device("s1", "phone");
+        let (new, _far2) = device_live(&mut registry, "s1", "phone", now);
+
+        assert!(matches!(registry.expire_device("s1", old, now), Lease::Over(None)));
+        assert_eq!(registry.device_frame(&frame("s1", 3), old, now), None);
+        registry.device_ended("s1", old);
+        assert_eq!(registry.device_frame(&frame("s1", 4), new, now), Some(true));
+    }
+
+    #[test]
+    fn a_failed_device_dial_takes_its_lease_with_it_and_the_next_watch_dials() {
+        let mut registry = Registry::default();
+        let Start::Dial(id) = registry.watch_device("s1", "phone", Instant::now()).0 else { panic!("no dial") };
+        registry.device_dial_failed("s1", id);
+        assert!(matches!(registry.watch_device("s1", "phone", Instant::now()).0, Start::Dial(_)));
+    }
+
+    #[test]
+    fn the_session_ending_closes_its_device_stream() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let (id, _far) = device_live(&mut registry, "s1", "phone", now);
+        assert!(registry.device_gone("s1").is_some());
+        assert_eq!(registry.device_frame(&frame("s1", 1), id, now), None);
+    }
+
+    fn phone_frame(seq: u64) -> Response {
+        Response::BrowserFrame {
+            session_id: "s1".into(),
+            seq,
+            data: format!("jpeg-{seq}"),
+            width: 1280,
+            height: 800,
+            url: "https://example.test/".into(),
+            title: "Example".into(),
+        }
+    }
+
+    #[test]
+    fn a_device_streams_frames_are_offered_while_held_and_its_end_is_told() {
+        let watches = BrowserWatches::default();
+        let (id, theirs) = device_live(&mut watches.0.lock().unwrap(), "s1", "phone", Instant::now());
+        let (ours, mut daemon) = Stream::pair().unwrap();
+        write_message(&mut daemon, &phone_frame(1)).unwrap();
+        write_message(&mut daemon, &phone_frame(2)).unwrap();
+        write_message(&mut daemon, &Response::BrowserGone { session_id: "s1".into() }).unwrap();
+        drop(daemon);
+        drop(theirs);
+
+        let offered = Mutex::new(Vec::new());
+        let gone = read_device_watch(&watches, "s1", id, ours, &|f| offered.lock().unwrap().push(f.seq));
+        assert_eq!(*offered.lock().unwrap(), vec![1, 2]);
+        assert_eq!(gone.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn a_device_stream_nobody_holds_is_read_to_the_end_and_offered_to_nobody() {
+        let watches = BrowserWatches::default();
+        let taken = ago(DEVICE_LEASE + Duration::from_secs(5));
+        let (id, _theirs) = device_live(&mut watches.0.lock().unwrap(), "s1", "phone", taken);
+        let (ours, mut daemon) = Stream::pair().unwrap();
+        for seq in 1..=3 {
+            write_message(&mut daemon, &phone_frame(seq)).unwrap();
+        }
+        drop(daemon);
+
+        let offered = Mutex::new(Vec::new());
+        assert_eq!(read_device_watch(&watches, "s1", id, ours, &|f| offered.lock().unwrap().push(f.seq)), None);
+        assert!(offered.lock().unwrap().is_empty());
+        // Its end forgets it, so the next renewal dials a fresh stream.
+        assert!(matches!(watches.0.lock().unwrap().watch_device("s1", "phone", Instant::now()).0, Start::Dial(_)));
+    }
+
+    #[test]
+    fn a_devices_watch_is_answered_in_camel_case_with_its_lease() {
+        let json = serde_json::to_value(DeviceBrowserWatch { frame: Some(frame("s1", 3)), lease_ms: 30_000 }).unwrap();
+        assert_eq!(json["leaseMs"], 30_000);
+        assert_eq!(json["frame"]["sessionId"], "s1");
+        // The phone asks for what the daemon allows it, no less.
+        assert_eq!(DEVICE_FPS, BrowserViewSize::Phone.max_fps_cap());
     }
 
     #[test]

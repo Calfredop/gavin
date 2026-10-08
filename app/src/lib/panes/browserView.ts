@@ -20,7 +20,9 @@
 //
 // Pure, on purpose: no Tauri import, and every effect goes through the
 // ports a window hands in (`browserViewState.ts`). The Companion's phone
-// view is a later card that reuses this module through its own ports.
+// view runs it on ports of its own (`app/companion/.../state/browser.ts`):
+// a smaller stream the desk opens for it, and an open setting that is
+// always the chip, since a phone's view never opens on its own.
 
 import { writable, type Readable } from "svelte/store";
 
@@ -88,6 +90,14 @@ export interface BrowserFrame {
   height: number;
   url: string;
   title: string;
+}
+
+/// What the desk answers a Device's watch (`browser_view.rs`): the newest
+/// phone-size frame it holds, and how long the watch lasts unless the
+/// Device asks again. Its frames arrive as `browser-frame`.
+export interface DeviceBrowserWatch {
+  frame: BrowserFrame | null;
+  leaseMs: number;
 }
 
 /// One running browser, as `ListBrowsers` reports it.
@@ -381,6 +391,14 @@ export function paneShows(view: BrowserView | undefined, blocked: string | null)
   if (view?.info) return { kind: "waiting" };
   return { kind: "idle" };
 }
+
+/// What a pane says where it has no frame to draw, or over its last one.
+/// The desk's pane and the phone's view say the same.
+export const PANE_NOTES = {
+  waiting: "Waiting for the browser's first frame…",
+  idle: "This agent's browser is not running. It starts with the agent's first browser tool call.",
+  stopped: "The browser stopped. This is the last thing it showed.",
+} as const;
 
 /// The tab's browser chip, or null when there is none to draw: no browser
 /// running, or a daemon that cannot show one.

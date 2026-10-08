@@ -192,6 +192,12 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // nothing away from the desk. The read-back and the setting do.
     ("watch_browser", RemoteAllowance::Refused), // meaningless away from the desk
     ("unwatch_browser", RemoteAllowance::Refused), // meaningless away from the desk
+    // A Device's own view: the desk opens the session's stream at the
+    // phone's size and rate, held by a lease the view renews, and offers
+    // each frame to the Devices as `browser-frame`. The Device still sends
+    // the daemon nothing of its own.
+    ("watch_browser_for_device", RemoteAllowance::Allowed),
+    ("unwatch_browser_for_device", RemoteAllowance::Allowed),
     ("list_browsers", RemoteAllowance::Allowed),
     ("get_playwright_pane_open", RemoteAllowance::Allowed),
     ("set_playwright_pane_open", RemoteAllowance::Allowed),

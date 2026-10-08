@@ -60,6 +60,11 @@ export const DESK_ONLY_COMMANDS = [
   // Opening things externally on the desk.
   "open_path_externally",
   "reveal_path_externally",
+  // The desk's own view of an agent's browser, streamed at the desk's
+  // size to the desk window that asked. A phone's view is a stream the
+  // desk opens for it (`watch_browser_for_device`, state/browser.ts).
+  "watch_browser",
+  "unwatch_browser",
 ] as const;
 
 const LAYOUT_SAVING: ReadonlySet<string> = new Set(LAYOUT_SAVING_COMMANDS);

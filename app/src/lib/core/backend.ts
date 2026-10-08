@@ -12,7 +12,7 @@ import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$li
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
 import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
-import type { BrowserFrame, LiveBrowser } from "$lib/panes/browserView";
+import type { BrowserFrame, DeviceBrowserWatch, LiveBrowser } from "$lib/panes/browserView";
 import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
@@ -747,6 +747,21 @@ export function watchBrowser(sessionId: string): Promise<BrowserFrame | null> {
 
 export function unwatchBrowser(sessionId: string): Promise<void> {
   return invoke("unwatch_browser", { sessionId });
+}
+
+/// A Device's view of a session's browser (the Companion, through the
+/// forwarding connection): takes or renews `watcher`'s lease on the
+/// session's phone-size stream, whose frames go to the Devices as
+/// `browser-frame`. Asked again within `leaseMs`, or the desk lets the
+/// stream go. Refused for a session on an ssh host.
+export function watchBrowserForDevice(sessionId: string, watcher: string): Promise<DeviceBrowserWatch> {
+  return invoke("watch_browser_for_device", { sessionId, watcher });
+}
+
+/// The view left the screen: `watcher`'s lease goes now rather than when
+/// it runs out.
+export function unwatchBrowserForDevice(sessionId: string, watcher: string): Promise<void> {
+  return invoke("unwatch_browser_for_device", { sessionId, watcher });
 }
 
 /// Every agent browser running now, on every daemon the app talks to: the

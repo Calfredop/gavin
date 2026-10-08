@@ -268,6 +268,8 @@ pub fn run() {
             agent_playwright::playwright_install,
             browser_view::watch_browser,
             browser_view::unwatch_browser,
+            browser_view::watch_browser_for_device,
+            browser_view::unwatch_browser_for_device,
             browser_view::list_browsers,
             browser_view::get_playwright_pane_open,
             browser_view::set_playwright_pane_open,

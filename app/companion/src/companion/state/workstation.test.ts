@@ -368,6 +368,7 @@ describe("everything above, at the wire", () => {
         "get_session_names",
         "get_theme_pref",
         "get_workspaces_state",
+        "list_browsers",
         "worktree_setup",
       ].sort()
     );

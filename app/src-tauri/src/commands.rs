@@ -146,6 +146,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "playwright_install",
     "watch_browser",
     "unwatch_browser",
+    "watch_browser_for_device",
+    "unwatch_browser_for_device",
     "list_browsers",
     "get_playwright_pane_open",
     "set_playwright_pane_open",

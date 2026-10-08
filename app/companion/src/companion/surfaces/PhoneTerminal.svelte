@@ -9,7 +9,7 @@
   // `sessionId` is fixed for the life of the component, as TerminalPane's
   // is: the page rebuilds this for another session.
   import { flushSync, onMount } from "svelte";
-  import { ArrowDownToLine, Keyboard, Power, Send, Type } from "@lucide/svelte";
+  import { ArrowDownToLine, Globe, Keyboard, Power, Send, Type } from "@lucide/svelte";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { askConfirm, showAlert } from "$lib/core/dialog";
@@ -21,10 +21,13 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tabAgentIndicator } from "$lib/ui/indicators";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { browserShown, browserViews, hideBrowser, showBrowser } from "$companion/state/browser";
   import { endSession } from "$companion/state/sessions";
   import { watchTurn } from "$companion/state/turn";
   import { sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
   import { closeTerminal } from "$companion/state/workstation";
+  import PhoneBrowser from "$companion/surfaces/PhoneBrowser.svelte";
+  import { browserButton } from "$companion/surfaces/phoneBrowser";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import { press, tap } from "$companion/surfaces/press";
   import { logicalRows, quickReplies, type QuickReply } from "$companion/surfaces/quickReplies";
@@ -77,6 +80,15 @@
     tabAgentIndicator($verdictAttentionStatusById[sessionId], $layoutState.failureReasonById[sessionId])
   );
   const quick = $derived(quickReplies({ status: sessionStatus, verdict: $turnVerdictById[sessionId], screen }));
+  /// The agent's browser, beside the terminal only once the human asks
+  /// for it (state/browser.ts): never on a frame of its own accord.
+  const browserUp = $derived($browserShown === sessionId);
+  const browser = $derived(browserButton($browserViews[sessionId], browserUp));
+
+  function toggleBrowser(): void {
+    if (browserUp) hideBrowser(sessionId);
+    else void showBrowser(sessionId);
+  }
 
   // Whatever the Workstation says next about the session is the answer
   // to a reply sent, or the end of waiting for one.
@@ -237,6 +249,8 @@
     const stopWatching = watchTurn(sessionId);
     return () => {
       stopWatching();
+      // The next time this terminal opens, it opens alone.
+      hideBrowser(sessionId);
       observer.disconnect();
       clearTimeout(refit);
       clearTimeout(reading);
@@ -261,20 +275,37 @@
     {/if}
   {/snippet}
   {#snippet actions()}
+    {#if browser}
+      <span class="browser-button">
+        <IconButton
+          icon={Globe}
+          label={browser.label}
+          active={browser.pressed}
+          aria-pressed={browser.pressed}
+          size={18}
+          onclick={toggleBrowser}
+        />
+      </span>
+    {/if}
     <span class="end">
       <IconButton icon={Power} label="End this session" tone="danger" size={18} onclick={() => void end()} />
     </span>
   {/snippet}
 </PhoneHeader>
 
-<div class="frame" bind:this={frame} use:tap={onFrameTap}>
-  <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={terminalFontSize(DEFAULT_TERMINAL_FONT_SIZE, $textScale)} />
-  {#if behind}
-    <button type="button" class="latest" use:press={{ onPress: latest }}>
-      <ArrowDownToLine size={14} />
-      <span>Latest</span>
-    </button>
+<div class="work">
+  {#if browserUp}
+    <PhoneBrowser {sessionId} onClose={() => hideBrowser(sessionId)} />
   {/if}
+  <div class="frame" bind:this={frame} use:tap={onFrameTap}>
+    <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={terminalFontSize(DEFAULT_TERMINAL_FONT_SIZE, $textScale)} />
+    {#if behind}
+      <button type="button" class="latest" use:press={{ onPress: latest }}>
+        <ArrowDownToLine size={14} />
+        <span>Latest</span>
+      </button>
+    {/if}
+  </div>
 </div>
 
 <div class="dock">
@@ -387,9 +418,28 @@
 </div>
 
 <style>
+  /* The terminal, and the agent's browser above it or, on its side,
+     beside it (PhoneBrowser.svelte). */
+  .work {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+  }
+  /* Halves: the terminal's own width is whatever xterm last fitted to,
+     which would otherwise decide the split. */
+  @media (orientation: landscape) {
+    .work {
+      flex-direction: row;
+    }
+    .work .frame {
+      flex-basis: 0;
+    }
+  }
   .frame {
     position: relative;
     flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
     background: var(--surface-base);
   }
@@ -578,6 +628,7 @@
     outline-offset: 1px;
   }
   /* A thumb's worth, around the desk's own button. */
+  .browser-button :global(.icon-button),
   .end :global(.icon-button) {
     min-width: 44px;
     min-height: 44px;

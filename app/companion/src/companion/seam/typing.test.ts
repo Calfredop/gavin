@@ -262,7 +262,8 @@ describe("typing, at the wire", () => {
     const sent = [...new Set(demo.commands())];
     expect(sent.filter((cmd) => (LAYOUT_SAVING_COMMANDS as readonly string[]).includes(cmd))).toEqual([]);
     expect(sent.filter((cmd) => !cmd.startsWith("get_") && cmd !== "worktree_setup").sort()).toEqual(
-      ["session_screen", "snapshot_session", "typesafe_settings", "typesafe_verdict", "write_input"].sort()
+      // `list_browsers`: the read-back of the agents' browsers, at connect.
+      ["list_browsers", "session_screen", "snapshot_session", "typesafe_settings", "typesafe_verdict", "write_input"].sort()
     );
   });
 });

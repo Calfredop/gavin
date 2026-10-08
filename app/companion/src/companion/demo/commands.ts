@@ -16,6 +16,7 @@
 import { agentLastLine } from "$lib/agents/turnVerdict";
 import type { GavinTree } from "$lib/core/gavin";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import { BROWSER_COMMANDS } from "$companion/demo/browser";
 import { CARD_COMMANDS } from "$companion/demo/cardCommands";
 import { FILE_COMMANDS } from "$companion/demo/fileCommands";
 import { GIT_COMMANDS } from "$companion/demo/gitCommands";
@@ -88,8 +89,6 @@ const WORK: Record<string, DemoCommand> = {
   }),
   get_session_names: (_args, demo): Answer<"getSessionNames"> => demo.state.sessionNames,
   list_queued_inputs: (_args, demo): Answer<"listQueuedInputs"> => demo.state.queuedInputs,
-  // No agent of the demo's drives a browser, so none is running.
-  list_browsers: (): Answer<"listBrowsers"> => [],
 
   // Each binding's launch command stays on the Workstation: the board has
   // carried none since v43, and `card_session` is what answers it.
@@ -271,4 +270,5 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...FILE_COMMANDS,
   ...CARD_COMMANDS,
   ...RAIL_COMMANDS,
+  ...BROWSER_COMMANDS,
 };

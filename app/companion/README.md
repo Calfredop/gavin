@@ -300,6 +300,51 @@ of them; narrowing that is a protocol change of its own.
 Workstation, with a real xterm fed from the wire as the phone's screen
 (`testing/phoneScreen.ts`).
 
+### An agent's browser (playwright-companion-view)
+
+An agent with Playwright drives a headless browser of its own, and the
+desk shows it live beside the agent's tab. On the phone the same view is
+one tap away: a globe in the terminal's header, there while the agent's
+browser runs, puts the browser above the terminal -- beside it on its
+side -- and takes it away again (`surfaces/PhoneBrowser.svelte`, over
+`surfaces/phoneBrowser.ts`). It never opens on its own, whatever the
+desk's "when the pane opens" setting says: a view taking over a phone's
+screen mid-glance would be worse than a missed frame. Each terminal opens
+without it.
+
+The rules are the desk's `$lib/panes/browserView.ts` -- which browsers
+run, what a view on screen holds, when a stream is let go -- run on the
+phone's own ports (`state/browser.ts`), never on the desk's instance:
+
+- **The stream is the desk's to open.** The desk's own watch streams the
+  desk's size to a desk window and is refused to a Device. The phone asks
+  the desk for one at the phone's size and rate instead,
+  `watch_browser_for_device` (640x400, 2 a second, spec Q4), and the desk
+  offers each frame to the Devices as `browser-frame`.
+- **A lease.** Nothing tells the desk a phone has gone quiet, so the watch
+  lasts as long as the desk says (`leaseMs`, 30 s) and the phone renews it
+  at a third of that while the view is up. A view off the screen lets go
+  after the desk module's grace (`unwatch_browser_for_device`); a phone
+  that locked or walked away costs the daemon its screencast for half a
+  minute at most. A connection coming back asks again at once.
+- **Frames only while watching.** `browser-frame` carries every Device's
+  frames, so the page listens for it only while it watches something,
+  and keeps only the frames of what it watches. `browser-changed` and
+  `browser-gone` light and put out the globe, and `list_browsers` reads
+  back the running browsers at connect and after a gap.
+- **Not an ssh session's.** Its frames ride its host's one streaming
+  connection, where a phone-size stream would arrive indistinguishable
+  from the desk's; the view says so rather than wait.
+
+The Demo Workstation's field-notes agent ("offline sync") has a browser
+from the start, turning a page each step of the activity loop (three
+pages of a notes app, drawn and rendered to phone-size JPEGs,
+`demo/browserFrames.ts`), and the desk's lease and first frame are played
+by `demo/browser.ts`. `seam/browserView.test.ts` drives the view against
+it and reads the wire; `crates/daemon/tests/device_wire.rs` has a frame
+the desk offers reach a listening Device through a real Relay -- one
+from a real headless shell where one is installed.
+
 ## The board and its cards (companion-27)
 
 The board draws the desktop's own `BoardCard` with no workspace id, which is

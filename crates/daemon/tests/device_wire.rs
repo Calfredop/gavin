@@ -284,6 +284,17 @@ impl Workstation {
     }
 
     fn start_trusting(certificate_pem: &str) -> Self {
+        Self::launch(certificate_pem, None)
+    }
+
+    /// Starts a daemon that trusts `relay`'s certificate and launches its
+    /// agents' browsers from `browsers`, this machine's Playwright
+    /// browsers directory.
+    fn start_with_browsers(relay: &LocalRelay, browsers: &std::path::Path) -> Self {
+        Self::launch(&relay.certificate_pem, Some(browsers))
+    }
+
+    fn launch(certificate_pem: &str, browsers: Option<&std::path::Path>) -> Self {
         // Under /tmp on unix, for the reason `tests/shutdown.rs` gives:
         // the default temporary directory is long enough on macOS to
         // overflow a socket path.
@@ -308,7 +319,8 @@ impl Workstation {
         std::fs::write(&roots, certificate_pem).unwrap();
         let log = std::fs::File::create(home.path().join("daemon.log")).unwrap();
 
-        let daemon = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"))
+        let mut daemon = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"));
+        daemon
             .env("HOME", home.path())
             .env("LOCALAPPDATA", home.path())
             .env("USERPROFILE", home.path())
@@ -318,9 +330,14 @@ impl Workstation {
             .env("SSL_CERT_FILE", &roots)
             .env_remove("SSL_CERT_DIR")
             .stdout(Stdio::null())
-            .stderr(Stdio::from(log))
-            .spawn()
-            .expect("failed to spawn gavin-daemon");
+            .stderr(Stdio::from(log));
+        // The browsers stay where the machine keeps them: the temporary
+        // home has none, and a download is the install step's to make.
+        match browsers {
+            Some(dir) => daemon.env("PLAYWRIGHT_BROWSERS_PATH", dir),
+            None => daemon.env_remove("PLAYWRIGHT_BROWSERS_PATH"),
+        };
+        let daemon = daemon.spawn().expect("failed to spawn gavin-daemon");
 
         let deadline = Instant::now() + SOON;
         while !protocol::transport::is_listening(&endpoint) {
@@ -500,6 +517,12 @@ impl Workstation {
     /// Opens the desktop's forwarding connection (v54).
     fn open_forwarding(&self) -> Desk {
         Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Forward)
+    }
+
+    /// A connection of the desk's own for one request that streams, as
+    /// `browser_view.rs` opens one per watch.
+    fn open_command(&self) -> Desk {
+        Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Command)
     }
 }
 
@@ -928,6 +951,266 @@ fn desktop_app_not_running_is_answered_when_the_stand_in_is_absent() {
     }
 }
 
+
+// -- an agent's browser on the phone (playwright-companion-view) --------
+
+/// What the desk offers a Device's view as (`browser_view.rs`).
+const FRAME_EVENT: &str = "browser-frame";
+
+/// A `browser-frame` payload, as the desk serialises a frame for the
+/// frontend: `Response::BrowserFrame` in camelCase.
+fn frame_payload(session_id: &str, seq: u64, data: &str, url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "seq": seq,
+        "data": data,
+        "width": 1280,
+        "height": 800,
+        "url": url,
+        "title": "",
+    })
+}
+
+/// The next `browser-frame` the Device hears: its payload.
+fn heard_frame(connection: &mut Connection) -> serde_json::Value {
+    match connection.next(SOON) {
+        Ok(Response::DesktopEvent { event, payload }) => {
+            assert_eq!(event, FRAME_EVENT);
+            payload
+        }
+        other => panic!("expected a {FRAME_EVENT} event, got {other:?}"),
+    }
+}
+
+/// A paired Device, connected, that has asked the desk for a session's
+/// browser the way the Companion's view does: it listens for the frames,
+/// then has the desk run `watch_browser_for_device`.
+fn watching_device(
+    relay: &LocalRelay,
+    workstation: &mut Workstation,
+    session_id: &str,
+) -> (Connection, StandIn) {
+    let phone = device(relay, "Watching iPhone");
+    let paired = workstation.pair(&phone);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let stand_in = StandIn::answering(
+        workstation.open_forwarding(),
+        serde_json::json!({ "frame": null, "leaseMs": 30_000 }),
+    );
+
+    // Not from the daemon: a Device asks it for nothing of its own, and a
+    // stream of the session's screen least of all.
+    assert_refused(
+        &mut connection,
+        &Request::WatchBrowser {
+            session_id: session_id.into(),
+            size: protocol::BrowserViewSize::Phone,
+            max_fps: 2,
+        },
+    );
+    match connection.request(&Request::ListenDesktop { event: FRAME_EVENT.into() }, SOON).unwrap() {
+        Response::Ok => {}
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    let args = serde_json::json!({ "sessionId": session_id, "watcher": "phone-view-1" });
+    let answer = invoked(&mut connection, "watch_browser_for_device", args.clone());
+    assert_eq!(answer, Some(serde_json::json!({ "frame": null, "leaseMs": 30_000 })));
+    assert_eq!(stand_in.received(), vec![("watch_browser_for_device".to_string(), args)]);
+    (connection, stand_in)
+}
+
+/// Seam 1 for the phone's view of an agent's browser: what the desk
+/// offers as `browser-frame` reaches the Device that listens for it,
+/// whole -- a frame at the top of what a phone-size screencast measured
+/// (28 KiB of JPEG, 38 KiB as base64, spec Q4), and one well past a Noise
+/// frame and a Relay message, which the daemon splits on the way.
+#[test]
+fn a_browser_frame_the_desk_offers_reaches_the_listening_device_whole() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let (mut connection, stand_in) = watching_device(&relay, &mut workstation, "s-agent");
+
+    for (seq, size) in [(1, 38 * 1024), (2, 200 * 1024)] {
+        let data = format!("/9j/{}", "A".repeat(size - 4));
+        stand_in.offer_event(FRAME_EVENT, frame_payload("s-agent", seq, &data, "https://example.test/"));
+        let payload = heard_frame(&mut connection);
+        assert_eq!(payload["seq"], seq);
+        assert_eq!(payload["sessionId"], "s-agent");
+        assert!(payload["data"] == data, "frame {seq} ({size} bytes) arrived altered");
+    }
+}
+
+/// This machine's Playwright browsers directory, when it holds a complete
+/// headless shell (`tests/playwright.rs`), read from the real environment.
+fn installed_browsers() -> Option<PathBuf> {
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = PathBuf::from(std::env::var_os(home_var)?);
+    let dir = protocol::playwright::browsers_dir(protocol::HostOs::current(), &home, |k| std::env::var(k).ok());
+    let complete: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join(protocol::playwright::INSTALLATION_COMPLETE).is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    protocol::playwright::pick_revision(complete.iter().map(String::as_str))?;
+    Some(dir)
+}
+
+/// One CDP command through the daemon's proxy, the way the Playwright MCP
+/// drives the browser, read until its reply.
+fn cdp_call(
+    ws: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+    session: Option<&str>,
+) -> serde_json::Value {
+    let mut message = serde_json::json!({ "id": id, "method": method, "params": params });
+    if let Some(session) = session {
+        message["sessionId"] = session.into();
+    }
+    ws.send(tungstenite::Message::Text(message.to_string().into())).unwrap();
+    loop {
+        let tungstenite::Message::Text(text) = ws.read().expect("a CDP reply") else { continue };
+        let reply: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        if reply["id"].as_u64() == Some(id) {
+            assert!(reply.get("error").is_none(), "{method}: {reply}");
+            return reply["result"].clone();
+        }
+    }
+}
+
+/// The width and height a JPEG says it is, from its base64: the start of
+/// it decoded far enough to reach the frame header.
+fn jpeg_size(base64: &str) -> Option<(u16, u16)> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut bytes = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in base64.bytes().take(16 * 1024).take_while(|c| *c != b'=') {
+        acc = ((acc << 6) | ALPHABET.iter().position(|a| *a == c)? as u32) & 0xFFFF;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+        }
+    }
+    // Segment by segment from the start-of-image marker to a start of
+    // frame, whose height then width follow its length and precision.
+    let mut at = 2;
+    while at + 9 < bytes.len() {
+        if bytes[at] != 0xFF {
+            return None;
+        }
+        let marker = bytes[at + 1];
+        let length = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        if matches!(marker, 0xC0..=0xC3) {
+            let height = u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]);
+            let width = u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]);
+            return Some((width, height));
+        }
+        at += 2 + length;
+    }
+    None
+}
+
+/// The same, end to end with a real browser: an agent's page, screencast
+/// by the daemon at the phone's size and rate to a connection of the
+/// desk's, offered on by the desk as `browser_view.rs` does, and received
+/// by the Device through the Relay as the 640x400 JPEG it was sent.
+/// Skips, saying why, where no headless shell is installed.
+#[test]
+fn a_real_agent_browsers_phone_frame_reaches_the_device() {
+    let Some(browsers) = installed_browsers() else {
+        assert!(
+            std::env::var_os("GAVIN_REQUIRE_PLAYWRIGHT").is_none(),
+            "GAVIN_REQUIRE_PLAYWRIGHT is set and no complete Playwright headless shell is installed"
+        );
+        eprintln!(
+            "SKIPPED: no complete Playwright headless shell is installed on this machine -- run `npx {}` to run this test",
+            protocol::playwright::install_args().join(" ")
+        );
+        return;
+    };
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start_with_browsers(&relay, &browsers);
+    workstation.reach(&relay);
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_string_lossy().into_owned();
+    let session_id = match workstation.command.request(&Request::CreateSession {
+        workspace_path: root.clone(),
+        cwd: root,
+        command: None,
+        profile_id: None,
+        api_family: None,
+        without_headroom: true,
+    }) {
+        Response::SessionCreated { id, .. } => id,
+        other => panic!("CreateSession: {other:?}"),
+    };
+    let endpoint = match workstation.command.request(&Request::PlaywrightEndpoint { session_id: session_id.clone() }) {
+        Response::PlaywrightEndpoint { endpoint, .. } => endpoint,
+        other => panic!("PlaywrightEndpoint: {other:?}"),
+    };
+
+    let (mut connection, stand_in) = watching_device(&relay, &mut workstation, &session_id);
+
+    // What the desk does with that call: a stream of its own at the
+    // phone's size and rate (`DEVICE_FPS`).
+    let mut watch = workstation.open_command();
+    write_message(
+        &mut watch.stream,
+        &Request::WatchBrowser { session_id: session_id.clone(), size: protocol::BrowserViewSize::Phone, max_fps: 2 },
+    )
+    .unwrap();
+
+    // The agent's first call launches the browser, and it opens a page.
+    let authority = endpoint.strip_prefix("ws://").unwrap().split('/').next().unwrap().to_string();
+    let tcp = std::net::TcpStream::connect(&authority).unwrap();
+    tcp.set_read_timeout(Some(SOON)).unwrap();
+    let (mut cdp, _) = tungstenite::client::client(endpoint.as_str(), tcp).expect("the proxy's handshake");
+    let targets = cdp_call(&mut cdp, 1, "Target.getTargets", serde_json::json!({}), None);
+    let page = targets["targetInfos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["type"] == "page")
+        .expect("the browser's first tab")["targetId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let attached = cdp_call(&mut cdp, 2, "Target.attachToTarget", serde_json::json!({ "targetId": page, "flatten": true }), None);
+    let cdp_session = attached["sessionId"].as_str().unwrap().to_string();
+    let url = "data:text/html,<body style='background:%23246'><h1 style='color:white'>seen on the phone</h1></body>";
+    cdp_call(&mut cdp, 3, "Page.navigate", serde_json::json!({ "url": url }), Some(&cdp_session));
+
+    // Each frame the desk's stream reads, offered on to the Devices, until
+    // one of that page has crossed.
+    let deadline = Instant::now() + SOON;
+    loop {
+        assert!(Instant::now() < deadline, "no frame of the page reached the Device");
+        let (seq, data, frame_url) = match watch.next() {
+            Response::BrowserFrame { session_id: s, seq, data, url, .. } => {
+                assert_eq!(s, session_id);
+                (seq, data, url)
+            }
+            other => panic!("unexpected on the watch: {other:?}"),
+        };
+        stand_in.offer_event(FRAME_EVENT, frame_payload(&session_id, seq, &data, &frame_url));
+        let payload = heard_frame(&mut connection);
+        assert!(payload["data"] == data, "the frame arrived altered");
+        if !frame_url.starts_with("data:text/html") {
+            continue;
+        }
+        assert!(data.starts_with("/9j/"), "a JPEG, base64");
+        assert_eq!(jpeg_size(&data), Some((640, 400)), "the phone's size");
+        // Under one Noise frame, as the spec measured a phone frame.
+        assert!(data.len() < 64 * 1024, "a phone frame of {} bytes", data.len());
+        break;
+    }
+    drop(cdp);
+}
 
 // -- presence (companion-16) --------------------------------------------
 

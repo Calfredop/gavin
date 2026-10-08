@@ -300,7 +300,8 @@ describe("sessions, at the wire", () => {
     const sent = demo.commands();
     expect(sent.filter((cmd) => (LAYOUT_SAVING_COMMANDS as readonly string[]).includes(cmd))).toEqual([]);
     expect([...new Set(sent)].filter((cmd) => !cmd.startsWith("get_") && cmd !== "worktree_setup").sort()).toEqual(
-      ["agent_profiles", "create_session", "kill_session"].sort()
+      // `list_browsers`: the read-back of the agents' browsers, at connect.
+      ["agent_profiles", "create_session", "kill_session", "list_browsers"].sort()
     );
   });
 });
