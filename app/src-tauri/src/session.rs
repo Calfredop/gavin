@@ -6078,6 +6078,20 @@ pub async fn create_session(
         return Ok(created.id);
     }
     let compat = current_compat(&compat);
+    // A kimi launch reads two pieces of the human's own kimi state that
+    // the integration cannot prepare: the folder-trust record for the
+    // session's cwd (cards launch in context folders below the root,
+    // and a trusted parent does not cover a child), and the default
+    // permission mode for new sessions. Both are no-ops when already
+    // in place; the remote lane above skips this -- the state lives on
+    // the host, as `grant_folder_trust` has always known.
+    if profile_id
+        .as_deref()
+        .and_then(crate::agent_setup::stock_profile_by_id)
+        .is_some_and(|profile| profile.folder_trust.is_some())
+    {
+        crate::agent_setup::prepare_kimi_launch(cwd.as_deref(), workspace_root.as_deref(), &local_home());
+    }
     let created = create_agent_session(
         &command_state.lanes(compat),
         cwd.as_deref(),

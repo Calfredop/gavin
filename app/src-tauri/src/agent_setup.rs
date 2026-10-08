@@ -2492,6 +2492,276 @@ fn try_grant_folder_trust(
     Ok(TrustGrant::Written(record))
 }
 
+/// What kimi's folder-trust launch grant needs from the MCP config files,
+/// read through whatever `WorkspaceFiles` the caller runs on.
+fn mcp_server_count(fs: &dyn WorkspaceFiles, file: &Path) -> Option<usize> {
+    let text = fs.read_to_string(file).ok()??;
+    if text.trim().is_empty() {
+        return Some(0);
+    }
+    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    Some(doc.get("mcpServers").and_then(|servers| servers.as_object()).map_or(0, |servers| servers.len()))
+}
+
+/// Every server key `<file>` declares, for the "only what gavin manages"
+/// reading a launch-time grant applies to the workspace root's `.mcp.json`.
+fn mcp_server_keys(fs: &dyn WorkspaceFiles, file: &Path) -> Option<Vec<String>> {
+    let text = fs.read_to_string(file).ok()??;
+    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    Some(
+        doc.get("mcpServers")
+            .and_then(|servers| servers.as_object())
+            .map(|servers| servers.keys().cloned().collect())
+            .unwrap_or_default(),
+    )
+}
+
+/// Grants kimi's per-folder trust record for a session LAUNCH about to
+/// run in `cwd`, when `cwd` sits strictly inside a gavin workspace whose
+/// project MCP configuration the integration already vetted.
+///
+/// Why launches need their own grant: kimi keys the record on the
+/// process's exact cwd, a trusted PARENT does not cover a child (proved
+/// against 2.1.1, 2026-10-06), and cards launch in context folders
+/// below the workspace root. Such a launch used to stop at the trust
+/// screen -- before any MCP server (gavin's included) started, so the
+/// daemon's queued card prompt, pasted into a screen that was not the
+/// chat input, was lost and the run "never started"
+/// (bug-kimi-launch-folder-trust).
+///
+/// What keeps this from being a blank cheque, given the record starts
+/// every project MCP target kimi discovers from `cwd` upward:
+///
+/// - `cwd` must be STRICTLY INSIDE the workspace root. The root's own
+///   record is the integration's grant (or the human's own answer at
+///   kimi's prompt), and this function never revisits that decision.
+/// - No `.mcp.json` or `.kimi-code/mcp.json` may sit in any directory
+///   from `cwd` up to (excluding) the root: a file there declares
+///   servers the integration's disclosure never showed the human.
+/// - The root's own files must still say what the integration vetted:
+///   `.kimi-code/mcp.json` declaring nothing, and `.mcp.json` (when
+///   present) declaring no server beyond the one gavin's merge writer
+///   manages (`McpLayout::server_key`). A later-added foreign server
+///   turns the grant off, not on.
+/// - `try_grant_folder_trust` never overwrites an existing record: the
+///   human's own answer at kimi's prompt stands.
+///
+/// `None` means "no grant", by shape or by policy -- not an error: kimi
+/// asks once at its trust screen, exactly as it did before this
+/// function existed.
+fn grant_kimi_launch_trust(fs: &dyn WorkspaceFiles, cwd: &Path, workspace_root: &Path) -> Option<TrustGrant> {
+    let physical_cwd = fs.canonical_dir(cwd)?;
+    let physical_root = fs.canonical_dir(workspace_root)?;
+    if physical_cwd == physical_root || !physical_cwd.starts_with(&physical_root) {
+        return None;
+    }
+    // No MCP declaration between the launch folder and the root: kimi
+    // walks upward from the cwd, so a file at any level in between
+    // would hand servers this grant never disclosed a way to start.
+    let mut dir = physical_cwd.as_path();
+    while dir != physical_root {
+        if fs.is_file(&dir.join(".mcp.json")) || fs.is_file(&dir.join(".kimi-code").join("mcp.json")) {
+            return None;
+        }
+        dir = dir.parent()?;
+    }
+    // The root's own files still declare nothing the integration did
+    // not vet. Unreadable or invalid JSON withholds -- what the grant
+    // would start is then unknown, the same posture
+    // `try_grant_folder_trust` takes; an absent file declares nothing
+    // (a `None` freshness below reads as `usize::MAX`, never 0).
+    let own = physical_root.join(".kimi-code").join("mcp.json");
+    if fs.is_file(&own) && mcp_server_count(fs, &own).unwrap_or(usize::MAX) != 0 {
+        return None;
+    }
+    let shared = physical_root.join(".mcp.json");
+    if fs.is_file(&shared) {
+        match mcp_server_count(fs, &shared) {
+            Some(0) => {}
+            Some(_) => {
+                // Non-empty: every server must be gavin's own.
+                if mcp_server_keys(fs, &shared).unwrap_or_default().iter().any(|key| key != "gavin") {
+                    return None;
+                }
+            }
+            None => return None,
+        }
+    }
+    Some(
+        try_grant_folder_trust(fs, FolderTrust::KimiRecord, &physical_cwd)
+            .unwrap_or_else(|e| TrustGrant::Withheld(format!("could not write the trust record ({e})"))),
+    )
+}
+
+/// kimi's managed models' own default for new sessions, and gavin's
+/// attention hooks, written into the human's kimi state when absent.
+///
+/// Two halves, one write:
+///
+/// - `default_permission_mode`. kimi's default is `manual` -- every tool
+///   call stops for an answer -- which leaves an unattended card run
+///   stalled at its first edit. The mode this writes, `yolo` ("Ask When
+///   Needed"), is the one the CLI's own `-y` flag documents: routine
+///   edits and commands run automatically; risky actions, questions and
+///   plans still ask -- it stops only when needed. (`auto` would be
+///   "never ask"; that is a different, stronger choice, and never what a
+///   gavin launch should take for the human.)
+///
+/// - The `[[hooks]]` rules that turn kimi's own events into the one
+///   signal the daemon already understands: a bell on the terminal.
+///   kimi asks for approval, fails a turn, finishes a background task
+///   or raises a background question WITHOUT ringing anything the
+///   daemon scans for, so a tab that needs the human read as `working`
+///   (or as `idle`, one unraised badge away) -- the exact complaint the
+///   hooks fix. Each rule runs `gavin-attention`, a script gavin also
+///   writes into the kimi home, which writes a bare BEL to `/dev/tty`;
+///   the daemon's status scanner maps a bare BEL to
+///   `waiting_for_input`, so the tab, the sidebar dot and the attention
+///   inbox light the moment kimi waits. The events are observation-only
+///   (none can block the tool or the turn), and the script consumes its
+///   stdin and exits 0, so a hook failure can never disturb the agent.
+///
+/// What is never touched: a `default_permission_mode` the human has
+/// already set (to any value, including `manual`), a hook event gavin's
+/// script already has an entry for (the human's edits to it stand), a
+/// `hooks` key that is not an array, and a `config.toml` kimi's own
+/// parser would reject -- a file this function cannot read is not this
+/// function's to rewrite.
+fn ensure_kimi_launch_config(fs: &dyn WorkspaceFiles, home: &Path) {
+    let kimi_home_dir = kimi_home(fs, home);
+    let config = kimi_home_dir.join("config.toml");
+    let script = kimi_home_dir.join(GAVIN_HOOK_SCRIPT_FILE);
+    if !fs.is_file(&script) {
+        let _ = fs.write_private(&script, GAVIN_HOOK_SCRIPT.as_bytes());
+    }
+    let text = fs.read_to_string(&config).ok().flatten().unwrap_or_default();
+    if !text.trim().is_empty() && toml::from_str::<toml::Value>(&text).is_err() {
+        return;
+    }
+    let doc = toml::from_str::<toml::Value>(&text).unwrap_or(toml::Value::Table(Default::default()));
+    let mut out = text.clone();
+    if doc.get("default_permission_mode").is_none() {
+        out = insert_top_level_key(&out, "default_permission_mode = \"yolo\"\n");
+    }
+    // Which of gavin's hook events already have an entry running the
+    // gavin script. `None` (the key absent entirely) appends them all;
+    // a `hooks` key of any other shape is left strictly alone.
+    let hooked: Option<std::collections::HashSet<&str>> = match doc.get("hooks") {
+        None => Some(Default::default()),
+        Some(toml::Value::Array(entries)) => Some(
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_table())
+                .filter(|table| {
+                    table
+                        .get("command")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|command| command.contains(GAVIN_HOOK_SCRIPT_FILE))
+                })
+                .filter_map(|table| table.get("event").and_then(toml::Value::as_str))
+                .collect(),
+        ),
+        Some(_) => None,
+    };
+    if let Some(hooked) = hooked {
+        let mut additions = String::new();
+        for (event, matcher) in GAVIN_ATTENTION_HOOKS {
+            if !hooked.contains(event) {
+                additions.push_str(&format!(
+                    "[[hooks]]\nevent = \"{event}\"\nmatcher = \"{matcher}\"\ncommand = \"sh '{script}'\"\ntimeout = 5\n\n",
+                    script = script.display(),
+                ));
+            }
+        }
+        if !additions.is_empty() {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&additions.trim_end_matches('\n'));
+            out.push('\n');
+        }
+    }
+    let _ = fs.write_private(&config, out.as_bytes());
+}
+
+/// `text` with `line` inserted ahead of the first `[table]` header --
+/// top-level TOML keys must precede every table -- or appended to a
+/// header-less file.
+fn insert_top_level_key(text: &str, line: &str) -> String {
+    let mut out = String::new();
+    let mut inserted = false;
+    for existing in text.lines() {
+        if !inserted && existing.trim_start().starts_with('[') {
+            out.push_str(line);
+            inserted = true;
+        }
+        out.push_str(existing);
+        out.push('\n');
+    }
+    if !inserted {
+        out.push_str(line);
+    }
+    out
+}
+
+/// The file name of gavin's hook script inside the kimi home. One name
+/// for the file and the `command` strings, and the marker the config
+/// merge looks for when deciding which hook events already exist.
+const GAVIN_HOOK_SCRIPT_FILE: &str = "gavin-attention";
+
+/// The hook events gavin maintains, as `(event, matcher)` pairs --
+/// every rule runs the same script, which only rings the bell.
+///
+/// `PermissionRequest` is the approval prompt in Ask When Needed mode
+/// (and the trust screen is gone before it, thanks to the launch-time
+/// grant); `StopFailure` is a turn that died on an error; the
+/// `Notification` matcher is background-task completions and failures;
+/// a `question` TaskStarted is a background question waiting on the
+/// human. Each is observation-only in kimi's hook table: no return
+/// value is read, so the script can never interfere with the agent.
+const GAVIN_ATTENTION_HOOKS: &[(&str, &str)] = &[
+    ("PermissionRequest", ".*"),
+    ("StopFailure", ".*"),
+    ("Notification", "task\\\\.(completed|failed)"),
+    ("TaskStarted", "question"),
+];
+
+/// What the hook script does, in four lines: drink the event JSON kimi
+/// pipes in (so a large payload can never fill the pipe and stall the
+/// hook), ring the terminal bell, succeed. `/dev/tty` is the session's
+/// own PTY -- hooks run in kimi's session even in their own process
+/// group -- and the daemon's status scanner turns a bare BEL into
+/// `waiting_for_input` for exactly this session. When no terminal is
+/// attached the write fails silently: missing the bell never blocks
+/// the turn.
+const GAVIN_HOOK_SCRIPT: &str = "\
+#!/bin/sh
+# gavin-managed: rings the terminal bell so gavin's daemon marks this
+# session waiting_for_input. Do not edit -- config.toml merges on this
+# file's name.
+cat >/dev/null 2>&1
+printf '\\a' > /dev/tty 2>/dev/null
+exit 0
+";
+
+/// Everything a kimi launch needs from the human's own kimi state,
+/// applied to this machine's disk before the session spawns: the
+/// folder-trust record for the launch cwd (a card's context folder
+/// below the root has none from the integration), and the config.toml
+/// entries a launched session should run with (permission default,
+/// attention hooks, the hook script). All no-ops on every launch after
+/// the first; a withheld trust grant leaves kimi asking at its screen,
+/// the pre-existing behavior, and is logged for the tab's log.
+pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home: &str) {
+    let fs = LocalFiles;
+    let target = cwd.map(Path::new).unwrap_or_else(|| Path::new(home));
+    let workspace = workspace_root.map(Path::new).unwrap_or(target);
+    if let Some(TrustGrant::Withheld(reason)) = grant_kimi_launch_trust(&fs, target, workspace) {
+        eprintln!("kimi folder trust withheld for {}: {reason}", target.display());
+    }
+    ensure_kimi_launch_config(&fs, Path::new(home));
+}
+
 /// What a setup run wrote, and what it could not. Rendered verbatim by
 /// the wizard's Integration step: a profile with no McpLayout still gets
 /// its instructions block, and the two omissions are named with reasons
@@ -5095,6 +5365,190 @@ mod tests {
                 assert!(why.contains(".kimi-code/mcp.json"), "{body:?}: {why}");
             }
         }
+    }
+
+    /// The launch-time grant this file exists for: a session spawned in a
+    /// context folder BELOW the root used to stop at kimi's trust screen
+    /// (a trusted parent does not cover a child), losing the queued card
+    /// prompt. The grant writes the child its own record, never touches
+    /// the root's, and repeats as a no-op.
+    #[test]
+    fn a_launch_below_the_root_gets_its_own_trust_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#,
+        )
+        .unwrap();
+        let sub = dir.path().join("packages").join("app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path());
+
+        let record = record_path(home.path(), &physical(&sub));
+        assert!(matches!(grant, Some(TrustGrant::Written(_))), "{grant:?}");
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+        assert_eq!(body["root"], physical(&sub).as_str(), "the launch cwd, physical");
+        assert_eq!(trust_records(home.path()).len(), 1, "the root got no record");
+
+        // The next launch in the same folder reads the record and leaves
+        // it alone.
+        let again = grant_kimi_launch_trust(&fs, &sub, dir.path());
+        assert!(matches!(again, Some(TrustGrant::Present)), "{again:?}");
+        assert_eq!(trust_records(home.path()).len(), 1);
+    }
+
+    /// Every way the launch grant must refuse: at the root itself (the
+    /// integration's or the human's decision stands), outside the root,
+    /// a server declaration in a folder between the cwd and the root,
+    /// and foreign servers at the root -- the root file may only ever
+    /// declare what gavin manages.
+    #[test]
+    fn a_launch_trust_is_withheld_by_shape_and_by_policy() {
+        let foreign = r#"{"mcpServers":{"other":{"command":"/bin/other"}}}"#;
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        for (label, root_body, between, cwd_name, granted) in [
+            ("at the root", gavin_only, None, "", false),
+            ("outside the root", gavin_only, None, "../elsewhere", false),
+            ("a subfolder declares servers", gavin_only, Some(foreign), "sub", false),
+            ("a foreign server at the root", foreign, None, "sub", false),
+            ("an unreadable root mcp file", "{not json", None, "sub", false),
+            ("the roots own kimi mcp file declares", gavin_only, Some("KIMI_MCP"), "sub", false),
+            ("a clean gavin-only root", gavin_only, None, "sub", true),
+            ("no root mcp file at all", "", None, "sub", true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            if !root_body.is_empty() {
+                std::fs::write(dir.path().join(".mcp.json"), root_body).unwrap();
+            }
+            let sub = if cwd_name == "../elsewhere" {
+                let outside = dir.path().parent().unwrap().join("elsewhere-twin");
+                std::fs::create_dir_all(&outside).unwrap();
+                outside
+            } else {
+                let sub = dir.path().join(cwd_name);
+                std::fs::create_dir_all(&sub).unwrap();
+                sub
+            };
+            if let Some(body) = between {
+                if body == "KIMI_MCP" {
+                    std::fs::create_dir_all(sub.join(".kimi-code")).unwrap();
+                    std::fs::write(sub.join(".kimi-code").join("mcp.json"), foreign).unwrap();
+                } else {
+                    std::fs::write(sub.join(".mcp.json"), body).unwrap();
+                }
+            }
+            let fs = HomedFiles { home: home.path().to_path_buf() };
+
+            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path());
+
+            assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
+            assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
+        }
+    }
+
+    /// `default_permission_mode` and the attention hooks are written
+    /// only where the human has not chosen them: absent means gavin's
+    /// defaults go in (the key ahead of the first table header, the
+    /// hooks appended at the end). A permission key the human set --
+    /// even `manual` -- keeps its value while the hooks still land;
+    /// invalid TOML stays untouched entirely, the file being kimi's
+    /// to fix, not gavin's to rewrite.
+    #[test]
+    fn the_launch_config_is_written_only_where_absent() {
+        let want = "default_permission_mode = \"yolo\"";
+        for (label, before, yolo, hooks) in [
+            ("absent", "", true, true),
+            ("tables below", "[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\n", true, true),
+            ("the humans manual", "default_permission_mode = \"manual\"\n", false, true),
+            ("broken toml", "not toml [", false, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let config = home.join(".kimi-code").join("config.toml");
+            if !before.is_empty() {
+                std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+                std::fs::write(&config, before).unwrap();
+            }
+            let fs = HomedFiles { home: home.clone() };
+
+            ensure_kimi_launch_config(&fs, &home);
+
+            let text = std::fs::read_to_string(&config).unwrap();
+            if yolo {
+                assert!(text.contains(want), "{label}: {text}");
+                assert!(toml::from_str::<toml::Value>(&text).is_ok(), "{label}: {text}");
+                if before.starts_with('[') {
+                    assert!(text.find(want).unwrap() < text.find('[').unwrap(), "{label}: the key precedes the tables: {text}");
+                }
+            } else if !before.is_empty() {
+                assert!(text.starts_with(before.trim_end()), "{label}: the human's text leads: {text}");
+            }
+            assert_eq!(text.contains(want), yolo, "{label}: the yolo default iff absent: {text}");
+            assert_eq!(text.contains("gavin-attention"), hooks, "{label}: hooks iff parseable: {text}");
+            if hooks {
+                let script = home.join(".kimi-code").join(GAVIN_HOOK_SCRIPT_FILE);
+                assert!(script.is_file(), "{label}: the hook script was written");
+                let doc = toml::from_str::<toml::Value>(&text).unwrap();
+                let hook_list = doc.get("hooks").and_then(toml::Value::as_array).cloned().unwrap_or_default();
+                assert_eq!(hook_list.len(), GAVIN_ATTENTION_HOOKS.len(), "{label}: one rule per event: {text}");
+            }
+        }
+    }
+
+    /// A second launch changes nothing: every event already has its
+    /// rule and the permission key exists, so the file comes back byte
+    /// for byte. A human's own hook -- even one gavin would not have
+    /// written -- is preserved alongside, and a hand-edited matcher on
+    /// gavin's rule is not rewritten.
+    #[test]
+    fn the_launch_config_merges_idempotently_and_keeps_the_humans_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let fs = HomedFiles { home: home.clone() };
+
+        ensure_kimi_launch_config(&fs, &home);
+        let config = home.join(".kimi-code").join("config.toml");
+        let first = std::fs::read_to_string(&config).unwrap();
+        ensure_kimi_launch_config(&fs, &home);
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), first, "second launch is a no-op");
+
+        // A human hook and a hand-tuned matcher survive the next launch.
+        let mut edited = first.clone();
+        edited.push_str("[[hooks]]\nevent = \"SessionStart\"\ncommand = \"my-tracker\"\n\n");
+        edited = edited.replace("matcher = \".*\"\ncommand = \"sh '", "matcher = \"^Bash$\"\ncommand = \"sh '");
+        std::fs::write(&config, &edited).unwrap();
+        ensure_kimi_launch_config(&fs, &home);
+        let after = std::fs::read_to_string(&config).unwrap();
+        assert!(after.contains("my-tracker"), "the human's hook stays");
+        assert!(after.matches("[[hooks]]").count() == GAVIN_ATTENTION_HOOKS.len() + 1, "no rule duplicated: {after}");
+        assert!(after.contains("matcher = \"^Bash$\""), "the hand-tuned matcher is not rewritten");
+        assert_eq!(after.matches("event = \"PermissionRequest\"").count(), 1, "one PermissionRequest rule");
+    }
+
+    /// `KIMI_CODE_HOME` relocates the whole store, the hooks with it.
+    #[test]
+    fn the_launch_config_follows_kimi_code_home() {
+        let fs = MemoryFiles {
+            home: Some(PathBuf::from("/home/ada")),
+            env: vec![("KIMI_CODE_HOME".to_string(), "/opt/kimi".into())],
+            ..Default::default()
+        };
+
+        ensure_kimi_launch_config(&fs, Path::new("/home/ada"));
+
+        let files = fs.files.lock().unwrap();
+        let config = files.get(Path::new("/opt/kimi/config.toml")).map(|b| String::from_utf8_lossy(b).into_owned()).expect("config written");
+        assert!(config.contains("default_permission_mode = \"yolo\""), "{config}");
+        assert!(config.contains("gavin-attention"), "{config}");
+        assert!(files.contains_key(Path::new("/opt/kimi/gavin-attention")), "the script follows too");
+        assert!(!files.contains_key(Path::new("/home/ada/.kimi-code/config.toml")));
     }
 
     /// ssh: kimi's home is the host's, which nothing here can reach, so no
