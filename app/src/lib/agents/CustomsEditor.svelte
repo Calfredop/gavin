@@ -315,14 +315,14 @@
     cursor: pointer;
   }
   button.danger {
-    color: var(--danger-text, #f87171);
+    color: var(--danger-text);
   }
   .hint {
     color: var(--text-subtle);
     margin: 6px 0 0;
   }
   .hint.warn {
-    color: var(--warning-text, #fbbf24);
+    color: var(--warning-text);
   }
   @media (max-width: 640px) {
     .customs {

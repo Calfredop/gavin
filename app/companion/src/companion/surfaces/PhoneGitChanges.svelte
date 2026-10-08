@@ -83,7 +83,7 @@
     align-items: center;
     gap: 8px;
     min-height: 44px;
-    padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    padding: 0 12px;
     color: var(--text-muted);
     font-size: 0.6875rem;
     letter-spacing: 0.05em;
@@ -95,7 +95,7 @@
     font-variant-numeric: tabular-nums;
   }
   .bulk {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -110,11 +110,11 @@
   }
   .none {
     margin: 0;
-    padding: 4px max(12px, env(safe-area-inset-left)) 12px;
+    padding: 4px 12px 12px;
     color: var(--text-subtle);
     font-size: 0.75rem;
   }
   .commit {
-    padding: 0 max(4px, env(safe-area-inset-right)) 16px max(4px, env(safe-area-inset-left));
+    padding: 0 4px 16px;
   }
 </style>

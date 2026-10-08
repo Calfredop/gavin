@@ -132,7 +132,7 @@
   .new {
     display: flex;
     gap: 8px;
-    padding: 12px max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    padding: 12px 12px 0;
   }
   .field {
     flex: 1 1 auto;
@@ -145,8 +145,9 @@
     background: var(--surface-base);
     color: var(--text);
     font-family: monospace;
-    /* 16px: iOS zooms into anything smaller when it takes focus. */
-    font-size: 16px;
+    /* 16px and no smaller: iOS zooms into anything smaller when it
+       takes focus. More at a larger text size. */
+    font-size: max(16px, 1rem);
   }
   .field:focus {
     border-color: var(--border-accent);
@@ -157,7 +158,7 @@
     align-items: center;
     gap: 8px;
     min-height: 44px;
-    padding: 0 max(12px, env(safe-area-inset-left));
+    padding: 0 12px;
     color: var(--text-muted);
     font-size: 0.8125rem;
   }
@@ -167,12 +168,12 @@
   }
   .problem {
     margin: -4px 0 8px;
-    padding: 0 max(12px, env(safe-area-inset-left));
+    padding: 0 12px;
     color: var(--danger-text);
     font-size: 0.75rem;
   }
   .section-head {
-    padding: 16px max(12px, env(safe-area-inset-left)) 6px;
+    padding: 16px 12px 6px;
     color: var(--text-muted);
     font-size: 0.6875rem;
     letter-spacing: 0.05em;
@@ -184,7 +185,7 @@
     align-items: center;
     gap: 10px;
     min-height: 56px;
-    padding: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+    padding: 6px 12px;
     border-bottom: 1px solid var(--border);
   }
   .row.current {
@@ -237,7 +238,7 @@
     margin-left: auto;
   }
   button {
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -259,7 +260,7 @@
   }
   .none {
     margin: 0;
-    padding: 16px max(12px, env(safe-area-inset-left));
+    padding: 16px 12px;
     color: var(--text-subtle);
     font-size: 0.8125rem;
   }

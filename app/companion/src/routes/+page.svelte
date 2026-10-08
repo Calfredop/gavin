@@ -131,13 +131,17 @@
           {/if}
         {/key}
       {:else if open}
-        <PhoneHeader
-          title={open.name}
-          back="Workspaces"
-          onBack={showWorkspaces}
-          tag={ready.workstation.demo ? "demo" : null}
-        />
-        <SurfaceTabs current={$view.surface} onPick={showSurface} {waiting} />
+        <!-- One band, the header and the strip, which a phone on its
+             side folds into one row (below). -->
+        <div class="chrome">
+          <PhoneHeader
+            title={open.name}
+            back="Workspaces"
+            onBack={showWorkspaces}
+            tag={ready.workstation.demo ? "demo" : null}
+          />
+          <SurfaceTabs current={$view.surface} onPick={showSurface} {waiting} />
+        </div>
         <!-- Keyed on the root as well: a workspace pointed at another
              folder at the desk is another repository and another tree. -->
         {#key `${open.id}\u0000${open.rootPath ?? ""}`}
@@ -206,13 +210,20 @@
        visible height (viewport.ts) goes further, and leaves out the soft
        keyboard: a page that did not would type under it. */
     height: var(--visible-height, 100dvh);
+    /* Clear of the side insets, the Dynamic Island's band and the
+       rounded corners of a phone on its side (62px each way on an iPhone
+       16 Pro, 0 upright), once for every surface: none of them reads a
+       side inset of its own. A sheet fixed over the page spans these
+       too, and keeps clear itself (PhoneCompose.svelte).
+       `seam/landscape.test.ts` holds it. */
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    box-sizing: border-box;
     transform: translateY(var(--visible-top, 0px));
   }
   .offline-line {
     flex: 0 0 auto;
     margin: 0;
-    padding: calc(env(safe-area-inset-top) + 4px) max(12px, env(safe-area-inset-right)) 4px
-      max(12px, env(safe-area-inset-left));
+    padding: calc(env(safe-area-inset-top) + 4px) 12px 4px;
     border-bottom: 1px solid var(--border-warning);
     background: var(--surface-warning);
     color: var(--warning-text);
@@ -223,6 +234,32 @@
      (PhoneHeader.svelte reads this). */
   .companion.offline {
     --header-inset-top: 0px;
+  }
+  .chrome {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+  }
+  /* A phone on its side is 402px tall on an iPhone 16 Pro, and the
+     header over the strip took 94 of them: one row, the header's title
+     beside the strip. A tablet's landscape is tall enough to keep both. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .companion .chrome {
+      flex-direction: row;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-sunken);
+    }
+    .companion .chrome > :global(*) {
+      border-bottom: 0;
+    }
+    .companion .chrome > :global(:first-child) {
+      flex: 0 1 auto;
+      max-width: 40%;
+    }
+    .companion .chrome > :global(:last-child) {
+      flex: 1 1 0;
+      min-width: 0;
+    }
   }
   .scroll {
     flex: 1 1 auto;

@@ -445,7 +445,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border-danger, var(--border));
     background: var(--surface-danger, var(--surface-sunken));
     color: var(--danger-text);
@@ -458,7 +458,7 @@
   }
   .problem button {
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -498,7 +498,7 @@
     font-size: 0.8125rem;
   }
   .desk-only {
-    padding: 16px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 16px 14px 0;
     line-height: 1.45;
   }
   .add-custom,
@@ -513,7 +513,7 @@
     font: inherit;
   }
   .danger {
-    margin: 4px max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+    margin: 4px 14px 8px 14px;
     border-color: var(--border-danger, var(--border-strong));
     color: var(--danger-text, var(--text));
   }

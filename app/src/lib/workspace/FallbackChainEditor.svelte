@@ -125,14 +125,14 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     margin-bottom: 8px;
   }
   .hint {
     margin: 0 0 8px;
-    color: #888;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -144,28 +144,28 @@
   }
   select {
     flex: 1;
-    background: #2a2a2a;
-    color: #eee;
-    border: 1px solid #444;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     padding: 4px 8px;
     font-family: monospace;
   }
   .pct {
     width: 4.5em;
-    background: #2a2a2a;
-    color: #eee;
-    border: 1px solid #444;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     padding: 4px 6px;
     font-family: monospace;
   }
   .unit {
-    color: #888;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.85em;
   }
   button.ghost {
     background: transparent;
-    color: #888;
+    color: var(--text-muted);
     border: none;
     cursor: pointer;
     font-family: monospace;
@@ -178,6 +178,9 @@
      and 16px text in the fields so iOS does not zoom into one. A window
      with a mouse never matches. */
   @media (pointer: coarse) {
+    .hint {
+      font-size: 0.875rem;
+    }
     .check {
       min-height: 44px;
       font-size: 0.875rem;
@@ -189,7 +192,7 @@
     select,
     .pct {
       min-height: 44px;
-      font-size: 16px;
+      font-size: max(16px, 1rem);
     }
     .pct {
       width: 4em;

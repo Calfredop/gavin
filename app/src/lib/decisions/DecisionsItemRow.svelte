@@ -235,7 +235,7 @@
   }
   .option.picked {
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .note {
     width: 100%;
@@ -275,7 +275,7 @@
   }
   .actions .primary {
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .actions .danger {
     color: var(--danger-text);
@@ -313,7 +313,7 @@
     }
     .note {
       padding: 8px 10px;
-      font-size: 16px;
+      font-size: max(16px, 1rem);
     }
   }
 </style>

@@ -53,7 +53,7 @@
 
 <style>
   .keys {
-    padding: 20px max(16px, env(safe-area-inset-right)) 24px max(16px, env(safe-area-inset-left));
+    padding: 20px 16px 24px;
     border-top: 1px solid var(--border);
   }
   h2 {

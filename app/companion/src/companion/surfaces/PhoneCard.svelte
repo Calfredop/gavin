@@ -386,8 +386,7 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    padding: 14px max(14px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom))
-      max(14px, env(safe-area-inset-left));
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
   }
   .note {
     margin: 0;
@@ -435,7 +434,7 @@
     text-transform: uppercase;
   }
   /* 16px and no smaller: below it iOS zooms the page into a field the
-     moment it takes focus. */
+     moment it takes focus. More at a larger text size. */
   .title,
   select {
     box-sizing: border-box;
@@ -447,7 +446,7 @@
     background: var(--surface-sunken);
     color: var(--text);
     font: inherit;
-    font-size: 16px;
+    font-size: max(16px, 1rem);
   }
   .title {
     font-weight: 600;

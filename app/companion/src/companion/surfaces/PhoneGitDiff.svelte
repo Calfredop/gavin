@@ -110,7 +110,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 0 max(12px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left));
+    padding: 0 12px 0 6px;
   }
   .back {
     display: inline-flex;
@@ -125,7 +125,7 @@
     font-size: 0.875rem;
   }
   .act {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 14px;
     border: 1px solid var(--border-success);
     border-radius: 6px;
@@ -140,7 +140,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 0 max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+    padding: 0 14px 10px;
     border-bottom: 1px solid var(--border);
     font-family: monospace;
   }

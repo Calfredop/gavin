@@ -49,13 +49,17 @@
     min-height: 48px;
     /* Zero where a line above the header has taken the notch's inset
        already: the page's offline line. */
-    padding: var(--header-inset-top, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0
-      max(12px, env(safe-area-inset-left));
+    padding: var(--header-inset-top, env(safe-area-inset-top)) 12px 0;
     background: var(--surface-sunken);
     border-bottom: 1px solid var(--border);
   }
   .back {
     display: inline-flex;
+    /* At a large text size the label gives way before the title does,
+       and is cut short rather than drawn over it. */
+    flex: 0 1 auto;
+    max-width: 40%;
+    overflow: hidden;
     align-items: center;
     gap: 2px;
     /* A thumb's worth, whatever the label's own size. */
@@ -67,6 +71,15 @@
     background: none;
     color: var(--accent-text);
     font-size: 0.875rem;
+  }
+  .back span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .back :global(svg) {
+    flex: 0 0 auto;
   }
   .back:active {
     background: var(--surface-hover);

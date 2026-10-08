@@ -757,6 +757,18 @@
     padding: 0 6px;
     line-height: 1.6;
   }
+  /* The Companion draws the card at 18px, where 0.7em is 10.7px -- under
+     the 11px a phone's smallest caption reads at -- and a nested card's
+     pill smaller still. A window with a mouse never matches. */
+  @media (pointer: coarse) {
+    .attachment-count,
+    .complexity-step {
+      font-size: 0.75em;
+    }
+    .card.nested .pill {
+      font-size: 0.72em;
+    }
+  }
   .pill:disabled {
     opacity: 0.45;
     cursor: default;

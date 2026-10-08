@@ -39,6 +39,7 @@
     type InputModes,
     type KeyId,
   } from "$companion/surfaces/terminalInput";
+  import { terminalFontSize, textScale } from "$companion/surfaces/textScale";
 
   interface Props {
     sessionId: string;
@@ -267,7 +268,7 @@
 </PhoneHeader>
 
 <div class="frame" bind:this={frame} use:tap={onFrameTap}>
-  <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={DEFAULT_TERMINAL_FONT_SIZE} />
+  <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={terminalFontSize(DEFAULT_TERMINAL_FONT_SIZE, $textScale)} />
   {#if behind}
     <button type="button" class="latest" use:press={{ onPress: latest }}>
       <ArrowDownToLine size={14} />
@@ -390,18 +391,17 @@
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
-    margin: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
     background: var(--surface-base);
   }
   .latest {
     position: absolute;
-    right: max(12px, env(safe-area-inset-right));
+    right: 12px;
     bottom: 12px;
     z-index: 2;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 999px;
@@ -415,8 +415,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 6px max(8px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom))
-      max(8px, env(safe-area-inset-left));
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--border);
     background: var(--surface-sunken);
   }
@@ -429,7 +428,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 36px;
+    min-height: 44px;
   }
   /* The answers scroll sideways when they outgrow the width; Esc and ^C
      stay where the thumb expects them (ticket 01, amendment 7). */
@@ -455,7 +454,7 @@
     align-items: center;
     gap: 6px;
     max-width: 14em;
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 999px;
@@ -488,6 +487,8 @@
     color: var(--text-muted);
   }
   .key-chip {
+    justify-content: center;
+    min-width: 44px;
     padding: 0 10px;
     color: var(--text-muted);
     font-size: 0.8125rem;

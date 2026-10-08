@@ -1,7 +1,10 @@
 package com.gavin.companion;
 
 import android.content.pm.ApplicationInfo;
+import android.content.res.Configuration;
 import android.os.Bundle;
+
+import androidx.annotation.NonNull;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -28,5 +31,12 @@ public class MainActivity extends BridgeActivity {
         DeviceKeysPlugin.checkRequested = debuggable && getIntent().getBooleanExtra("gavinKeysCheck", false);
         DeviceKeysPlugin.strict = debuggable && getIntent().getBooleanExtra("gavinStrictKeys", false);
         super.onCreate(savedInstanceState);
+        SystemTextSize.apply(bridge.getWebView(), getResources().getConfiguration());
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (bridge != null) SystemTextSize.apply(bridge.getWebView(), configuration);
     }
 }

@@ -138,8 +138,7 @@
   .scroll {
     flex: 1 1 auto;
     min-height: 0;
-    padding: 0 max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
-      max(12px, env(safe-area-inset-left));
+    padding: 0 12px calc(16px + env(safe-area-inset-bottom));
     overflow-y: auto;
   }
   .note {

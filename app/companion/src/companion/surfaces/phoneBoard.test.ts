@@ -9,6 +9,7 @@ import {
   openingColumn,
   phoneBoard,
   scrollBehaviour,
+  stripScrollToShow,
   type AgentsInput,
 } from "$companion/surfaces/phoneBoard";
 
@@ -209,6 +210,28 @@ describe("which column a swipe has settled on", () => {
   it("is none before the pager has a width, or a column", () => {
     expect(columnAt(keys, 0, 0)).toBeNull();
     expect(columnAt([], 0, 390)).toBeNull();
+  });
+});
+
+describe("where the column strip scrolls for the shown column", () => {
+  // A 402px strip; five tabs 464px wide in all, as the Demo board draws.
+  const strip = (scrollLeft: number) => ({ scrollLeft, width: 402 });
+
+  it("stays put while the tab is wholly in view", () => {
+    expect(stripScrollToShow({ left: 80, width: 127 }, strip(0))).toBe(0);
+    expect(stripScrollToShow({ left: 80, width: 127 }, strip(30))).toBe(30);
+  });
+
+  it("brings a tab cut off at the right edge in, by as much as it is cut", () => {
+    expect(stripScrollToShow({ left: 368, width: 96 }, strip(0))).toBe(62);
+  });
+
+  it("brings a tab cut off at the left edge in, flush with the start", () => {
+    expect(stripScrollToShow({ left: 0, width: 80 }, strip(62))).toBe(0);
+  });
+
+  it("shows a tab wider than the strip from its start", () => {
+    expect(stripScrollToShow({ left: 100, width: 500 }, strip(0))).toBe(100);
   });
 });
 

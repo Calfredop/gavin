@@ -476,7 +476,29 @@ shows its actions without hover and at a fingertip's size, `GitCommitBox` and
 `GitDiffUnified` wraps long lines and `MarkdownToolbar` scrolls in one row.
 `ColourPicker`'s swatches and `FallbackChainEditor`'s controls are
 fingertip-sized, and `ComplexityTable` stacks each level's controls at a
-phone's width.
+phone's width. Those queries do match inside the bundle's webview; what was
+wrong on an iPhone was the number -- several grew to 32 or 40px -- and a
+fingertip here means 44px, Apple's floor.
+
+**44px and 11px.** `surfaces/phone.css` floors every kind of control the
+bundle draws -- button, select, summary, a link, a tab, a `role="button"`,
+every input but a tick box, a radio and a hidden one, every textarea but
+xterm's -- at 44px both ways, `!important` because a component's scoped
+size would otherwise win. A floor, not a size: what is bigger is untouched.
+A tick box or a radio keeps its own size inside the label that is its hit
+area, and a link inside running text stays the text's size (`min-height`
+does not reach an inline box). Every select draws its own box and chevron
+there, since WebKit sizes a native one to its font whatever `min-height`
+says; it still opens the system's picker. The same sheet sets the root to
+16px: the surfaces size their type in `rem` as if it were, and the bare
+`monospace` root made it 13px, so every caption drew at 13/16 of itself
+(`0.6875rem`, 11px, at 8.9). `seam/touchTargets.test.ts` holds the floor,
+that it reaches every control the bundle draws and nothing out-ranks it,
+the labels around the boxes, the elements that take a tap and why, the root,
+and no size under 11px in the bundle's own surfaces. A desktop component's
+`em` sizes compound through what holds it, past a stylesheet reader, so
+those were measured at 402px with a coarse pointer and set where they live
+(`BoardCard`'s step and attachment counts, `FallbackChainEditor`'s hint).
 
 Fields are the exception: no component sizes its own for the phone. iOS
 zooms the whole page into a text field under 16px the moment it takes focus,
@@ -484,11 +506,33 @@ and leaves it zoomed after the keyboard goes, so `surfaces/phone.css` puts
 one floor under every `input` typed into, `textarea` and `select` the bundle
 draws: `max(16px, 1em) !important`. A component's own size cannot undercut
 it, and `rem` would not have: the desktop's root is the bare `monospace`,
-13px. `seam/fieldFontSize.test.ts` holds the floor and that nothing shipped
+13px (16px in the bundle now, but a field written `0.8rem` would still
+undercut it). `seam/fieldFontSize.test.ts` holds the floor and that nothing shipped
 out-ranks it. CodeMirror's editor is no field to that rule (it is
 contenteditable, its gutter sized with it), so `CodeMirrorView` keeps its own.
 The viewport meta leaves pinch zoom alone: `maximum-scale=1` would stop the
 zoom too, at the cost of a reader's own zoom.
+
+**On its side.** The shell supports landscape on a phone, and every screen is
+meant to work that way. Turned sideways an iPhone 16 Pro is 874x402 with
+`env(safe-area-inset-*)` top 0, right 62, bottom 20, left 62: the Dynamic
+Island and the rounded corners live in those 62px bands. The page frame,
+`.companion` in `routes/+page.svelte`, pads by both side insets once, for
+every surface, and nothing inside it reads a side inset again (a surface
+that did would keep a second 62px clear). A layer fixed over the page spans
+the frame's padding -- `.companion`'s transform makes it their containing
+block -- so it pads itself: the New card sheet, and the desktop's `Modal`
+backdrop, which centres its panel inside the safe area (zero at a desk). The
+hub does the same on `.hub`, and its pairing sheet on itself. Below 500px of
+height in landscape, a phone on its side and never a tablet, the chrome
+folds: the workspace header sits beside the surface strip in one 49px row,
+Git's branch beside its sync buttons, and the board's tools beside its
+column strip. Measured at 874x402 against the Demo Workstation, the working
+area is Board 75% of the height, Rails 60%, Git 63%, Files 77%, a terminal
+61%, Sessions, Decisions, Review and Settings 88%. `seam/landscape.test.ts`
+holds the frame, that nothing inside reads a side inset, the fixed layers,
+and the one fold query against sideways phones, upright ones and tablets;
+the shell's `surfaces/landscape.test.ts` holds the hub's.
 
 The desktop's Git actions name every op with `crypto.randomUUID`, which a
 page has only in a secure context; `remote/randomUUID.ts` gives the page one

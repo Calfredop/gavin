@@ -2,7 +2,7 @@
 order: 24576
 kind: task
 title: Companion: sweep touch targets under 44 px and text under 11 px
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -31,8 +31,16 @@ The bundle README says `GitFileRow` actions are shown "at a fingertip's size", `
 - Raise the smallest captions to 11 px or more, and make sure Dynamic Type / `-webkit-text-size-adjust` is not fighting the sizes.
 - Add a guard test in the bundle suites that fails on a visible interactive element under 44 px at a 402 px width (allow-list the exceptions).
 
+**Outcome.**
+- **Which it was:** the media queries match inside the bundle (the measured 40x32, 32x32 and 34 px are exactly what the `(pointer: coarse)` rules set); the numbers were under 44. They are 44 now.
+- **Targets:** one floor in `surfaces/phone.css`: `min-width`/`min-height: 44px !important` on every button, select, summary, `a[href]`, `[role=button]`, `[role=tab]`, input (not checkbox, radio, hidden) and textarea (not xterm's hidden one). A tick box keeps its size inside its label (Amend's label is a 44px row). Every select draws its own box and chevron there, since WebKit ignores `min-height` on a native select (the rail editor's own chevron gave way to it). The surfaces' own 36/40 px sizes went to 44 as well.
+- **Text:** the surfaces size type in `rem` as if it were 16px, but `theme.css`'s bare `monospace` root made it 13px, so every size drew at 13/16 (0.6875rem at 8.9 px). `phone.css` sets the root to 16px. The `em` sizes that still fell under 11 px were set where they live, under `(pointer: coarse)`: `BoardCard`'s step and attachment counts and nested pills, the board's agent badge, `FallbackChainEditor`'s hint. `-webkit-text-size-adjust: 100%` is on the root too; nothing sizes text by Dynamic Type.
+- **Board strip:** five columns at a readable 13 px are 464 px, more than a 402 px screen, so the strip still scrolls (as the surface strip does), but it now brings the shown column's tab into view on a tap, a swipe or the opening column (`stripScrollToShow`).
+- **Guard:** `seam/touchTargets.test.ts`. The suites have no layout engine, so it reads what ships: the floor and that it reaches every control the bundle draws (its own surfaces plus every desktop component they import, transitively); that nothing shipped out-ranks it; every checkbox and radio inside a label; each other tappable element in the bundle's own surfaces on a named list (two pagers, the card slot, the markdown link delegate); the 16px root; and no size under 11 px in the bundle's own surfaces. Checked to fail when the floor loses `!important`, the root changes and a caption goes to 0.625rem.
+- **Audit:** headless Chrome as an iPhone 16 Pro (402x874, DPR 3, touch on, so `(pointer: coarse)` and `(hover: none)` match), running the card's inspector selector over whole scrolled pages, not just the first screenful: workspace list, board (nested tasks open), New card, card page, PRD, Decisions, Review, workspace Settings, Workstation settings, Sessions, terminal, End-session confirm, Rails, rail editor, Delete-rail confirm, Git changes and branches, Files, file page in Formatted and Edit, Add a workspace. Nothing under 44 px, no text under 11 px, no page wider than 402. That is Chrome, not WebKit, which is what the human test below is for.
+
 **Acceptance.**
-- [ ] The inspector audit lists no visible interactive element under 44 px on board, card, Sessions, terminal, Git, Files and Settings
-- [ ] No visible caption under 11 px
-- [ ] The guard test holds that
+- [x] The inspector audit lists no visible interactive element under 44 px on board, card, Sessions, terminal, Git, Files and Settings
+- [x] No visible caption under 11 px
+- [x] The guard test holds that
 - [ ] Human test: thumb through each surface; nothing needs a second try

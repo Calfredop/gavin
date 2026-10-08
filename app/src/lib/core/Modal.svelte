@@ -94,9 +94,15 @@
 </div>
 
 <style>
+  /* The panel centres inside the safe area: on a phone on its side (the
+     Companion draws this) a wide panel would otherwise reach under the
+     Dynamic Island and the corners. Zero at a desk. */
   .backdrop {
     position: fixed;
     inset: 0;
+    box-sizing: border-box;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+      env(safe-area-inset-left);
     background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
@@ -128,6 +134,7 @@
      being a positioned box (every pane in Pane.svelte already is). */
   .backdrop.inline {
     position: absolute;
+    padding: 0;
     background: none;
     z-index: auto;
     display: block;

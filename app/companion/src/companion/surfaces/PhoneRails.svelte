@@ -322,7 +322,6 @@
                             <option value="sequence">one at a time</option>
                             <option value="parallel">all at once</option>
                           </select>
-                          <ChevronDown size={16} />
                         </span>
                       {:else}
                         <span class="mode-said">{stage.mode === "sequence" ? "one at a time" : "all at once"}</span>
@@ -402,7 +401,6 @@
                       <option value={choice.path}>{choice.title}{choice.column ? ` · ${choice.column}` : ""}</option>
                     {/each}
                   </select>
-                  <ChevronDown size={16} />
                 </span>
                 <span class="choice">
                   <select class="pick" aria-label="Where it goes" bind:value={into}>
@@ -411,7 +409,6 @@
                       <option value={stage.id}>into {stage.label}</option>
                     {/each}
                   </select>
-                  <ChevronDown size={16} />
                 </span>
                 <button type="button" class="action" disabled={!picked} onclick={() => void add(row)}>
                   <Plus size={16} />
@@ -457,7 +454,7 @@
   }
   .top {
     flex: 0 0 auto;
-    padding: 0 max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
+    padding: 0 12px 4px;
   }
   .bar {
     display: flex;
@@ -472,9 +469,12 @@
     font-size: 0.75rem;
     line-height: 1.4;
   }
+  /* At most the row's width, the label wrapping inside it: at a large
+     text size the agent's name alone is wider than the phone. */
   .action {
     display: inline-flex;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-width: 100%;
     align-items: center;
     gap: 8px;
     min-height: 44px;
@@ -539,7 +539,7 @@
   }
   .empty {
     margin: 0;
-    padding: 20px max(16px, env(safe-area-inset-right)) 20px max(16px, env(safe-area-inset-left));
+    padding: 20px 16px;
     color: var(--text-muted);
     font-size: 0.875rem;
     line-height: 1.5;
@@ -604,8 +604,7 @@
     flex: 0 0 100%;
     box-sizing: border-box;
     min-width: 0;
-    padding: 12px max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
-      max(12px, env(safe-area-inset-left));
+    padding: 12px 12px calc(16px + env(safe-area-inset-bottom));
     overflow-y: auto;
     scroll-snap-align: start;
     scroll-snap-stop: always;
@@ -648,7 +647,7 @@
     background: var(--surface-base);
     color: var(--text);
     font: inherit;
-    font-size: 16px;
+    font-size: max(16px, 1rem);
     font-weight: 600;
   }
   .said {
@@ -703,21 +702,14 @@
      the Add-a-card picker 92px off a 402px phone. So each one takes the
      column and cuts its chosen text short inside it. It also draws its
      own box: WebKit sizes a native select to its font and ignores
-     min-height, 29px on an iPhone under a 44px rule. */
+     min-height, 29px on an iPhone under a 44px rule. The chevron is the
+     page's, drawn for every select (phone.css). */
   .choice {
     position: relative;
     display: block;
     flex: 1 1 100%;
     min-width: 0;
     max-width: 100%;
-  }
-  .choice :global(svg) {
-    position: absolute;
-    top: 50%;
-    right: 12px;
-    color: var(--text-muted);
-    transform: translateY(-50%);
-    pointer-events: none;
   }
   .pick {
     box-sizing: border-box;
@@ -731,7 +723,7 @@
     border-radius: 6px;
     background: var(--surface-base);
     color: var(--text);
-    font-size: 16px;
+    font-size: max(16px, 1rem);
     text-overflow: ellipsis;
     white-space: nowrap;
     appearance: none;

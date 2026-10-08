@@ -10,18 +10,40 @@ body {
   color: var(--text);
 }
 
+html {
+  /* 16px at the phone's default text size, so `rem` is what the surfaces
+     were written in, and that times the text size the person picked in
+     iOS's Settings: `--text-scale` is what `textScale.ts` reads off a
+     probe in iOS's body style, 1 where there is none. Without the 16px
+     the root is the bare `monospace` of `$lib/ui/theme.css`, which a
+     browser sizes at its fixed-pitch default, 13px: every caption written
+     `0.6875rem` (11px) drew at 8.9px on an iPhone, `0.8125rem` at 10.6px.
+     `-webkit-text-size-adjust` stays 100%: the scale is this, not
+     WebKit's own guess. `seam/textScale.test.ts` holds it. */
+  font-size: calc(16px * var(--text-scale, 1));
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
-  /* 16px and no smaller: below it iOS zooms the page when a field takes
-     focus, and the surfaces that follow this one have fields. The
-     desktop's components size themselves in `em`, so this is also the
-     one number that scales them all for a thumb. */
-  font-size: 16px;
+  /* The root's size: 16px at the default text size. The desktop's
+     components size themselves in `em`, so this is also the one number
+     that scales them all, for a thumb and for the phone's text size. */
+  font-size: 1rem;
   -webkit-text-size-adjust: 100%;
   /* The page never scrolls; its surfaces do. Without this a pull at the
      top of a list rubber-bands the whole bundle inside the shell. */
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* A button no component sizes takes the browser's own control size,
+   13.333px in Chrome, fixed, which no text size reaches: a workspace
+   row's counts and the Git tab's Commit stayed that size at the largest
+   one. The same size here, times the scale. A component's own size, a
+   class selector, still wins. `seam/textScale.test.ts` holds it. */
+button {
+  font-size: calc(13.333px * var(--text-scale, 1));
 }
 
 /* No field under 16px either. iOS zooms the whole page into a text field
@@ -31,8 +53,9 @@ body {
    generic `monospace`, which a browser sizes at its fixed-pitch default,
    13px -- so a field written `1rem` is 13px. Hence one rule for every
    field the bundle draws, xterm's hidden input included, and `!important`
-   because a component's own scoped size would otherwise win.
-   `seam/fieldFontSize.test.ts` holds it. */
+   because a component's own scoped size would otherwise win. (The root
+   is 16px at the default text size, above, but less at a smaller one,
+   and a field written `0.8rem` would be under the floor either way.) `seam/fieldFontSize.test.ts` holds it. */
 input:not(
     [type="checkbox"],
     [type="radio"],
@@ -48,4 +71,46 @@ input:not(
 textarea,
 select {
   font-size: max(16px, 1em) !important;
+}
+
+/* Nothing a thumb presses is under 44px either way: Apple's floor, 44pt,
+   and a CSS px is a point on an iPhone. The desktop's components size
+   their controls for a cursor -- a dialog's buttons were 26px tall on an
+   iPhone 16 Pro -- and several that grow for a coarse pointer grew to 32
+   or 40, so one rule floors every kind of control the bundle draws, and
+   `!important` because a component's own scoped size would otherwise
+   win. A floor, not a size: what is already bigger is untouched. A tick
+   box and a radio stay their own size, inside the label that is their
+   hit area; a link inside running text is the text's size, which a
+   floor cannot change (min-height does not reach an inline box). xterm's
+   hidden input is no control. `seam/touchTargets.test.ts` holds it. */
+button,
+select,
+summary,
+a[href],
+[role="button"],
+[role="tab"],
+input:not([type="checkbox"], [type="radio"], [type="hidden"]),
+textarea:not(.xterm-helper-textarea) {
+  min-width: 44px !important;
+  min-height: 44px !important;
+}
+
+/* WebKit sizes a native select to its font whatever `min-height` says
+   (the card page's column picker measured 29px under a 44px rule), so
+   every select draws its own box, and its own chevron in the text's
+   colour at the right. It still opens the system's picker. */
+select {
+  appearance: none !important;
+  padding-right: 34px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%) !important;
+  background-position:
+    right 19px center,
+    right 14px center !important;
+  background-size:
+    5px 5px,
+    5px 5px !important;
+  background-repeat: no-repeat !important;
 }

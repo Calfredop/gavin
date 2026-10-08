@@ -39,7 +39,7 @@
     flex: 0 0 auto;
     overflow-x: auto;
     scrollbar-width: none;
-    padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-sunken);
   }

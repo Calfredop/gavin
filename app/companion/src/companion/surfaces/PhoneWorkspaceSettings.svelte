@@ -403,7 +403,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border-danger);
     background: var(--surface-danger);
     color: var(--danger-text);
@@ -416,7 +416,7 @@
   }
   .problem button {
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;

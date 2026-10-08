@@ -76,19 +76,20 @@
     border-radius: 2px;
   }
   /* A fingertip, on the Companion (companion-30): an 18px dot is a miss
-     more often than a hit. A window with a mouse never matches. */
+     more often than a hit, and Apple's floor is 44pt. A window with a
+     mouse never matches. */
   @media (pointer: coarse) {
     .swatches {
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 8px;
     }
     .swatch {
-      width: 32px;
-      height: 32px;
+      width: 44px;
+      height: 44px;
     }
     .custom input {
       width: 44px;
-      height: 32px;
+      height: 44px;
     }
   }
 </style>

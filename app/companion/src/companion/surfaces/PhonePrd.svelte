@@ -51,8 +51,7 @@
     overflow-y: auto;
   }
   .document {
-    padding: 16px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom))
-      max(16px, env(safe-area-inset-left));
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
   }
   .note {
     margin: 0;

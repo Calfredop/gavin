@@ -340,7 +340,7 @@
     select,
     input {
       min-height: 44px;
-      font-size: 16px;
+      font-size: max(16px, 1rem);
     }
     .clear {
       min-width: 44px;

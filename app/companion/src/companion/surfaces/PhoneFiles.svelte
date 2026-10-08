@@ -247,7 +247,7 @@
     flex: 0 0 auto;
     align-items: center;
     gap: 2px;
-    padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
+    padding: 0 4px;
     border-bottom: 1px solid var(--border);
   }
   .up {
@@ -316,7 +316,7 @@
     gap: 12px;
     width: 100%;
     min-height: 48px;
-    padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     border: 0;
     border-bottom: 1px solid var(--border);
     background: none;
@@ -359,7 +359,7 @@
     flex: 0 0 auto;
     align-items: center;
     gap: 8px;
-    padding: 0 max(12px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left));
+    padding: 0 12px 0 6px;
     border-bottom: 1px solid var(--border);
   }
   .back {

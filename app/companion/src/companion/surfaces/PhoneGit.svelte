@@ -104,37 +104,39 @@
   {@const note = syncNote(view)}
   {@const line = branchLine(view)}
   <div class="git">
-    <div class="head">
-      <span class="branch">
-        <GitBranch size={15} />
-        <span class="branch-name">{line ?? "…"}</span>
-      </span>
-      <button
-        type="button"
-        class="icon"
-        aria-label="Refresh"
-        disabled={locked}
-        onclick={() => void refresh(workspace.id)}
-      >
-        <RefreshCw size={17} />
-      </button>
-    </div>
+    <div class="top">
+      <div class="head">
+        <span class="branch">
+          <GitBranch size={15} />
+          <span class="branch-name">{line ?? "…"}</span>
+        </span>
+        <button
+          type="button"
+          class="icon"
+          aria-label="Refresh"
+          disabled={locked}
+          onclick={() => void refresh(workspace.id)}
+        >
+          <RefreshCw size={17} />
+        </button>
+      </div>
 
-    <div class="sync">
-      <button type="button" class="sync-button" disabled={!sync.fetch.enabled} onclick={() => void fetch(workspace.id)}>
-        <Download size={16} />
-        {sync.fetch.label}
-      </button>
-      <button type="button" class="sync-button" disabled={!sync.pull.enabled} onclick={() => void pull(workspace.id)}>
-        <ArrowDown size={16} />
-        {sync.pull.label}
-        {#if sync.pull.count > 0}<span class="count">{sync.pull.count}</span>{/if}
-      </button>
-      <button type="button" class="sync-button" disabled={!sync.push.enabled} onclick={() => void push(workspace.id)}>
-        <ArrowUp size={16} />
-        {sync.push.label}
-        {#if sync.push.count > 0}<span class="count">{sync.push.count}</span>{/if}
-      </button>
+      <div class="sync">
+        <button type="button" class="sync-button" disabled={!sync.fetch.enabled} onclick={() => void fetch(workspace.id)}>
+          <Download size={16} />
+          {sync.fetch.label}
+        </button>
+        <button type="button" class="sync-button" disabled={!sync.pull.enabled} onclick={() => void pull(workspace.id)}>
+          <ArrowDown size={16} />
+          {sync.pull.label}
+          {#if sync.pull.count > 0}<span class="count">{sync.pull.count}</span>{/if}
+        </button>
+        <button type="button" class="sync-button" disabled={!sync.push.enabled} onclick={() => void push(workspace.id)}>
+          <ArrowUp size={16} />
+          {sync.push.label}
+          {#if sync.push.count > 0}<span class="count">{sync.push.count}</span>{/if}
+        </button>
+      </div>
     </div>
     {#if note}
       <p class="hint">{note}</p>
@@ -236,7 +238,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px max(8px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 4px 8px 0 14px;
   }
   .branch {
     display: inline-flex;
@@ -265,14 +267,36 @@
     background: none;
     color: var(--text-muted);
   }
+  /* Wraps, and each button is at least its label's width: at a large
+     text size three labels and a count are wider than the phone. (A
+     zero basis would let phone.css's 44px floor, which replaces a flex
+     item's own minimum, squeeze a button under its label.) */
   .sync {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
-    padding: 4px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    padding: 4px 12px 8px;
+  }
+  /* A phone on its side has 402px to share: the branch and the sync
+     buttons on one row, where upright they take two. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .top {
+      display: flex;
+      align-items: center;
+    }
+    .head {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-bottom: 4px;
+    }
+    .sync {
+      flex: 0 1 auto;
+      padding: 4px 12px 4px 0;
+    }
   }
   .sync-button {
     display: inline-flex;
-    flex: 1 1 0;
+    flex: 1 0 auto;
     align-items: center;
     justify-content: center;
     gap: 6px;
@@ -304,7 +328,7 @@
   }
   .hint {
     margin: -2px 0 8px;
-    padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     color: var(--text-subtle);
     font-size: 0.75rem;
   }
@@ -313,7 +337,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    padding: 8px 12px;
     font-size: 0.8125rem;
   }
   .banner.info {
@@ -337,7 +361,7 @@
     margin-left: auto;
   }
   .banner-acts button {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid currentColor;
     border-radius: 6px;
@@ -348,15 +372,17 @@
   .banner-acts button:disabled {
     opacity: 0.45;
   }
+  /* Wraps as the sync row does. */
   .panes {
     display: flex;
     flex: 0 0 auto;
+    flex-wrap: wrap;
     border-block: 1px solid var(--border);
     background: var(--surface-sunken);
   }
   .pane-tab {
     display: inline-flex;
-    flex: 1 1 0;
+    flex: 1 0 auto;
     align-items: center;
     justify-content: center;
     gap: 6px;

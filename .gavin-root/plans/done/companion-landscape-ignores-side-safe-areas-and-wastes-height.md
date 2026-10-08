@@ -2,7 +2,7 @@
 order: 33792
 kind: task
 title: Companion in landscape: content ignores the side safe areas and the chrome leaves a quarter of the screen for work
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -22,7 +22,10 @@ Found on a physical iPhone 16 Pro (iOS 27.0) by `companion-iphone-smoke-tests.md
 - Add landscape cases to the guard tests where they can run (a 874x402 viewport with insets 0/62/20/62 in the bundle's seam tests) and note in the README which screens are expected to work sideways. If landscape is judged not worth the work for v1, lock the phone to portrait in `Info.plist` and say so; that is an acceptable answer, but decide it.
 
 **Acceptance.**
-- [ ] In landscape no text or control starts or ends inside the 62 px side insets, on the hub and on every bundle surface
-- [ ] The working area on Git, Board, Files and Sessions is at least about 60% of the screen height
-- [ ] Or: the app is locked to portrait and the README says so
-- [ ] Human test: turn the phone sideways on the Git, Board and terminal screens; nothing is under the Island or the corners and a list shows several rows
+- [x] In landscape no text or control starts or ends inside the 62 px side insets, on the hub and on every bundle surface
+- [x] The working area on Git, Board, Files and Sessions is at least about 60% of the screen height
+- [ ] Or: the app is locked to portrait and the README says so (not taken: landscape stays, see Outcome)
+- [ ] Human test: Turn the phone sideways on the Git, Board and terminal screens; nothing is under the Island or the corners and a list shows several rows
+
+**Outcome (2026-10-09).** Landscape kept, not locked. The side insets are now the page frame's alone: `.companion` in `app/companion/src/routes/+page.svelte` and `.hub` in the shell's `Hub.svelte` pad both sides once, and every surface's own `max(Npx, env(safe-area-inset-left/right))` became plain `Npx` (a surface that kept one would clear a second 62 px). Layers fixed over the page span the frame's padding, so they pad themselves: the New card sheet, the pairing sheet, and the desktop `Modal` backdrop (safe-area padding, zero at a desk; `inline` resets it). Under `(orientation: landscape) and (max-height: 500px)` (sideways phones, never tablets) the workspace header folds beside the surface strip into one 49 px row, Git's branch row sits beside its sync buttons, and the board's tools sit beside its column strip. Measured on the built bundle in an 874x402 frame with 62 px insets, Demo Workstation: no control or text inside the bands on any surface, the sheet or the terminal; working area Board 75%, Rails 60%, Git 63% (was 39%), Files 77%, terminal 61%, Sessions/Decisions/Review/Settings 88%. Upright unchanged. Guards: `app/companion/src/companion/seam/landscape.test.ts` (frame, no inner side insets, fixed layers, one fold query against sideways phones, upright ones and tablets) and `app/companion-shell/src/shell/surfaces/landscape.test.ts` (the hub); helper `testing/safeArea.ts`. README: "On its side". Chrome reports `env()` as 0, so the real insets are the human test's.
+

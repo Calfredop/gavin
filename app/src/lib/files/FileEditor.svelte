@@ -482,12 +482,17 @@
     background: var(--surface-overlay);
     color: var(--text);
   }
-  /* A touch screen (the Companion): the mode switch fills the strip's
-     height and reads at body size, so a thumb lands on the mode it meant.
-     The strip itself keeps the desk's band height. */
+  /* A touch screen (the Companion): the mode switch is a fingertip tall
+     (44px, Apple's floor) and reads at body size, so a thumb lands on the
+     mode it meant. The strip's band grows to hold it, and the formatting
+     bar's buttons, which the phone's page floors at 44px too; there is no
+     hub on a phone for the band to line up with. */
   @media (pointer: coarse) {
+    .pane {
+      --hub-bar-height: 52px;
+    }
     .segments button {
-      min-height: 34px;
+      min-height: 44px;
       padding: 0 14px;
       font-size: 0.875em;
     }

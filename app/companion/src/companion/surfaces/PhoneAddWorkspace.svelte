@@ -245,7 +245,7 @@
     flex: 0 0 auto;
     align-items: center;
     gap: 2px;
-    padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
+    padding: 0 4px;
     border-bottom: 1px solid var(--border);
   }
   .icon {
@@ -314,7 +314,7 @@
     width: 100%;
     min-height: 48px;
     box-sizing: border-box;
-    padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     border: 0;
     border-bottom: 1px solid var(--border);
     background: none;
@@ -360,8 +360,7 @@
     flex: 0 0 auto;
     flex-direction: column;
     gap: 8px;
-    padding: 10px max(14px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
-      max(14px, env(safe-area-inset-left));
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--border);
     background: var(--surface-sunken);
   }

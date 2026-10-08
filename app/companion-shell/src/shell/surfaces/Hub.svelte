@@ -157,6 +157,12 @@
     flex-direction: column;
     height: 100vh;
     height: 100dvh;
+    /* Clear of the side insets, the Dynamic Island's band and the
+       rounded corners of a phone on its side, once for the whole hub, as
+       the bundle's page is (companion/src/routes/+page.svelte): nothing
+       inside reads a side inset of its own. */
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    box-sizing: border-box;
   }
   .scroll {
     flex: 1 1 auto;
@@ -174,7 +180,7 @@
     flex-direction: column;
     gap: 4px;
     width: 100%;
-    padding: 14px max(14px, env(safe-area-inset-right)) 14px max(14px, env(safe-area-inset-left));
+    padding: 14px;
     border: 0;
     border-bottom: 1px solid var(--border);
     background: none;
@@ -191,8 +197,11 @@
   .row:disabled {
     color: var(--text);
   }
+  /* Wraps: at a large text size the tag and the state go under the name
+     rather than squeezing it to its first letters. */
   .head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
@@ -247,7 +256,7 @@
   }
   .section {
     margin: 0;
-    padding: 18px max(14px, env(safe-area-inset-right)) 6px max(14px, env(safe-area-inset-left));
+    padding: 18px 14px 6px;
     color: var(--text-muted);
     font-size: 0.75rem;
     font-weight: 600;
@@ -271,7 +280,7 @@
   }
   .kind-waiting .kind,
   .kind-human-test .kind {
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .kind-rail-stopped .kind {
     color: var(--warning-text);
@@ -293,7 +302,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px max(14px, env(safe-area-inset-right)) 12px max(14px, env(safe-area-inset-left));
+    padding: 12px 14px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-raised);
   }
@@ -320,7 +329,7 @@
     font-size: 0.8125rem;
   }
   .pair {
-    padding: 16px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+    padding: 16px 16px 0;
   }
   .note {
     margin: 0;

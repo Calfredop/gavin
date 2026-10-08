@@ -151,7 +151,7 @@
   .new {
     display: flex;
     gap: 8px;
-    padding: 12px max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
+    padding: 12px 12px 4px;
   }
   .start {
     display: inline-flex;
@@ -186,7 +186,7 @@
   }
   .group-title {
     margin: 16px 0 4px;
-    padding: 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     color: var(--text-subtle);
     font-size: 0.6875rem;
     font-weight: 600;
@@ -195,7 +195,7 @@
   }
   .unplaced {
     margin: 0 0 4px;
-    padding: 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     color: var(--text-muted);
     font-size: 0.8125rem;
     line-height: 1.4;
@@ -211,7 +211,7 @@
     gap: 12px;
     width: 100%;
     min-height: 56px;
-    padding: 8px max(12px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+    padding: 8px 12px 8px 14px;
     border: 0;
     border-bottom: 1px solid var(--border);
     background: none;

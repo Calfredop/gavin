@@ -136,6 +136,21 @@ export function columnAt(keys: string[], scrollLeft: number, width: number): str
   return keys[index];
 }
 
+/// Where the column strip scrolls to so the shown column's tab is wholly
+/// in view: as little as that takes, and nowhere when it already is. A
+/// board's columns outgrow a phone's width at a readable size, so the
+/// strip scrolls, and a swipe to the last column must not leave its tab
+/// cut off at the edge. `tab.left` is from the start of the strip.
+export function stripScrollToShow(
+  tab: { left: number; width: number },
+  strip: { scrollLeft: number; width: number }
+): number {
+  if (tab.left < strip.scrollLeft) return tab.left;
+  const overhang = tab.left + tab.width - (strip.scrollLeft + strip.width);
+  if (overhang > 0) return Math.min(tab.left, strip.scrollLeft + overhang);
+  return strip.scrollLeft;
+}
+
 /// The card an inbox item lands on: the card the item names, or the card
 /// whose agent is the session it names. Null when the board is not here
 /// yet, or names neither -- then the workspace's board is the landing,
