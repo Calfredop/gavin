@@ -154,16 +154,26 @@
   const drawableView = $derived(
     drawableHubViewId(activeView, Boolean(activeWorkspace?.rootPath), hubTabPrefs)
   );
-  // The hub section the navigator is showing over a page, per workspace
-  // it was opened in -- never the workspace's own activeView.
-  let navigatorView = $state<{ workspaceId: string; view: string } | null>(null);
+  // The hub section the navigator is showing over a page. Bound to the
+  // workspace AND page it was opened on, and cleared the moment either
+  // changes (or the workspace leaves the page for the hub): coming back
+  // to a page with a hub section still up front is confusing.
+  let navigatorView = $state<{ workspaceId: string; pageId: string | null; view: string } | null>(null);
   const navigatorViewId = $derived(
-    navigatorView && navigatorView.workspaceId === activeWorkspace?.id ? navigatorView.view : null
+    navigatorView &&
+      activeView === "terminal" &&
+      navigatorView.workspaceId === activeWorkspace?.id &&
+      navigatorView.pageId === (activeWorkspace?.activePageId ?? null)
+      ? navigatorView.view
+      : null
   );
+  $effect(() => {
+    if (navigatorView && navigatorViewId === null) navigatorView = null;
+  });
   const navigatorViewDef = $derived(hubViews.find((v) => v.id === navigatorViewId) ?? null);
   function toggleNavigatorView(id: string): void {
     if (!activeWorkspace) return;
-    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, view: id };
+    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, pageId: activeWorkspace.activePageId ?? null, view: id };
   }
   const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
