@@ -154,6 +154,17 @@
   const drawableView = $derived(
     drawableHubViewId(activeView, Boolean(activeWorkspace?.rootPath), hubTabPrefs)
   );
+  // The hub section the navigator is showing over a page, per workspace
+  // it was opened in -- never the workspace's own activeView.
+  let navigatorView = $state<{ workspaceId: string; view: string } | null>(null);
+  const navigatorViewId = $derived(
+    navigatorView && navigatorView.workspaceId === activeWorkspace?.id ? navigatorView.view : null
+  );
+  const navigatorViewDef = $derived(hubViews.find((v) => v.id === navigatorViewId) ?? null);
+  function toggleNavigatorView(id: string): void {
+    if (!activeWorkspace) return;
+    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, view: id };
+  }
   const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
@@ -508,11 +519,22 @@
             <div class="page-with-navigator">
               <HubNavigator
                 workspaceId={activeWorkspace.id}
+                open={navigatorViewId}
+                onselect={toggleNavigatorView}
                 hasRoot={Boolean(activeWorkspace.rootPath)}
                 agentFileName={activeAgent.file}
               />
               <div class="view">
                 <TerminalView workspaceId={activeWorkspace.id} />
+                <!-- Over the page, not instead of it: the terminal stays
+                     mounted underneath, and the workspace's view never
+                     changes. Pressing the same navigator button again
+                     closes it. -->
+                {#if navigatorViewDef}
+                  <div class="navigator-overlay">
+                    <navigatorViewDef.component workspaceId={activeWorkspace.id} />
+                  </div>
+                {/if}
               </div>
             </div>
           {:else}
@@ -1026,6 +1048,14 @@
   }
   .page-with-navigator > .view {
     min-width: 0;
+  }
+  .navigator-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-base);
   }
   .view {
     flex: 1 1 auto;

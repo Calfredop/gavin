@@ -3,10 +3,10 @@ import { hubNavigatorLabel, hubNavigatorViewIds } from "$lib/hub/hubNavigator";
 import { tabStripHubViewIds } from "$lib/hub/hubViewMeta";
 
 describe("hubNavigatorViewIds", () => {
-  it("is the strip's list with Settings after it", () => {
+  it("is the strip's list, without Settings", () => {
     const ids = hubNavigatorViewIds(true);
-    expect(ids.slice(0, -1)).toEqual(tabStripHubViewIds(true));
-    expect(ids[ids.length - 1]).toBe("settings");
+    expect(ids).toEqual(tabStripHubViewIds(true));
+    expect(ids).not.toContain("settings");
     expect(ids).toContain("home");
     expect(ids).toContain("orchestration");
   });
@@ -21,14 +21,12 @@ describe("hubNavigatorViewIds", () => {
     const ids = hubNavigatorViewIds(false);
     expect(ids).not.toContain("orchestration");
     expect(ids).toContain("kanban");
-    expect(ids).toContain("settings");
   });
 });
 
 describe("hubNavigatorLabel", () => {
-  it("names the agent file and the workspace's settings", () => {
+  it("names the agent file", () => {
     expect(hubNavigatorLabel({ id: "agent-file", label: "CLAUDE.md" }, "AGENTS.md")).toBe("AGENTS.md");
-    expect(hubNavigatorLabel({ id: "settings", label: "Settings" }, "x")).toBe("Workspace settings");
     expect(hubNavigatorLabel({ id: "home", label: "Home" }, "x")).toBe("Home");
   });
 });
@@ -40,6 +38,17 @@ describe("hub navigator surface", () => {
       string
     >
   )[0];
+  it("shows a section over the page without switching the workspace's view", () => {
+    const nav = Object.values(
+      import.meta.glob("./HubNavigator.svelte", { query: "?raw", import: "default", eager: true }) as Record<
+        string,
+        string
+      >
+    )[0];
+    expect(nav).not.toContain("switchWorkspaceView");
+    expect(page).toContain("navigatorView");
+  });
+
   it("is mounted beside the terminal view only", () => {
     expect(page).toMatch(/<HubNavigator[\s\S]*?<TerminalView/);
     expect(page.match(/<HubNavigator/g)).toHaveLength(1);

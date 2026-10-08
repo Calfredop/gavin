@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { switchWorkspaceView } from "$lib/core/layoutState";
-  import { tabStripHubViews, visibleHubViews, type HubView } from "$lib/hub/workspaceViews";
+  import { tabStripHubViews, type HubView } from "$lib/hub/workspaceViews";
   import { hubNavigatorLabel, hubNavigatorViewIds } from "$lib/hub/hubNavigator";
   import {
     hubTabOrderByWorkspace,
@@ -12,13 +11,16 @@
 
   interface Props {
     workspaceId: string;
+    /// The section currently shown over the page, if any.
+    open: string | null;
+    onselect: (id: string) => void;
     hasRoot: boolean;
     /// The agent file's name (CLAUDE.md, AGENTS.md…), which is what the
     /// hub's own tab for it is called.
     agentFileName: string;
   }
 
-  let { workspaceId, hasRoot, agentFileName }: Props = $props();
+  let { workspaceId, open, onselect, hasRoot, agentFileName }: Props = $props();
 
   const prefs = $derived(
     hubTabPrefsFor(workspaceId, $hubTabOrderByWorkspace, $hubTabsHiddenByWorkspace, $hubTabsHiddenDefault)
@@ -27,7 +29,7 @@
   // hidden or dragged there is hidden or dragged here.
   const views = $derived.by(() => {
     const byId = new Map<string, HubView>(
-      [...tabStripHubViews(hasRoot, prefs), ...visibleHubViews(hasRoot)].map((v) => [v.id, v])
+      tabStripHubViews(hasRoot, prefs).map((v) => [v.id, v])
     );
     return hubNavigatorViewIds(hasRoot, prefs)
       .map((id) => byId.get(id))
@@ -45,7 +47,8 @@
       label={hubNavigatorLabel(view, agentFileName)}
       size={16}
       class="hub-navigator-button"
-      onclick={() => switchWorkspaceView(workspaceId, view.id)}
+      active={open === view.id}
+      onclick={() => onselect(view.id)}
     />
   {/each}
 </nav>
