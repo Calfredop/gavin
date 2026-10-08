@@ -66,6 +66,16 @@
       $agentDefaultsStore.defaultAgent
     )
   );
+  // The two strings the read effect below keys on. Read straight off
+  // `agentCfg` there, the effect depended on the whole object, and
+  // resolveAgentConfig builds a new one whenever any store feeding it
+  // emits -- which a busy agent's status pushes do about once a second.
+  // Every rebuild re-ran the reads, which put the setup inputs back to
+  // unknown, which drew and removed the "Finish setting up" banner, which
+  // resized the terminal under it. Strings compare by value, so these only
+  // propagate when the file or command actually changed.
+  const agentFile = $derived(agentCfg.file);
+  const agentCommand = $derived(agentCfg.command);
   // The excerpt has to come from the file the workspace actually points
   // at, or a project with its own docs/PRD.md shows an empty tile beside
   // a PRD tab full of prose.
@@ -188,7 +198,7 @@
         prdBody = null;
       });
     void backend
-      .readFileForViewer(`${r}/${agentCfg.file}`)
+      .readFileForViewer(`${r}/${agentFile}`)
       .then((res) => {
         if (mine !== readToken) return;
         agentFileExists = res.exists;
@@ -219,7 +229,7 @@
         agentSkillsMark = recorded;
         if (recorded) return;
         return backend
-          .agentSkillsStatus(r, agentCfg.command)
+          .agentSkillsStatus(r, agentCommand)
           .catch(() => UNKNOWN_STATUS)
           .then((res) => {
             if (mine !== readToken) return;
