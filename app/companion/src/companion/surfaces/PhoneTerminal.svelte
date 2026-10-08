@@ -26,7 +26,7 @@
   import { sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
   import { closeTerminal } from "$companion/state/workstation";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
-  import { press } from "$companion/surfaces/press";
+  import { press, tap } from "$companion/surfaces/press";
   import { logicalRows, quickReplies, type QuickReply } from "$companion/surfaces/quickReplies";
   import {
     ARROW_KEYS,
@@ -160,9 +160,14 @@
   }
 
   // A tap on the terminal while composing puts the keyboard away, so the
-  // screen it covered can be read.
-  function onFrameTap(): void {
-    if (dock === "compose" && document.activeElement === field) field?.blur();
+  // screen it covered can be read; in raw mode it gives the terminal the
+  // keyboard. xterm's own mousedown did the second under 6.0, and 6.1
+  // sends none for a touch: it takes the touch for scrolling.
+  function onFrameTap(e: PointerEvent): void {
+    // The Latest pill is a press of its own, and keeps the keyboard up.
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    if (dock === "raw") getTerminal(sessionId)?.focus();
+    else if (document.activeElement === field) field?.blur();
   }
 
   function latest(): void {
@@ -261,8 +266,7 @@
   {/snippet}
 </PhoneHeader>
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -- a tap here only puts the soft keyboard away; the terminal inside has its own keyboard handling -->
-<div class="frame" bind:this={frame} onclick={onFrameTap}>
+<div class="frame" bind:this={frame} use:tap={onFrameTap}>
   <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={DEFAULT_TERMINAL_FONT_SIZE} />
   {#if behind}
     <button type="button" class="latest" use:press={{ onPress: latest }}>
