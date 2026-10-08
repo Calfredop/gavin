@@ -264,6 +264,9 @@ pub enum RelayUrlError {
     Credentials,
     /// `ws://` to a host that is not on this machine or this network.
     PlainToPublicHost,
+    /// A dev (debug) build asked to use a Relay that is not on this
+    /// machine or this network. See `RelayUrl::parse_for`.
+    PublicHostInDevBuild,
 }
 
 impl std::fmt::Display for RelayUrlError {
@@ -289,6 +292,10 @@ impl std::fmt::Display for RelayUrlError {
                 f,
                 "ws:// would send the admission token unencrypted — use wss:// for a Relay that is not on this machine or this network"
             ),
+            RelayUrlError::PublicHostInDevBuild => write!(
+                f,
+                "a development build only talks to a Relay on this machine or this network — point it at the local dev stack (docs/dev-setup.md), or use a release build for a public Relay"
+            ),
         }
     }
 }
@@ -296,6 +303,23 @@ impl std::fmt::Display for RelayUrlError {
 impl std::error::Error for RelayUrlError {}
 
 impl RelayUrl {
+    /// `parse`, and then the build's own rule: a dev (debug) build may use
+    /// only a Relay on loopback or the LAN, so a build made from a
+    /// working tree cannot carry a real Workstation's admission token, or
+    /// its Devices' traffic, to somebody's public Relay. A release build
+    /// takes what `parse` takes.
+    ///
+    /// The dev and release builds share one trust store, so this is asked
+    /// where the URL is stored AND where it is dialled: a public URL the
+    /// release build saved is still not one the dev build's daemon dials.
+    pub fn parse_for(url: &str, profile: crate::BuildProfile) -> Result<Self, RelayUrlError> {
+        let parsed = Self::parse(url)?;
+        if profile == crate::BuildProfile::Dev && !parsed.local {
+            return Err(RelayUrlError::PublicHostInDevBuild);
+        }
+        Ok(parsed)
+    }
+
     /// Reads `url` and decides whether it may be dialled.
     ///
     /// `wss://` is accepted for any host. `ws://` is accepted only for a
@@ -546,6 +570,21 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_build_refuses_a_public_relay_and_a_release_build_takes_it() {
+        use crate::BuildProfile::{Dev, Release};
+        for url in ["wss://relay.example/gavin", "wss://8.8.8.8:9000", "wss://[2001:db8::1]"] {
+            assert_eq!(RelayUrl::parse_for(url, Dev), Err(RelayUrlError::PublicHostInDevBuild), "{url}");
+            assert!(RelayUrl::parse_for(url, Release).is_ok(), "{url}");
+        }
+        for url in ["ws://127.0.0.1:9000", "wss://localhost", "ws://192.168.1.20:9000", "ws://studio.local", "ws://[::1]:1"] {
+            assert!(RelayUrl::parse_for(url, Dev).is_ok(), "{url}");
+            assert!(RelayUrl::parse_for(url, Release).is_ok(), "{url}");
+        }
+        // What is wrong with the URL itself is still said first.
+        assert_eq!(RelayUrl::parse_for("ws://relay.example", Dev), Err(RelayUrlError::PlainToPublicHost));
+    }
+
+    #[test]
     fn a_plain_url_to_a_public_host_is_refused() {
         for url in ["ws://relay.example/gavin", "ws://8.8.8.8:9000", "ws://[2001:db8::1]:9000"] {
             assert_eq!(RelayUrl::parse(url), Err(RelayUrlError::PlainToPublicHost), "{url}");
@@ -612,6 +651,8 @@ mod tests {
             RelayUrlError::Port => "port",
             RelayUrlError::Credentials => "credentials",
             RelayUrlError::PlainToPublicHost => "plain-to-public-host",
+            // `parse_for`'s, never `parse`'s, so the shared table has no case for it.
+            RelayUrlError::PublicHostInDevBuild => "public-host-in-dev-build",
         }
     }
 

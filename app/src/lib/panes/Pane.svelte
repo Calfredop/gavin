@@ -39,6 +39,8 @@
   import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
+  import { deviceNameBySessionId, typingBySessionId } from "$lib/core/devicesState";
+  import { typingText } from "$lib/core/devicePresence";
   import { dirtyPaths } from "$lib/files/fileEditing";
   import { showAlert } from "$lib/core/dialog";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
@@ -62,6 +64,7 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
+    deviceTypingIndicator,
     gitIndicator,
     headroomIndicator,
     shellOrphanIndicator,
@@ -77,6 +80,7 @@
   import {
     followUpsSessionFor,
     isViewTab as tabIsView,
+    renameSeed,
     renameable,
     tabLabel as labelForTab,
     tabTooltip as tooltipForTab,
@@ -152,6 +156,7 @@
     cwdBySessionId: $layoutState.cwdBySessionId,
     trees: $gavinTrees,
     orchestrations: $orchestrations,
+    deviceBySessionId: $deviceNameBySessionId,
   });
 
   function fileTabPath(tabId: string): string | null {
@@ -310,6 +315,13 @@
   // -- only the active page renders panes -- and its setting is the one
   // it has NOW: a switch turned off since the launch has asked for
   // exactly what the session is.
+  // The presence marker (companion-16): a Device is typing into this
+  // terminal right now. devicePresence.ts decides when; this only asks.
+  function tabDeviceBadge(sessionId: string): Indicator | null {
+    const names = $typingBySessionId[sessionId];
+    return names?.length ? deviceTypingIndicator(typingText(names)) : null;
+  }
+
   function tabHeadroomBadge(sessionId: string): Indicator | null {
     const compressedHere = resolveHeadroom(ownHeadroom(getActiveWorkspace($layoutState)), $headroomDefault);
     return headroomIndicator(headroomException($sessionCompressionById[sessionId], compressedHere));
@@ -337,7 +349,7 @@
     // exact.
     if (!renameable(sessionId, naming)) return;
     editingSessionId = sessionId;
-    editValue = tabLabel(sessionId);
+    editValue = renameSeed(sessionId, naming);
   }
 
   function commitEdit(): void {
@@ -627,6 +639,10 @@
           {#if tabHeadroomBadge(sessionId)}
             {@const headroom = tabHeadroomBadge(sessionId)}
             {#if headroom}<StatusBadge indicator={headroom} size={10} />{/if}
+          {/if}
+          {#if tabDeviceBadge(sessionId)}
+            {@const typing = tabDeviceBadge(sessionId)}
+            {#if typing}<StatusBadge indicator={typing} size={10} />{/if}
           {/if}
           <!-- `restored` still decides whether the badge is THERE, exactly
                as it always did: it is a note about the screen, and typing

@@ -5,7 +5,8 @@
 #
 #   docker build -f crates/gavin-relay/Dockerfile -t gavin-relay .
 #
-# Configuration and running it: docs/relay.md.
+# Configuration and running it: docs/relay.md. The local dev stack
+# (`docker compose -f dev-stack/compose.yaml up`) builds it too.
 
 FROM rust:1.97-slim-trixie AS build
 WORKDIR /src
@@ -21,7 +22,7 @@ RUN mkdir -p app/src-tauri/src \
  && touch app/src-tauri/src/lib.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p gavin-relay \
+    cargo build --release --locked -p gavin-relay --bin gavin-relay \
  && cp target/release/gavin-relay /usr/local/bin/
 
 FROM debian:trixie-slim

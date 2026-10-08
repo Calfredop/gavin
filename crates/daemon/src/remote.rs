@@ -48,6 +48,7 @@ use crate::server::{AwaitedPairing, PairingDecision, SessionManager};
 use gavin_relay::client::{self, DialError, DialOptions, RelayConnection, RelayStream};
 use protocol::device_wire::{ConnectVerdict, PairingVerdict, MAX_PAYLOAD};
 use protocol::relay::{self, RefusalReason, RelayHello, RelayReply};
+use protocol::RelayState;
 use protocol::transport::Stream;
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -378,6 +379,14 @@ fn desired(manager: &SessionManager) -> Option<Dial> {
         return None;
     }
     let url = settings.relay_url?;
+    // The store is shared with the release build, which may have saved a
+    // public Relay; a dev build's daemon does not dial it.
+    // (Any other fault in the URL is the dial's to name in the log.)
+    if let Err(relay::RelayUrlError::PublicHostInDevBuild) =
+        relay::RelayUrl::parse_for(&url, manager.build_profile())
+    {
+        return None;
+    }
     let key = trust.static_public_key().ok()?;
     Some(Dial {
         url,
@@ -420,6 +429,13 @@ enum Ended {
     Undiallable(String),
     /// The connection failed or was refused, after being held this long.
     Lost(String, Duration),
+}
+
+pub(crate) fn epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Starts the dial. Called once, by `serve`, after the trust store is
@@ -465,14 +481,22 @@ fn supervise(manager: &Arc<SessionManager>) {
         let Some(dial) = desired(manager) else {
             // Until poked, or until it is time to look at the store
             // again on nobody's say-so.
+            manager.set_relay_state(RelayState::NotWanted);
             wake.wait_past(seen, Some(STORE_POLL));
             backoff.reset();
             said.forget();
             continue;
         };
         match hold(manager, &dial, &mut seen, &mut said) {
-            Ended::Changed | Ended::Slept => backoff.reset(),
+            Ended::Changed | Ended::Slept => {
+                // Dialled again at once, so what was said about the last
+                // dial -- a failure against a URL since changed -- is
+                // not said about the next.
+                manager.set_relay_state(RelayState::Dialling);
+                backoff.reset();
+            }
             Ended::Undiallable(why) => {
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!("the Relay is not being dialled: {why}"));
                 wait_while_wanted(manager, &dial, None);
                 backoff.reset();
@@ -481,6 +505,7 @@ fn supervise(manager: &Arc<SessionManager>) {
                 if held >= SETTLED {
                     backoff.reset();
                 }
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!(
                     "the connection to the Relay ended ({why}); dialling again until it holds"
                 ));
@@ -520,6 +545,12 @@ fn wait_while_wanted(manager: &SessionManager, dial: &Dial, at_most: Option<Dura
 /// Dials the Relay, registers this Workstation, and holds the connection
 /// until it ends or stops being wanted.
 fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut Said) -> Ended {
+    // A retry after a failure keeps saying it failed: "dialling" again
+    // every backoff would flap the desk between the two, and the reason
+    // is what the human needs until a dial holds.
+    if !matches!(manager.relay_state(), RelayState::Failed { .. }) {
+        manager.set_relay_state(RelayState::Dialling);
+    }
     let hello = RelayHello::workstation(&dial.token, &dial.rendezvous);
     let mut connection = match client::dial(&dial.url, &hello, &DialOptions::default()) {
         Ok(connection) => connection,
@@ -528,6 +559,7 @@ fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut S
     };
     said.forget();
     said.say("connected to the Relay".to_string());
+    manager.set_relay_state(RelayState::Connected { since: epoch_seconds() });
     let since = Instant::now();
     let ended = attend(manager, dial, seen, &mut connection, since);
     connection.close();
@@ -703,7 +735,7 @@ fn connect_through(
         // Refused, and told so.
         Ok(Err(refused)) => {
             stream.close();
-            note(refusal(&refused));
+            refused_at_the_door(manager, &refused);
             return Ok(());
         }
         Err(e) => {
@@ -723,11 +755,10 @@ fn connect_through(
             let verdict = ConnectVerdict::Refused { reason };
             let _ = connect::send_verdict(&mut stream, &mut accepted.transport, &verdict);
             stream.close();
-            note(refusal(&connect::Refused {
-                reason,
-                device_id: Some(device_id),
-                why: None,
-            }));
+            refused_at_the_door(
+                manager,
+                &connect::Refused { reason, device_id: Some(device_id), why: None },
+            );
             return Ok(());
         }
     };
@@ -762,6 +793,16 @@ fn connect_through(
         note(format!("{device_id}'s connection was dropped: {why}"));
     }
     Ok(())
+}
+
+/// A Device was refused a connection: the log says so, and if the key that
+/// handshook is one the store holds, so does the desk (v62). A key the
+/// store has never seen names no Device and stays in the log.
+fn refused_at_the_door(manager: &SessionManager, refused: &connect::Refused) {
+    note(refusal(refused));
+    if let Some(device_id) = &refused.device_id {
+        manager.note_device_refusal(device_id, refused.reason);
+    }
 }
 
 /// What the log says of a Device that was refused.
@@ -1105,6 +1146,8 @@ mod tests {
             .unwrap(),
         );
         manager.set_trust_store(TrustStore::open(&dir.path().join("devices.sqlite")).unwrap());
+        // The tests below use example hosts; the dev guard has its own.
+        manager.set_build_profile(protocol::BuildProfile::Release);
         manager
     }
 
@@ -1118,6 +1161,22 @@ mod tests {
                 relay_admission: token.map(str::to_string),
             })
             .unwrap();
+    }
+
+    /// The dev build shares its trust store with the release build, so a
+    /// public Relay the release build saved must not be dialled by it.
+    #[test]
+    fn a_dev_build_does_not_dial_a_public_relay_the_store_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(&dir);
+        tell(&manager, true, Some("wss://relay.example"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a release build dials it");
+
+        manager.set_build_profile(protocol::BuildProfile::Dev);
+        assert_eq!(desired(&manager), None, "a dev build does not");
+
+        tell(&manager, true, Some("ws://192.168.1.20:9000"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a Relay on the LAN is fine");
     }
 
     /// The rule the whole module hangs on: there is something to dial

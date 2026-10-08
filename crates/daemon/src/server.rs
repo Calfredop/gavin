@@ -1596,7 +1596,15 @@ pub struct SessionManager {
     /// take that reply's place. That also settles what "an app is live"
     /// means: someone who can be shown a dialog, and a command connection
     /// alone cannot be.
-    app_connections: Mutex<HashMap<u64, Arc<Mutex<Stream>>>>,
+    app_connections: Mutex<HashMap<u64, (u32, Arc<Mutex<Stream>>)>>,
+    /// Each paired Device's last refused connection (v62), by device id.
+    /// In memory: a fact about the recent past, not the trust store's, and
+    /// the other daemon sharing that store cannot see it. Only a key the
+    /// store holds gets an entry -- see `note_device_refusal`.
+    device_refusals: Mutex<HashMap<String, protocol::DeviceRefusal>>,
+    /// Each Device's presence (v63), read off the commands it has had the
+    /// desktop run (`presence.rs`). In memory, for the refusals' reason.
+    device_presence: Mutex<crate::presence::Presences>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -1626,6 +1634,14 @@ pub struct SessionManager {
     /// above and unlike `trust`: it holds no file and cannot fail, and a
     /// manager whose dial was never started simply has nobody listening.
     remote_wake: Arc<crate::remote::Wake>,
+    /// Which Relays this daemon may use; see `protocol::RelayUrl::parse_for`.
+    /// A test may pin it, since the test build is a dev build.
+    build_profile: Mutex<protocol::BuildProfile>,
+    /// Where the dial to the Relay stands, written by `remote.rs` and read
+    /// by `GetRelayState`. Held here and not in the dial's thread because
+    /// the desk asks for it from a connection's, and pushes follow every
+    /// change (`set_relay_state`).
+    relay_state: Mutex<protocol::RelayState>,
     /// Hands out `PendingPairing::ticket`.
     next_pairing_ticket: AtomicU64,
     /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
@@ -1872,10 +1888,14 @@ impl SessionManager {
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
+            device_refusals: Mutex::new(HashMap::new()),
+            device_presence: Mutex::new(crate::presence::Presences::default()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
             remote_wake: Arc::new(crate::remote::Wake::default()),
+            build_profile: Mutex::new(protocol::BuildProfile::current()),
+            relay_state: Mutex::new(protocol::RelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(None),
@@ -1884,6 +1904,25 @@ impl SessionManager {
             pending_forwards: Mutex::new(HashMap::new()),
             event_subscribers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Where the dial to the Relay stands. See `relay_state`.
+    pub fn relay_state(&self) -> protocol::RelayState {
+        self.relay_state.lock().unwrap().clone()
+    }
+
+    /// Records where the dial stands and, if that is a change, tells
+    /// every live app. A repeat -- the dial re-reads the store every few
+    /// seconds and says "not wanted" each time -- pushes nothing.
+    pub fn set_relay_state(&self, state: protocol::RelayState) {
+        {
+            let mut held = self.relay_state.lock().unwrap();
+            if *held == state {
+                return;
+            }
+            *held = state.clone();
+        }
+        self.push_to_apps(&Response::RelayStateChanged { state });
     }
 
     /// What `remote.rs` waits on. See `remote_wake`.
@@ -2008,6 +2047,15 @@ impl SessionManager {
     /// Hands this daemon its trust store. Called once by `serve` before
     /// the socket accepts anything; idempotent, because the `OnceLock`
     /// ignores a second set.
+    pub fn build_profile(&self) -> protocol::BuildProfile {
+        *self.build_profile.lock().unwrap()
+    }
+
+    #[cfg(test)]
+    pub fn set_build_profile(&self, profile: protocol::BuildProfile) {
+        *self.build_profile.lock().unwrap() = profile;
+    }
+
     pub fn set_trust_store(&self, store: crate::trust::TrustStore) {
         let _ = self.trust.set(Mutex::new(store));
     }
@@ -2136,9 +2184,12 @@ impl SessionManager {
 
     /// Registers a connection that took the `app` role and reads pushes,
     /// returning the token that removes it again. See `app_connections`.
-    fn register_app_connection(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+    ///
+    /// `speaks` is the version the app's `Hello` said, which is what a
+    /// push newer than that is held back by (`push_to_apps_speaking`).
+    fn register_app_connection(&self, speaks: u32, writer: Arc<Mutex<Stream>>) -> u64 {
         let token = self.next_app_connection.fetch_add(1, Ordering::SeqCst);
-        self.app_connections.lock().unwrap().insert(token, writer);
+        self.app_connections.lock().unwrap().insert(token, (speaks, writer));
         token
     }
 
@@ -2400,9 +2451,90 @@ impl SessionManager {
     /// going away and its own thread's `Drop` is what removes it.
     fn push_to_apps(&self, resp: &Response) {
         let writers: Vec<Arc<Mutex<Stream>>> =
-            self.app_connections.lock().unwrap().values().cloned().collect();
+            self.app_connections.lock().unwrap().values().map(|(_, w)| Arc::clone(w)).collect();
         for writer in writers {
             let _ = write_message(&mut *writer.lock().unwrap(), resp);
+        }
+    }
+
+    /// `push_to_apps`, to the apps whose `Hello` said they speak at least
+    /// `since`. For a push that is a new `Response` variant: an older app
+    /// cannot parse it, and what it cannot parse it reads as the reply to
+    /// its next request.
+    fn push_to_apps_speaking(&self, since: u32, resp: &Response) {
+        let writers: Vec<Arc<Mutex<Stream>>> = self
+            .app_connections
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(speaks, _)| *speaks >= since)
+            .map(|(_, w)| Arc::clone(w))
+            .collect();
+        for writer in writers {
+            let _ = write_message(&mut *writer.lock().unwrap(), resp);
+        }
+    }
+
+    /// Records that `device_id` was refused a connection for `reason`, and
+    /// tells the desks that can be told (v62).
+    ///
+    /// Only for a Device the store holds: the caller has a device id only
+    /// when the key that handshook is one it does, and a key it has never
+    /// seen is not the desk's business. The record is replaced by every
+    /// refusal, but a repeat of the same reason inside `REFUSAL_PUSH_EVERY`
+    /// is not pushed again -- a Device that retries every few seconds would
+    /// otherwise be a push every few seconds. The read (`list_devices`)
+    /// always has the latest.
+    pub fn note_device_refusal(
+        &self,
+        device_id: &str,
+        reason: protocol::device_wire::ConnectRefusal,
+    ) {
+        self.note_device_refusal_at(device_id, reason, crate::remote::epoch_seconds());
+    }
+
+    fn note_device_refusal_at(
+        &self,
+        device_id: &str,
+        reason: protocol::device_wire::ConnectRefusal,
+        at: i64,
+    ) {
+        const REFUSAL_PUSH_EVERY: i64 = 30;
+        let refusal = protocol::DeviceRefusal { reason, at };
+        let previous = self
+            .device_refusals
+            .lock()
+            .unwrap()
+            .insert(device_id.to_string(), refusal.clone());
+        if let Some(previous) = previous {
+            if previous.reason == reason && at - previous.at < REFUSAL_PUSH_EVERY {
+                return;
+            }
+        }
+        self.push_to_apps_speaking(
+            protocol::DEVICE_REFUSALS_MIN_VERSION,
+            &Response::DeviceRefusalChanged { device_id: device_id.to_string(), refusal },
+        );
+    }
+
+    /// Records a command the desktop ran for `device_id`, and tells the
+    /// desks that can be told when its presence changed (v63). See
+    /// `presence.rs` for what counts.
+    fn note_device_activity(
+        &self,
+        device_id: &str,
+        command: &str,
+        args: &serde_json::Value,
+        value: Option<&serde_json::Value>,
+    ) {
+        let now = crate::remote::epoch_seconds();
+        let changed =
+            self.device_presence.lock().unwrap().observe(device_id, command, args, value, now);
+        if let Some(presence) = changed {
+            self.push_to_apps_speaking(
+                protocol::DEVICE_PRESENCE_MIN_VERSION,
+                &Response::DevicePresenceChanged { device_id: device_id.to_string(), presence },
+            );
         }
     }
 
@@ -2725,10 +2857,14 @@ impl SessionManager {
         let trust = self.trust_or_err()?;
         let now = crate::trust::now_us();
         let settings = trust.remote_access()?;
+        let refusals = self.device_refusals.lock().unwrap().clone();
+        let presences = self.device_presence.lock().unwrap();
         let devices = trust
             .list()?
             .into_iter()
             .map(|d| protocol::DeviceInfo {
+                last_refusal: refusals.get(&d.device_id).cloned(),
+                presence: presences.get(&d.device_id),
                 // Computed here, by the daemon that enforces it, rather
                 // than left for the app to re-derive from `last_seen_at`
                 // -- see `protocol::DeviceInfo`. Read before the row is
@@ -2767,6 +2903,16 @@ impl SessionManager {
         relay_url: Option<String>,
         relay_admission: Option<String>,
     ) -> anyhow::Result<()> {
+        // A dev build turns remote access on only against a Relay on this
+        // machine or network. Switching it off, or storing a URL while it
+        // is off, is never refused: the store is shared with the release
+        // build, which may have put a public one there.
+        if enabled {
+            if let Some(url) = relay_url.as_deref().filter(|u| !u.trim().is_empty()) {
+                protocol::relay::RelayUrl::parse_for(url, self.build_profile())
+                    .map_err(|e| anyhow::anyhow!("gavin-daemon: {e}"))?;
+            }
+        }
         {
             let trust = self.trust_or_err()?;
             let relay_admission = match relay_admission {
@@ -5827,6 +5973,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.reject_pairing(&device_id).map(|_| Response::Ok)
         }
         Request::ListDevices => manager.list_devices(),
+        Request::GetRelayState => Ok(Response::RelayState { state: manager.relay_state() }),
         // Answered `Ok` rather than with what changed: the app refetches
         // the list, which is the only account of the store that cannot
         // disagree with the store.
@@ -6331,6 +6478,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ConfirmPairing { .. }
         | Request::RejectPairing { .. }
         | Request::ListDevices
+        | Request::GetRelayState
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }
@@ -6846,7 +6994,7 @@ fn serve_connection(
         // never authorized (it is what SETS the role) and never dispatched
         // to handle_request. A second one is refused -- identity is fixed
         // once set.
-        if let Request::Hello { auth, nonce, connection, .. } = &req {
+        if let Request::Hello { auth, nonce, connection, protocol_version, .. } = &req {
             if hello_seen {
                 write_message(
                     &mut *writer.lock().unwrap(),
@@ -6885,7 +7033,7 @@ fn serve_connection(
             // reply to its request, so a push written to it mid-request
             // is read as that reply. See `ConnectionKind`.
             if identity.role == Role::App && protocol::ConnectionKind::takes_device_pushes(*connection) {
-                let token = manager.register_app_connection(Arc::clone(&writer));
+                let token = manager.register_app_connection(*protocol_version, Arc::clone(&writer));
                 _app_slot = Some(AppConnectionSlot { manager: &manager, token });
             }
             // The forwarding connection (v54): the daemon hands it gated
@@ -6949,8 +7097,16 @@ fn serve_connection(
         // the result comes back on the forwarding connection as
         // `ForwardResult`.
         if let Request::InvokeDesktop { command, args } = req {
-            let resp = manager.invoke_desktop(&command, args);
+            let resp = manager.invoke_desktop(&command, args.clone());
             write_message(&mut *writer.lock().unwrap(), &resp)?;
+            // After the answer, so the Device is not kept waiting on the
+            // desk being told. Only a Device has a presence: the desk's
+            // own connections never send this request.
+            if let (Some(device_id), Response::DesktopResult { value, error: None }) =
+                (identity.device_id.as_deref(), &resp)
+            {
+                manager.note_device_activity(device_id, &command, &args, value.as_ref());
+            }
             continue;
         }
 
@@ -11305,6 +11461,8 @@ mod tests {
     /// take the `app` role against it.
     fn paired_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
         let manager = trusted_manager(dir);
+        // These tests use example hosts; the dev guard has its own.
+        manager.set_build_profile(protocol::BuildProfile::Release);
         manager.set_daemon_token("test-daemon-token".to_string());
         manager
     }
@@ -12112,6 +12270,33 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_dev_build_refuses_to_turn_remote_access_on_against_a_public_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        manager.set_build_profile(protocol::BuildProfile::Dev);
+        let refused = app.request(&Request::SetRemoteAccess {
+            enabled: true,
+            relay_url: Some("wss://relay.example/gavin".into()),
+            relay_admission: None,
+        });
+        match refused {
+            Response::Error { message } => assert!(message.contains("development build"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!manager.trust().unwrap().remote_access().unwrap().enabled);
+
+        // Off is never refused, and neither is a Relay on this network.
+        set_remote_access(&mut app, false, Some("wss://relay.example/gavin"), None);
+        set_remote_access(&mut app, true, Some("ws://127.0.0.1:9000"), None);
+
+        // A release build takes the public one.
+        manager.set_build_profile(protocol::BuildProfile::Release);
+        set_remote_access(&mut app, true, Some("wss://relay.example/gavin"), None);
     }
 
     fn set_remote_access(app: &mut AppConn, enabled: bool, url: Option<&str>, token: Option<&str>) {

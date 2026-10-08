@@ -22,7 +22,14 @@ import type { BoardTab, CardTab, GavinTree } from "$lib/core/gavin";
 import type { FileTab } from "$lib/core/layoutState";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { linkForCardPath } from "$lib/cards/cardTabLink";
-import { boardTabLabel, cardTabLabel, folderName, followUpsTabLabel, sessionLabel } from "$lib/core/paths";
+import {
+  boardTabLabel,
+  cardTabLabel,
+  deviceSessionLabel,
+  folderName,
+  followUpsTabLabel,
+  sessionLabel,
+} from "$lib/core/paths";
 
 /// The three maps that classify a tab id.
 export interface TabMaps {
@@ -39,6 +46,9 @@ export interface TabNaming extends TabMaps {
   cwdBySessionId: Record<string, string>;
   trees: Record<string, GavinTree>;
   orchestrations: Record<string, Orchestration>;
+  /// The Device that started a terminal, by name (companion-16), which its
+  /// label carries. Empty until the Devices list has been read.
+  deviceBySessionId: Record<string, string>;
 }
 
 export type TabKind = "terminal" | "file" | "board" | "card" | "followups";
@@ -102,7 +112,16 @@ export function tabLabel(tabId: string, ctx: TabNaming): string {
   }
   const file = ctx.fileTabsById[tabId];
   if (file) return folderName(file.path);
-  return sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId);
+  const own = sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId);
+  const device = ctx.deviceBySessionId[tabId];
+  return device ? deviceSessionLabel(own, device) : own;
+}
+
+/// What a rename starts from: the terminal's own name, without the Device
+/// that started it. Seeding the editor with the whole label would store the
+/// Device's name AS the terminal's, and the tab would then say it twice.
+export function renameSeed(tabId: string, ctx: TabNaming): string {
+  return renameable(tabId, ctx) ? sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId) : tabLabel(tabId, ctx);
 }
 
 /// The hover text: where the tab points, which is the part the label had
@@ -120,5 +139,7 @@ export function tabTooltip(tabId: string, ctx: TabNaming): string {
   if (card) return card.path;
   const file = ctx.fileTabsById[tabId];
   if (file) return file.path;
-  return ctx.sessionNames[tabId] ?? ctx.cwdBySessionId[tabId] ?? tabId;
+  const where = ctx.sessionNames[tabId] ?? ctx.cwdBySessionId[tabId] ?? tabId;
+  const device = ctx.deviceBySessionId[tabId];
+  return device ? `${where} · started from ${device}` : where;
 }

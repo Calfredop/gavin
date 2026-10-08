@@ -42,6 +42,14 @@ export function sessionLabel(
   return cwd ? folderName(cwd) : sessionId.slice(0, 8);
 }
 
+// A terminal a Device started, labelled with the Device (companion-16): the
+// terminal's own label, then the Device's name -- the qualifier shape the
+// board, card and follow-up tabs already wear. The Device is not part of
+// the terminal's NAME: a rename replaces the part before it.
+export function deviceSessionLabel(sessionName: string, deviceName: string): string {
+  return `${sessionName} · ${deviceName}`;
+}
+
 // A board tab's label, in the one place both the tab bar and the sidebar's
 // page expansion can read it: the context's name from the tree, falling
 // back to its folder's own basename when the tree has not loaded yet (or

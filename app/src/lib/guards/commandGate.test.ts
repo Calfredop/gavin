@@ -111,6 +111,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   begin_pairing: ["ordinary"],
   reject_pairing: ["ordinary"],
   list_devices: ["ordinary"],
+  // A read of the dial's state; the admission token is in no answer.
+  get_relay_state: ["ordinary"],
   set_remote_access: ["ordinary"],
 
   // ---- destructive, deliberately not gated ----

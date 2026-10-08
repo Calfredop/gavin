@@ -615,6 +615,33 @@ export const FEATURE_MIN_VERSION = {
   // Home count and the open-time backfill all stand down -- and the
   // index sync after Adopt, which skips the ask.
   memoryIndex: 60,
+  // Where the daemon's dial stands (`companion-32`): `GetRelayState` and
+  // the `RelayStateChanged` push are v61 request/response TYPES an older
+  // daemon answers `Unsupported`.
+  //
+  // Consumer: `remoteAccess.ts`'s `relayStateBlocked`, which the Settings
+  // section reads before it asks and before it draws the badge beside the
+  // Relay URL, and which `pairingUnavailable` reads so that an older
+  // daemon's silence is not taken for a Relay that failed.
+  relayState: 61,
+  // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
+  // and the `DeviceRefusalChanged` push are v62. An older daemon sends
+  // neither, and a row with no refusal reads as "nothing was refused" --
+  // which is a claim an older daemon cannot back.
+  //
+  // Consumer: `devicesPanel.ts`'s `refusalsBlocked`, which the Devices
+  // panel reads to say so under the list rather than leave the silence to
+  // be taken for a clean record.
+  deviceRefusals: 62,
+  // Where each Device is and what it is doing (`companion-16`):
+  // `DeviceInfo.presence` and the `DevicePresenceChanged` push are v63. An
+  // older daemon sends neither, so a row with no presence line reads as a
+  // Device doing nothing -- which that daemon cannot say -- and no session
+  // a Device starts is placed at the desk.
+  //
+  // Consumer: `devicesPanel.ts`'s `presenceBlocked`, which the Devices panel
+  // reads to say so under the list.
+  devicePresence: 63,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

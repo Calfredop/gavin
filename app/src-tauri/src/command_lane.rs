@@ -173,6 +173,9 @@ fn is_unsolicited(resp: &Response) -> bool {
         Response::DevicePairingRequested { .. }
             | Response::DeviceConnected { .. }
             | Response::DeviceDisconnected { .. }
+            | Response::RelayStateChanged { .. }
+            | Response::DeviceRefusalChanged { .. }
+            | Response::DevicePresenceChanged { .. }
     )
 }
 
@@ -1427,23 +1430,41 @@ mod tests {
     /// Every push the daemon broadcasts to `app` connections must be one
     /// `is_unsolicited` knows, or a new broadcast would desync the lane.
     /// Read from the daemon's own source, since the list lives there.
+    ///
+    /// Both spellings: `push_to_apps(&Response::…)`, and
+    /// `push_to_apps_speaking(version, &Response::…)` for a push an older
+    /// app cannot parse, whose variant rustfmt puts on a later line.
     #[test]
     fn every_push_the_daemon_sends_to_apps_is_skipped() {
         const SERVER: &str = include_str!("../../../crates/daemon/src/server.rs");
         let mut pushed = 0;
-        for (at, _) in SERVER.match_indices("push_to_apps(&Response::") {
-            let name: String = SERVER[at + "push_to_apps(&Response::".len()..]
+        for (at, call) in SERVER
+            .match_indices("push_to_apps(")
+            .chain(SERVER.match_indices("push_to_apps_speaking("))
+        {
+            let args = &SERVER[at + call.len()..];
+            let Some(variant) = args.find("&Response::") else { continue };
+            // The call's own argument list, not a later one.
+            if args[..variant].contains(';') {
+                continue;
+            }
+            let name: String = args[variant + "&Response::".len()..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric())
                 .collect();
             let skipped = matches!(
                 name.as_str(),
-                "DevicePairingRequested" | "DeviceConnected" | "DeviceDisconnected"
+                "DevicePairingRequested"
+                    | "DeviceConnected"
+                    | "DeviceDisconnected"
+                    | "RelayStateChanged"
+                    | "DeviceRefusalChanged"
+                    | "DevicePresenceChanged"
             );
             assert!(skipped, "the daemon pushes {name} to app connections; is_unsolicited must skip it");
             pushed += 1;
         }
-        assert!(pushed >= 3, "found only {pushed} push_to_apps calls -- did the daemon's spelling change?");
+        assert!(pushed >= 5, "found only {pushed} push_to_apps calls -- did the daemon's spelling change?");
     }
 
     /// A request routed by `is_slow_read` goes to the reads lane, and

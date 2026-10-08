@@ -1,0 +1,45 @@
+# The Companion's local dev stack: a Relay and a sandboxed Push gateway, so
+# a Device, a Workstation and the notifications between them can be
+# developed end to end without a public service.
+#
+#   docker compose -f compose.dev.yaml up --build
+#
+# Nothing here is for production. See "The Companion dev stack" in
+# docs/dev-setup.md.
+name: gavin-dev-stack
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: crates/gavin-relay/Dockerfile
+    environment:
+      # A fixed token, because this Relay is only ever reachable from this
+      # machine or this network. Enter it in Settings -> Remote access.
+      GAVIN_RELAY_TOKENS: dev-admission-token
+      # Plain ws://, which a dev build may only use against loopback or the
+      # LAN -- exactly what this is. The traffic inside is end-to-end
+      # encrypted regardless.
+      GAVIN_RELAY_TLS_TERMINATED: "1"
+      GAVIN_RELAY_LISTEN: 0.0.0.0:8443
+    # Published on all interfaces so a phone on the same network can reach
+    # it at ws://<this machine's LAN address>:8443.
+    ports:
+      - "8443:8443"
+
+  push-gateway:
+    build:
+      context: .
+      dockerfile: crates/push-gateway/Dockerfile
+    environment:
+      # Dry run: permissions are verified and allowances spent, and nothing
+      # is handed to Apple or Google -- no credentials are configured, no
+      # client for either is built, and no outbound request is made.
+      GAVIN_PUSH_DELIVERY: dry-run
+    volumes:
+      - push-data:/data
+    ports:
+      - "8080:8080"
+
+volumes:
+  push-data:

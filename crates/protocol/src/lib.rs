@@ -62,6 +62,37 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v63 is the desk seeing where each Device is and what it is doing
+/// (`companion-16`). The daemon reads a Device's presence off the commands
+/// it has the desktop run -- the workspace it last named, the session it is
+/// typing into, the sessions it started -- and carries it on
+/// `DeviceInfo::presence`, pushing `DevicePresenceChanged` when it changes.
+/// Like v62's push, a new `Response` variant, so it goes only to an app
+/// whose `Hello` said it speaks 63 or more (`DEVICE_PRESENCE_MIN_VERSION`);
+/// the field is defaulted and skipped when absent. No new request. The
+/// Devices panel owes `FEATURE_MIN_VERSION.devicePresence`.
+///
+/// v62 is the desk hearing of a Device that was refused
+/// (`companion-34`). `DeviceInfo` gains `last_refusal`, and the
+/// `DeviceRefusalChanged` push says when one changes. The push is a new
+/// `Response` variant, which an app older than v62 cannot parse, so the
+/// daemon sends it only to an app connection whose `Hello` said it speaks
+/// 62 or more (`DEVICE_REFUSALS_MIN_VERSION`). The read needs no such
+/// care: `last_refusal` is a defaulted field an older app ignores. The
+/// Devices panel owes `FEATURE_MIN_VERSION.deviceRefusals`.
+///
+/// v61 is the desk knowing whether the daemon reached its Relay
+/// (`companion-32`). It adds `GetRelayState`, answered by
+/// `Response::RelayState`, and the `RelayStateChanged` push that follows
+/// every change -- one new TYPE and one push, no widened payload, so
+/// `min_version_for` is the whole wire gate. The Settings section owes
+/// `FEATURE_MIN_VERSION.relayState`, for the copy against an older daemon.
+/// The state carries the words `DialError` and `RefusalReason` already
+/// have and never the admission token.
+///
+/// v61-v63 were built at 56-58 on `companion/wire` and moved past
+/// main's 56-60 when the two met.
+///
 /// v60 is adopted-memory retrieval (`feat-vectorized-memory.md`): the
 /// daemon keeps a local vector index over each workspace's `### Learned`
 /// section and answers searches against it. Three new TYPES --
@@ -760,7 +791,17 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 60;
+pub const PROTOCOL_VERSION: u32 = 63;
+
+/// The first version that pushes `DevicePresenceChanged` and carries
+/// `DeviceInfo::presence`. The daemon compares an app's `Hello` version
+/// with this before it writes the push (v63).
+pub const DEVICE_PRESENCE_MIN_VERSION: u32 = 63;
+
+/// The first version that pushes `DeviceRefusalChanged` and carries
+/// `DeviceInfo::last_refusal`. The daemon compares an app's `Hello`
+/// version with this before it writes the push (v62).
+pub const DEVICE_REFUSALS_MIN_VERSION: u32 = 62;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -790,6 +831,30 @@ pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 /// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
 /// the app, and the host's `create_agent_session` behind it).
 pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
+
+/// Where the daemon's dial to the Relay stands (v61).
+///
+/// `Failed.why` is a sentence the dial already has -- `DialError`'s or
+/// `RefusalReason`'s Display -- and never carries the admission token: the
+/// token is presented in the first frame and appears in no error.
+/// `Connected.since` is wall-clock epoch seconds, like `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RelayState {
+    /// Remote access is off, or there is no Relay URL to dial.
+    NotWanted,
+    /// The dial is being made, for the first time or after the settings
+    /// changed.
+    Dialling,
+    /// Registered with the Relay and holding the connection.
+    Connected { since: i64 },
+    /// The last dial failed or the held connection was lost, and another
+    /// is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -1685,6 +1750,10 @@ pub enum Request {
     /// settings `SetRemoteAccess` wrote. See `Response::Devices` for why
     /// the settings ride along.
     ListDevices,
+    /// Where the daemon's dial to the Relay stands (v61). Answered with
+    /// `Response::RelayState`; every change after is pushed as
+    /// `RelayStateChanged`.
+    GetRelayState,
     /// Revoke one device: mark the row and drop every live connection
     /// carrying its id (§3, "Revocation").
     RevokeDevice {
@@ -2286,6 +2355,10 @@ pub fn min_version_for(req: &Request) -> u32 {
         // payload's own `COMPANION_BUNDLE_API_VERSION` is the compat gate
         // for fields, so no FEATURE_MIN_VERSION entry is owed.
         Request::GetCompanionBundle { .. } | Request::BundleResult { .. } => 57,
+        // Whether the daemon reached its Relay (v61 / companion-32). One
+        // new TYPE, so this arm is its whole wire gate; the Settings
+        // section owes FEATURE_MIN_VERSION.relayState for the copy.
+        Request::GetRelayState => 61,
 
         Request::Shutdown => 12,
 
@@ -2955,6 +3028,30 @@ pub enum Response {
         #[serde(default)]
         relay_admission_set: bool,
     },
+    /// The answer to `GetRelayState` (v61).
+    RelayState { state: RelayState },
+    /// Push (v62): a paired Device was refused a connection, and this is
+    /// its new last refusal. Not cleared by the Device connecting later:
+    /// a copied key that failed its proof and then the real phone
+    /// connecting is exactly the order that must not hide the first.
+    /// Sent only to an `app` connection that reads
+    /// pushes and whose `Hello` said it speaks
+    /// `DEVICE_REFUSALS_MIN_VERSION` or more: an older app cannot parse a
+    /// variant it has never heard of.
+    DeviceRefusalChanged { device_id: String, refusal: DeviceRefusal },
+    /// Push (v63): a Device's presence changed, and this is the whole of
+    /// it -- never a delta, so a desk that missed one cannot drift. Sent
+    /// only to an `app` connection that reads pushes and whose `Hello`
+    /// said it speaks `DEVICE_PRESENCE_MIN_VERSION` or more, for the
+    /// reason `DeviceRefusalChanged` is.
+    ///
+    /// A session appearing in `presence.started` is how the desk learns a
+    /// Device started it, and places it as a tab labelled with the Device.
+    DevicePresenceChanged { device_id: String, presence: DevicePresence },
+    /// Push to every live `app` connection (v61): the dial's state
+    /// changed. Only to a connection that reads pushes, like the device
+    /// pushes -- see `ConnectionKind`.
+    RelayStateChanged { state: RelayState },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -3233,6 +3330,91 @@ pub struct DeviceInfo {
     /// Unseen for ninety days: shown greyed with "re-pair to use", and
     /// refused until it is paired again (§3, "How many, for how long").
     pub stale: bool,
+    /// The last time this daemon refused this Device a connection (v62),
+    /// or `None` if it has not since it started. A later successful
+    /// connection does not clear it. In memory on the daemon: a fact about the recent
+    /// past, not the trust store's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refusal: Option<DeviceRefusal>,
+    /// Where this Device is and what it is doing (v63), or `None` if it
+    /// has had the desktop run nothing since this daemon started. In
+    /// memory on the daemon, like `last_refusal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<DevicePresence>,
+}
+
+/// Where a Device is on this Workstation and what it is doing there (v63),
+/// as the daemon read it off the commands the Device had the desktop run.
+///
+/// Only commands the desktop ran without error count: a refused name, a
+/// desktop that is not running and a command that failed tell the desk
+/// nothing about where the Device is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePresence {
+    /// The desk's id of the workspace the Device last named in a command
+    /// (`workspaceId`, the argument most workspace commands take).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The session the Device last sent input to, and when. Whether it is
+    /// typing NOW is the desk's reading of `at` (see `DeviceTyping`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<DeviceTyping>,
+    /// Sessions the Device started, oldest first, the most recent few.
+    #[serde(default)]
+    pub started: Vec<DeviceStartedSession>,
+}
+
+/// A Device's input into one session (v63).
+///
+/// `at` is the latest keystroke the daemon has recorded, and the daemon
+/// pushes it again at most every `DEVICE_TYPING_REPUSH_SECS` while the
+/// Device keeps typing into the same session -- so a desk that reads
+/// "typing" as "`at` within a few seconds of now" has to allow for that
+/// cadence (the app's `TYPING_FRESH_MS`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTyping {
+    pub session_id: String,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
+}
+
+/// How often the daemon re-pushes a Device's presence while it keeps
+/// typing into the same session (v63).
+pub const DEVICE_TYPING_REPUSH_SECS: i64 = 2;
+
+/// A session a Device started (v63): the id the desktop's `create_session`
+/// answered, and where it was asked to start it. The desk places it as a
+/// tab in the workspace `workspace_root` names, or failing that the one
+/// `cwd` is under.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceStartedSession {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
+}
+
+/// One refused connection from a paired Device, as the desk shows it (v62).
+///
+/// A refusal of a key the store has never seen is not one of these: it
+/// names no Device, and stays in the daemon's log.
+///
+/// `reason` is what the Device was told. `ConnectRefusal::Unlock` on a row
+/// that is otherwise good is the one that matters: the handshake proved
+/// someone holds the Device's Noise key and the signature proved it is not
+/// the phone, which is what a copied key looks like (ADR 0001).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRefusal {
+    pub reason: device_wire::ConnectRefusal,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
 }
 
 /// One Companion notification event the desk asks the daemon to seal and
@@ -5456,6 +5638,18 @@ mod tests {
     /// survive the parse as `None`, and a request that names none has to
     /// write the bytes an older daemon has always seen.
     #[test]
+    fn the_relay_state_has_one_wire_shape_and_a_newer_state_reads_as_unknown() {
+        let connected = serde_json::to_value(RelayState::Connected { since: 7 }).unwrap();
+        assert_eq!(connected, serde_json::json!({"state": "connected", "since": 7}));
+        let failed = RelayState::Failed { why: "no".into() };
+        let back: RelayState = serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+        assert_eq!(back, failed);
+        let newer: RelayState = serde_json::from_str(r#"{"state":"asleep"}"#).unwrap();
+        assert_eq!(newer, RelayState::Unknown);
+        assert_eq!(min_version_for(&Request::GetRelayState), 61);
+    }
+
+    #[test]
     fn a_set_remote_access_with_no_token_is_what_an_older_app_sends() {
         let old = r#"{"type":"SetRemoteAccess","enabled":true,"relay_url":"wss://relay.example"}"#;
         match serde_json::from_str::<Request>(old).unwrap() {
@@ -5564,6 +5758,8 @@ mod tests {
             last_seen_at: 1_770_000_500,
             revoked_at: None,
             stale: false,
+            last_refusal: None,
+            presence: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["deviceId"], "dev-1");
@@ -5573,6 +5769,65 @@ mod tests {
         // The static public key is NOT on the wire, and that is a rule
         // rather than an omission -- see DeviceInfo's doc comment.
         assert!(v.get("publicKey").is_none());
+    }
+
+    /// v62: a row from an older daemon has no `lastRefusal`, and a row
+    /// with none says nothing rather than `null`, so an older app's parse
+    /// of a newer daemon's list is byte-for-byte what it was.
+    #[test]
+    fn device_info_carries_a_refusal_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.last_refusal, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("lastRefusal").is_none());
+
+        let refused = DeviceInfo {
+            last_refusal: Some(DeviceRefusal {
+                reason: device_wire::ConnectRefusal::Unlock,
+                at: 1_770_000_900,
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&refused).unwrap();
+        assert_eq!(v["lastRefusal"]["reason"], "unlock");
+        assert_eq!(v["lastRefusal"]["at"], 1_770_000_900);
+    }
+
+    /// v63: a row from an older daemon has no `presence`, and a Device
+    /// that has done nothing says nothing -- the older app's parse is
+    /// unchanged. A presence crosses in the camelCase the desk reads.
+    #[test]
+    fn device_info_carries_presence_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.presence, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("presence").is_none());
+
+        let present = DeviceInfo {
+            presence: Some(DevicePresence {
+                workspace_id: Some("w1".into()),
+                typing: Some(DeviceTyping { session_id: "s1".into(), at: 1_770_000_950 }),
+                started: vec![DeviceStartedSession {
+                    session_id: "s2".into(),
+                    workspace_root: Some("/work/app".into()),
+                    cwd: None,
+                    at: 1_770_000_900,
+                }],
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&present).unwrap();
+        assert_eq!(v["presence"]["workspaceId"], "w1");
+        assert_eq!(v["presence"]["typing"]["sessionId"], "s1");
+        assert_eq!(v["presence"]["typing"]["at"], 1_770_000_950);
+        assert_eq!(v["presence"]["started"][0]["sessionId"], "s2");
+        assert_eq!(v["presence"]["started"][0]["workspaceRoot"], "/work/app");
+        assert!(v["presence"]["started"][0].get("cwd").is_none());
+
+        // An empty presence from a newer daemon that trims its fields
+        // still parses.
+        let bare: DevicePresence = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, DevicePresence::default());
     }
 
     /// The env-carrying run is a SEPARATE request from `RunGit`, not a
@@ -7046,7 +7301,13 @@ mod tests {
         // behaviour only, no new TYPE.
         // v60: GetMemoryIndex + EnsureMemoryIndex + SearchMemories --
         // adopted-memory retrieval. Three new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 60);
+        // v61: GetRelayState -- one new TYPE (plus the RelayState reply
+        // and RelayStateChanged push).
+        // v62: no new request. DeviceInfo.last_refusal and the
+        // DeviceRefusalChanged push, which is gated by the app's Hello.
+        // v63: no new request. DeviceInfo.presence and the
+        // DevicePresenceChanged push, gated the same way.
+        assert_eq!(PROTOCOL_VERSION, 63);
     }
 
     #[test]
@@ -7593,6 +7854,8 @@ mod tests {
                 offset: 0,
                 data: String::new(),
             },
+            // v61: whether the daemon reached its Relay.
+            Request::GetRelayState,
             // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
@@ -7739,6 +8002,8 @@ mod tests {
         expected.insert(57, 2);
         // RunGitCapped -- host stdout cap so a GitRun reply fits the line.
         expected.insert(58, 1);
+        // GetRelayState -- whether the daemon reached its Relay.
+        expected.insert(61, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

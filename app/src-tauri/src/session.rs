@@ -3571,6 +3571,26 @@ pub async fn list_devices(
     }
 }
 
+/// Where the daemon's dial to the Relay stands (v61). The Settings
+/// section's read on open; every change after arrives as the
+/// `relay-state-changed` event.
+#[tauri::command]
+pub async fn get_relay_state(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::RelayState, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetRelayState)
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::RelayState { state } => Ok(state),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected RelayState, got {other:?}")),
+    }
+}
+
 /// Revoke one device: the daemon marks the row and drops every live
 /// connection carrying its id (§3, "Revocation").
 #[tauri::command]
@@ -5383,6 +5403,31 @@ pub(crate) fn attach_and_relay(
                 }
                 Response::DeviceDisconnected { device_id } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "device-disconnected", device_id);
+                }
+                // A paired Device was refused a connection (v62). The
+                // daemon only sends it to an app that said it speaks 62.
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-refusal-changed",
+                        (device_id, refusal),
+                    );
+                }
+                // A Device's presence changed (v63): the whole of it, which
+                // the Devices panel draws, the terminal a Device is typing
+                // into marks, and from which the desk places a session the
+                // Device started. Only sent to an app that speaks 63.
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-presence-changed",
+                        (device_id, presence),
+                    );
+                }
+                // The dial's state changed (v61). The payload is the state
+                // itself, so the section redraws without asking again.
+                Response::RelayStateChanged { state } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "relay-state-changed", state);
                 }
                 Response::AgentSessionSpawned {
                     workspace_id,

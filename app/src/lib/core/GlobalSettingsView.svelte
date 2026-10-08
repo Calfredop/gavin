@@ -91,7 +91,7 @@
     type ClosestMatch,
   } from "$lib/core/settingsSearchFallback";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
-  import { grantForAnsweredPrompt, pairingSubject, DAEMON_SUBJECT } from "$lib/core/confirmGate";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
   import { typesafeSettings } from "$lib/agents/turnVerdictState";
@@ -114,41 +114,28 @@
     type UpdatePrompt,
   } from "$lib/shell/updates";
   import { onMount } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { listen } from "@tauri-apps/api/event";
   import {
     ADMISSION_CLEAR,
     ADMISSION_NOTE,
     KEEP_RUNNING_NOTE,
-    NO_DEVICES,
-    PAIRING_IDLE,
     RELAY_NOTE,
     admissionAfterSave,
     admissionPlaceholder,
     admissionToSave,
-    countdownLabel,
-    deviceRows,
-    pairingClosed,
-    pairingConfirmCopy,
-    knownDevice,
-    pairingConfirmed,
-    pairingOffered,
-    pairingOpen,
-    pairingRejected,
-    pairingRequested,
-    pairingTick,
-    pairingUnavailable,
-    qrDraw,
     relayAdmissionBlocked,
+    relayStateBlocked,
+    relayStatus,
     relayUrlHint,
     relayUrlToSave,
     remoteAccessBlocked,
-    revokeAllCopy,
-    revokeDeviceCopy,
     transportNote,
     type DeviceList,
-    type PairingRequest,
-    type PairingState,
+    type RelayState,
   } from "$lib/core/remoteAccess";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { DEVICES_LABEL } from "$lib/core/devicesPanel";
+  import { relayIndicator } from "$lib/ui/indicators";
   import { profilesInUse } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
@@ -439,7 +426,7 @@
     }
   }
 
-  // --- remote access: the Relay, pairing, devices, revocation --------
+  // --- remote access: the switch, the Relay, the admission token ------
   //
   // The template below is the ONE consumer of
   // `FEATURE_MIN_VERSION.remoteAccess`, which the handshake task added
@@ -462,25 +449,41 @@
 
   let devices = $state<DeviceList | null>(null);
   let devicesError = $state<string | null>(null);
-  let devicesBusy = $state(false);
   let relayDraft = $state("");
   let relayFocused = false;
   /// What is being typed into the admission field, and nothing else: the
   /// field is write-only, so this is empty again the moment it is saved.
   let admissionDraft = $state("");
-  let pairing = $state<PairingState>(PAIRING_IDLE);
-  let pairingError = $state<string | null>(null);
-  /// Re-read once a second while the pairing panel is open, so the
-  /// countdown and the list's ages come off a clock rather than off
-  /// whenever the panel last happened to re-render.
+  /// Read once a second is not needed here: the relay line's age only has
+  /// to be right when it is drawn, and every push re-stamps it.
   let nowMs = $state(Date.now());
 
-  const deviceList = $derived(devices ? deviceRows(devices.devices, nowMs) : []);
+  /// Whether the daemon reached its Relay: read once on open, then
+  /// followed by the daemon's `relay-state-changed` push. Null until read,
+  /// and for good against a daemon too old to be asked.
+  let relayState = $state<RelayState | null>(null);
+
   const relayHint = $derived(relayUrlHint(relayDraft));
-  /// Why a QR drawn now could pair nothing, or null. Read from what the
-  /// DAEMON holds rather than from the drafts: a URL still being typed
-  /// is not one it is dialling.
-  const pairingGate = $derived(pairingUnavailable(devices, $daemonCompat));
+  const relayGate = $derived(relayStateBlocked($daemonCompat));
+  const relayLine = $derived(relayStatus(relayState, nowMs));
+  const relayBadge = $derived(
+    relayLine.badge === null
+      ? null
+      : relayIndicator(
+          relayLine.badge,
+          relayState?.state === "failed" ? `${relayState.why}` : null
+        )
+  );
+
+  async function refreshRelayState(): Promise<void> {
+    if (remoteAccessGate !== null || relayGate !== null) return;
+    try {
+      relayState = await backend.getRelayState();
+    } catch {
+      // Not knowing is not a failure to connect.
+      relayState = null;
+    }
+  }
 
   async function refreshDevices(): Promise<void> {
     if (remoteAccessGate !== null) return;
@@ -507,111 +510,20 @@
     if (remoteAccessGate !== null || devices !== null) return;
     void refreshDevices();
   });
-
-  // The device pushes. Component-local rather than in layoutState's
-  // bootstrap listeners on purpose: this section is the only thing in
-  // gavin that can answer one, it is mounted only while the human is
-  // looking at it, and `DevicePairingRequested` is a question -- a
-  // question nobody is being asked is not a notification, it is a
-  // dialog waiting to fire over some other screen.
-  //
-  // What is lost while Settings is closed is nothing that matters: the
-  // daemon refuses a pairing outright when no `app` connection is live,
-  // and connect/disconnect only change a list this re-reads on open.
-  onMount(() => {
-    const stop: Promise<UnlistenFn>[] = [
-      listen<[string, string, string]>("device-pairing-requested", (event) => {
-        const [deviceId, name, sas] = event.payload;
-        const next = pairingRequested(pairing, { deviceId, name, sas });
-        if (next === pairing) return; // a second phone, or no offer on screen
-        pairing = next;
-        void askPairing({ deviceId, name, sas });
-      }),
-      // A Device's connection opening and closing. Pairing opens none --
-      // a pairing stream is not a connection -- so these arrive once
-      // Devices connect; the list they change is drawn here.
-      listen<string>("device-connected", () => void refreshDevices()),
-      listen<string>("device-disconnected", () => void refreshDevices()),
-    ];
-    return () => {
-      for (const p of stop) void p.then((off) => off());
-    };
-  });
-
   $effect(() => {
-    if (!pairingOpen(pairing)) return;
-    const timer = setInterval(() => {
-      nowMs = Date.now();
-      pairing = pairingTick(pairing, nowMs);
-    }, 1000);
-    return () => clearInterval(timer);
+    if (remoteAccessGate !== null || relayGate !== null || relayState !== null) return;
+    void refreshRelayState();
   });
 
-  async function startPairing(): Promise<void> {
-    pairingError = null;
-    try {
-      pairing = pairingOffered(await backend.beginPairing());
+  // The Relay's state is the one push this section still hears: pairing
+  // and the connect pushes moved to the Devices panel with the list.
+  onMount(() => {
+    const stop = listen<RelayState>("relay-state-changed", (event) => {
+      relayState = event.payload;
       nowMs = Date.now();
-    } catch (e) {
-      pairing = PAIRING_IDLE;
-      pairingError = String(e instanceof Error ? e.message : e);
-    }
-  }
-
-  /// The six-digit comparison. `askConfirm` rather than an inline panel
-  /// because this is a question with two named answers and no third: the
-  /// prompt keeps focus on Reject (`danger`), so Enter cannot confirm a
-  /// code nobody compared.
-  async function askPairing(request: PairingRequest): Promise<void> {
-    const said = await askConfirm(pairingConfirmCopy(request, knownDevice(request, devices)));
-    pairingError = null;
-    try {
-      if (said) {
-        const token = await grantForAnsweredPrompt("confirm_pairing", [
-          pairingSubject(request.deviceId, request.sas),
-        ]);
-        await backend.confirmPairing(request.deviceId, request.sas, token);
-        pairing = pairingConfirmed(pairing);
-      } else {
-        await backend.rejectPairing(request.deviceId);
-        pairing = pairingRejected(pairing);
-      }
-    } catch (e) {
-      pairingError = String(e instanceof Error ? e.message : e);
-    }
-    await refreshDevices();
-  }
-
-  async function revokeOne(row: { deviceId: string; name: string }): Promise<void> {
-    if (!(await askConfirm(revokeDeviceCopy(row)))) return;
-    devicesBusy = true;
-    devicesError = null;
-    try {
-      await backend.revokeDevice(row.deviceId);
-    } catch (e) {
-      devicesError = String(e instanceof Error ? e.message : e);
-    } finally {
-      devicesBusy = false;
-    }
-    await refreshDevices();
-  }
-
-  async function revokeAll(): Promise<void> {
-    if (!(await askConfirm(revokeAllCopy()))) return;
-    devicesBusy = true;
-    devicesError = null;
-    try {
-      await backend.revokeAllDevices();
-      // The offer on screen was minted under the OLD key, so a phone
-      // that scanned it would pin a key the daemon no longer has.
-      pairing = pairingClosed();
-    } catch (e) {
-      devicesError = String(e instanceof Error ? e.message : e);
-    } finally {
-      devicesBusy = false;
-    }
-    await refreshDevices();
-  }
+    });
+    return () => void stop.then((off) => off());
+  });
 
   /// The switch and the relay go together: the request carries both, so
   /// sending one without the other would write the stale value of
@@ -775,18 +687,13 @@
         "Remote access",
         "token",
         "local access",
-        "pairing",
-        "phone",
-        "device",
-        "Pair a device",
-        "QR",
         "Relay URL",
         "relay",
         "Admission token",
-        "Revoke",
-        "Revoke all devices",
-        "lost phone",
-        "trust store",
+        "push",
+        "phone",
+        "device",
+        "Devices",
       ],
     },
   ];
@@ -1586,12 +1493,12 @@
         {/if}
       </p>
 
-      <!-- The Relay, pairing, the device list, revocation. Everything from
+      <!-- The switch, the Relay and the admission token. Everything from
            here down is greyed together when the daemon is too old, and
            the reason names the version it needs. The reason hangs on
            WRAPPING spans, never on the disabled control: a disabled
            element fires no mouseenter, so a tooltip on it never opens. -->
-      <h3 class="sub">Devices</h3>
+      <h3 class="sub">Relay</h3>
       {#if remoteAccessGate}
         <p class="hint warn">{remoteAccessGate}</p>
       {/if}
@@ -1626,6 +1533,14 @@
           />
         </span>
       </div>
+      {#if relayBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={relayBadge} text={relayLine.text} />
+          {#if relayLine.detail}
+            <span class="detail">{relayLine.detail}</span>
+          {/if}
+        </p>
+      {/if}
       <p class="hint">
         {RELAY_NOTE}
         {#if relayHint}
@@ -1666,112 +1581,12 @@
         {/if}
       </p>
 
-      <div class="row">
-        <span use:tooltip={remoteAccessGate ?? pairingGate ?? ""}>
-          <button
-            type="button"
-            class="manage"
-            disabled={remoteAccessGate !== null || pairingGate !== null}
-            onclick={() => void startPairing()}
-          >
-            Pair a device
-          </button>
-        </span>
-        <span use:tooltip={remoteAccessGate ?? ""}>
-          <button
-            type="button"
-            class="manage danger"
-            disabled={remoteAccessGate !== null || devicesBusy || deviceList.length === 0}
-            onclick={() => void revokeAll()}
-          >
-            Revoke all devices
-          </button>
-        </span>
-      </div>
-      {#if pairingError}
-        <p class="hint warn">Pairing failed: {pairingError}</p>
-      {/if}
-
-      {#if pairingOpen(pairing)}
-        <div class="pairing">
-          {#if pairing.phase === "offer" || pairing.phase === "requested"}
-            {@const drawn = qrDraw(pairing.qr)}
-            {#if drawn.error}
-              <p class="hint warn">Couldn't draw the QR: {drawn.error}</p>
-            {:else}
-              <!-- Inline SVG, drawn from the payload by qr.ts. No image
-                   service, no CDN, and no dependency: the thing being
-                   drawn is a pairing secret. -->
-              <svg
-                class="qr"
-                viewBox="0 0 {drawn.size} {drawn.size}"
-                role="img"
-                aria-label="Pairing QR code"
-              >
-                <rect width={drawn.size} height={drawn.size} fill="#fff" />
-                <path d={drawn.path} fill="#000" />
-              </svg>
-            {/if}
-            <div class="pairing-text">
-              {#if pairing.phase === "requested"}
-                <p>Waiting for your answer on the prompt.</p>
-              {:else}
-                <p>Scan this with the phone you want to pair.</p>
-              {/if}
-              <p class="hint">
-                This code expires in {countdownLabel(pairing.expiresAt, nowMs)}. It is one use
-                only, and scanning it is not enough on its own — you confirm a six-digit code
-                here, on the desktop, before the device exists.
-              </p>
-            </div>
-          {:else if pairing.phase === "confirmed"}
-            <p>“{pairing.request.name}” is paired.</p>
-          {:else if pairing.phase === "rejected"}
-            <p>“{pairing.request.name}” was rejected. Nothing was written.</p>
-          {:else}
-            <p>That pairing code expired. Press Pair a device for a new one.</p>
-          {/if}
-          <button type="button" class="manage" onclick={() => (pairing = pairingClosed())}>
-            Close
-          </button>
-        </div>
-      {/if}
-
+      <p class="hint">
+        Pairing a phone and the list of paired Devices are in the sidebar's
+        {DEVICES_LABEL} panel.
+      </p>
       {#if devicesError}
         <p class="hint warn">{devicesError}</p>
-      {/if}
-      <!-- Nothing at all about the list against a daemon that was never
-           asked: "no devices are paired" would be an assertion about a
-           store this build could not read, and the human would take it
-           for an answer. The gate's own line above is the answer. -->
-      {#if remoteAccessGate === null}
-        {#if deviceList.length === 0}
-          <p class="hint">{NO_DEVICES}</p>
-        {:else}
-          <ul class="devices">
-            {#each deviceList as row (row.deviceId)}
-              <li class:dimmed={row.dimmed}>
-                <span class="device-name">{row.name}</span>
-                <span class="device-role">{row.role}</span>
-                <span class="device-age" title={row.pairedAtTitle}>paired {row.pairedAt}</span>
-                <span class="device-age" title={row.lastSeenTitle}>seen {row.lastSeen}</span>
-                {#if row.note}
-                  <span class="warn">{row.note}</span>
-                {/if}
-                <span use:tooltip={remoteAccessGate ?? ""}>
-                  <button
-                    type="button"
-                    class="manage danger"
-                    disabled={remoteAccessGate !== null || devicesBusy || !row.revocable}
-                    onclick={() => void revokeOne(row)}
-                  >
-                    Revoke
-                  </button>
-                </span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
       {/if}
     </section>
 
@@ -2014,86 +1829,5 @@
   .row span.grow input {
     flex: 1 1 auto;
     min-width: 0;
-  }
-  /* The per-row Revoke sits in a <li>, not a .row, so it needs the
-     button styling spelled out rather than inherited from the shared
-     rule above. */
-  .devices li button.manage {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-family: monospace;
-    font-size: 1em;
-  }
-  .devices li button.manage:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .row button.manage.danger,
-  .devices li button.manage.danger {
-    color: var(--danger-text);
-  }
-  .pairing {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    margin: 10px 0;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  /* A fixed box rather than one sized by the symbol: a version-10 code
-     and a version-4 code have to be the same size on screen, or the
-     panel jumps every time the relay URL changes length. White ground
-     always, in both themes -- a dark-on-dark QR is one no camera
-     reads. */
-  .pairing svg.qr {
-    flex: 0 0 auto;
-    width: 168px;
-    height: 168px;
-    border-radius: 4px;
-  }
-  .pairing-text {
-    min-width: 0;
-  }
-  .pairing p {
-    margin: 0 0 6px;
-  }
-  .devices {
-    list-style: none;
-    margin: 8px 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .devices li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 0;
-    border-top: 1px solid var(--border);
-  }
-  /* Greyed, not hidden: a revoked row is the record that the revocation
-     happened, and a device the daemon will refuse until it re-pairs has
-     to be visible to be re-paired. */
-  .devices li.dimmed .device-name,
-  .devices li.dimmed .device-role,
-  .devices li.dimmed .device-age {
-    opacity: 0.5;
-  }
-  .device-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .device-role,
-  .device-age {
-    flex: 0 0 auto;
-    color: var(--text-subtle);
   }
 </style>

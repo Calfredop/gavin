@@ -37,7 +37,7 @@ import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/works
 import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
-import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
+import type { DeviceList, PairingOffer, RelayState } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
@@ -124,6 +124,12 @@ export function rejectPairing(deviceId: string): Promise<void> {
 /// settings that ride along with them.
 export function listDevices(): Promise<DeviceList> {
   return invoke("list_devices");
+}
+
+/// Where the daemon's dial to the Relay stands. Changes after this read
+/// arrive as the `relay-state-changed` event.
+export function getRelayState(): Promise<RelayState> {
+  return invoke("get_relay_state");
 }
 
 export function revokeDevice(deviceId: string): Promise<void> {

@@ -24,10 +24,14 @@
 #   Building it signed and checking it is signed are different claims.
 #
 # * The workflow token stays `contents: read` and this workflow publishes
-#   nothing. It produces verified artefacts; attaching them to a release is
-#   a deliberate human act, and giving a tag-triggered workflow write
+#   no RELEASE. It produces verified artefacts; attaching them to a release
+#   is a deliberate human act, and giving a tag-triggered workflow write
 #   access to the repository is a bigger hole than the one it would close.
-#   See docs/RELEASING.md.
+#   See docs/RELEASING.md. The one exception is the `images` job, which
+#   pushes the Relay's and the Push gateway's container images to GHCR:
+#   an image has no other place to be, so that job alone holds
+#   `packages: write` and `id-token: write` (its own `permissions:`, never
+#   widened for the rest), and signs what it pushed keylessly.
 #
 # The updater is the fourth thing this workflow produces. `tauri build`
 # gets `tauri.updater.conf.json` on top of the usual overlay, which is
@@ -521,6 +525,123 @@ jobs:
           path: |
             target/release/bundle/nsis/*.exe
             target/release/bundle/nsis/*.exe.sig
+          if-no-files-found: error
+
+  # The Relay's and the Push gateway's container images: built, pushed to
+  # GHCR, signed, and verified from the registry.
+  #
+  # A self-hoster's promise (spec stories 69 and 75) is "this image came
+  # from that tag, and nobody touched it since", checkable without trusting
+  # the publisher's word. Two choices make it so:
+  #
+  # * SIGNED BY DIGEST. A tag is a pointer somebody can move; a digest is
+  #   the content. `cosign sign` is handed `repo@sha256:...`, never
+  #   `repo:tag`, and the digests are printed into `image-digests.md` for
+  #   the release notes, so a self-hoster pins the same string the
+  #   signature covers.
+  #
+  # * KEYLESS. The signature is bound to THIS workflow file on a `v*` tag
+  #   through the run's OIDC identity and recorded in Sigstore's public
+  #   log. There is no image-signing key to leak, rotate or lose, which
+  #   is the failure the updater key section of docs/RELEASING.md
+  #   spends a page on. `cosign verify` below (and the self-hosting doc)
+  #   pins that identity, not a key.
+  #
+  # cosign is built with `go install` at a pinned version rather than
+  # fetched by a third-party action or a curl: the Go module proxy checks
+  # the source against the public checksum database, which is a stronger
+  # statement than any tag on an action repository.
+  images:
+    name: Container images (Relay, Push gateway)
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      COSIGN_VERSION: v2.4.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install cosign
+        run: go install "github.com/sigstore/cosign/v2/cmd/cosign@${COSIGN_VERSION}"
+
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # Pushed by digest only: the tag is a courtesy for humans reading
+      # the registry page, and nothing in this job or in the docs relies
+      # on it. `--metadata-file` is where the digest of what was actually
+      # pushed comes from -- read back, never computed.
+      - name: Build, push and sign
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          # Manual runs are not on a tag; the signing identity below only
+          # accepts a tag, so a dispatch builds and pushes under a
+          # `dispatch-<run>` tag and its signature would not verify as a
+          # release. That is deliberate: a release is a tag.
+          ref="${TAG//\//-}"
+          : > image-digests.md
+          printf '| Image | Digest |\n|---|---|\n' >> image-digests.md
+          for spec in "gavin-relay crates/gavin-relay/Dockerfile" \
+                      "gavin-push-gateway crates/push-gateway/Dockerfile"; do
+            set -- $spec
+            name=$1; dockerfile=$2
+            image="ghcr.io/$owner/$name"
+            docker buildx build --push \
+              --file "$dockerfile" \
+              --tag "$image:$ref" \
+              --label "org.opencontainers.image.source=https://github.com/$REPO" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.version=$ref" \
+              --metadata-file "$name.metadata.json" \
+              .
+            digest=$(node -p "require('./$name.metadata.json')['containerimage.digest']")
+            case "$digest" in
+              sha256:????????????????????????????????????????????????????????????????) ;;
+              *) echo "no digest for $name: '$digest'" >&2; exit 1 ;;
+            esac
+            cosign sign --yes "$image@$digest"
+            printf '| `%s` | `%s` |\n' "$image" "$digest" >> image-digests.md
+            echo "$image@$digest" >> image-refs.txt
+          done
+          cat image-digests.md
+
+      # Verified from the registry, by digest, with the identity a
+      # self-hoster is told to use. Signing an image and checking that
+      # the signature verifies the way the docs say are different claims;
+      # this is what keeps the docs' command honest.
+      - name: Verify the signatures the way docs/self-hosting-relay.md says
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          while IFS= read -r ref; do
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/release\.yml@refs/tags/v" \
+              "$ref" > /dev/null
+            echo "verified $ref"
+          done < image-refs.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gavin-image-digests
+          path: |
+            image-digests.md
+            image-refs.txt
           if-no-files-found: error
 
   # The manifest every install polls, written from the signatures the
