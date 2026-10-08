@@ -25,11 +25,11 @@ Order: spike → broker → (install-wizard ∥ live-pane) → companion → the
 - [x] [The spike lands its spec, and the spec answers every open question it lists](./playwright-spike.md)
 - [x] [Per-session Chromium + screencast in the daemon, plus the `gavin-mcp playwright` shim](./playwright-browser-broker.md)
 - [x] [Per-profile install, wizard step, Home catchup](./playwright-install-wizard.md)
-- [ ] [The desktop pane beside the agent's tab, with the app + workspace open setting](./playwright-live-pane.md)
-- [ ] [The same view on the phone](./playwright-companion-view.md)
+- [x] [The desktop pane beside the agent's tab, with the app + workspace open setting](./playwright-live-pane.md)
+- [x] [The same view on the phone](./playwright-companion-view.md)
 - [x] `builtin:browser-test-playwright` added in `orchestrationTools.ts` (+ `actionPrompts.ts`, the orchestration tools spec table and `gavin_orchestrate_skill.md`); the builtins tests pass
 - [x] gavin's managed instructions block and `gavin_skill.md` tell agents the `browser_*` tools exist when Playwright is installed, and to use them to verify UI changes; covered by an `agent_setup.rs` test
-- [ ] ssh workspace: install runs on the host, the browser launches there, frames reach the desktop pane through the bridge — proven with an isolated daemon behind a local `gavin-daemon bridge`
+- [x] ssh workspace: install runs on the host, the browser launches there, frames reach the desktop pane through the bridge — proven with an isolated daemon behind a local `gavin-daemon bridge`
 - [ ] Human test: on macOS, an agent session that calls `browser_navigate` opens a live pane beside its tab, which follows the agent's clicks and closes with the session
 - [ ] Human test: with the workspace override set to "Open from the tab chip" while the app default stays automatic, an agent's first `browser_navigate` opens no pane, and the tab's browser chip opens it
 - [ ] Human test: the same macOS run on a Windows machine and on a Linux machine
