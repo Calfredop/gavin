@@ -49,6 +49,18 @@ describe("hub navigator surface", () => {
     expect(page).toContain("navigatorView");
   });
 
+  it("marks the open section with the tab row's accent line, not a box or a close badge", () => {
+    const nav = Object.values(
+      import.meta.glob("./HubNavigator.svelte", { query: "?raw", import: "default", eager: true }) as Record<
+        string,
+        string
+      >
+    )[0];
+    expect(nav).not.toContain("close-badge");
+    expect(nav).toContain("var(--tab-indicator)) 0 0 0 var(--ws-accent, #d9a648)");
+    expect(page).toContain("border-bottom-color: var(--ws-accent, #d9a648)");
+  });
+
   it("is mounted beside the terminal view only", () => {
     expect(page).toMatch(/<HubNavigator[\s\S]*?<TerminalView/);
     expect(page.match(/<HubNavigator/g)).toHaveLength(1);

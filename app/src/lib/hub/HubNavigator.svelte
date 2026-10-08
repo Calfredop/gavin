@@ -7,7 +7,6 @@
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
   } from "$lib/hub/hubTabPrefs";
-  import { X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
 
   interface Props {
@@ -39,8 +38,8 @@
 </script>
 
 <!-- A column beside a page, not a row above it: the page's own tab bar
-     already owns the top edge. Square buttons, icon only -- the tooltip
-     (IconButton's label) carries the name. -->
+     already owns the top edge. Icon only -- the tooltip (IconButton's
+     label) carries the name. -->
 <nav class="hub-navigator" aria-label="Hub sections">
   {#each views as view (view.id)}
     <IconButton
@@ -50,12 +49,7 @@
       class="hub-navigator-button"
       active={open === view.id}
       onclick={() => onselect(view.id)}
-    >
-      {#if open === view.id}
-        <!-- Says what pressing it again does. -->
-        <span class="close-badge" aria-hidden="true"><X size={8} strokeWidth={3} /></span>
-      {/if}
-    </IconButton>
+    />
   {/each}
 </nav>
 
@@ -76,24 +70,17 @@
     width: 28px;
     height: 28px;
     padding: 0;
+    border-radius: 0;
   }
-  /* The workspace's own colour marks the open section. */
+  /* The hub tab row's highlight turned on its side (+page.svelte's
+     .tab.active): the same accent at the same thickness, on the edge
+     that faces the page rather than under the label, since this column
+     runs down the page's left. An inset shadow rather than a border so
+     opening a section moves nothing -- the tab rows' drop marks draw the
+     same way. No box: IconButton's active background is dropped. */
   .hub-navigator :global(.hub-navigator-button.active) {
-    background: color-mix(in srgb, var(--ws-accent, var(--text)) 12%, transparent);
-    border-color: color-mix(in srgb, var(--ws-accent, var(--text)) 30%, transparent);
-  }
-  .close-badge {
-    position: absolute;
-    top: -3px;
-    right: -3px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     color: var(--text);
-    background: var(--surface-overlay);
-    border: 1px solid var(--border-strong);
+    background: transparent;
+    box-shadow: inset calc(-1 * var(--tab-indicator)) 0 0 0 var(--ws-accent, #d9a648);
   }
 </style>
