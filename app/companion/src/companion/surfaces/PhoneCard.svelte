@@ -29,10 +29,11 @@
     renameCard,
     tickItem,
   } from "$companion/state/cards";
+  import { onReconnect } from "$companion/state/reachability";
   import { closePage, followCard, openCard } from "$companion/state/workstation";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import PhoneMarkdown from "$companion/surfaces/PhoneMarkdown.svelte";
-  import { cardAgent } from "$companion/surfaces/phoneBoard";
+  import { cardAgent, recoverBoard } from "$companion/surfaces/phoneBoard";
   import { allCards, deviceBar, findCard, owedItems, tickableItems } from "$companion/surfaces/phoneCard";
 
   interface Props {
@@ -80,6 +81,15 @@
       r.stop();
       if (reading === r) reading = null;
     };
+  });
+  // The board it stands on and its file, read again when the connection
+  // comes back: what changed meanwhile was pushed to nobody.
+  $effect(() => {
+    const id = workspace.id;
+    return onReconnect(() => {
+      void recoverBoard(id);
+      void reading?.reread();
+    });
   });
   const body = $derived(content ? stripFrontmatter(content).trim() : "");
   const checklist = $derived(content && cardPath ? tickableItems(parseChecklist(content), tree, cardPath) : []);

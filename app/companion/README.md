@@ -59,8 +59,9 @@ exactly one `result` with that id.
 
 | to the bundle | carries |
 |---|---|
-| `result` | `id`, `ok`, then `value` or `error` (+ `code: "unsupported"`) |
+| `result` | `id`, `ok`, then `value` or `error` (+ `code: "unsupported"` or `"unreachable"`) |
 | `event` | `listener`, `event`, `payload` |
+| `connection` | `state: "up"`, or `state: "down"` and `reason`: `unreachable`, `asleep` or `desktop-app-not-running` |
 
 Neither end throws on what it is handed. A type an end does not know is
 answered `unsupported` when it carries an id and dropped when it does not; an
@@ -68,6 +69,30 @@ unknown field is ignored. A bundle asks `capabilities` before using anything
 beyond the core set (`invoke`, `result`, `listen`, `event`, `unlisten`), and an
 end that cannot answer the question is taken to carry exactly that set — so a
 shell older than its bundle costs a button, never the page.
+
+`connection` is the one message nobody asked for, and so carries no id: the
+shell says it each time its connection to the Workstation goes down or comes
+back up (`visit/connectionState.ts`, from the hub's state in `hub/live.ts`),
+and never before the bundle has said something, since until then there is no
+way to reach it. A bundle assumes up until told otherwise. An older bundle
+drops it as a type it does not know; an older shell never sends it, and the
+bundle shows each failure as before. A call the shell could not carry -- no
+connection, one that dropped or went quiet, a desktop app the daemon could not
+ask -- is answered with `code: "unreachable"`, which is how the bundle tells
+an error about the outage from the Workstation's own.
+
+The bundle's side is `state/reachability.ts`. While down, the page says so in
+one line above the screen, and an error that only says the Workstation could
+not be reached is not repeated under it (`shownError`). On the way back up,
+every open surface re-runs its own load once, through the desktop's own
+in-flight guards (`onReconnect`: Git's `recoverGit`, the board's and a card's
+`recoverBoard`, `recoverRails`, the folder Files shows), clearing the
+reachability errors it showed first; `state/workstation.ts` reads the
+workspaces and the sessions' statuses again, since the pushes sent meanwhile
+reached nobody. A git failure or any other refusal of the Workstation's own
+stays. An open terminal is not repainted: leaving it and opening it again
+does that. `seam/reconnect.test.ts` drops and restores the Demo
+Workstation's connection (`reach`) with each surface open, and reads the wire.
 
 `landing` is optional and read only by a bundle that knows it: where the
 shell wants the bundle to land, when it opened it for an inbox item — the

@@ -20,6 +20,7 @@
     type FileTreeState,
   } from "$lib/files/fileTree";
   import { loadViewableExtensions } from "$lib/files/fileTypes";
+  import { onReconnect } from "$companion/state/reachability";
   import type { FilesPlace } from "$companion/state/viewState";
   import {
     crumbs,
@@ -79,6 +80,14 @@
       tree = withError(tree, dir, String(e instanceof Error ? e.message : e));
     }
   }
+
+  // The folder on screen, read again when the connection comes back -- a
+  // read that failed for want of one shows its error until then.
+  $effect(() =>
+    onReconnect(() => {
+      if (root && place.dir) void read(place.dir);
+    })
+  );
 
   // Each folder is read the first time it is shown, and not again until
   // asked: the desk's tree has no watcher either.

@@ -185,6 +185,7 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
           if (set.size === 0) connectionListeners.delete(id);
         };
       },
+      watchLive: (listener) => live.subscribe((all) => listener(all[id] ?? null)),
     }),
 
     async start() {

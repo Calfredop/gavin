@@ -18,12 +18,14 @@
     moveStage,
     newRail,
     pressRail,
+    recoverRails,
     removeStageAsked,
     removeStep,
     renameRail,
     resetRailAsked,
     setStageMode,
   } from "$companion/state/rails";
+  import { onReconnect, reachability, shownError } from "$companion/state/reachability";
   import { openCard, openTerminal } from "$companion/state/workstation";
   import { cardsToPlace, PRESS_LABEL, railRows, railStateText, type RailRow } from "$companion/surfaces/phoneRails";
 
@@ -38,7 +40,7 @@
   );
   const rails = $derived(input ? railRows(input) : []);
   const choices = $derived(input ? cardsToPlace(input) : []);
-  const saveError = $derived($saveErrors[workspace.id] ?? null);
+  const saveError = $derived(shownError($saveErrors[workspace.id], $reachability));
 
   /// The rail open for editing, one at a time.
   let editing = $state<string | null>(null);
@@ -51,6 +53,7 @@
 
   onMount(() => {
     void loadRails(workspace.id);
+    return onReconnect(() => void recoverRails(workspace.id));
   });
 
   /// Shows a refusal the desk's action returned. The run-state writes

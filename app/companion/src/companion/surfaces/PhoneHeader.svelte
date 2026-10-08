@@ -47,7 +47,9 @@
     align-items: center;
     gap: 8px;
     min-height: 48px;
-    padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0
+    /* Zero where a line above the header has taken the notch's inset
+       already: the page's offline line. */
+    padding: var(--header-inset-top, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0
       max(12px, env(safe-area-inset-left));
     background: var(--surface-sunken);
     border-bottom: 1px solid var(--border);

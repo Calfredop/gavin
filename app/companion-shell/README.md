@@ -425,9 +425,15 @@ The hub shows each step under the Workstation's name while it opens.
 event name and a desktop event the daemon pushes (`DesktopEvent`) an
 `event` to each listener of that name; `unlisten` ends the wire's listen
 with the last listener. A call made while the connection is down is
-answered with an error the bundle shows, never dropped, and every event
-still listened for is listened for again when the connection comes back
-— the daemon keeps a listen per connection. The connection itself hands
+answered with an error the bundle shows, never dropped — coded
+`unreachable`, as is one the connection dropped or the daemon could not
+hand to its desktop app — and every event still listened for is listened
+for again when the connection comes back — the daemon keeps a listen per
+connection. The bundle is told each change as `connection` (up, or down
+with the hub's reason: `visit/connectionState.ts` over the live hub's
+state, `connectionSource(id).watchLive`), so the open screen says it is
+down once and reads itself again once it is up; the bundle's README has
+its side. The connection itself hands
 pushes to whoever listens (`Connection.onPush`); with nobody listening
 they wait for the next request to pass over, as before.
 

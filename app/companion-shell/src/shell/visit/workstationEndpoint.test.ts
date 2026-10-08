@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CHANNEL_VERSION, encode } from "$companion/channel/messages";
 import type { Connection } from "$shell/connection/connection";
+import type { LiveState } from "$shell/hub/live";
 import { NOT_CONNECTED, problemOf, workstationEndpoint, type ConnectionSource } from "$shell/visit/workstationEndpoint";
 
 /// A connection whose answers are scripted by request type, and whose
@@ -39,10 +40,15 @@ function scripted() {
   };
 }
 
-function source(initial: Connection | null): ConnectionSource & { set(c: Connection | null): void } {
+function source(
+  initial: Connection | null,
+  initialLive?: LiveState | null
+): ConnectionSource & { set(c: Connection | null): void; setLive(live: LiveState | null): void } {
   let current = initial;
+  let live = initialLive ?? null;
   const listeners = new Set<(c: Connection | null) => void>();
-  return {
+  const liveListeners = new Set<(live: LiveState | null) => void>();
+  const src: ConnectionSource & { set(c: Connection | null): void; setLive(live: LiveState | null): void } = {
     current: () => current,
     subscribe(listener) {
       listeners.add(listener);
@@ -52,13 +58,26 @@ function source(initial: Connection | null): ConnectionSource & { set(c: Connect
       current = c;
       for (const l of listeners) l(c);
     },
+    setLive(next) {
+      live = next;
+      for (const l of liveListeners) l(next);
+    },
   };
+  // Only a source handed a live state tells one, as the hub's does.
+  if (initialLive !== undefined) {
+    src.watchLive = (listener) => {
+      liveListeners.add(listener);
+      listener(live);
+      return () => liveListeners.delete(listener);
+    };
+  }
+  return src;
 }
 
 const message = (body: Record<string, unknown>) => JSON.stringify({ v: CHANNEL_VERSION, ...body });
 
-function bench(initial: Connection | null) {
-  const src = source(initial);
+function bench(initial: Connection | null, live?: LiveState | null) {
+  const src = source(initial, live);
   const endpoint = workstationEndpoint(src, { invokeTimeoutMs: 100, listenTimeoutMs: 100 });
   const replies: Array<Record<string, unknown>> = [];
   const reply = (raw: string) => replies.push(JSON.parse(raw));
@@ -105,11 +124,15 @@ describe("a paired Workstation's end of the channel", () => {
       "The Workstation's Gavin is too old for this. Update Gavin at the desk.",
       "gavin-daemon: desktop app not running",
     ]);
+    // Only the call that never reached the desk is coded so: a refusal
+    // is the Workstation's answer, and stays on screen.
+    expect(b.replies.map((r) => r.code)).toEqual([undefined, undefined, "unreachable"]);
 
     b.src.set(null);
     b.endpoint.receive(message({ type: "invoke", id: 4, cmd: "get_board", args: {} }), b.reply);
     await flush();
-    expect(b.replies[3]).toEqual({ v: 1, type: "result", id: 4, ok: false, error: NOT_CONNECTED });
+    expect(b.replies[3]).toEqual({ v: 1, type: "connection", state: "down", reason: "unreachable" });
+    expect(b.replies[4]).toEqual({ v: 1, type: "result", id: 4, ok: false, error: NOT_CONNECTED, code: "unreachable" });
     expect(s.sent).toHaveLength(3);
 
     expect(problemOf({ type: "Forbidden", role: "remote", request_type: "ListDevices" })).toMatch(/does not let a phone ListDevices/);
@@ -171,21 +194,24 @@ describe("a paired Workstation's end of the channel", () => {
     expect(first.pushHandlers.size).toBe(1);
 
     // Dropped: no connection. A listen made now is registered here and
-    // answered, and the wire hears of it when a connection comes.
+    // answered, and the wire hears of it when a connection comes. The
+    // bundle is told it is down, and back up.
     b.src.set(null);
     expect(first.pushHandlers.size).toBe(0);
     b.endpoint.receive(message({ type: "listen", id: 2, event: "session-status-changed" }), b.reply);
     await flush();
-    expect(b.replies[1]).toEqual({ v: 1, type: "result", id: 2, ok: true, value: null });
+    expect(b.replies[1]).toEqual({ v: 1, type: "connection", state: "down", reason: "unreachable" });
+    expect(b.replies[2]).toEqual({ v: 1, type: "result", id: 2, ok: true, value: null });
 
     const second = scripted();
     second.answers.set("ListenDesktop", () => ({ type: "Ok" }));
     b.src.set(second.connection);
     await flush();
     expect(second.sent.map((m) => m.event).sort()).toEqual(["session-status-changed", "workspaces-synced"]);
+    expect(b.replies[3]).toEqual({ v: 1, type: "connection", state: "up" });
     second.push({ type: "DesktopEvent", event: "workspaces-synced", payload: { n: 1 } });
     first.push({ type: "DesktopEvent", event: "workspaces-synced", payload: { n: 0 } });
-    expect(b.replies.slice(2)).toEqual([{ v: 1, type: "event", listener: 1, event: "workspaces-synced", payload: { n: 1 } }]);
+    expect(b.replies.slice(4)).toEqual([{ v: 1, type: "event", listener: 1, event: "workspaces-synced", payload: { n: 1 } }]);
 
     // Stopping ends the listens on the connection that stays.
     second.answers.set("UnlistenDesktop", () => ({ type: "Ok" }));
@@ -197,7 +223,7 @@ describe("a paired Workstation's end of the channel", () => {
     ]);
     expect(second.pushHandlers.size).toBe(0);
     second.push({ type: "DesktopEvent", event: "workspaces-synced", payload: { n: 2 } });
-    expect(b.replies).toHaveLength(3);
+    expect(b.replies).toHaveLength(5);
   });
 
   it("answers what is not the Workstation's, and what it cannot read, rather than dropping it", async () => {
@@ -223,12 +249,65 @@ describe("a paired Workstation's end of the channel", () => {
     const b = bench(s.connection);
     b.endpoint.receive(message({ type: "invoke", id: 1, cmd: "get_board", args: {} }), b.reply);
     await flush();
-    expect(b.replies[0]).toEqual({ v: 1, type: "result", id: 1, ok: false, error: "the Workstation did not answer in time" });
+    expect(b.replies[0]).toEqual({
+      v: 1,
+      type: "result",
+      id: 1,
+      ok: false,
+      error: "the Workstation did not answer in time",
+      code: "unreachable",
+    });
     // A listen's failure too.
     s.answers.set("ListenDesktop", () => ({ type: "Error", message: "only a Device can listen" }));
     b.endpoint.receive(message({ type: "listen", id: 2, event: "e" }), b.reply);
     await flush();
     expect(b.replies[1]).toEqual({ v: 1, type: "result", id: 2, ok: false, error: "only a Device can listen" });
     expect(encode({ v: 1, type: "result", id: 2, ok: false, error: "x" })).toContain('"ok":false');
+  });
+
+  it("tells the bundle the hub's state as it changes: each reason once, and up once it is ready again", async () => {
+    const s = scripted();
+    const b = bench(s.connection, { state: "ready", items: [] });
+    const told = () => b.replies.filter((r) => r.type === "connection");
+    // Nothing is said before the bundle has spoken: there is no way to.
+    b.src.setLive({ state: "desktop-app-not-running" });
+    expect(b.replies).toEqual([]);
+    b.endpoint.receive(message({ type: "unlisten", id: 1, listener: 9 }), b.reply);
+    // Said before the answer to what it asked.
+    expect(b.replies[0]).toEqual({ v: 1, type: "connection", state: "down", reason: "desktop-app-not-running" });
+    expect(b.replies[1]).toMatchObject({ type: "result", id: 1, ok: true });
+
+    // Dropped, and the Relay has not heard from it: asleep, between
+    // tries and through each try.
+    b.src.set(null);
+    b.src.setLive({ state: "unreachable", problem: "The connection dropped." });
+    b.src.setLive({ state: "connecting" });
+    b.src.setLive({ state: "asleep" });
+    b.src.setLive({ state: "connecting" });
+    b.src.setLive({ state: "asleep" });
+    b.src.setLive({ state: "connecting" });
+    b.src.set(s.connection);
+    // Connected, but not up until its desktop app has answered.
+    expect(told().slice(1)).toEqual([
+      { v: 1, type: "connection", state: "down", reason: "unreachable" },
+      { v: 1, type: "connection", state: "down", reason: "asleep" },
+    ]);
+    b.src.setLive({ state: "ready", items: [] });
+    b.src.setLive({ state: "ready", items: [] });
+    expect(told().slice(3)).toEqual([{ v: 1, type: "connection", state: "up" }]);
+
+    // Nothing after the visit ends.
+    b.stop();
+    b.src.setLive({ state: "asleep" });
+    expect(told()).toHaveLength(4);
+  });
+
+  it("says nothing of a connection that was up from the start", async () => {
+    const s = scripted();
+    s.answers.set("InvokeDesktop", () => ({ type: "DesktopResult", value: 1 }));
+    const b = bench(s.connection, { state: "ready", items: [] });
+    b.endpoint.receive(message({ type: "invoke", id: 1, cmd: "get_board", args: {} }), b.reply);
+    await flush();
+    expect(b.replies.map((r) => r.type)).toEqual(["result"]);
   });
 });

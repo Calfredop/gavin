@@ -20,6 +20,7 @@
     select,
     startWatching,
   } from "$lib/git/gitState";
+  import { onReconnect, reachability, shownError } from "$companion/state/reachability";
   import PhoneGitBranches from "$companion/surfaces/PhoneGitBranches.svelte";
   import PhoneGitChanges from "$companion/surfaces/PhoneGitChanges.svelte";
   import PhoneGitDiff from "$companion/surfaces/PhoneGitDiff.svelte";
@@ -30,6 +31,7 @@
     gitScreen,
     inProgressBanner,
     openFile,
+    recoverGit,
     syncButtons,
     syncNote,
     type GitPane,
@@ -47,6 +49,7 @@
   const sync = $derived(view ? syncButtons(view) : null);
   const banner = $derived(view ? inProgressBanner(view) : null);
   const file = $derived(view ? openFile(view) : null);
+  const error = $derived(shownError(view?.error, $reachability));
 
   let pane = $state<GitPane>("changes");
 
@@ -59,6 +62,14 @@
     if (!target) return;
     ensureGitView(id, target);
     void refresh(id);
+  });
+
+  // Read again when the connection comes back, once, with the banner
+  // that only said it was gone taken down first.
+  $effect(() => {
+    const id = workspace.id;
+    if (!root) return;
+    return onReconnect(() => void recoverGit(id));
   });
 
   // Watched while the surface is up, as the desk's tab watches while it
@@ -155,9 +166,9 @@
         </span>
       </div>
     {/if}
-    {#if view.error}
+    {#if error}
       <div class="banner error" role="alert">
-        <span class="banner-text">{view.error}</span>
+        <span class="banner-text">{error}</span>
         <span class="banner-acts">
           <button type="button" onclick={() => dismissError(workspace.id)}>Dismiss</button>
         </span>

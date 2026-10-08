@@ -20,6 +20,7 @@ import {
   addStepAsStageAction,
   addStepToStageAction,
   deleteRailAction,
+  dismissSaveError,
   fetchOrchestration,
   moveStageToIndexAction,
   orchestrations,
@@ -30,10 +31,12 @@ import {
   renameRailAction,
   resetRail,
   resumeRail,
+  saveErrors,
   setStageModeAction,
   startRail,
 } from "$lib/orchestration/orchestrationState";
 import { groupRemoveConfirm, railDeleteConfirm } from "$lib/orchestration/railConfirm";
+import { isReachabilityError } from "$companion/state/reachability";
 import type { RailPress } from "$companion/surfaces/phoneRails";
 
 function planOf(workspaceId: string): Orchestration | null {
@@ -49,6 +52,15 @@ export async function loadRails(workspaceId: string): Promise<void> {
   if (!(workspaceId in get(gavinTrees))) reads.push(refreshGavinTree(workspaceId));
   reads.push(planOf(workspaceId) ? refreshOrchestration(workspaceId) : fetchOrchestration(workspaceId));
   await Promise.all(reads);
+}
+
+/// What the Rails surface does when the connection comes back: a save that
+/// failed only for want of a connection stops saying so, and the plan and
+/// its cards are read again -- what the desk ran meanwhile was pushed to
+/// nobody.
+export function recoverRails(workspaceId: string): Promise<void> {
+  if (isReachabilityError(get(saveErrors)[workspaceId])) dismissSaveError(workspaceId);
+  return loadRails(workspaceId);
 }
 
 /// A rail's one press. Start and Resume ARM the rail; the desk runs it.

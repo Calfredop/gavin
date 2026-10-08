@@ -8,6 +8,7 @@
   import { layoutState } from "$lib/core/layoutState";
   import { workspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
   import { DEMO_PACE_MS, deviceStorage, openChannel } from "$companion/state/entry";
+  import { reachability, reachabilityLine } from "$companion/state/reachability";
   import {
     connection,
     connectWorkstation,
@@ -80,6 +81,7 @@
     $view.page?.kind === "card" ? $view.page.path.slice($view.page.path.lastIndexOf("/") + 1) : ($view.page?.kind ?? null)
   );
   const ready = $derived($connection.status === "ready" ? $connection : null);
+  const offline = $derived(ready ? reachabilityLine($reachability, ready.workstation.name) : null);
   const waiting = $derived(
     open
       ? workspaceAgentsSummary(open, {
@@ -92,7 +94,13 @@
   );
 </script>
 
-<main class="companion">
+<main class="companion" class:offline={offline !== null}>
+  <!-- The one place an outage is said: above whatever screen is up, which
+       keeps its place and its drafts, and reads again by itself once the
+       Workstation is back (state/reachability.ts). -->
+  {#if offline}
+    <p class="offline-line" role="status">{offline}</p>
+  {/if}
   {#if $connection.status === "connecting"}
     <PhoneHeader title="Gavin" />
     <p class="note">Connecting to the Workstation…</p>
@@ -195,6 +203,22 @@
        keyboard: a page that did not would type under it. */
     height: var(--visible-height, 100dvh);
     transform: translateY(var(--visible-top, 0px));
+  }
+  .offline-line {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: calc(env(safe-area-inset-top) + 4px) max(12px, env(safe-area-inset-right)) 4px
+      max(12px, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border-warning);
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+  /* The line has taken the notch's inset; the header under it need not
+     (PhoneHeader.svelte reads this). */
+  .companion.offline {
+    --header-inset-top: 0px;
   }
   .scroll {
     flex: 1 1 auto;

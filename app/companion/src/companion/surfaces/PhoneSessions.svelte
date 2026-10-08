@@ -9,6 +9,7 @@
   import { layoutState } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { onReconnect } from "$companion/state/reachability";
   import { launchTables, loadLaunchTables, startedHere, startSession, type SessionKind } from "$companion/state/sessions";
   import { openTerminal } from "$companion/state/workstation";
   import { sessionGroups } from "$companion/surfaces/sessionList";
@@ -41,6 +42,9 @@
 
   onMount(() => {
     void loadLaunchTables();
+    // The list itself is the Workstation's sessions, read again by
+    // state/workstation.ts; what starting one needs, if it failed.
+    return onReconnect(() => void loadLaunchTables());
   });
 
   async function start(kind: SessionKind): Promise<void> {

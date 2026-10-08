@@ -5,8 +5,10 @@
 // unchanged with its commands travelling the channel to the Workstation,
 // where they run as the same Tauri commands the desktop's own webview
 // would have reached.
+import { ChannelError } from "$companion/channel/client";
 import { channel, NOT_CONNECTED } from "$companion/remote/connection";
 import { refusedOnDevice } from "$companion/remote/remoteRole";
+import { noteUnreachable } from "$companion/state/reachability";
 
 export type InvokeArgs = Record<string, unknown>;
 
@@ -28,6 +30,10 @@ export async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   try {
     return await client.invoke<T>(cmd, args ?? {});
   } catch (e) {
+    // Noted before the caller words it into a banner, so the banner can
+    // be told apart from the Workstation's own refusals once the
+    // connection is back (state/reachability.ts).
+    if (e instanceof ChannelError && e.code === "unreachable") noteUnreachable(e.message);
     throw asTauriRejects(e);
   }
 }

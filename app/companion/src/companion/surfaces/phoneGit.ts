@@ -18,14 +18,19 @@ import {
   type FileStatus,
   type InProgressKind,
 } from "$lib/git/git";
+import { get } from "svelte/store";
 import {
   canSync,
   currentBranch,
+  dismissError,
   findEntry,
+  gitStore,
   pushLabel,
+  refresh,
   runBlocker,
   type GitViewState,
 } from "$lib/git/gitState";
+import { isReachabilityError } from "$companion/state/reachability";
 
 export type GitScreen = "no-root" | "loading" | "git-missing" | "not-a-repo" | "ready";
 
@@ -38,6 +43,15 @@ export function gitScreen(rootPath: string | null | undefined, view: GitViewStat
   if (view.gitMissing) return "git-missing";
   if (view.repo?.notARepo) return "not-a-repo";
   return "ready";
+}
+
+/// What the Git surface does when the connection comes back: the banner
+/// that only said the Workstation could not be reached goes, and the view
+/// is read again -- once, through the desk's own refresh and its queue.
+/// A banner of git's own stays.
+export function recoverGit(workspaceId: string): Promise<void> {
+  if (isReachabilityError(get(gitStore)[workspaceId]?.error)) dismissError(workspaceId);
+  return refresh(workspaceId);
 }
 
 /// The two panes a phone switches between. The desk's third column --

@@ -10,8 +10,10 @@ import {
   CHANNEL_VERSION,
   CORE_MESSAGES,
   encode,
+  NOT_REACHABLE,
   readBundleMessage,
   type BundleMessage,
+  type ConnectionState,
   type Capabilities,
   type ErrorCode,
   type WorkstationMessage,
@@ -38,9 +40,9 @@ export interface DemoHost {
 const WILLING_HOST: DemoHost = { openExternal: () => {}, returnToHub: () => {} };
 
 export interface DemoOptions {
-  /// The message types this end carries. By default the core set and
-  /// whichever acts the host can perform; given outright, it is how a
-  /// suite plays a shell older than the bundle.
+  /// The message types this end carries. By default the core set,
+  /// whichever acts the host can perform, and `connection`; given
+  /// outright, it is how a suite plays a shell older than the bundle.
   messages?: readonly string[];
   host?: DemoHost;
   state?: DemoState;
@@ -52,6 +54,12 @@ export interface DemoWorkstation extends ChannelEndpoint, DemoContext {
   /// forward to. The shell still answers for itself: `capabilities` is
   /// a question about the channel, not about the desk.
   unavailable: string | null;
+  /// Plays the connection to this Workstation going down and coming back
+  /// up, as a shell sees it: while it is down every call is refused as
+  /// one that never reached the desk (`unreachable`) -- a listen is still
+  /// taken, as the shell takes one -- and the bundle is told each change,
+  /// when this end carries `connection`.
+  reach(state: ConnectionState): void;
   /// Takes the next step of the demo's activity (activity.ts), which
   /// loops.
   advance(): void;
@@ -78,12 +86,16 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
     ...CORE_MESSAGES,
     ...(host.openExternal ? ["open-external"] : []),
     ...(host.returnToHub ? ["return-to-hub"] : []),
+    "connection",
   ];
   const state = options.state ?? sampleState();
   const received: BundleMessage[] = [];
   const unanswered: string[] = [];
   const listeners = new Map<number, Listener>();
   let step = 0;
+  let reachable: ConnectionState = { state: "up" };
+  /// How to reach the bundle unasked: the reply of the last message.
+  let lastReply: ((raw: string) => void) | null = null;
 
   function send(reply: (raw: string) => void, message: WorkstationMessage): void {
     reply(encode(message));
@@ -114,6 +126,12 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
       runAllRails(demo);
     },
 
+    reach(next) {
+      reachable = next;
+      if (!lastReply || !messages.includes("connection")) return;
+      send(lastReply, { v: CHANNEL_VERSION, type: "connection", ...next });
+    },
+
     emit(event, payload) {
       for (const [id, listener] of listeners) {
         if (listener.event !== event) continue;
@@ -122,6 +140,7 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
     },
 
     receive(raw, reply) {
+      lastReply = reply;
       const read = readBundleMessage(raw);
       if (read.kind === "malformed") {
         if (read.id !== null) fail(reply, read.id, read.reason);
@@ -148,6 +167,10 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
           return;
         }
         case "invoke": {
+          if (reachable.state === "down") {
+            fail(reply, message.id, NOT_REACHABLE, "unreachable");
+            return;
+          }
           if (demo.unavailable !== null) {
             fail(reply, message.id, demo.unavailable);
             return;

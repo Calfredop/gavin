@@ -12,6 +12,7 @@
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import type { Landing } from "$companion/channel/messages";
+  import { onReconnect, reachability, shownError } from "$companion/state/reachability";
   import { openCard, openPrd, returnedFrom } from "$companion/state/workstation";
   import PhoneCompose from "$companion/surfaces/PhoneCompose.svelte";
   import { waitingCount } from "$companion/surfaces/phoneCard";
@@ -22,6 +23,7 @@
     landingCard,
     openingColumn,
     phoneBoard,
+    recoverBoard,
     scrollBehaviour,
   } from "$companion/surfaces/phoneBoard";
 
@@ -40,7 +42,13 @@
   // is kept beside the boards, not in them.
   const loadError = $derived.by(() => {
     void $kanbanState;
-    return boardError(workspace.id);
+    return shownError(boardError(workspace.id), $reachability);
+  });
+
+  $effect(() => {
+    const id = workspace.id;
+    if (!workspace.rootPath) return;
+    return onReconnect(() => void recoverBoard(id));
   });
   const agents = $derived({
     board: $kanbanState[workspace.id],
