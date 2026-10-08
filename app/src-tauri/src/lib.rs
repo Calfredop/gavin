@@ -23,7 +23,7 @@ mod remote;
 mod session;
 mod single_instance;
 mod stream_writer;
-mod superpowers;
+mod agent_skills;
 mod trash;
 mod typesafe;
 mod updater;
@@ -163,6 +163,8 @@ pub fn run() {
             session::headroom_reach,
             session::detect_headroom,
             session::install_headroom,
+            session::get_memory_index,
+            session::ensure_memory_index,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,
@@ -251,10 +253,12 @@ pub fn run() {
             session::set_root_config_field,
             session::get_agent_model_defaults,
             session::set_agent_model_default,
-            session::get_superpowers_marks,
-            session::set_superpowers_mark,
-            superpowers::superpowers_status,
-            superpowers::superpowers_install,
+            session::get_agent_skills_marks,
+            session::set_agent_skills_mark,
+            agent_skills::agent_skills_farewell,
+            agent_skills::dismiss_agent_skills_farewell,
+            agent_skills::agent_skills_status,
+            agent_skills::agent_skills_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,

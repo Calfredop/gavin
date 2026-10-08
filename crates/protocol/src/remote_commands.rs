@@ -79,6 +79,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // through `set_workspace_settings`.
     ("set_headroom_workspaces", RemoteAllowance::Refused), // meaningless away from the desk
     ("get_headroom_status", RemoteAllowance::Allowed),
+    // Adopted memories (v60). The status is a read; the ensure is what
+    // Adopt calls after writing `### Learned`, which a Device can press.
+    ("get_memory_index", RemoteAllowance::Allowed),
+    ("ensure_memory_index", RemoteAllowance::Allowed),
     ("headroom_savings", RemoteAllowance::Allowed),
     ("headroom_reach", RemoteAllowance::Allowed),
     ("detect_headroom", RemoteAllowance::Allowed),
@@ -171,10 +175,12 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_root_config_field", RemoteAllowance::Allowed),
     ("get_agent_model_defaults", RemoteAllowance::Allowed),
     ("set_agent_model_default", RemoteAllowance::Allowed),
-    ("get_superpowers_marks", RemoteAllowance::Allowed),
-    ("set_superpowers_mark", RemoteAllowance::Allowed),
-    ("superpowers_status", RemoteAllowance::Allowed),
-    ("superpowers_install", RemoteAllowance::Allowed),
+    ("get_agent_skills_marks", RemoteAllowance::Allowed),
+    ("set_agent_skills_mark", RemoteAllowance::Allowed),
+    ("agent_skills_farewell", RemoteAllowance::Allowed),
+    ("dismiss_agent_skills_farewell", RemoteAllowance::Allowed),
+    ("agent_skills_status", RemoteAllowance::Allowed),
+    ("agent_skills_install", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),

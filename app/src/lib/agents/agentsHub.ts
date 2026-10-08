@@ -98,7 +98,7 @@ export const AGENTS_SECTION_KEYWORDS: readonly string[] = [
   "PRD file",
   "MCP config",
   "MCP format",
-  "Superpowers",
+  "Matt Pocock's skills",
 ];
 
 export const AGENTS_SECTION: SettingsSection = {
@@ -210,7 +210,7 @@ export function agentsTabForQuery(
     "thinking",
     "model",
     "mcp",
-    "superpowers",
+    "pocock",
     "agent file",
   ];
   if (agentHits.some((w) => q.includes(w))) {

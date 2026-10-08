@@ -1543,6 +1543,8 @@ pub struct SessionManager {
     /// "Headroom is absent", which is a statement about a machine this
     /// manager never looked at.
     headroom: std::sync::OnceLock<crate::headroom::Headroom>,
+    /// Adopted-memory indexes (v60, `memory_index.rs`).
+    memories: std::sync::OnceLock<crate::memory_index::Memories>,
     /// Live connections whose identity names a paired device, keyed by a
     /// token this manager hands out, each with a socket handle that can
     /// close it.
@@ -1866,6 +1868,7 @@ impl SessionManager {
             daemon_token: std::sync::OnceLock::new(),
             trust: std::sync::OnceLock::new(),
             headroom: std::sync::OnceLock::new(),
+            memories: std::sync::OnceLock::new(),
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
@@ -1978,6 +1981,20 @@ impl SessionManager {
         self.headroom
             .get()
             .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon was started without its Headroom supervisor"))
+    }
+
+    /// Hands this daemon its memory indexes. Called once by `serve`,
+    /// like `set_headroom`.
+    pub fn set_memories(&self, memories: crate::memory_index::Memories) {
+        let _ = self.memories.set(memories);
+    }
+
+    /// This daemon's memory indexes, or the error every memory request
+    /// answers when it has none.
+    pub fn memories_or_err(&self) -> anyhow::Result<&crate::memory_index::Memories> {
+        self.memories
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon was started without its memory index"))
     }
 
     /// Stops this daemon's Headroom because the daemon itself is
@@ -5572,6 +5589,20 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }),
         Request::ReadPrd { root_path } => crate::gavin::read_prd(std::path::Path::new(&root_path))
             .map(|content| Response::PrdContent { content }),
+        // Adopted memories (v60). `EnsureMemoryIndex` with `download`
+        // returns before a model download finishes, like InstallHeadroom:
+        // the caller polls `GetMemoryIndex`.
+        Request::GetMemoryIndex { root_path } => manager
+            .memories_or_err()
+            .map(|m| Response::MemoryIndex { status: m.status(std::path::Path::new(&root_path)) }),
+        Request::EnsureMemoryIndex { root_path, download } => manager
+            .memories_or_err()
+            .and_then(|m| m.ensure(std::path::Path::new(&root_path), download))
+            .map(|status| Response::MemoryIndex { status }),
+        Request::SearchMemories { root_path, query, topics, limit } => manager
+            .memories_or_err()
+            .and_then(|m| m.search(std::path::Path::new(&root_path), &query, &topics, limit))
+            .map(|hits| Response::MemoryHits { hits }),
         // Workspace files for a desktop on another machine (v39). Confined
         // to the root and its extra contexts inside `gavin`, so this
         // dispatch decides nothing about paths.
@@ -6154,6 +6185,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // Scoped reads/writes by ROOT (gavin-mcp's own workspace).
         Request::ScanGavinRoot { root_path }
         | Request::ReadPrd { root_path }
+        // Reading its own workspace's adopted memories, which is the
+        // tool's whole point. `EnsureMemoryIndex` stays out: it can start
+        // a model download, which is the human's call at setup.
+        | Request::SearchMemories { root_path, .. }
         | Request::GetBoardByRoot { root_path }
         | Request::GetOrchestrationByRoot { root_path }
         | Request::GetToolsByRoot { root_path }
@@ -6324,6 +6359,12 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // sessions it hosts; an agent asking it of another session would
         // be reading that session's traffic, however coarsely.
         | Request::HeadroomReach { .. }
+        // Adopted memories (v60): the index's state and its build. The
+        // build can start a model download, which is the human's call at
+        // setup; the state read goes with it as the setup step's half.
+        // The search itself is allowed above, scoped to the root.
+        | Request::GetMemoryIndex { .. }
+        | Request::EnsureMemoryIndex { .. }
         // What finishes them (v42): the streaming network ops and their
         // cancel, the worktree watch, the env-carrying run and the three
         // tree mutations. Same reasoning, and it does not weaken for the
@@ -8190,6 +8231,64 @@ mod tests {
         );
     }
 
+    /// An agent searches its own workspace's adopted memories and no
+    /// other's; building the index, which can start a model download, is
+    /// the human's.
+    #[test]
+    fn an_agent_may_search_its_own_memories_and_build_none() {
+        let ws = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = ws.path().to_string_lossy().to_string();
+        let agent = ClientIdentity::agent("sess-1", &root, &root);
+        let search = |root_path: String| Request::SearchMemories {
+            root_path,
+            query: "q".into(),
+            topics: vec![],
+            limit: None,
+        };
+        assert!(authorize(&agent, &search(root.clone()), false).is_ok());
+        assert!(authorize(&agent, &search(other.path().to_string_lossy().to_string()), false).is_err());
+        for req in [
+            Request::GetMemoryIndex { root_path: root.clone() },
+            Request::EnsureMemoryIndex { root_path: root.clone(), download: false },
+        ] {
+            assert!(matches!(
+                authorize(&agent, &req, false),
+                Err(Response::Forbidden { role, .. }) if role == "agent"
+            ));
+        }
+    }
+
+    /// The three memory requests reach the daemon's indexes and answer
+    /// in their own shapes -- an empty workspace included, which is an
+    /// empty answer and never asks for a model.
+    #[test]
+    fn memory_requests_answer_from_the_daemon_s_indexes() {
+        let dirs = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dirs);
+        manager.set_memories(crate::memory_index::Memories::open(dirs.path()));
+        let root = dirs.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.to_string_lossy().to_string();
+        match handle_request(&manager, Request::GetMemoryIndex { root_path: root.clone() }) {
+            Response::MemoryIndex { status } => {
+                assert_eq!((status.model.as_str(), status.learned, status.in_sync), ("absent", 0, true))
+            }
+            other => panic!("wrong response: {other:?}"),
+        }
+        match handle_request(
+            &manager,
+            Request::SearchMemories { root_path: root.clone(), query: "q".into(), topics: vec![], limit: None },
+        ) {
+            Response::MemoryHits { hits } => assert!(hits.is_empty()),
+            other => panic!("wrong response: {other:?}"),
+        }
+        match handle_request(&manager, Request::EnsureMemoryIndex { root_path: root, download: false }) {
+            Response::Error { message } => assert!(message.contains("Memory step"), "{message}"),
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
     /// Removing a Device is something a Device does to itself. An agent
     /// holds no Device to remove, and must not be able to ask.
     #[test]
@@ -8206,6 +8305,9 @@ mod tests {
     /// not depend on that helper's visibility.
     fn one_of_every_request_variant_for_authorize() -> Vec<Request> {
         vec![
+            Request::GetMemoryIndex { root_path: "/x".into() },
+            Request::EnsureMemoryIndex { root_path: "/x".into(), download: true },
+            Request::SearchMemories { root_path: "/x".into(), query: "q".into(), topics: vec![], limit: None },
             Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::ListSessions,
             Request::SessionProcesses,

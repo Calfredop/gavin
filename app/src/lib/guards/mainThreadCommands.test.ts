@@ -103,11 +103,11 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["memory.rs", "watchman_status", "the `watchman watch-list` CLI, every 30 s poll"],
   ["memory.rs", "watchman_forget", "the `watchman watch-del` CLI, once per dropped root"],
   // Every Settings visit, every workspace or profile change there, a Home
-  // visit with no recorded answer, and the wizards' Superpowers step:
+  // visit with no recorded answer, and the wizards' agent skills step:
   // `claude plugin list`, a Node start, measured at 0.48-0.90 s. The
   // Install button held the window for the whole network install.
-  ["superpowers.rs", "superpowers_status", "`claude plugin list`, on every Settings visit"],
-  ["superpowers.rs", "superpowers_install", "`claude plugin install` over the network, up to 180 s"],
+  ["agent_skills.rs", "agent_skills_status", "`claude plugin list`, on every Settings visit"],
+  ["agent_skills.rs", "agent_skills_install", "`claude plugin install` or `npx skills add` over the network, up to 180 s"],
   // Once per launch, from bootstrap, in the same first seconds as the
   // first usage poll and watchman read: `opencode models`, a start that
   // alone takes 0.41-0.85 s, under a 15 s deadline.
@@ -162,6 +162,13 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // Locate… run `headroom --version`, a Python start.
   ["session.rs", "get_headroom_status", "a daemon round trip, polled while Settings is open"],
   ["session.rs", "headroom_savings", "a daemon round trip, polled while the hub is open"],
+
+  // The Memory step polls the status while the model downloads; the
+  // ensure can load the model and embed a whole `### Learned` section.
+
+  ["session.rs", "get_memory_index", "a daemon round trip, polled while the Memory step is open"],
+
+  ["session.rs", "ensure_memory_index", "a model load and embedding in the daemon"],
   ["session.rs", "detect_headroom", "`headroom --version` in the daemon, a Python start"],
   ["session.rs", "install_headroom", "a daemon round trip"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],

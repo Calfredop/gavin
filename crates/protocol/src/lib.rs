@@ -62,6 +62,14 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v60 is adopted-memory retrieval (`feat-vectorized-memory.md`): the
+/// daemon keeps a local vector index over each workspace's `### Learned`
+/// section and answers searches against it. Three new TYPES --
+/// `GetMemoryIndex`, `EnsureMemoryIndex`, `SearchMemories` -- so
+/// `min_version_for` is their whole wire gate; the app still owes
+/// `FEATURE_MIN_VERSION.memoryIndex` for the COPY, so the setup step says
+/// "restart gavin" rather than "the memory model is missing".
+///
 /// v59 keeps an exited session's screen until `KillSession`, so a
 /// kept-open shell tool tab can still `Snapshot` what the run printed
 /// after the PTY is gone (`fix-kept-open-tool-tab-shows-nothing.md`).
@@ -752,7 +760,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 59;
+pub const PROTOCOL_VERSION: u32 = 60;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -1050,6 +1058,35 @@ pub enum Request {
     },
     ReadPrd {
         root_path: String,
+    },
+    /// Where a workspace's adopted-memory index stands (v60): whether the
+    /// embedding model is on disk, how many memories `### Learned` holds
+    /// and whether the index matches them. Reads files and the index;
+    /// embeds nothing and downloads nothing.
+    GetMemoryIndex {
+        root_path: String,
+    },
+    /// Bring a workspace's memory index up to `### Learned` (v60). With
+    /// `download`, a missing model is fetched first -- on the daemon's own
+    /// thread, so the answer comes back at once saying `downloading` and
+    /// the caller polls `GetMemoryIndex`. Without it, a missing model is
+    /// an error: Adopt asks this way, and must not start a download the
+    /// human declined at setup.
+    EnsureMemoryIndex {
+        root_path: String,
+        download: bool,
+    },
+    /// Adopted memories nearest `query` in meaning (v60), gavin-mcp's
+    /// `gavin_search_memories`. Heals the index from `### Learned` first
+    /// when the two disagree. `topics` narrows to memories carrying any
+    /// of them; `limit` defaults to 5.
+    SearchMemories {
+        root_path: String,
+        query: String,
+        #[serde(default)]
+        topics: Vec<String>,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     /// A file under a watched root, for a desktop driving this daemon from
     /// another machine (ssh workspaces, v39,
@@ -2135,6 +2172,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         // blow the line.
         Request::RunGitCapped { .. } => 58,
 
+        // Adopted-memory retrieval (v60). Three new TYPES, so this match
+        // is their whole wire gate; FEATURE_MIN_VERSION.memoryIndex is
+        // the app's copy for the setup step, not a second gate.
+        Request::GetMemoryIndex { .. }
+        | Request::EnsureMemoryIndex { .. }
+        | Request::SearchMemories { .. } => 60,
+
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
         // and the other half is the one that bites: the same version
@@ -3012,6 +3056,12 @@ pub enum Response {
     /// whatever the request did, so a caller never has to ask twice to
     /// see what its own press changed.
     Headroom { status: HeadroomStatus },
+    /// The answer to `GetMemoryIndex` and `EnsureMemoryIndex` (v60): the
+    /// state AFTER the request, like `Headroom`.
+    MemoryIndex { status: MemoryIndexStatus },
+    /// The answer to `SearchMemories` (v60), best first. Empty for a
+    /// workspace with nothing adopted -- not an error.
+    MemoryHits { hits: Vec<MemoryHit> },
     /// The answer to `HeadroomSavings` (v49), oldest first.
     HeadroomSavings { runs: Vec<RunSavings> },
     /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
@@ -3031,8 +3081,41 @@ pub enum Response {
 /// `state` is one of `verified`, `too-old`, `absent` and `unavailable`,
 /// kept as a string like `SessionSummary::status` so a word written by a
 /// newer daemon reaches the app as written. There is no "asserted": the
-/// human's word is enough for Superpowers because the agent runs it, and
+/// human's word is enough for agent skills because the agent runs them, and
 /// gavin has to execute Headroom -- a word does not name a file.
+/// One workspace's adopted-memory index (v60).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryIndexStatus {
+    /// The embedding model: `absent`, `downloading`, `ready` or `failed`.
+    /// A string, like `HeadroomStatus::state`, so a word a newer daemon
+    /// writes reaches the app as written.
+    pub model: String,
+    /// What went wrong, for `failed`.
+    pub model_error: Option<String>,
+    /// Memories `### Learned` holds, across the workspace's instructions
+    /// files, once each.
+    pub learned: u32,
+    /// Of those, how many the index holds a vector for.
+    pub indexed: u32,
+    /// The index holds exactly `### Learned`: nothing missing, nothing
+    /// left over from a memory since edited or removed.
+    pub in_sync: bool,
+}
+
+/// One adopted memory a search returned (v60).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryHit {
+    pub fact: String,
+    pub topics: Vec<String>,
+    pub why: Option<String>,
+    /// The instructions file it was adopted into, root-relative.
+    pub source: String,
+    /// Cosine similarity to the query, -1..1.
+    pub score: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadroomStatus {
@@ -6961,7 +7044,9 @@ mod tests {
         // under MAX_LINE_BYTES. One new TYPE.
         // v59: exited sessions keep their screen until KillSession --
         // behaviour only, no new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 59);
+        // v60: GetMemoryIndex + EnsureMemoryIndex + SearchMemories --
+        // adopted-memory retrieval. Three new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 60);
     }
 
     #[test]

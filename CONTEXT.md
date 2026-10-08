@@ -11,7 +11,7 @@ What Gavin writes into an agent's own configuration so the agent can use Gavin: 
 _Avoid_: setup (that is the whole wizard), install
 
 **Agent tooling**:
-A third-party tool Gavin sets up to run alongside the agents, such as Superpowers or Headroom. Gavin can check whether it is there, and when it cannot, it takes the human's word.
+A third-party tool Gavin sets up to run alongside the agents, such as Matt Pocock's skills or Headroom. Gavin can check whether it is there, and when it cannot, it takes the human's word.
 _Avoid_: integration (that is Gavin wiring itself into an agent), plugin, add-on, extension
 
 **Headroom**:

@@ -99,6 +99,10 @@ pub(crate) fn deadline_for(req: &Request) -> Duration {
         Request::EndOrphan { .. } => Duration::from_secs(60),
         // The host's Trash, which on macOS can be a Finder round trip.
         Request::TrashWorkspacePath { .. } => Duration::from_secs(120),
+        // Embeds every memory `### Learned` holds that the index does
+        // not, loading the model first: a backfill of a large section on
+        // a cold daemon.
+        Request::EnsureMemoryIndex { .. } => Duration::from_secs(120),
         _ => DEFAULT_DEADLINE,
     }
 }
@@ -112,6 +116,11 @@ pub(crate) fn deadline_for(req: &Request) -> Duration {
 /// scan of a root -- and nothing ordered depends on them: a write never
 /// has to land after one, and a caller that needs a read to see its
 /// write awaits the write first.
+///
+/// The memory index's two are here too: the status reads every
+/// instructions file of a root, and the ensure can embed a whole
+/// `### Learned` section on the connection thread. Adopt awaits its file
+/// write before it asks, so nothing ordered rides behind it.
 ///
 /// The three Headroom requests are here for the same reason: a `/stats`
 /// read (megabytes on a long-lived proxy, 3 s timeout) or a
@@ -128,6 +137,8 @@ pub(crate) fn is_slow_read(req: &Request) -> bool {
             | Request::GetHeadroomStatus
             | Request::DetectHeadroom { .. }
             | Request::HeadroomReach { .. }
+            | Request::GetMemoryIndex { .. }
+            | Request::EnsureMemoryIndex { .. }
     )
 }
 

@@ -10,7 +10,8 @@ import { isTerminalReport } from "$lib/terminal/terminalReport";
 import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
-import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
+import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
+import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
 import type {
@@ -462,6 +463,21 @@ export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<
   return invoke("set_headroom_workspaces", { workspaces });
 }
 
+/// Where a root's adopted-memory index stands: the model on this
+/// machine, and whether the index matches `### Learned`. Local only, like
+/// Headroom. See `memoryIndexState.ts`, its one caller.
+export function getMemoryIndex(rootPath: string): Promise<MemoryIndexStatus> {
+  return invoke("get_memory_index", { rootPath });
+}
+
+/// Brings a root's memory index up to `### Learned`. `download` lets a
+/// missing model be fetched (on the daemon's thread; the answer says
+/// `downloading` and `getMemoryIndex` follows it). See
+/// `memoryIndexState.ts`, its one caller.
+export function ensureMemoryIndex(rootPath: string, download: boolean): Promise<MemoryIndexStatus> {
+  return invoke("ensure_memory_index", { rootPath, download });
+}
+
 /// Headroom on this machine, as the local daemon sees it. Reads what
 /// detection stored; the first ask of a daemon's lifetime runs detection.
 /// See `headroomState.ts`, its one caller.
@@ -614,7 +630,7 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
   return invoke("set_agent_defaults", { agentDefaults });
 }
 
-/// Superpowers plugin status for one workspace root. Straight to Tauri,
+/// Agent skills (Matt Pocock's) status for one workspace root. Straight to Tauri,
 /// like the model defaults above: the detector reads the local checkout
 /// and the marker lives in the app's own config.json, so none of this
 /// needs a daemon request and all of it keeps working across a version
@@ -629,42 +645,55 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
 /// once the human approved this config, the profile's until then.
 /// `profileId` overlays the workspace's active agent so setup-only
 /// arming can probe Codex while `[agent] profile` still names Claude.
-export function superpowersStatus(
+export function agentSkillsStatus(
   rootPath: string,
   agentCommand: string,
   profileId?: string
-): Promise<SuperpowersStatus> {
-  return invoke("superpowers_status", { rootPath, agentCommand, profileId });
+): Promise<AgentSkillsStatus> {
+  return invoke("agent_skills_status", { rootPath, agentCommand, profileId });
 }
 
 /// Runs the install and returns the status that follows it. A failed
 /// install is not a rejection -- the returned status carries the run's
 /// stdout and stderr for the drawer, and its state is what the detector
 /// says afterwards. Rejects only when no install was attempted: a profile
-/// gavin must not install into, or a binary it could not spawn.
-/// `agentCommand`: as `superpowersStatus` above.
-/// `profileId`: as `superpowersStatus` — fallback arming names the chain
+/// gavin cannot install into (a custom agent), or a binary it could not
+/// spawn.
+/// `agentCommand`: as `agentSkillsStatus` above.
+/// `profileId`: as `agentSkillsStatus` — fallback arming names the chain
 /// agent so Install does not write the workspace's active CLI.
-export function superpowersInstall(
+export function agentSkillsInstall(
   rootPath: string,
   agentCommand: string,
   profileId?: string
-): Promise<SuperpowersStatus> {
-  return invoke("superpowers_install", { rootPath, agentCommand, profileId });
+): Promise<AgentSkillsStatus> {
+  return invoke("agent_skills_install", { rootPath, agentCommand, profileId });
 }
 
 /// What the human has told gavin, keyed by workspace root path.
-export function getSuperpowersMarks(): Promise<Record<string, SuperpowersMark>> {
-  return invoke("get_superpowers_marks");
+export function getAgentSkillsMarks(): Promise<Record<string, AgentSkillsMark>> {
+  return invoke("get_agent_skills_marks");
 }
 
 /// `null` forgets what was said, so someone who asserted an install and
 /// then removed it has a way back to the honest answer.
-export function setSuperpowersMark(
+export function setAgentSkillsMark(
   rootPath: string,
-  mark: SuperpowersMark | null
+  mark: AgentSkillsMark | null
 ): Promise<void> {
-  return invoke("set_superpowers_mark", { rootPath, mark });
+  return invoke("set_agent_skills_mark", { rootPath, mark });
+}
+
+/// Whether Settings → Agent owes this root the one-time note about the
+/// plugin gavin used to recommend: true only where this machine recorded
+/// an answer about it, and nobody has dismissed the note since.
+export function agentSkillsFarewell(rootPath: string): Promise<boolean> {
+  return invoke("agent_skills_farewell", { rootPath });
+}
+
+/// Dismisses that note for one root, for good.
+export function dismissAgentSkillsFarewell(rootPath: string): Promise<void> {
+  return invoke("dismiss_agent_skills_farewell", { rootPath });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in

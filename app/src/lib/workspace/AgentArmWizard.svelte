@@ -1,10 +1,10 @@
 <script lang="ts">
   /// Setup-only arming for a fallback (or inherited default) agent.
-  /// Integration and Superpowers run for the named profile; the workspace
+  /// Integration and agent skills run for the named profile; the workspace
   /// active agent and complexity table are not touched.
   import Modal from "$lib/core/Modal.svelte";
   import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
-  import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import AgentSkillsStep from "$lib/wizardSteps/AgentSkillsStep.svelte";
   import {
     agentDefaultsStore,
     agentModelDefaultsStore,
@@ -17,9 +17,9 @@
   import * as backend from "$lib/core/backend";
   import {
     UNKNOWN_STATUS,
-    type SuperpowersMark,
-    type SuperpowersStatus,
-  } from "$lib/agents/superpowers";
+    type AgentSkillsMark,
+    type AgentSkillsStatus,
+  } from "$lib/agents/agentSkills";
   import { AGENT_ARM_STEPS, nextAgentArmStep, type AgentArmStep } from "$lib/workspace/agentArm";
   import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import { tooltip } from "$lib/core/tooltip";
@@ -49,8 +49,8 @@
   );
 
   let current = $state<AgentArmStep>("integration");
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const declineHint = $derived(
     `Stop offering to set up ${toLabel} in this workspace. Launches here skip it in the fallback chain until you choose Ask again in the workspace's Fallback agent settings.`
@@ -61,24 +61,24 @@
   // after a newer one -- the one after Install, or after the command
   // changed. Only the newest may write.
   let spToken = 0;
-  async function refreshSuperpowers(): Promise<void> {
+  async function refreshAgentSkills(): Promise<void> {
     const mine = ++spToken;
     const root = ws?.rootPath;
     if (!root) return;
     const [sp, marks] = await Promise.all([
-      backend.superpowersStatus(root, pendingAgent.command, profileId).catch(() => UNKNOWN_STATUS),
-      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+      backend.agentSkillsStatus(root, pendingAgent.command, profileId).catch(() => UNKNOWN_STATUS),
+      backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
     ]);
     if (mine !== spToken) return;
-    superpowers = sp;
-    superpowersMark = marks[root];
+    agentSkills = sp;
+    agentSkillsMark = marks[root];
   }
 
   $effect(() => {
-    if (current !== "superpowers") return;
+    if (current !== "agentSkills") return;
     void pendingAgent.command;
     void ws?.rootPath;
-    void refreshSuperpowers();
+    void refreshAgentSkills();
   });
 
   function advance(): void {
@@ -107,7 +107,7 @@
     <header>
       <h2>Set up {toLabel} as a fallback</h2>
       <p class="hint">
-        This does not change the workspace's agent. gavin writes MCP, skills and Superpowers for
+        This does not change the workspace's agent. gavin writes MCP, skills and Matt Pocock's skills for
         {toLabel} so it can run when the current agent's usage is spent.
       </p>
     </header>
@@ -134,13 +134,13 @@
           <button type="button" class="ghost" use:tooltip={declineHint} onclick={onDecline}>Don't ask again</button>
         </div>
       {:else}
-        <SuperpowersStep
+        <AgentSkillsStep
           {workspaceId}
           {profileId}
-          status={superpowers}
-          mark={superpowersMark}
+          status={agentSkills}
+          mark={agentSkillsMark}
           agentCommand={pendingAgent.command}
-          onChanged={() => void refreshSuperpowers()}
+          onChanged={() => void refreshAgentSkills()}
           onDone={advance}
         />
         <div class="actions below">

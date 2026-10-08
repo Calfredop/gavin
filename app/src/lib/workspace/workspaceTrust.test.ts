@@ -209,7 +209,7 @@ describe("a config gavin wrote itself", () => {
 });
 
 // The gate is only as good as its coverage: one `resolveAgentConfig` call
-// handed the tree's raw `[agent]` block, or one `superpowersStatus` given
+// handed the tree's raw `[agent]` block, or one `agentSkillsStatus` given
 // a command read off disk, and a cloned repo is launching again. That is
 // wiring the pure suite cannot reach, so it is pinned in the source the
 // way worktreeSetup.test.ts pins its own — and each of these fails
@@ -271,13 +271,13 @@ describe("nothing resolves an agent around the gate", () => {
     }
   });
 
-  it("passes a resolved command to the superpowers probe, never a root alone", () => {
-    // AS-02: `superpowers_status` fires on a TAB RENDER and spawns the
+  it("passes a resolved command to the agentSkills probe, never a root alone", () => {
+    // AS-02: `agent_skills_status` fires on a TAB RENDER and spawns the
     // first token of what it is given. A one-argument call would put a
     // cloned repo's binary back on that path.
     for (const [name, text] of Object.entries(ALL)) {
       if (name.endsWith(".test.ts") || baseName(name) === "backend.ts") continue;
-      for (const call of text.match(/superpowers(?:Status|Install)\([^)]*\)/g) ?? []) {
+      for (const call of text.match(/agentSkills(?:Status|Install)\([^)]*\)/g) ?? []) {
         expect(call, `${name} calls ${call} with no command`).toMatch(/,/);
       }
     }

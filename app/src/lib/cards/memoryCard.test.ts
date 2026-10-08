@@ -12,9 +12,16 @@ import {
   LEARNED_HEADING,
   adoptBlockedReason,
   adoptMemory,
+  MAX_FACT_CHARS,
+  MAX_WHY_CHARS,
   appendLearned,
   isMemoryCard,
+  learnedMemories,
   memoryBullet,
+  parseLearned,
+  parseMemoryCard,
+  type Memory,
+  type MemoryRefusal,
 } from "$lib/cards/memoryCard";
 
 const MARKER_START = "<!-- gavin:start -->";
@@ -40,28 +47,115 @@ describe("isMemoryCard", () => {
   });
 });
 
-describe("memoryBullet", () => {
+describe("parseMemoryCard", () => {
   it("takes the body, never the frontmatter", () => {
     const card = "---\nkind: note\ntitle: The daemon is shared\nlabels: memory\n---\nNever pkill gavin-daemon.\n";
-    expect(memoryBullet(card)).toBe("- Never pkill gavin-daemon.");
+    expect(parseMemoryCard(card)).toEqual({ fact: "Never pkill gavin-daemon.", topics: [], why: null });
   });
 
-  it("keeps the optional Why line inside the same bullet", () => {
-    const card = "---\nkind: note\n---\nNever pkill gavin-daemon.\n\nWhy: every other session loses its PTYs.\n";
-    expect(memoryBullet(card)).toBe(
-      "- Never pkill gavin-daemon.\n  Why: every other session loses its PTYs."
+  it("reads topics off the frontmatter, not the labels", () => {
+    const card = "---\nkind: note\nlabels: memory, bug\ntopics: Daemon, pty\n---\nNever pkill gavin-daemon.\n";
+    expect(parseMemoryCard(card)).toEqual({
+      fact: "Never pkill gavin-daemon.",
+      topics: ["daemon", "pty"],
+      why: null,
+    });
+  });
+
+  it("does not take a topics line from the body for frontmatter", () => {
+    const card = "---\nkind: note\n---\ntopics: a\n";
+    expect(parseMemoryCard(card)).toEqual({ fact: "topics: a", topics: [], why: null });
+  });
+
+  it("names each refusal in a sentence the modal can show", () => {
+    const refusal = (body: string) => {
+      const r = parseMemoryCard(`---\nkind: note\n---\n${body}`);
+      if (!("refuse" in r)) throw new Error("adopted");
+      return r.error;
+    };
+    expect(refusal("")).toBe("This card has no body, so there is no memory to adopt.");
+    expect(refusal("Why: because.\n")).toContain("no fact above it");
+    expect(refusal("One.\nTwo.\n")).toContain("one fact line plus an optional Why: line");
+    expect(refusal(`${"x".repeat(MAX_FACT_CHARS + 1)}\n`)).toContain(`${MAX_FACT_CHARS + 1} characters`);
+    expect(refusal(`One.\nWhy: ${"y".repeat(MAX_WHY_CHARS + 1)}\n`)).toContain("more than one fact");
+  });
+
+  it("keeps a fact of exactly the limit", () => {
+    const fact = "x".repeat(MAX_FACT_CHARS);
+    expect(parseMemoryCard(`---\nkind: note\n---\n${fact}\n`)).toEqual({ fact, topics: [], why: null });
+  });
+});
+
+describe("memoryBullet", () => {
+  it("puts topics on the bullet line and the Why under it", () => {
+    expect(memoryBullet({ fact: "A fact.", topics: ["a", "b"], why: "because." })).toBe(
+      "- A fact. (topics: a, b)\n  Why: because."
     );
+    expect(memoryBullet({ fact: "A fact.", topics: [], why: null })).toBe("- A fact.");
+  });
+});
+
+// The table the daemon's `memory_index::parse_learned` reads too: the
+// app writes `### Learned` and the daemon rebuilds its index from it.
+describe("against the table it shares with the daemon", () => {
+  interface ParseCase {
+    name: string;
+    section: string;
+    memories: Memory[];
+  }
+  interface BulletCase {
+    name: string;
+    body: string;
+    topics: string | null;
+    bullet?: string;
+    refuse?: MemoryRefusal;
+  }
+  const raw = Object.values(
+    import.meta.glob("../../../../test-fixtures/learned-memories/cases.json", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>
+  )[0];
+  const table = JSON.parse(raw) as { parse: ParseCase[]; bullet: BulletCase[] };
+
+  it("has the table", () => {
+    expect(table.parse.length).toBeGreaterThan(5);
+    expect(table.bullet.length).toBeGreaterThan(5);
   });
 
-  it("does not double the list marker on a body already written as a bullet", () => {
-    expect(memoryBullet("---\nkind: note\n---\n- Never pkill gavin-daemon.\n")).toBe(
-      "- Never pkill gavin-daemon."
+  for (const c of table.parse) {
+    it(`reads back: ${c.name}`, () => {
+      expect(parseLearned(c.section)).toEqual(c.memories);
+    });
+  }
+
+  for (const c of table.bullet) {
+    it(`adopts: ${c.name}`, () => {
+      const front = c.topics === null ? "" : `topics: ${c.topics}\n`;
+      const parsed = parseMemoryCard(`---\nkind: note\nlabels: memory\n${front}---\n${c.body}`);
+      if (c.refuse) {
+        expect("refuse" in parsed && parsed.refuse).toBe(c.refuse);
+        return;
+      }
+      if ("refuse" in parsed) throw new Error(parsed.error);
+      const bullet = memoryBullet(parsed);
+      expect(bullet).toBe(c.bullet);
+      // What Adopt writes is what the daemon will read back.
+      expect(parseLearned(bullet)).toEqual([parsed]);
+    });
+  }
+});
+
+describe("learnedMemories", () => {
+  it("reads only the block's Learned section", () => {
+    const content = file(
+      "Guidance.\n- not a memory\n\n### Learned\n\n- One. (topics: a)\n",
+      "### Learned\n\n- the human's, outside the block\n\n"
     );
-  });
-
-  it("is null for a card that is a title and no fact", () => {
-    expect(memoryBullet("---\nkind: note\ntitle: T\n---\n")).toBeNull();
-    expect(memoryBullet("---\nkind: note\ntitle: T\n---\n\n   \n")).toBeNull();
+    expect(learnedMemories(content)).toEqual([{ fact: "One.", topics: ["a"], why: null }]);
+    expect(learnedMemories("# no block\n")).toEqual([]);
+    expect(learnedMemories(file("Guidance.\n"))).toEqual([]);
   });
 });
 
@@ -102,6 +196,14 @@ describe("appendLearned", () => {
     // Un-Done the card, press Adopt again: the file must not grow a
     // second copy of the same line.
     const again = appendLearned(first.content, "- One.");
+    if ("error" in again) throw new Error(again.error);
+    expect(again.content).toBe(first.content);
+  });
+
+  it("is a no-op for the same fact adopted again with other topics", () => {
+    const first = appendLearned(file("Guidance.\n"), "- One. (topics: a)");
+    if ("error" in first) throw new Error(first.error);
+    const again = appendLearned(first.content, "- One. (topics: a, b)\n  Why: because.");
     if ("error" in again) throw new Error(again.error);
     expect(again.content).toBe(first.content);
   });
@@ -201,6 +303,29 @@ describe("adoptMemory", () => {
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
 
+  it("writes the topics into the bullet the daemon reads", async () => {
+    reads({
+      [CARD.id]: { content: "---\nkind: note\nlabels: memory\ntopics: daemon\n---\nNever pkill gavin-daemon.\nWhy: PTYs.\n" },
+      [INSTRUCTIONS]: { content: file("Guidance.\n") },
+    });
+    await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    expect(backend.writeFileForEditor).toHaveBeenCalledWith(
+      INSTRUCTIONS,
+      file("Guidance.\n\n### Learned\n\n- Never pkill gavin-daemon. (topics: daemon)\n  Why: PTYs.\n")
+    );
+  });
+
+  it("files nothing for a card that is more than one fact", async () => {
+    reads({
+      [CARD.id]: { content: "---\nkind: note\n---\nOne.\nTwo.\n" },
+      [INSTRUCTIONS]: { content: file("G\n") },
+    });
+    const result = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    expect("error" in result && result.error).toContain("one fact line");
+    expect(backend.writeFileForEditor).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
   it("names the file when the write itself fails", async () => {
     reads({ [CARD.id]: { content: BODY }, [INSTRUCTIONS]: { content: file("G\n") } });
     vi.mocked(backend.writeFileForEditor).mockRejectedValue(new Error("read-only"));
@@ -233,6 +358,14 @@ describe("the card detail modal", () => {
   it("files the card into the board's done column, not a literal", () => {
     expect(source).toContain("doneColumnOf(columns)");
     expect(source).toContain("done.name");
+  });
+
+  // The index follows the file: after a successful write, never before,
+  // and a miss lands on the modal as a note rather than undoing the adopt.
+  it("updates the search index after the adopt, not instead of it", () => {
+    const handler = source.slice(source.indexOf("async function handleAdopt"));
+    const body = handler.slice(0, handler.indexOf("\n  }"));
+    expect(body.indexOf("syncAfterAdopt(adoptRoot)")).toBeGreaterThan(body.indexOf("followMove("));
   });
 
   it("opens nothing on success", () => {

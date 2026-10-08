@@ -89,7 +89,7 @@ independently of the GUI. Design history is in
   data directories and AppImage/deb bundling on Linux, CI on `windows-latest` and
   `ubuntu-latest`.
 - **Workspace plumbing** — settings, init wizard, agent profiles that write real MCP
-  config, superpowers install, keyboard shortcuts, daemon restart from Settings,
+  config, agent skills install (Matt Pocock's), keyboard shortcuts, daemon restart from Settings,
   worktree setup scripts, a workspace-removal wizard with OS-trash and restore,
   an updater, machine memory-pressure gating, and a daemon version compatibility
   window with a banner and per-feature gating.

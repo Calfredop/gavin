@@ -12,9 +12,11 @@
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { setupProgress, SETUP_STEPS } from "$lib/workspace/setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { UNKNOWN_STATUS, type AgentSkillsMark, type AgentSkillsStatus } from "$lib/agents/agentSkills";
   import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
+  import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
+  import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
@@ -83,16 +85,24 @@
   let prdBody = $state<string | null | undefined>(undefined);
   let agentFileBody = $state<string | null | undefined>(undefined);
   // Same unknown-until-read rule for the third input: the banner counts
-  // the Superpowers step too, and a check still running must not be
+  // the agent skills step too, and a check still running must not be
   // rendered as a step left undone.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
   // And the Headroom step's reading, which is the machine's rather than
   // this root's: shared, asked once and kept, so a visit to this tab costs
   // no round trip once it has landed. Unknown until then, for the reason
   // the two above are.
   ensureHeadroomReading();
   const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
+  // The Memory step's reading is this root's, shared with the wizard and
+  // asked once per root; unknown until then, for the reason the ones
+  // above are. "Not now" is a synchronous read off this machine.
+  const memory = $derived(workspaceMemoryReading(root ? $memoryReadings[root] : undefined, ws));
+  const memorySkipped = $derived(root ? loadMemorySkipped(root) : false);
+  $effect(() => {
+    if (root && !ws?.ssh) ensureMemoryReading(root);
+  });
 
   const setup = $derived(
     setupProgress({
@@ -101,8 +111,8 @@
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
-      superpowers,
-      superpowersMark,
+      agentSkills,
+      agentSkillsMark,
       // Read off the workspace record rather than from git: the step's
       // evidence is a recorded answer, so the banner needs no extra round
       // trip on every visit to this tab -- and `git` is outside
@@ -111,6 +121,8 @@
       // Same shape, same reason -- see the git field above.
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
       headroomReading: headroom,
+      memoryReading: memory,
+      memorySkipped,
       headroomAsked: Boolean(ws?.headroomAsked),
     })
   );
@@ -157,8 +169,8 @@
     // flight, whose answer belongs to the root we just left.
     prdBody = undefined;
     agentFileBody = undefined;
-    superpowers = undefined;
-    superpowersMark = undefined;
+    agentSkills = undefined;
+    agentSkillsMark = undefined;
     const mine = ++readToken;
     if (!r || !treeSettled) return;
     void backend
@@ -199,19 +211,19 @@
     // back while any input is pending, so a read that threw must still
     // land an answer or the banner never appears again.
     void backend
-      .getSuperpowersMarks()
-      .catch(() => ({}) as Record<string, SuperpowersMark>)
+      .getAgentSkillsMarks()
+      .catch(() => ({}) as Record<string, AgentSkillsMark>)
       .then((marks) => {
         if (mine !== readToken) return;
         const recorded = marks[r];
-        superpowersMark = recorded;
+        agentSkillsMark = recorded;
         if (recorded) return;
         return backend
-          .superpowersStatus(r, agentCfg.command)
+          .agentSkillsStatus(r, agentCfg.command)
           .catch(() => UNKNOWN_STATUS)
           .then((res) => {
             if (mine !== readToken) return;
-            superpowers = res;
+            agentSkills = res;
           });
       });
     // One-shot git status for the tile — no watcher here; the Git tab

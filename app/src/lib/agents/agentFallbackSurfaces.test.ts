@@ -15,10 +15,10 @@ describe("fallback agent surfaces", () => {
     const wizard = source("AgentArmWizard.svelte");
     expect(wizard).toContain("does not change the workspace's agent");
     expect(wizard).toContain("IntegrationStep");
-    expect(wizard).toContain("SuperpowersStep");
+    expect(wizard).toContain("AgentSkillsStep");
     expect(wizard).not.toContain("switchWorkspaceAgentProfile");
     expect(wizard).not.toContain("setWorkspaceComplexityTable");
-    expect(wizard).toMatch(/SuperpowersStep[\s\S]*\{profileId\}/);
+    expect(wizard).toMatch(/AgentSkillsStep[\s\S]*\{profileId\}/);
     expect(source("agentArm.ts")).toContain("integration");
     expect(source("agentArm.ts")).not.toContain("complexity");
   });
