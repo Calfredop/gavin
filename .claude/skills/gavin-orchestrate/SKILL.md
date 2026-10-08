@@ -278,6 +278,9 @@ never invent a `toolId` outside either one:
   - `builtin:send-email` — sends through macOS Mail.app.
   - `builtin:browser-test` — drives the Claude-in-Chrome tools through a
     checklist against a URL.
+  - `builtin:browser-test-playwright` — the same checklist through
+    gavin's Playwright browser tools (`browser_*`), in a headless browser
+    of the step's own; needs Playwright installed for the workspace.
   - `builtin:unity-tests` — runs a Unity project's tests in batch mode.
   - `builtin:start-rail` — arms another rail by name (see "Chaining one
     rail to the next" below).
