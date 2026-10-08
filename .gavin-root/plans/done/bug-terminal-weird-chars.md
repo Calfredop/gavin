@@ -2,7 +2,7 @@
 order: 36864
 kind: task
 title: [bug] terminal weird chars
-status: In Progress
+status: Done
 ---
 Each terminal is now rendering with a weird line of black chars hovering in top left of the terminal view
 
