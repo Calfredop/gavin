@@ -453,6 +453,32 @@ impl PtySession {
         Ok(())
     }
 
+    /// Whether the program in this pty has taken its terminal out of
+    /// canonical mode -- reading keystrokes itself, the way every TUI
+    /// does -- read back off the master. `None` where there is no
+    /// termios to ask (Windows' pseudoconsole) or the process has
+    /// already ended.
+    pub fn takes_raw_input(&self) -> Option<bool> {
+        #[cfg(unix)]
+        {
+            let guard = self.master.lock().unwrap();
+            let Master::Open(master) = &*guard else { return None };
+            let fd = master.as_raw_fd()?;
+            // SAFETY: `termios` is plain data, fully written by a
+            // successful tcgetattr, and the fd stays open for as long as
+            // the guard holds the master.
+            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
+                return None;
+            }
+            Some(termios.c_lflag & libc::ICANON == 0)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
     /// A handle to the OS process in this PTY, for the registry to store
     /// so a LATER daemon can ask whether it is still there (see `proc`).
     ///
@@ -1444,5 +1470,28 @@ mod tests {
             assert!(Instant::now() < deadline, "process did not exit in time");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// The program in the pty decides whether its keystrokes are cooked,
+    /// and the master can read that decision back: a shell asleep before
+    /// `stty raw` is still canonical, and the same pty reads raw once the
+    /// program has switched it.
+    #[cfg(unix)]
+    #[test]
+    fn takes_raw_input_follows_the_programs_own_terminal_mode() {
+        let mut session = PtySession::spawn(
+            "/tmp",
+            Some("sleep 0.5; stty raw -echo; printf RAW_NOW; sleep 5"),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+        assert_eq!(session.takes_raw_input(), Some(false), "a fresh pty is cooked");
+
+        let output = read_until_contains(&mut *reader, "RAW_NOW", Duration::from_secs(5));
+        assert!(output.contains("RAW_NOW"), "got: {output}");
+        assert_eq!(session.takes_raw_input(), Some(true));
+        session.kill().unwrap();
     }
 }

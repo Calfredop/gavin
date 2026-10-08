@@ -378,10 +378,10 @@ fn bracketed_paste(text: &str) -> String {
 /// of sleeping the full grace out.
 const AGENT_READY_GRACE: Duration = Duration::from_secs(15);
 
-/// Whether a delivery for this session is being held for its agent's
-/// first Hello. True only inside the grace window after spawn; once the
-/// agent has announced itself (`resolve_hello`) or the window has closed,
-/// the ordinary idle rules answer instead.
+/// Whether a delivery for this session is being held for its agent. True
+/// only inside the grace window after spawn and until the agent-ready
+/// door opens (`open_agent_door`); after either, the ordinary idle rules
+/// answer instead.
 fn delivery_held_for_agent(manager: &SessionManager, id: &str) -> bool {
     manager
         .awaiting_agent_since
@@ -391,54 +391,131 @@ fn delivery_held_for_agent(manager: &SessionManager, id: &str) -> bool {
         .is_some_and(|since| since.elapsed() < manager.agent_ready_grace())
 }
 
-/// The K3 delivery door. An agent Hello is the only startup signal a
-/// profile with no prompt flag has: its CLI was launched bare, and the
-/// gavin-mcp inside its session presenting the session token is what
-/// proves the agent's side of the PTY is alive and reading. A prompt
-/// queued for such a session (held by `deliver_next_queued` until now)
-/// goes immediately, status unchecked -- "the agent is alive" IS the
-/// readiness verdict an idle transition otherwise stands in for.
+/// How long a freshly launched agent's terminal must have been raw, and
+/// its output quiet, before its launch prompt is typed in.
 ///
-/// Only the FIRST Hello per session opens the door: the awaiting entry
-/// is removed here and never re-added, so a gavin-mcp reconnecting
-/// mid-turn cannot use it to paste a queued follow-up into an agent that
-/// is busy -- that wait is exactly what the idle path is for.
-fn note_agent_ready(manager: &SessionManager, id: &str) {
+/// Measured against kimi 2.1.1 (2026-10-08), whose MCP servers -- and so
+/// gavin-mcp's Hello -- start while its TUI is still coming up. A prompt
+/// written before kimi takes the pty raw has its Enter rewritten by the
+/// line discipline (ICRNL: `\r` -> `\n`), which kimi's editor inserts as a
+/// newline: the whole prompt sat in its input, unsent. One written in the
+/// first ~150 ms after it goes raw is dropped outright while it negotiates
+/// keyboard protocols with the terminal. Waiting for raw-for-500ms and
+/// quiet-for-500ms delivered intact on every run, answered terminal or
+/// not.
+const AGENT_SETTLE: Duration = Duration::from_millis(500);
+
+/// Whether an agent's terminal is ready to be typed into: the program has
+/// held it raw for the settle window (`raw_for`, `None` while cooked),
+/// has drawn something (`output_seen`), and has been quiet for the window
+/// since (`quiet_for`). Raw-for and quiet-for are separate on purpose --
+/// a TUI that goes raw before its first frame is "quiet" at that instant
+/// only because nothing has been drawn yet.
+fn agent_input_ready(raw_for: Option<Duration>, output_seen: bool, quiet_for: Duration) -> bool {
+    raw_for.is_some_and(|raw| raw >= AGENT_SETTLE) && output_seen && quiet_for >= AGENT_SETTLE
+}
+
+/// Opens the K3 delivery door: the session stops waiting for its agent,
+/// and a prompt queued for it goes now, status unchecked -- an agent that
+/// is alive and reading IS the readiness verdict an idle transition
+/// otherwise stands in for. False when the door was already open (or the
+/// session never waited), which is what keeps it once per session: the
+/// awaiting entry is removed here and never re-added.
+fn open_agent_door(manager: &SessionManager, id: &str) -> bool {
     let was_awaiting = manager.awaiting_agent_since.lock().unwrap().remove(id).is_some();
+    manager.agent_announced.lock().unwrap().remove(id);
     if was_awaiting {
         deliver_next_queued(manager, id);
     }
+    was_awaiting
 }
 
-/// The bounded half of the agent-ready wait: when the grace window
-/// closes without a Hello, the hold lapses and an idle session takes its
-/// queue under the ordinary rules. Spawned beside the pump (one per
-/// session, like the heuristic idle timer) because that is the one place
-/// every hosted session passes with an `Arc` in hand.
+/// An agent Hello: the gavin-mcp inside this session presented its token,
+/// so the agent is alive. Alive is not ready -- gavin-mcp starts beside the
+/// TUI, not after it (see `AGENT_SETTLE`) -- so this only marks the session
+/// announced, and `spawn_agent_ready_fallback` opens the door once the
+/// terminal has settled.
 ///
-/// The fallback has to be a timer, not only a check at idle transitions:
-/// the case it exists for -- an agent that never starts its MCP servers,
-/// like kimi at a trust screen -- goes quiet and STAYS quiet, so the
-/// transition the check hangs off already happened while the hold was
-/// still on.
-fn spawn_agent_ready_fallback(manager: &Arc<SessionManager>, id: String) {
-    let remaining = {
+/// Only while the session is still waiting: a gavin-mcp reconnecting
+/// mid-turn finds the door already open and changes nothing, so it cannot
+/// paste a queued follow-up into an agent that is busy -- that wait is
+/// exactly what the idle path is for.
+fn note_agent_ready(manager: &SessionManager, id: &str) {
+    if manager.awaiting_agent_since.lock().unwrap().contains_key(id) {
+        manager.agent_announced.lock().unwrap().insert(id.to_string());
+    }
+}
+
+/// The poll behind the agent-ready door, and its bound. Spawned beside
+/// the pump (one per session, like the heuristic idle timer) because that
+/// is the one place every hosted session passes with an `Arc` in hand --
+/// and the pump's `last_activity` is what "quiet" is read from.
+///
+/// Announced and settled (`agent_input_ready`) opens the door. When the
+/// grace window closes first, an announced agent gets its prompt anyway,
+/// as the Hello alone used to; one that never said hello -- kimi at a
+/// trust screen starts no MCP server -- has the hold lapse, and an idle
+/// session takes its queue under the ordinary rules. That half has to be
+/// a timer, not only a check at idle transitions: such a session goes
+/// quiet and STAYS quiet, so the transition the check hangs off already
+/// happened while the hold was still on.
+fn spawn_agent_ready_fallback(manager: &Arc<SessionManager>, id: String, heuristic: Arc<HeuristicState>) {
+    let deadline = {
         let awaiting = manager.awaiting_agent_since.lock().unwrap();
         let Some(since) = awaiting.get(&id) else { return };
-        manager.agent_ready_grace().saturating_sub(since.elapsed())
+        *since + manager.agent_ready_grace()
     };
     let manager = Arc::clone(manager);
     std::thread::spawn(move || {
-        std::thread::sleep(remaining);
-        // A Hello that arrived during the sleep already removed the entry
-        // and delivered through its own door; taking it here is what
-        // makes the two paths mutually exclusive rather than merely
-        // unlikely to race.
-        if manager.awaiting_agent_since.lock().unwrap().remove(&id).is_some() {
+        let started = heuristic.inner.lock().unwrap().last_activity;
+        let mut raw_since: Option<Instant> = None;
+        while Instant::now() < deadline {
+            if !manager.awaiting_agent_since.lock().unwrap().contains_key(&id) {
+                return;
+            }
+            let raw = manager.sessions.lock().unwrap().get(&id).map(|pty| pty.takes_raw_input());
+            match raw {
+                // Gone: the pump's teardown ends the wait.
+                None => return,
+                // Cooked: the line discipline still owns the Enter.
+                Some(Some(false)) => raw_since = None,
+                // Raw, or no termios to ask (Windows): only the settle
+                // window and the screen can say more.
+                Some(Some(true)) | Some(None) => {
+                    raw_since.get_or_insert_with(Instant::now);
+                }
+            }
+            let last_activity = heuristic.inner.lock().unwrap().last_activity;
+            let announced = manager.agent_announced.lock().unwrap().contains(&id);
+            if announced
+                && agent_input_ready(
+                    raw_since.map(|since| since.elapsed()),
+                    last_activity != started,
+                    last_activity.elapsed(),
+                )
+            {
+                open_agent_door(&manager, &id);
+                return;
+            }
+            std::thread::sleep(AGENT_READY_POLL);
+        }
+        // Taken here, not merely read: whichever of this and the door
+        // removes the entry is the one that delivers, so the two are
+        // mutually exclusive rather than merely unlikely to race.
+        if manager.awaiting_agent_since.lock().unwrap().remove(&id).is_none() {
+            return;
+        }
+        let announced = manager.agent_announced.lock().unwrap().remove(&id);
+        if announced {
+            deliver_next_queued(&manager, &id);
+        } else {
             deliver_next_queued_if_idle(&manager, &id);
         }
     });
 }
+
+/// How often the agent-ready poll looks at a waiting session's terminal.
+const AGENT_READY_POLL: Duration = Duration::from_millis(50);
 
 /// Why this session cannot be handed a follow-up right now, or `None` if
 /// it can.
@@ -1481,12 +1558,13 @@ pub struct SessionManager {
     /// A session already in here is skipped, never queued behind:
     /// whatever the other delivery is doing ends the idleness anyway.
     delivering_queued: Mutex<std::collections::HashSet<String>>,
-    /// Sessions this daemon spawned whose agent has not yet announced
-    /// itself, keyed to when they were spawned. What
+    /// Sessions this daemon spawned whose agent-ready door has not opened
+    /// yet, keyed to when they were spawned. What
     /// `delivery_held_for_agent` reads: a session in here and inside
-    /// `AGENT_READY_GRACE` has its queue held for the agent's first
-    /// Hello (`note_agent_ready`) instead of delivered on idle. Removed
-    /// by that Hello, by the grace fallback timer, and by
+    /// `AGENT_READY_GRACE` has its queue held for its agent -- announced
+    /// by a Hello (`note_agent_ready`) and then settled at its terminal
+    /// -- instead of delivered on idle. Removed when the door opens
+    /// (`open_agent_door`), by the grace fallback, and by
     /// `forget_session` -- never re-added, so the hold and the door it
     /// feeds each happen at most once per session.
     ///
@@ -1495,6 +1573,10 @@ pub struct SessionManager {
     /// only this process performed, and a daemon restart ends the window
     /// with everything else it forgets.
     awaiting_agent_since: Mutex<HashMap<String, Instant>>,
+    /// The waiting sessions whose agent has said hello: alive, and
+    /// waiting now only for its terminal to settle (`AGENT_SETTLE`).
+    /// Leaves with the session's `awaiting_agent_since` entry.
+    agent_announced: Mutex<std::collections::HashSet<String>>,
     /// See `AGENT_READY_GRACE`. Millis in an atomic so a test can
     /// shorten the wait the way `session_ceiling` is lowered, instead of
     /// sleeping the real fifteen seconds out.
@@ -1973,6 +2055,7 @@ impl SessionManager {
             gavin_watch_generation: Mutex::new(HashMap::new()),
             delivering_queued: Mutex::new(std::collections::HashSet::new()),
             awaiting_agent_since: Mutex::new(HashMap::new()),
+            agent_announced: Mutex::new(std::collections::HashSet::new()),
             agent_ready_grace_ms: AtomicU64::new(AGENT_READY_GRACE.as_millis() as u64),
             last_pty_size: Mutex::new(HashMap::new()),
             provoked_repaint_at: Mutex::new(HashMap::new()),
@@ -3260,8 +3343,9 @@ impl SessionManager {
                         // The earliest moment the daemon can know this
                         // session's agent is alive: its gavin-mcp
                         // presented the token only the PTY's environment
-                        // holds. Releases a prompt the queue is holding
-                        // for exactly this signal (K3).
+                        // holds. Announces it to the hold its launch
+                        // prompt is waiting in (K3), which opens once the
+                        // agent's terminal has settled.
                         note_agent_ready(self, &rec.id);
                         (
                         ClientIdentity {
@@ -4719,6 +4803,7 @@ impl SessionManager {
         self.acknowledged_failures.lock().unwrap().remove(id);
         self.slept_mid_turn.lock().unwrap().remove(id);
         self.awaiting_agent_since.lock().unwrap().remove(id);
+        self.agent_announced.lock().unwrap().remove(id);
         Ok(())
     }
 
@@ -5306,7 +5391,7 @@ impl SessionManager {
                 },
             });
             spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
-            spawn_agent_ready_fallback(&manager, id.clone());
+            spawn_agent_ready_fallback(&manager, id.clone(), Arc::clone(&heuristic));
 
             loop {
                 match reader.read(&mut buf) {
@@ -18855,15 +18940,47 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_queued_for_a_fresh_session_is_delivered_the_moment_its_agent_says_hello() {
+    fn an_agents_terminal_is_ready_once_raw_drawn_and_quiet() {
+        let settled = AGENT_SETTLE;
+        let short = AGENT_SETTLE / 2;
+        // Raw, drawn and quiet, each for the whole settle window.
+        assert!(agent_input_ready(Some(settled), true, settled));
+        // Still cooked: the line discipline would rewrite the Enter.
+        assert!(!agent_input_ready(None, true, settled));
+        // Raw only a moment ago: kimi drops input while it negotiates
+        // with the terminal, and an earlier quiet spell proves nothing --
+        // nothing had been drawn yet to be quiet after.
+        assert!(!agent_input_ready(Some(short), true, settled));
+        // Raw and quiet but never drawn: the TUI is not up.
+        assert!(!agent_input_ready(Some(settled), false, settled));
+        // Still drawing its first frame.
+        assert!(!agent_input_ready(Some(settled), true, short));
+    }
+
+    #[test]
+    fn a_prompt_queued_for_a_fresh_session_waits_for_its_agent_to_take_the_terminal_raw() {
         // K3, end to end: a profile with no prompt flag launches its
-        // agent bare and the card prompt rides the follow-up queue; the
-        // agent's gavin-mcp presenting the session token is what
-        // releases it. The wait for an idle transition never happens.
+        // agent bare and the card prompt rides the follow-up queue. The
+        // agent's gavin-mcp presenting the session token says the agent
+        // is ALIVE -- but gavin-mcp starts beside the TUI, not after it,
+        // and a prompt written while the pty is still cooked has its
+        // Enter turned into a newline by the line discipline (ICRNL):
+        // kimi showed the whole prompt in its input and never sent it.
+        // So the Hello opens the door only once the program has taken
+        // its terminal raw and finished drawing, and the Enter arrives as
+        // the `\r` it was written as.
+        //
+        // The agent here is cooked for its first second -- the Hello
+        // lands inside it -- then goes raw and echoes what it reads.
         let dir = tempfile::tempdir().unwrap();
         let (manager, sock, _sock_dir) = serving_manager(&dir);
         let id = manager
-            .create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell)
+            .create_session(
+                "/tmp/ws",
+                "/tmp",
+                Some("sleep 1; stty raw -echo; printf AGENT_UP; exec cat"),
+                Launch::Shell,
+            )
             .unwrap();
         // `create_session` mints the token and keeps only its hash; the
         // test re-keys it to a value it can present, the way
@@ -18914,8 +19031,17 @@ mod tests {
             other => panic!("expected HelloAck, got {other:?}"),
         }
 
-        // Delivered on the Hello, seconds ahead of any idle transition.
-        await_output(&client, "INJECTED_PROMPT_OK");
+        // Still cooked a moment after the Hello: nothing is written yet.
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(
+            queued_texts(&manager, &id),
+            ["INJECTED_PROMPT_OK"],
+            "a Hello must not paste into a terminal its agent has not taken raw yet"
+        );
+
+        // Delivered once the agent is raw and has drawn, ahead of any idle
+        // transition -- with its Enter intact as a carriage return.
+        await_output(&client, "INJECTED_PROMPT_OK\x1b[201~\r");
 
         let mut check = Stream::connect(&sock).unwrap();
         match request(&mut check, &Request::ListQueuedInputs) {
@@ -18948,7 +19074,10 @@ mod tests {
         manager.queue_input(&id, "first").unwrap();
         let (identity, _) = manager.resolve_hello(&auth, "n");
         assert_eq!(identity.role, Role::Agent);
-        assert!(queued_texts(&manager, &id).is_empty(), "the first Hello delivers");
+        // The poller's half, done by hand: this session is never attached,
+        // so nothing watches its terminal settle.
+        assert!(open_agent_door(&manager, &id), "the first Hello leaves the door to open");
+        assert!(queued_texts(&manager, &id).is_empty(), "the opened door delivers");
 
         // Mid-turn now. A second Hello changes nothing: the entry the
         // door keys on was spent by the first.
@@ -18987,6 +19116,7 @@ mod tests {
         let (identity, _) =
             manager.resolve_hello(&protocol::HelloAuth::SessionToken { token: "tok".into() }, "n");
         assert_eq!(identity.role, Role::Agent);
+        assert!(open_agent_door(&manager, "s1"));
         assert_eq!(
             queued_texts(&manager, "s1"),
             ["run this"],
