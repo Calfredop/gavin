@@ -86,7 +86,25 @@ pub fn mcp_command(npx: &Path, endpoint: &Endpoint, extra: &[OsString]) -> Comma
     }
     let mut command = Command::new(npx);
     command.args(&args).args(extra);
+    // `npx` is a `#!/usr/bin/env node` script, and found in a well-known
+    // directory rather than on PATH, the node beside it is not on PATH
+    // either.
+    if let Some(path) = path_with_dir_of(std::env::var_os("PATH").as_deref(), npx) {
+        command.env("PATH", path);
+    }
     command
+}
+
+/// `path` with the directory `program` is in appended, or `None` when it
+/// is already on it.
+fn path_with_dir_of(path: Option<&std::ffi::OsStr>, program: &Path) -> Option<OsString> {
+    let dir = program.parent().filter(|d| !d.as_os_str().is_empty())?;
+    let mut dirs: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
+    if dirs.iter().any(|d| d == dir) {
+        return None;
+    }
+    dirs.push(dir.to_path_buf());
+    std::env::join_paths(dirs).ok()
 }
 
 /// The whole subcommand. `Err` is why the MCP could not be started,
@@ -225,6 +243,14 @@ mod tests {
                 "--caps=vision"
             ]
         );
+    }
+
+    #[test]
+    fn npx_found_off_path_brings_its_directory_onto_it() {
+        let path = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let added = path_with_dir_of(Some(&path), Path::new("/opt/homebrew/bin/npx")).unwrap();
+        assert_eq!(std::env::split_paths(&added).last().unwrap(), PathBuf::from("/opt/homebrew/bin"));
+        assert_eq!(path_with_dir_of(Some(&path), Path::new("/usr/bin/npx")), None);
     }
 
     #[test]
