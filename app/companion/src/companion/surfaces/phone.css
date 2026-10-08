@@ -23,3 +23,29 @@ body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
+
+/* No field under 16px either. iOS zooms the whole page into a text field
+   set smaller the moment it takes focus, and leaves it zoomed after the
+   keyboard goes. The desktop's components size their fields for a mouse,
+   and `rem` is no floor here: `$lib/ui/theme.css` gives the root the bare
+   generic `monospace`, which a browser sizes at its fixed-pitch default,
+   13px -- so a field written `1rem` is 13px. Hence one rule for every
+   field the bundle draws, xterm's hidden input included, and `!important`
+   because a component's own scoped size would otherwise win.
+   `seam/fieldFontSize.test.ts` holds it. */
+input:not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="color"],
+    [type="file"],
+    [type="button"],
+    [type="submit"],
+    [type="reset"],
+    [type="image"],
+    [type="hidden"]
+  ),
+textarea,
+select {
+  font-size: max(16px, 1em) !important;
+}

@@ -505,9 +505,9 @@
     border-radius: 8px;
     background: var(--surface-base);
     color: var(--text);
+    /* Sized by the page's floor for fields, 16px (phone.css): iOS zooms
+       the page into a smaller one. `1rem` was 13px here. */
     font: inherit;
-    /* 16px, never less: iOS zooms the page into a smaller field. */
-    font-size: 1rem;
     line-height: 1.25;
     resize: none;
   }

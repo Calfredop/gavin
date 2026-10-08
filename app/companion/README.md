@@ -422,6 +422,18 @@ shows its actions without hover and at a fingertip's size, `GitCommitBox` and
 fingertip-sized, and `ComplexityTable` stacks each level's controls at a
 phone's width.
 
+Fields are the exception: no component sizes its own for the phone. iOS
+zooms the whole page into a text field under 16px the moment it takes focus,
+and leaves it zoomed after the keyboard goes, so `surfaces/phone.css` puts
+one floor under every `input` typed into, `textarea` and `select` the bundle
+draws: `max(16px, 1em) !important`. A component's own size cannot undercut
+it, and `rem` would not have: the desktop's root is the bare `monospace`,
+13px. `seam/fieldFontSize.test.ts` holds the floor and that nothing shipped
+out-ranks it. CodeMirror's editor is no field to that rule (it is
+contenteditable, its gutter sized with it), so `CodeMirrorView` keeps its own.
+The viewport meta leaves pinch zoom alone: `maximum-scale=1` would stop the
+zoom too, at the cost of a reader's own zoom.
+
 The desktop's Git actions name every op with `crypto.randomUUID`, which a
 page has only in a secure context; `remote/randomUUID.ts` gives the page one
 where the shell's origin (iOS's `gavin-bundle://`) may not count as secure.

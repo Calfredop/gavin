@@ -13,6 +13,11 @@ export default defineConfig(async () => ({
     // `check-install.mjs` beside this file as well: it runs before every
     // build, and is a node script, outside what svelte-check reads.
     include: ["src/**/*.{test,spec}.ts", "*.{test,spec}.mjs"],
+    // Vitest empties every stylesheet it is not told to process, `?raw`
+    // too. A stylesheet read as text is a guard's subject (the floor
+    // under every field, seam/fieldFontSize.test.ts), so those come
+    // through; one imported for its styles still compiles to nothing.
+    css: { include: [/\.css\?raw$/] },
   },
   clearScreen: false,
   server: {
