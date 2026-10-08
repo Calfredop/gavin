@@ -79,9 +79,8 @@
   }
   /* The workspace's own colour marks the open section. */
   .hub-navigator :global(.hub-navigator-button.active) {
-    color: var(--ws-accent, var(--text));
-    background: color-mix(in srgb, var(--ws-accent, var(--text)) 16%, transparent);
-    border-color: color-mix(in srgb, var(--ws-accent, var(--text)) 45%, transparent);
+    background: color-mix(in srgb, var(--ws-accent, var(--text)) 12%, transparent);
+    border-color: color-mix(in srgb, var(--ws-accent, var(--text)) 30%, transparent);
   }
   .close-badge {
     position: absolute;
@@ -93,7 +92,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--surface-base);
-    background: var(--ws-accent, var(--text-muted));
+    color: var(--text);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-strong);
   }
 </style>
