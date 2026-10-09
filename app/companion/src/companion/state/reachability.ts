@@ -12,7 +12,9 @@
 // - **Back up**: every surface that is open re-runs its own load once
 //   (`onReconnect`), clearing the reachability errors it showed first.
 //   An error that is the Workstation's own -- git refusing, a file that
-//   is not there -- is not about reachability and stays.
+//   is not there -- is not about reachability and stays. The line turns
+//   into `Reconnected` for a moment (`reconnected`), so the human sees
+//   the outage end rather than the warning just vanishing.
 //
 // Which errors are about reachability is told by the wire, not guessed
 // from their words: a call the shell could not carry is answered with the
@@ -28,6 +30,28 @@ const UP: ConnectionState = { state: "up" };
 const store = writable<ConnectionState>(UP);
 
 export const reachability: Readable<ConnectionState> = { subscribe: store.subscribe };
+
+/// How long the line says `Reconnected` once the connection is back. The
+/// page fades it out over the end of this.
+export const RECONNECTED_MS = 2_500;
+
+const reconnectedStore = writable(false);
+
+/// Whether the connection came back up within the last `RECONNECTED_MS`.
+export const reconnected: Readable<boolean> = { subscribe: reconnectedStore.subscribe };
+
+let reconnectedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function setReconnected(on: boolean): void {
+  if (reconnectedTimer !== null) clearTimeout(reconnectedTimer);
+  reconnectedTimer = on
+    ? setTimeout(() => {
+        reconnectedTimer = null;
+        reconnectedStore.set(false);
+      }, RECONNECTED_MS)
+    : null;
+  reconnectedStore.set(on);
+}
 
 /// The messages calls were refused with because the Workstation could not
 /// be reached.
@@ -70,7 +94,10 @@ export function onReconnect(recover: () => void): () => void {
 export function connectionChanged(next: ConnectionState): void {
   const was = get(store);
   store.set(next);
+  // Going down again says why at once; `Reconnected` would be stale.
+  if (next.state === "down") setReconnected(false);
   if (was.state !== "down" || next.state !== "up") return;
+  setReconnected(true);
   for (const recover of [...recoveries]) {
     try {
       recover();
@@ -85,6 +112,7 @@ export function connectionChanged(next: ConnectionState): void {
 /// are theirs to end, as they close.
 export function resetReachability(): void {
   store.set(UP);
+  setReconnected(false);
   unreachable.clear();
 }
 
@@ -102,6 +130,20 @@ export function reachabilityLine(state: ConnectionState, workstation: string): s
     default:
       return `Can’t reach ${name}. Trying again…`;
   }
+}
+
+/// What the page's one line shows: why the Workstation cannot be reached
+/// while it cannot, then `Reconnected` for a moment once it can again.
+export type ReachabilityBanner = { tone: "down" | "back"; text: string };
+
+export function reachabilityBanner(
+  state: ConnectionState,
+  reconnectedNow: boolean,
+  workstation: string
+): ReachabilityBanner | null {
+  const down = reachabilityLine(state, workstation);
+  if (down !== null) return { tone: "down", text: down };
+  return reconnectedNow ? { tone: "back", text: `Reconnected to ${workstation || "the Workstation"}.` } : null;
 }
 
 function capital(text: string): string {

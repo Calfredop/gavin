@@ -2,6 +2,7 @@
 // live hub's state for it.
 import { describe, expect, it } from "vitest";
 import type { ConnectionState } from "$companion/channel/messages";
+import { reachabilityLine } from "$companion/state/reachability";
 import type { LiveState } from "$shell/hub/live";
 import { connectionStateOf, sameConnectionState, UP } from "$shell/visit/connectionState";
 
@@ -39,6 +40,41 @@ describe("connectionStateOf", () => {
   it("goes by the connection alone where the hub's state is not known", () => {
     expect(connectionStateOf(null, true, UNREACHABLE)).toEqual(UP);
     expect(connectionStateOf(null, false, UP)).toEqual(UNREACHABLE);
+  });
+});
+
+// The four ways an open Workstation goes away (the owner turning Remote
+// access off at the desk passes through the first two), each followed to
+// the line the open UI shows.
+describe("what the open Workstation's UI says when it goes away", () => {
+  const said = (live: LiveState, connected: boolean): string | null =>
+    reachabilityLine(connectionStateOf(live, connected, UP), "MBP16Pro");
+
+  it.each<[string, LiveState, boolean, string]>([
+    ["asleep", { state: "asleep" }, false, "MBP16Pro is asleep, or remote access is off there. Trying again…"],
+    ["unreachable", { state: "unreachable", problem: "x" }, false, "Can’t reach MBP16Pro. Trying again…"],
+    [
+      "desktop-app-not-running",
+      { state: "desktop-app-not-running" },
+      true,
+      "Gavin’s desktop app is not answering on MBP16Pro. Trying again…",
+    ],
+    ["a plain drop", { state: "ready", items: [] }, false, "Can’t reach MBP16Pro. Trying again…"],
+  ])("%s", (_, live, connected, line) => {
+    expect(said(live, connected)).toBe(line);
+  });
+
+  it("keeps asleep, unreachable and desktop-app-not-running apart", () => {
+    const lines = new Set([
+      said({ state: "asleep" }, false),
+      said({ state: "unreachable", problem: "x" }, false),
+      said({ state: "desktop-app-not-running", reason: "not-answering" }, true),
+    ]);
+    expect(lines.size).toBe(3);
+  });
+
+  it("says nothing once it is back", () => {
+    expect(said({ state: "ready", items: [] }, true)).toBeNull();
   });
 });
 

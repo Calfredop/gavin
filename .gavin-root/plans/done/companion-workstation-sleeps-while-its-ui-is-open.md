@@ -2,7 +2,7 @@
 order: 25600
 kind: task
 title: Companion: when a Workstation goes asleep while its UI is open, nothing tells you
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -21,10 +21,14 @@ Options:
 
 **To do.** Get the owner's choice (a Decision is filed on this card), then build it with a pure rule in `app/companion-shell/src/shell/` tested like `unlock/leaveOnLock.ts`, covering `asleep`, `unreachable`, `desktop-app-not-running` and a plain drop, each with its own wording from `hub/live.ts`.
 
+**Built (2026-10-09), option A.** Most of A had landed the evening of the report, after the owner's build (639f2b90): the shell's `connection` message (`visit/connectionState.ts`, from the live hub's state) and the bundle's one offline line (`state/reachability.ts` `reachabilityLine`, drawn by `routes/+page.svelte`), naming the Workstation and why, while the screen keeps its place and re-reads on its own once back. What this card added: the line turns into `Reconnected to <name>.` for `RECONNECTED_MS` (2.5 s) and fades out (`reconnected` store, `reachabilityBanner`, `state/reachability.test.ts`), giving way at once if it drops again; and `connectionState.test.ts` follows asleep, unreachable, desktop-app-not-running and a plain drop through to the line each one shows.
+
 **Acceptance.**
-- [ ] A visible, honest state inside the Workstation's UI (or a return to the hub) within a few seconds of the Workstation going away
-- [ ] Reconnecting clears it without the owner doing anything
-- [ ] The wording for asleep vs unreachable vs desktop-app-not-running is kept apart
+- [x] A visible, honest state inside the Workstation's UI (or a return to the hub) within a few seconds of the Workstation going away
+- [x] Reconnecting clears it without the owner doing anything
+- [x] The wording for asleep vs unreachable vs desktop-app-not-running is kept apart
 - [ ] Human test: turn Remote access off at the desk with the Workstation open; the phone says so; turn it on; it recovers
-- [ ] Decision: When a paired Workstation goes asleep or unreachable while its UI is open on the phone, what should the Companion do?
+- [x] Decision: When a paired Workstation goes asleep or unreachable while its UI is open on the phone, what should the Companion do?
   Options: A) A) Stay, with a persistent banner inside the UI saying it is asleep and retrying B) B) Stay for about 60 s, then return to the hub with the reason C) C) Return to the hub at once, like the lock
+  Answer (2026-10-09): A) Stay, with a persistent banner inside the UI saying it is asleep and retrying
+- [ ] Human test: turn Remote access off at the desk with the Workstation open; the phone says so; turn it on; it recovers

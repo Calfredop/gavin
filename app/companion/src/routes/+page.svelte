@@ -8,7 +8,7 @@
   import { layoutState } from "$lib/core/layoutState";
   import { workspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
   import { DEMO_PACE_MS, deviceStorage, openChannel } from "$companion/state/entry";
-  import { reachability, reachabilityLine } from "$companion/state/reachability";
+  import { RECONNECTED_MS, reachability, reachabilityBanner, reconnected } from "$companion/state/reachability";
   import { SURFACE_LABELS } from "$companion/state/viewState";
   import {
     connection,
@@ -83,7 +83,7 @@
     $view.page?.kind === "card" ? $view.page.path.slice($view.page.path.lastIndexOf("/") + 1) : ($view.page?.kind ?? null)
   );
   const ready = $derived($connection.status === "ready" ? $connection : null);
-  const offline = $derived(ready ? reachabilityLine($reachability, ready.workstation.name) : null);
+  const offline = $derived(ready ? reachabilityBanner($reachability, $reconnected, ready.workstation.name) : null);
   const waiting = $derived(
     open
       ? workspaceAgentsSummary(open, {
@@ -99,9 +99,17 @@
 <main class="companion" class:offline={offline !== null}>
   <!-- The one place an outage is said: above whatever screen is up, which
        keeps its place and its drafts, and reads again by itself once the
-       Workstation is back (state/reachability.ts). -->
+       Workstation is back, saying `Reconnected` as it clears
+       (state/reachability.ts). -->
   {#if offline}
-    <p class="offline-line" role="status">{offline}</p>
+    <p
+      class="offline-line"
+      class:back={offline.tone === "back"}
+      role="status"
+      style:--reconnected-ms="{RECONNECTED_MS}ms"
+    >
+      {offline.text}
+    </p>
   {/if}
   {#if $connection.status === "connecting"}
     <PhoneHeader title="Gavin" />
@@ -229,6 +237,23 @@
     color: var(--warning-text);
     font-size: 0.75rem;
     line-height: 1.4;
+  }
+  /* Back up: held long enough to read, then faded out before it is
+     removed, so the outage is seen to end. */
+  .offline-line.back {
+    border-bottom-color: var(--border-success);
+    background: var(--surface-success);
+    color: var(--success-text);
+    animation: reconnected var(--reconnected-ms) ease-in forwards;
+  }
+  @keyframes reconnected {
+    0%,
+    70% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
   }
   /* The line has taken the notch's inset; the header under it need not
      (PhoneHeader.svelte reads this). */
