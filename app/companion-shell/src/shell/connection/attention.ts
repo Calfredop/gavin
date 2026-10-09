@@ -21,6 +21,10 @@ export interface AttentionItem {
   id: string;
   /// The workspace's id on its Workstation.
   workspace: string;
+  /// The workspace's name, from a Workstation new enough to say it: the
+  /// inbox's heading for it. An id is no heading, so without one the
+  /// workspace goes unheaded.
+  workspaceName?: string;
   kind: AttentionKind;
   text: string;
   /// Where tapping it lands, once the Workstation's UI can be opened
@@ -95,11 +99,12 @@ export function readAttention(reply: unknown): AttentionAnswer {
 
 function readItem(value: unknown): AttentionItem | null {
   if (!isObject(value)) return null;
-  const { id, workspace, kind, text, target } = value;
+  const { id, workspace, workspaceName, kind, text, target } = value;
   if (typeof id !== "string" || !id || typeof text !== "string" || typeof workspace !== "string") return null;
   return {
     id,
     workspace,
+    ...(typeof workspaceName === "string" && workspaceName.trim() ? { workspaceName: workspaceName.trim() } : {}),
     kind: typeof kind === "string" && KINDS.has(kind as AttentionKind) ? (kind as AttentionKind) : "other",
     text,
     target: readTarget(target),

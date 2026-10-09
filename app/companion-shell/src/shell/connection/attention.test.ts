@@ -63,6 +63,21 @@ describe("the attention answer", () => {
     });
   });
 
+  it("reads a workspace's name where the Workstation says it, and goes without one where it does not", () => {
+    const answer = readAttention({
+      type: "Attention",
+      state: "ready",
+      version: 1,
+      items: [
+        { id: "a", workspace: "w1", workspaceName: " Gavin ", kind: "waiting", text: "t", target: null },
+        { id: "b", workspace: "w2", workspaceName: "", kind: "waiting", text: "t", target: null },
+        { id: "c", workspace: "w3", workspaceName: 7, kind: "waiting", text: "t", target: null },
+      ],
+    });
+    expect(answer.state === "ready" && answer.items.map((item) => item.workspaceName)).toEqual(["Gavin", undefined, undefined]);
+    expect(answer.state === "ready" && "workspaceName" in answer.items[1]).toBe(false);
+  });
+
   it("leaves out an item it cannot show, and keeps the rest", () => {
     const answer = readAttention({
       type: "Attention",
