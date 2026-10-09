@@ -64,6 +64,10 @@ tempfile = "3"
 gavin-relay = { path = "../gavin-relay", features = ["server", "client"] }
 companion-core = { path = "../companion-core", features = ["test-device"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# The notification fixture's ciphertexts are base64, as the phone's push
+# carries them (`test-fixtures/companion-notify`). The version protocol
+# already builds, so this adds nothing to what is compiled.
+base64 = "0.22"
 
 # `proc.rs` reaches for libc on the two unix arms and for Win32 on the
 # third; neither exists on the other's target, and both are absent from

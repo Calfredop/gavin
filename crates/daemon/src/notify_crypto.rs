@@ -95,24 +95,49 @@ pub fn seal(
     issued_at_secs: u64,
     body: &NotifyPlaintext,
 ) -> Result<Vec<u8>, NotifyCryptoError> {
-    let key = key_from(key_bytes)?;
+    let mut nonce = [0u8; NONCE_LEN];
+    getrandom::getrandom(&mut nonce).expect("CSPRNG");
+    seal_with_nonce(key_bytes, &nonce, counter, issued_at_secs, body)
+}
+
+/// `seal` with the nonce named: how the shared fixture's ciphertexts are
+/// reproduced byte for byte. A nonce must never repeat under one key, so
+/// outside the tests the only caller is `seal`, with a random one.
+fn seal_with_nonce(
+    key_bytes: &[u8],
+    nonce: &[u8; NONCE_LEN],
+    counter: u64,
+    issued_at_secs: u64,
+    body: &NotifyPlaintext,
+) -> Result<Vec<u8>, NotifyCryptoError> {
+    let json = serde_json::to_vec(body).map_err(|e| NotifyCryptoError::Malformed(e.to_string()))?;
+    seal_plaintext(key_bytes, nonce, &plaintext(PAYLOAD_VERSION, counter, issued_at_secs, &json))
+}
+
+/// The AEAD plaintext: version, counter and issue time, the JSON, padded.
+fn plaintext(version: u8, counter: u64, issued_at_secs: u64, json: &[u8]) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(PAYLOAD_VERSION);
+    plain.push(version);
     plain.extend_from_slice(&counter.to_be_bytes());
     plain.extend_from_slice(&issued_at_secs.to_be_bytes());
-    let json = serde_json::to_vec(body).map_err(|e| NotifyCryptoError::Malformed(e.to_string()))?;
-    plain.extend_from_slice(&json);
+    plain.extend_from_slice(json);
     pad_in_place(&mut plain);
+    plain
+}
 
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::getrandom(&mut nonce_bytes).expect("CSPRNG");
-    let nonce = Nonce::from_slice(&nonce_bytes);
+fn seal_plaintext(
+    key_bytes: &[u8],
+    nonce_bytes: &[u8; NONCE_LEN],
+    plain: &[u8],
+) -> Result<Vec<u8>, NotifyCryptoError> {
+    let key = key_from(key_bytes)?;
+    let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new(&key);
     let sealed = cipher
-        .encrypt(nonce, Payload { msg: &plain, aad: b"" })
+        .encrypt(nonce, Payload { msg: plain, aad: b"" })
         .map_err(|_| NotifyCryptoError::Decrypt)?;
     let mut out = Vec::with_capacity(NONCE_LEN + sealed.len());
-    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(nonce_bytes);
     out.extend_from_slice(&sealed);
     Ok(out)
 }
@@ -154,21 +179,23 @@ fn key_from(key_bytes: &[u8]) -> Result<Key, NotifyCryptoError> {
 
 fn pad_in_place(buf: &mut Vec<u8>) {
     // PKCS#7-style over the bucket: at least one pad byte, so the length
-    // after stripping is unambiguous. Pad byte value = number of pad bytes.
+    // after stripping is unambiguous. Pad byte value = number of pad bytes,
+    // except that a plaintext which already fills its bucket gets a whole
+    // bucket more, 256 bytes, and 256 does not fit in a byte: it is
+    // written as 0, and `unpad` reads a 0 as 256.
     let need = PAD_BUCKET - (buf.len() % PAD_BUCKET);
-    let need = if need == 0 { PAD_BUCKET } else { need };
     buf.extend(std::iter::repeat(need as u8).take(need));
 }
 
 fn unpad(buf: &[u8]) -> Result<&[u8], NotifyCryptoError> {
-    let Some(&n) = buf.last() else {
+    let Some(&byte) = buf.last() else {
         return Err(NotifyCryptoError::Malformed("empty".into()));
     };
-    let n = n as usize;
-    if n == 0 || n > PAD_BUCKET || n > buf.len() {
+    let n = if byte == 0 { PAD_BUCKET } else { byte as usize };
+    if n > buf.len() {
         return Err(NotifyCryptoError::Malformed("bad pad".into()));
     }
-    if !buf[buf.len() - n..].iter().all(|&b| b as usize == n) {
+    if !buf[buf.len() - n..].iter().all(|&b| b == byte) {
         return Err(NotifyCryptoError::Malformed("bad pad".into()));
     }
     Ok(&buf[..buf.len() - n])
@@ -228,6 +255,117 @@ mod tests {
         assert_eq!(opened.body.op, NotifyOp::Resolve);
         assert_eq!(opened.body.id, "session:s1");
         assert!(opened.body.text.is_none());
+    }
+
+    /// The table the phone's opener is held to
+    /// (`test-fixtures/companion-notify/README.md`): the iOS Notification
+    /// Service Extension opens these same bytes in Swift, and what keeps
+    /// the two formats one format is that both read this file. Each case
+    /// that names what it was sealed from is sealed again here, so a change
+    /// to the format on this side fails here before it reaches a phone.
+    #[test]
+    fn every_case_in_the_shared_table_seals_and_opens_as_the_table_says() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let table: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-fixtures/companion-notify/cases.json"
+        ))
+        .unwrap();
+        let cases = table["cases"].as_array().unwrap();
+        assert!(cases.len() >= 13, "the table has shrunk to {} cases", cases.len());
+
+        let mut stale = Vec::new();
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let key = protocol::hex_decode(case["key"].as_str().unwrap()).unwrap();
+            if let Some(from) = case.get("sealed_from") {
+                let nonce: [u8; NONCE_LEN] = protocol::hex_decode(from["nonce"].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                let counter = from.get("counter").map_or(0, |v| v.as_u64().unwrap());
+                let issued_at = from.get("issued_at").map_or(0, |v| v.as_u64().unwrap());
+                let sealed = if let Some(body) = from.get("body") {
+                    let body: NotifyPlaintext = serde_json::from_value(body.clone()).unwrap();
+                    if case.get("fills_its_bucket").is_some() {
+                        let json = serde_json::to_vec(&body).unwrap();
+                        assert_eq!((17 + json.len()) % PAD_BUCKET, 0, "{name}: no longer fills its bucket");
+                    }
+                    seal_with_nonce(&key, &nonce, counter, issued_at, &body).unwrap()
+                } else if let Some(json) = from.get("json") {
+                    let version = from.get("version").map_or(PAYLOAD_VERSION, |v| v.as_u64().unwrap() as u8);
+                    let plain = plaintext(version, counter, issued_at, json.as_str().unwrap().as_bytes());
+                    seal_plaintext(&key, &nonce, &plain).unwrap()
+                } else {
+                    let plain = protocol::hex_decode(from["plaintext_hex"].as_str().unwrap()).unwrap();
+                    seal_plaintext(&key, &nonce, &plain).unwrap()
+                };
+                let sealed = b64.encode(sealed);
+                if sealed != case["c"].as_str().unwrap() {
+                    stale.push(format!("{name}: {sealed}"));
+                }
+            }
+        }
+        assert!(stale.is_empty(), "the table's c is stale for:\n{}", stale.join("\n"));
+
+        let mut refusals = std::collections::BTreeSet::new();
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let key = protocol::hex_decode(case["key"].as_str().unwrap()).unwrap();
+            let c = case["c"].as_str().unwrap();
+            let opened = b64.decode(c).map_err(|e| e.to_string()).and_then(|c| {
+                open(&key, &c).map_err(|e| e.to_string())
+            });
+            match (case.get("opens"), case.get("refuse")) {
+                (Some(opens), None) => {
+                    let opened = opened.unwrap_or_else(|e| panic!("{name}: {e}"));
+                    assert_eq!(opened.counter, opens["counter"].as_u64().unwrap(), "{name}");
+                    assert_eq!(opened.issued_at_secs, opens["issued_at"].as_u64().unwrap(), "{name}");
+                    let body: NotifyPlaintext = serde_json::from_value(opens["body"].clone()).unwrap();
+                    assert_eq!(opened.body, body, "{name}");
+                }
+                (None, Some(why)) => {
+                    let why = why.as_str().unwrap();
+                    refusals.insert(why);
+                    let err = b64
+                        .decode(c)
+                        .map(|c| open(&key, &c))
+                        .unwrap_or_else(|e| panic!("{name}: c is not base64: {e}"))
+                        .err()
+                        .unwrap_or_else(|| panic!("{name} opened; the table says {why}"));
+                    assert_eq!(refusal_name(&err), why, "{name}: {err}");
+                }
+                _ => panic!("{name} must say exactly one of opens and refuse"),
+            }
+        }
+        // Every refusal the phone can meet has a case.
+        assert_eq!(
+            refusals.into_iter().collect::<Vec<_>>(),
+            vec!["decrypt", "malformed", "truncated", "version"]
+        );
+    }
+
+    /// The table's name for a refusal, as the phone's opener names it.
+    fn refusal_name(e: &NotifyCryptoError) -> &'static str {
+        match e {
+            NotifyCryptoError::BadKeyLen => "key",
+            NotifyCryptoError::Truncated => "truncated",
+            NotifyCryptoError::Decrypt => "decrypt",
+            NotifyCryptoError::BadVersion(_) => "version",
+            NotifyCryptoError::Malformed(_) => "malformed",
+        }
+    }
+
+    #[test]
+    fn a_plaintext_that_fills_its_bucket_still_opens() {
+        // 17 bytes of header and 239 of JSON: the pad is a whole bucket,
+        // written as 0, which `unpad` once refused.
+        let mut body = notify_body();
+        let bare = serde_json::to_vec(&NotifyPlaintext { text: Some(String::new()), ..body.clone() }).unwrap();
+        body.text = Some("x".repeat(PAD_BUCKET - 17 - bare.len()));
+        let sealed = seal(&key(), 2, 2, &body).unwrap();
+        assert_eq!(sealed.len(), NONCE_LEN + 2 * PAD_BUCKET + 16);
+        assert_eq!(open(&key(), &sealed).unwrap().body, body);
     }
 
     #[test]
