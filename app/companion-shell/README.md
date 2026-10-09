@@ -144,6 +144,32 @@ carries it over USB through the Mac's usbmuxd and opens no port. Synthetic
 `TouchEvent`s prove nothing here (they are untrusted), which is why this
 needs a finger.
 
+## A physical iPhone
+
+```
+DEVELOPMENT_TEAM=<team id> scripts/device-drive.sh ios-device <iphone-udid>   # build, install, launch, inspector
+scripts/device-drive.sh ios-device <iphone-udid> dom                      # the hub's text and its buttons
+scripts/device-drive.sh ios-device <iphone-udid> click "<label>"          # press one
+echo 'document.title' | scripts/device-drive.sh ios-device <iphone-udid> eval [gavin-bundle://]
+```
+
+A real phone has no `simctl` to tap or screenshot with, so the page is
+driven through Web Inspector, over USB through the Mac's usbmuxd
+(pymobiledevice3, in its own venv under `~/Library/Caches/gavin-companion`).
+`install` signs a debug build with `DEVELOPMENT_TEAM` from the environment
+(never commit it) and launches it with `devicectl`. `dom`, `click` and
+`eval` reach the hub (`capacitor://localhost`) or a bundle
+(`gavin-bundle://`) through `webview-eval.py` and open no port; `click`
+fires a synthetic click, which a Svelte handler takes but a gesture does
+not. `inspector` serves Chrome DevTools Protocol for Playwright, Puppeteer
+or a DevTools tab on `127.0.0.1:9322` (`--port` for another; 9222 is
+where an `adb forward` usually sits), through
+`device-inspector.py`, and stops itself unless every LAN address of this
+Mac is refused. Needs: the phone unlocked and trusted, Developer Mode on,
+Settings > Apps > Safari > Advanced > Web Inspector on, and Gavin in front
+-- a page is listed only then. Face ID cannot be scripted on a phone: the
+Unlock waits for its owner.
+
 ## How the bundle webview is sealed
 
 | | iOS | Android |
@@ -365,6 +391,15 @@ the core's rule, `ws://` only to this machine or this network.
   build's WebView can be asked directly: `adb -s <serial> forward
   tcp:9333 localabstract:webview_devtools_remote_<pid>`, then the page's
   DevTools socket from `http://127.0.0.1:9333/json`.
+- **`ios_webkit_debug_proxy` puts a phone's webview on the LAN.** It has no
+  bind option: `-u <udid>` listens on `*:9222` and `*:9221`, and with the
+  macOS firewall on, the Mac's LAN address still answered `/json` with the
+  page's `webSocketDebuggerUrl` -- JS in a debug build's shell webview,
+  which holds the Device's Noise key and, unlocked, a live Workstation
+  connection. Use `scripts/device-drive.sh` (above). Loopback is not the
+  whole of it either: pymobiledevice3's own `webinspector cdp` checks no
+  Host or Origin, so a web page in a browser on the Mac could open its
+  WebSocket; `device-inspector.py` refuses both.
 
 ## Served bundles
 

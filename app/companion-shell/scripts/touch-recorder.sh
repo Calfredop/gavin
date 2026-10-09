@@ -13,8 +13,8 @@
 # a Workstation's bundle open (the Demo's is `gavin-bundle://demo/`). The
 # recorder lives in the page, so reopening the bundle needs `on` again.
 #
-# pymobiledevice3 is installed once into its own venv under the user's
-# cache (GAVIN_DEVICE_VENV to put it elsewhere).
+# It evaluates through `device-drive.sh ios-device <udid> eval`, which
+# opens no port.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,14 +22,8 @@ usage="usage: touch-recorder.sh <udid> on|report|clear"
 udid=${1:?$usage}
 action=${2:?$usage}
 
-venv=${GAVIN_DEVICE_VENV:-${XDG_CACHE_HOME:-$HOME/Library/Caches}/gavin-companion/device-venv}
-if [ ! -x "$venv/bin/python" ]; then
-  python3 -m venv "$venv"
-  "$venv/bin/pip" install -q "pymobiledevice3==11.26.0"
-fi
-
 page() {
-  "$venv/bin/python" -I "$here/webview-eval.py" "$udid" "gavin-bundle://" 2> >(grep -v -E " (INFO|DEBUG) " >&2)
+  "$here/device-drive.sh" ios-device "$udid" eval "gavin-bundle://"
 }
 
 case "$action" in

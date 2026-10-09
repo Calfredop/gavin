@@ -151,6 +151,27 @@ scripts/pair.sh ios <simulator-udid>
 scripts/pair.sh android <emulator-serial> --pin <pin>
 ```
 
+## Drive a physical iPhone
+
+```sh
+DEVELOPMENT_TEAM=<TEAM_ID> scripts/device-drive.sh ios-device <udid>   # build, install, launch, inspector
+scripts/device-drive.sh ios-device <udid> dom                         # hub text + buttons
+scripts/device-drive.sh ios-device <udid> click "<label>"
+```
+
+Over USB, through Web Inspector: a real phone has no `simctl` to tap with.
+The phone must be unlocked and trusted, with Developer Mode and Settings →
+Apps → Safari → Advanced → Web Inspector on, and Gavin in front. Face ID
+cannot be scripted: an Unlock on a phone waits for its owner.
+
+**Never `ios_webkit_debug_proxy` for this.** It has no bind option and
+listens on every interface, macOS firewall or not, so a debug build's
+webview — the Device's Noise key, a live Workstation connection — answers
+anyone on the LAN. `device-drive.sh`'s inspector binds 127.0.0.1, refuses a
+foreign Host or Origin, and stops itself unless the Mac's LAN addresses are
+refused; `dom`, `click` and `eval` open no port at all. See the shell
+README's "A physical iPhone".
+
 ## Related scripts
 
 | Script | Job |
@@ -161,6 +182,7 @@ scripts/pair.sh android <emulator-serial> --pin <pin>
 | `scripts/probe.sh` | Seal checks on Simulator / emulator |
 | `scripts/keys.sh` | Device-keys plugin on Simulator / emulator |
 | `scripts/pair.sh` / `hub.sh` | Pairing and live-hub e2e |
+| `scripts/device-drive.sh` | Install on, and drive, a physical iPhone over USB |
 | `scripts/devstack.mjs` | Local Relay + isolated daemon |
 | `crates/gavin-relay/scripts/deploy.sh` | Relay image / systemd helper |
 
