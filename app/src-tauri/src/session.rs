@@ -3672,6 +3672,39 @@ pub async fn set_remote_access(
     Ok(())
 }
 
+/// Where the daemon posts Companion notifications (v49), or none. The
+/// daemon checks the URL and says what is wrong with one it refuses.
+#[tauri::command]
+pub async fn set_push_gateway_url(
+    url: Option<String>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetPushGatewayUrl { url })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// What the desk decided to notify Devices of (v49): the daemon seals
+/// each event for every Device that handed it a send permission and posts
+/// them to the Push gateway, answering once they are queued.
+#[tauri::command]
+pub async fn push_companion_notify(
+    events: Vec<protocol::CompanionNotifyEvent>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::PushCompanionNotify { events })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
 /// Walks the tree, replacing any session id not present in `valid_ids`
 /// (stale, exited, or never existed) with a freshly created session — the
 /// same silent, normal fallback Milestone B established for its one

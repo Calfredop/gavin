@@ -651,6 +651,18 @@ export const FEATURE_MIN_VERSION = {
   // Consumer: the live pane and the tab's browser chip
   // (`playwright-live-pane.md`), which say why there is no view instead.
   playwrightBrowser: 65,
+  // Companion notifications reaching a phone (v67): a Device hands this
+  // Workstation its send permission (`SetThisDeviceSendPermission`, a new
+  // TYPE the shell sends and nothing here does), and two replies widen --
+  // `Devices.pushGatewayUrl` and `DeviceInfo.notifies`. An older daemon
+  // sends neither, so its empty field and its rows with no "notifies"
+  // would be claims it cannot back; and no phone can hand it a
+  // permission, so a gateway set there notifies nobody.
+  //
+  // Consumers: `remoteAccess.ts`'s `pushGatewayBlocked`, which the
+  // Settings section's Push gateway field reads before it draws or saves,
+  // and which the Devices panel reads before it draws the word.
+  pushGateway: 67,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

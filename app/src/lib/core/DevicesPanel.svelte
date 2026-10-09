@@ -21,6 +21,7 @@
     pairingRequested,
     pairingTick,
     pairingUnavailable,
+    pushGatewayBlocked,
     qrDraw,
     relayStatus,
     revokeAllCopy,
@@ -62,6 +63,8 @@
   const refusalGate = $derived(refusalsBlocked($daemonCompat));
   // And again for presence (v63).
   const presenceGate = $derived(presenceBlocked($daemonCompat));
+  // And for whether notifications reach a Device (v67).
+  const notifyGate = $derived(pushGatewayBlocked($daemonCompat));
 
   let pairing = $state<PairingState>(PAIRING_IDLE);
   let pairingError = $state<string | null>(null);
@@ -292,6 +295,7 @@
                 title={row.lastSeenTitle}>{row.state}</span
               >
               {#if row.note}<span class="warn">{row.note}</span>{/if}
+              {#if row.notifies && notifyGate === null}<span class="notifies">notifications on</span>{/if}
               {#if row.refusal}
                 <span class="refusal">
                   <StatusBadge
@@ -319,6 +323,9 @@
         {/if}
         {#if presenceGate}
           <p class="hint">Where each Device is, and what it started, is not shown. {presenceGate}</p>
+        {/if}
+        {#if notifyGate}
+          <p class="hint">Which Devices this Workstation can notify is not shown. {notifyGate}</p>
         {/if}
       {/if}
     {/if}
@@ -434,6 +441,10 @@
   .refusal {
     flex: 0 1 auto;
     min-width: 0;
+  }
+  .notifies {
+    flex: 0 0 auto;
+    color: var(--text-muted);
   }
   /* Its own line under the row: a sentence, not a column. */
   .presence {

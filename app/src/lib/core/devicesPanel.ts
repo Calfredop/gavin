@@ -176,6 +176,9 @@ export interface PanelRow extends DeviceRow {
   refusal: RefusalNotice | null;
   /// Where it is and what it is doing (`devicePresence.ts`'s line), or null.
   presence: string | null;
+  /// Whether the desk's notifications reach it (v67). Only drawn where
+  /// `pushGatewayBlocked` is null.
+  notifies: boolean;
 }
 
 /// The list the panel draws: `deviceRows`' order and dimming, plus whether
@@ -199,6 +202,7 @@ export function panelRows(
       state: isConnected ? "Connected" : `seen ${row.lastSeen}`,
       refusal: refusalNotice(byId.get(row.deviceId)!, nowMs),
       presence: naming ? presenceLine(presences[row.deviceId], isConnected, naming, nowMs) : null,
+      notifies: !row.dimmed && byId.get(row.deviceId)!.notifies === true,
     };
   });
   // Connected first, then `deviceRows`' own order. Stable, so ties keep it.

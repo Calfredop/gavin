@@ -205,6 +205,8 @@ pub fn run() {
             session::revoke_device,
             session::revoke_all_devices,
             session::set_remote_access,
+            session::set_push_gateway_url,
+            session::push_companion_notify,
             daemon_compat,
             confirm_gate::open_confirmation,
             confirm_gate::answer_confirmation,

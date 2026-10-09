@@ -170,6 +170,20 @@ export function setRemoteAccess(
   });
 }
 
+/// Where the daemon posts Companion notifications, or null for nowhere.
+/// The daemon refuses a URL it will not post to, and says why.
+export function setPushGatewayUrl(url: string | null): Promise<void> {
+  return invoke("set_push_gateway_url", { url });
+}
+
+/// What the desk decided to notify Devices of. The daemon queues the
+/// events and answers; sealing and posting happen after.
+export function pushCompanionNotify(
+  events: import("$lib/agents/companionNotifyDriver").CompanionNotifyEventWire[]
+): Promise<void> {
+  return invoke("push_companion_notify", { events });
+}
+
 export function getFileTabs(): Promise<Record<string, string>> {
   return invoke("get_file_tabs");
 }

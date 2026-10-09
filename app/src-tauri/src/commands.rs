@@ -81,6 +81,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "revoke_device",
     "revoke_all_devices",
     "set_remote_access",
+    "set_push_gateway_url",
+    "push_companion_notify",
     "daemon_compat",
     "open_confirmation",
     "answer_confirmation",

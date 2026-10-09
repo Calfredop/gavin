@@ -46,6 +46,10 @@ export interface DeviceInfo {
   /// daemon never sends it, and a Device that has had the desktop run
   /// nothing since the daemon started has none.
   presence?: DevicePresence;
+  /// Whether this Workstation holds a send permission from the Device
+  /// (v67): whether the desk's notifications reach it. An older daemon
+  /// never sends it, and its silence is not a no (`pushGatewayBlocked`).
+  notifies?: boolean;
 }
 
 /// `protocol::DevicePresence` (v63): what the daemon read off the commands
@@ -112,6 +116,9 @@ export interface DeviceList {
   /// what it is. The token is a credential somebody handed the human,
   /// and nothing on the desk needs to read it back.
   relayAdmissionSet: boolean;
+  /// Where the daemon posts Companion notifications (v67), or null for
+  /// nowhere. Absent from an older daemon, which cannot say.
+  pushGatewayUrl?: string | null;
 }
 
 /// `BeginPairing`'s answer.
@@ -665,6 +672,27 @@ export function admissionAfterSave(
 /// there is one.
 export function admissionPlaceholder(set: boolean): string {
   return set ? "A token is stored — type a new one to replace it" : "No token stored";
+}
+
+// -- where the desk posts notifications ---------------------------------
+
+/// The Push gateway field's own line.
+export const PUSH_GATEWAY_NOTE =
+  "Where this Workstation sends notifications for its paired phones: the publisher's Push gateway, or one you run. It starts https:// — or plain http, for one on this network. What it carries is sealed with each phone's own key; the gateway cannot read it. Empty means no notifications are sent.";
+
+/// The gateway URL to send, or null for "post nowhere". What is wrong
+/// with one is the daemon's to say: it is the one that posts to it.
+export function pushGatewayUrlToSave(draft: string): string | null {
+  const trimmed = draft.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/// The field's gate, and the Devices panel's "notifies" word's. A daemon
+/// older than v67 neither says where it posts nor which Devices it can
+/// notify, and no phone can hand it a permission: an empty field and rows
+/// without the word would read as facts it cannot back.
+export function pushGatewayBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "pushGateway");
 }
 
 /// The admission field's own gate, on top of the section's. A daemon

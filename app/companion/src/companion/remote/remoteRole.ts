@@ -37,6 +37,10 @@ export const DESK_ONLY_COMMANDS = [
   "revoke_all_devices",
   "set_remote_access",
   "set_require_local_token",
+  // Where the desk posts notifications, and what it posts: the desk
+  // decides, from the window holding the app's duties.
+  "set_push_gateway_url",
+  "push_companion_notify",
   // Window management.
   "open_workspace_window",
   "claim_workspace_window",

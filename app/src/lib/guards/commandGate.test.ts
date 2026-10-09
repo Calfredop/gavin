@@ -114,6 +114,17 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // A read of the dial's state; the admission token is in no answer.
   get_relay_state: ["ordinary"],
   set_remote_access: ["ordinary"],
+  // Where the daemon posts notifications, and what it posts (v49/v67).
+  // Neither removes work or ends a process. A gateway of a script's
+  // choosing is handed sealed payloads it holds no key for, and the send
+  // permissions that go with them as bearer tokens: with those it can
+  // make the real gateway push to a paired phone -- rate-limited per
+  // Device, and still sealed by the daemon, so only text the desk could
+  // have sent anyway. Which is all `push_companion_notify` lets the page
+  // do directly: the desk decides what to notify, and the page is the
+  // desk.
+  set_push_gateway_url: ["ordinary"],
+  push_companion_notify: ["ordinary"],
 
   // ---- destructive, deliberately not gated ----
   kill_session: [

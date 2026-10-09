@@ -122,6 +122,8 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust
+    ("set_push_gateway_url", RemoteAllowance::Refused), // Trust: where the desk posts
+    ("push_companion_notify", RemoteAllowance::Refused), // the desk decides what to notify
     ("daemon_compat", RemoteAllowance::Allowed),
     ("open_confirmation", RemoteAllowance::Refused), // meaningless away from the desk
     ("answer_confirmation", RemoteAllowance::Refused), // meaningless away from the desk
@@ -330,6 +332,8 @@ mod tests {
             "revoke_device",
             "revoke_all_devices",
             "set_remote_access",
+            "set_push_gateway_url",
+            "push_companion_notify",
             "set_workspaces_state",
             "set_file_tabs",
             "set_board_tabs",

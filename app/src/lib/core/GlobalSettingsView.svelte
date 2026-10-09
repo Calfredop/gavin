@@ -99,6 +99,7 @@
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
+  import { refreshDeviceList } from "$lib/core/devicesState";
   import { typesafeSettings } from "$lib/agents/turnVerdictState";
   import { tooltip } from "$lib/core/tooltip";
   import {
@@ -123,6 +124,9 @@
   import {
     ADMISSION_CLEAR,
     ADMISSION_NOTE,
+    PUSH_GATEWAY_NOTE,
+    pushGatewayBlocked,
+    pushGatewayUrlToSave,
     KEEP_RUNNING_NOTE,
     RELAY_NOTE,
     admissionAfterSave,
@@ -456,6 +460,12 @@
   let devicesError = $state<string | null>(null);
   let relayDraft = $state("");
   let relayFocused = false;
+  /// The Push gateway field (v67): what the daemon posts to, and what is
+  /// wrong with what was typed, in the daemon's words.
+  const pushGatewayGate = $derived(pushGatewayBlocked($daemonCompat));
+  let pushGatewayDraft = $state("");
+  let pushGatewayFocused = false;
+  let pushGatewayError = $state<string | null>(null);
   /// What is being typed into the admission field, and nothing else: the
   /// field is write-only, so this is empty again the moment it is saved.
   let admissionDraft = $state("");
@@ -500,6 +510,7 @@
       // Same rule as the update endpoint's field: never clobber what the
       // human is in the middle of typing.
       if (!relayFocused) relayDraft = list.relayUrl ?? "";
+      if (!pushGatewayFocused) pushGatewayDraft = list.pushGatewayUrl ?? "";
     } catch (e) {
       devicesError = String(e instanceof Error ? e.message : e);
     }
@@ -558,6 +569,25 @@
     } catch (e) {
       devices = before; // roll back a failed write
       devicesError = String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  /// The Push gateway field lost focus. Saved only when it changed; the
+  /// daemon is the one that checks it, and the shared list is read again
+  /// so the desk's notify driver sees where it now posts.
+  async function savePushGateway(): Promise<void> {
+    const url = pushGatewayUrlToSave(pushGatewayDraft);
+    if (!devices || url === (devices.pushGatewayUrl ?? null)) {
+      pushGatewayError = null;
+      return;
+    }
+    try {
+      await backend.setPushGatewayUrl(url);
+      pushGatewayError = null;
+      devices = { ...devices, pushGatewayUrl: url };
+      void refreshDeviceList();
+    } catch (e) {
+      pushGatewayError = String(e instanceof Error ? e.message : e);
     }
   }
 
@@ -709,6 +739,8 @@
         "Relay URL",
         "relay",
         "Admission token",
+        "Push gateway",
+        "notifications",
         "push",
         "phone",
         "device",
@@ -1629,6 +1661,31 @@
         {ADMISSION_NOTE}
         {#if admissionGate && remoteAccessGate === null}
           <span class="warn">{admissionGate}</span>
+        {/if}
+      </p>
+
+      <div class="row endpoint-row">
+        <span>Push gateway</span>
+        <span class="grow" use:tooltip={remoteAccessGate ?? pushGatewayGate ?? ""}>
+          <input
+            type="text"
+            placeholder="https://push.example"
+            disabled={remoteAccessGate !== null || pushGatewayGate !== null || devices === null}
+            bind:value={pushGatewayDraft}
+            onfocus={() => (pushGatewayFocused = true)}
+            onblur={() => {
+              pushGatewayFocused = false;
+              void savePushGateway();
+            }}
+          />
+        </span>
+      </div>
+      <p class="hint">
+        {PUSH_GATEWAY_NOTE}
+        {#if pushGatewayError}
+          <span class="warn">{pushGatewayError}</span>
+        {:else if pushGatewayGate && remoteAccessGate === null}
+          <span class="warn">{pushGatewayGate}</span>
         {/if}
       </p>
 
