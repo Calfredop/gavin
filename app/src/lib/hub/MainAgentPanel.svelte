@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import { Globe, MessageSquarePlus } from "@lucide/svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import BrowserPane from "$lib/panes/BrowserPane.svelte";
@@ -15,8 +14,11 @@
     resolvedAgentFor,
     terminalFontSizeDefault,
     mainBrowserOpen,
+    mainBrowserShare,
     hideMainBrowser,
+    setMainBrowserShare,
   } from "$lib/core/layoutState";
+  import { DEFAULT_TERMINAL_SHARE, terminalShareFromHeight } from "$lib/hub/homeSplit";
   import { chipFor } from "$lib/panes/browserView";
   import { browserBlocked, browserViews } from "$lib/panes/browserViewState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
@@ -74,12 +76,55 @@
     if (browserOpen) hideMainBrowser(sessionId);
     else void browserViews.openFromChip(sessionId);
   }
-  // Opening or hiding it changes the terminal's height but not the cell's,
-  // so HomeHubView's observer on the cell never sees it.
+  // Showing, hiding or resizing it changes the terminal's height but not
+  // the cell's, so HomeHubView's observer on the cell never sees it.
+  let terminalEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    void browserOpen;
-    void tick().then(() => pane?.fit());
+    const el = terminalEl;
+    if (!el) return;
+    const observer = new ResizeObserver(() => pane?.fit());
+    observer.observe(el);
+    return () => observer.disconnect();
   });
+
+  // The divider between the terminal and the browser, kept as the
+  // terminal's share of the pair -- see homeSplit.ts. Written on every
+  // move: the share lives in memory, so there is no save to batch.
+  const share = $derived($mainBrowserShare[workspaceId] ?? DEFAULT_TERMINAL_SHARE);
+  let dragging = $state(false);
+
+  // Window-level listeners with a buttons===0 bail-out, like every other
+  // splitter here: WKWebView drops pointerup when the pointerdown target
+  // leaves the DOM.
+  function startDrag(e: PointerEvent): void {
+    e.preventDefault();
+    // The divider's own neighbours are the two halves it divides.
+    const el = e.currentTarget as HTMLElement | null;
+    const top = el?.previousElementSibling as HTMLElement | null;
+    const bottom = el?.nextElementSibling as HTMLElement | null;
+    if (!top || !bottom) return;
+    const startY = e.clientY;
+    const startH = top.offsetHeight;
+    const total = startH + bottom.offsetHeight;
+    const id = workspaceId;
+    dragging = true;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      setMainBrowserShare(id, terminalShareFromHeight(startH + ev.clientY - startY, total));
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      dragging = false;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
 
   function start(): void {
     void setAgentField(workspaceId, "command", commandDraft).then(() => startMainAgent(workspaceId));
@@ -141,7 +186,7 @@
     {/if}
   </div>
   {#if sessionId}
-    <div class="terminal">
+    <div class="terminal" bind:this={terminalEl} style:flex-grow={browserOpen ? share : 1}>
       <!-- Keyed, because nothing above this panel is rebuilt when the
            workspace changes: the hub renders <activeViewDef.component>,
            which is the same HomeHubView value for every workspace, so
@@ -159,7 +204,16 @@
       {/key}
     </div>
     {#if browserOpen}
-      <div class="browser">
+      <div
+        class="divider"
+        class:dragging
+        role="separator"
+        aria-orientation="horizontal"
+        use:tooltip={"Drag to resize \u00b7 double-click to reset"}
+        onpointerdown={startDrag}
+        ondblclick={() => setMainBrowserShare(workspaceId, undefined)}
+      ></div>
+      <div class="browser" style:flex-grow={1 - share}>
         <BrowserPane {sessionId} visible={true} />
       </div>
     {/if}
@@ -243,15 +297,34 @@
     flex: 1 1 0;
     min-height: 0;
   }
-  /* Half the cell, under the terminal rather than beside it: the cell
-     already shares its row with the summaries, and a landscape page
-     squeezed beside a terminal in what is left would leave both
-     unreadable. */
+  /* Under the terminal rather than beside it: the cell already shares
+     its row with the summaries, and a landscape page squeezed beside a
+     terminal in what is left would leave both unreadable. The two
+     flex-grow factors are the divider's share. */
   .browser {
     position: relative;
     flex: 1 1 0;
     min-height: 0;
-    border-top: 1px solid var(--border);
+  }
+  /* The grab area, with the border between the halves drawn inside it so
+     the line thickens under the pointer the way the Home divider's does. */
+  .divider {
+    position: relative;
+    flex: 0 0 7px;
+    margin: -3px 0;
+    z-index: 1;
+    cursor: row-resize;
+  }
+  .divider::before {
+    content: "";
+    position: absolute;
+    inset: 3px 0;
+    background: var(--border);
+  }
+  .divider:hover::before,
+  .divider.dragging::before {
+    inset: 2px 0;
+    background: var(--border-strong);
   }
   .idle {
     flex: 1 1 auto;

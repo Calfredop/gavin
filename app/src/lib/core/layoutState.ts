@@ -3587,6 +3587,26 @@ export const mainBrowserOpen = hotState(
   hotBag
 );
 
+/// Where the divider between a main agent's terminal and its browser
+/// sits, as the terminal's share of the cell (`homeSplit.ts`). Per
+/// workspace rather than per session, so a restarted agent keeps the split
+/// the human dragged; in memory, like the browser it divides.
+export const mainBrowserShare = hotState(
+  "mainBrowserShare",
+  () => writable<Readonly<Record<string, number>>>({}),
+  hotBag
+);
+
+/// `undefined` clears it, which puts the divider back where it ships.
+export function setMainBrowserShare(workspaceId: string, share: number | undefined): void {
+  mainBrowserShare.update((all) => {
+    const next = { ...all };
+    if (share === undefined) delete next[workspaceId];
+    else next[workspaceId] = share;
+    return next;
+  });
+}
+
 /// Hides a main agent's browser: the cell gives the terminal its full
 /// height back. The chip shows it again.
 export function hideMainBrowser(sessionId: string): void {

@@ -1,5 +1,6 @@
 // Geometry for the Home tab's divider between the main agent and the
-// PRD/Board/Orchestration column.
+// PRD/Board/Orchestration column, and for the one inside the main agent's
+// cell between its terminal and its browser.
 //
 // Stored as a SHARE of the row rather than a pixel width, for the reason
 // splitShare.ts sets out: the row is as wide as the window and the
@@ -38,6 +39,24 @@ export function agentShareFromWidth(
   min = MIN_HOME_PANE_PX
 ): number {
   return shareFromSize(desired, total, min, DEFAULT_AGENT_SHARE);
+}
+
+/// The main agent's cell once its browser is shown: the terminal above,
+/// the browser below, even until someone drags the divider between them.
+export const DEFAULT_TERMINAL_SHARE = 0.5;
+
+/// Enough for a few lines of the agent's terminal above, and for the
+/// browser's address row and a strip of the page below.
+export const MIN_AGENT_ROW_PX = 120;
+
+/// The share of the cell the terminal should keep, given a drag that
+/// wants it `desired` px tall and the pair's combined height.
+export function terminalShareFromHeight(
+  desired: number,
+  total: number,
+  min = MIN_AGENT_ROW_PX
+): number {
+  return shareFromSize(desired, total, min, DEFAULT_TERMINAL_SHARE);
 }
 
 /// What to render for a stored preference, absent or otherwise.

@@ -248,6 +248,8 @@ import {
   openFollowUpsInSplit,
   openBrowserInSplit,
   mainBrowserOpen,
+  mainBrowserShare,
+  setMainBrowserShare,
   hideMainBrowser,
   setWorkspacePlaywrightPaneOpen,
   setCardTabPath,
@@ -1364,6 +1366,16 @@ describe("openBrowserInSplit", () => {
 
       expect(await openBrowserInSplit("main-1", true)).toBe(true);
       expect(get(mainBrowserOpen).has("main-1")).toBe(true);
+    });
+
+    it("keeps the dragged split per workspace, and a reset clears it", () => {
+      mainBrowserShare.set({});
+      setMainBrowserShare("ws-1", 0.3);
+      setMainBrowserShare("ws-2", 0.7);
+      expect(get(mainBrowserShare)).toEqual({ "ws-1": 0.3, "ws-2": 0.7 });
+
+      setMainBrowserShare("ws-1", undefined);
+      expect(get(mainBrowserShare)).toEqual({ "ws-2": 0.7 });
     });
 
     it("loses it when the agent exits, so a restarted agent starts without one", async () => {
