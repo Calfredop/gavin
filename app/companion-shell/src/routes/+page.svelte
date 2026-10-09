@@ -27,7 +27,7 @@
   import PairingSheet from "$shell/surfaces/PairingSheet.svelte";
   import { endpointFor } from "$shell/visit/endpoints";
   import { createVisits } from "$shell/visit/visit";
-  import { leavesVisitOnLock } from "$shell/unlock/leaveOnLock";
+  import { leavesVisitOnLock, returnFor, stepReturn, type PendingReturn } from "$shell/unlock/leaveOnLock";
   import { connectionsAllowed, unlockNotice } from "$shell/unlock/unlock";
 
   const PROBE_TIMEOUT_MS = 30_000;
@@ -134,9 +134,19 @@
   // The Unlock gates the connection, not the screen: a paired
   // Workstation's bundle would stay in front with its last data after
   // Face ID is declined or the app is backgrounded. Back to the hub, where
-  // the Unlock is.
+  // the Unlock is, and back to that Workstation once the Unlock is too.
+  /// Not reactive: the effects below are what read and write it.
+  let pendingReturn: PendingReturn | null = null;
   $effect(() => {
-    if ($unlockState && leavesVisitOnLock($unlockState, $visitState)) void visits.close();
+    if (!$unlockState || !leavesVisitOnLock($unlockState, $visitState)) return;
+    pendingReturn = returnFor($visitState);
+    void visits.close();
+  });
+  $effect(() => {
+    if (!$unlockState) return;
+    const step = stepReturn(pendingReturn, $unlockState, $visitState, hubWorkstations(paired, $live ?? {}), Date.now());
+    pendingReturn = step.pending;
+    if (step.open) void visits.open(step.open);
   });
 
   const inbox = $derived(

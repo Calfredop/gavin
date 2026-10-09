@@ -2,7 +2,7 @@
 order: 12288
 kind: task
 title: Companion: after Face ID is declined, an open Workstation's UI stays on screen with its data
-status: To Do
+status: Done
 priority: high
 complexity: moderate
 ---
@@ -30,9 +30,9 @@ Found on 2026-10-08 by `companion-iphone-smoke-tests.md` (A7), on a physical iPh
 
 **Acceptance.**
 - [x] Cancelling Face ID with a Workstation open leaves no Workstation data visible
-- [ ] The locked state offers an Unlock that returns to the same Workstation
+- [x] The locked state offers an Unlock that returns to the same Workstation
 - [x] Backgrounding does the same (Home seen on the phone; screen lock not tried separately)
-- [ ] Android is checked: the bundle runs in its own process (`:bundle`)
+- [x] Android is checked: the bundle runs in its own process (`:bundle`)
 - [ ] Human test: open a Workstation, press Home, reopen, cancel Face ID; nothing of the Workstation is visible; press Unlock, approve; the Workstation is back
 
 ## Progress (2026-10-08, same session)
@@ -47,3 +47,15 @@ The owner decided: when the Unlock ends inside a paired Workstation, go back to 
 **Device check, Home case (2026-10-08 17:31, iPhone 16 Pro, console + inspector):** a paired Workstation open (`bundle eec8fa25eb51… cached`, session 1), Home pressed: `background: unlocked -> locked (background)`, `[gavin-hub] ... locked`, `DeviceKeys lock`, then `BundleView close`; on reopen `foreground -> unlocking`, `prompt-succeeded`, `ready, 212 waiting`. The inspector then listed only `capacitor://localhost`: the Workstation's webview was gone and the hub was in front. The declined-Face-ID case is still to be checked on the phone.
 
 **Device check, declined case (2026-10-08, console + inspector):** with MBP16Pro open, Home then reopen then Face ID cancelled: `background: unlocked -> locked (background)`, `[gavin-hub] ... locked`, `BundleView close` (before the foreground), `foreground -> unlocking`, `prompt-declined: unlocking -> locked (declined)`; the owner then tapped Unlock (`unlock-requested: locked (declined) -> unlocking`). The inspector listed only `capacitor://localhost`, so the Workstation's webview no longer existed while the prompt was declined. Acceptance boxes 1 to 3 are met on iOS; Android is still open.
+
+## Progress (2026-10-09): the way back
+
+The hub's `Unlock` now returns to the Workstation the lock left, instead of leaving the owner on the hub to find it again:
+- `leaveOnLock.ts`: `returnFor(visit)` remembers the paired Workstation being left (never the Demo); `stepReturn(pending, unlock, visit, workstations, now)` reopens it once the Unlock is `unlocked` and that Workstation is `openable` (ready). It forgets it when the owner opens anything else, when the Workstation is no longer paired, or when it is not ready within `RETURN_WINDOW_MS` (15 s) of the Unlock coming back. Without that window, an offline desk that came back an hour later would pull the owner out of the hub. Re-locking before it was ready restarts the wait.
+- `+page.svelte`: the leave effect records the return before `visits.close()`; a second effect runs `stepReturn` on every Unlock, visit, paired or live change. No timer is needed, because the only thing that can trigger the open is a state change, and the window is checked at that moment.
+- 8 new cases in `leaveOnLock.test.ts` (18 in all). `companion-shell:test` 316 passed, `companion-shell:check` 0 errors, `companion-shell:build` ok.
+- What returns is the Workstation, not the bundle's place in it: closing loses that, as the owner chose on 10-08.
+
+**Android check (2026-10-09, emulator `KeySpike_API36`, debug build of this tree, one devstack desk serving the staged dev-signed bundle `eec8fa25eb51`):** opened the paired Workstation: `BundleActivity` topResumed in its own `com.gavin.companion:bundle` process. Home: `background: unlocked -> locked (background)`; `dumpsys` taken BEFORE reopening listed only `MainActivity`, so the shell's close crossed into `:bundle` and finished the activity while the app was in the background (the `:bundle` process lives on, empty). Reopened, PIN prompt dismissed with Back: `prompt-declined: unlocking -> locked (declined)`, stack still `MainActivity` only, the hub reads `Locked. Unlock to connect to your Workstations.` Tapped `Unlock`, entered the PIN: `prompt-succeeded`, `ready, 1 waiting`, `bundle eec8fa25eb51… cached`, and a new `BundleActivity` topResumed. Home, then reopen and approve, also returned to the Workstation. The `singleTask` trap (`am start` clears a bundle above `MainActivity`) does not hide anything here: the bundle was already gone in the `dumpsys` taken before any `am start`.
+
+The iPhone still has the 10-08 build, which leaves the visit but does not return to it. The Human test's last step ("the Workstation is back") needs a build of this tree on the phone.

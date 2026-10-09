@@ -1,6 +1,6 @@
 // A paired Workstation's UI does not stay on screen after the Unlock ends.
 import { describe, expect, it } from "vitest";
-import { leavesVisitOnLock } from "$shell/unlock/leaveOnLock";
+import { RETURN_WINDOW_MS, leavesVisitOnLock, returnFor, stepReturn } from "$shell/unlock/leaveOnLock";
 import type { LockedWhy, UnlockState } from "$shell/unlock/unlock";
 import type { VisitState } from "$shell/visit/visit";
 import type { HubWorkstation } from "$shell/hub/workstations";
@@ -53,5 +53,64 @@ describe("leaving a paired Workstation when the Unlock ends", () => {
     expect(
       leavesVisitOnLock(locked("background"), { status: "failed", workstation: workstation(false), reason: "no" })
     ).toBe(false);
+  });
+});
+
+describe("returning to the Workstation the lock left", () => {
+  const MBP = workstation(false);
+  const hub = (openable: boolean): HubWorkstation[] => [{ ...MBP, openable, state: openable ? "ready" : "connecting" }];
+  const HUB: VisitState = { status: "hub" };
+
+  it("remembers the paired Workstation it leaves, and nothing for the Demo", () => {
+    expect(returnFor(OPEN)).toEqual({ workstation: MBP.id, unlockedAt: null });
+    expect(returnFor(OPENING)).toEqual({ workstation: MBP.id, unlockedAt: null });
+    expect(returnFor({ status: "open", workstation: workstation(true) })).toBeNull();
+    expect(returnFor(HUB)).toBeNull();
+  });
+
+  it("waits while locked, whatever the hub lists", () => {
+    const pending = returnFor(OPEN);
+    expect(stepReturn(pending, locked("declined"), HUB, hub(true), 5_000)).toEqual({ pending, open: null });
+    expect(stepReturn(pending, { state: "unlocking", renewing: false }, HUB, hub(true), 5_000)).toEqual({
+      pending,
+      open: null,
+    });
+  });
+
+  it("reopens it once unlocked and it is ready again", () => {
+    const pending = returnFor(OPEN);
+    const connecting = stepReturn(pending, UNLOCKED, HUB, hub(false), 5_000);
+    expect(connecting).toEqual({ pending: { workstation: MBP.id, unlockedAt: 5_000 }, open: null });
+    const ready = stepReturn(connecting.pending, UNLOCKED, HUB, hub(true), 5_400);
+    expect(ready.pending).toBeNull();
+    expect(ready.open?.id).toBe(MBP.id);
+  });
+
+  it("gives up on a Workstation that is not ready soon after the Unlock, rather than jump into it later", () => {
+    const waiting = stepReturn(returnFor(OPEN), UNLOCKED, HUB, hub(false), 5_000).pending;
+    expect(stepReturn(waiting, UNLOCKED, HUB, hub(true), 5_000 + RETURN_WINDOW_MS + 1)).toEqual({
+      pending: null,
+      open: null,
+    });
+  });
+
+  it("starts the wait again when the Unlock ends before it was ready", () => {
+    const waiting = stepReturn(returnFor(OPEN), UNLOCKED, HUB, hub(false), 5_000).pending;
+    const relocked = stepReturn(waiting, locked("background"), HUB, hub(false), 6_000).pending;
+    expect(relocked).toEqual({ workstation: MBP.id, unlockedAt: null });
+    expect(stepReturn(relocked, UNLOCKED, HUB, hub(true), 60_000).open?.id).toBe(MBP.id);
+  });
+
+  it("forgets it once the owner opens something else", () => {
+    const other: VisitState = { status: "opening", workstation: workstation(true), detail: null };
+    expect(stepReturn(returnFor(OPEN), UNLOCKED, other, hub(true), 5_000)).toEqual({ pending: null, open: null });
+  });
+
+  it("forgets a Workstation that is no longer paired", () => {
+    expect(stepReturn(returnFor(OPEN), UNLOCKED, HUB, [], 5_000)).toEqual({ pending: null, open: null });
+  });
+
+  it("has nothing to do with nothing pending", () => {
+    expect(stepReturn(null, UNLOCKED, HUB, hub(true), 5_000)).toEqual({ pending: null, open: null });
   });
 });
