@@ -1,9 +1,9 @@
 <script lang="ts">
   // The shell's one page: the Workstations hub, the visits it opens,
-  // pairing, and the Unlock. Every decision is in a module (visit.ts,
-  // shellChannel.ts, probe.ts, keysCheck.ts, pairFlow.ts, paired.ts,
-  // unlock.ts, liveHub.ts, inbox.ts); this wires them to the native views
-  // and draws the hub.
+  // pairing, the Unlock and notifications. Every decision is in a module
+  // (visit.ts, shellChannel.ts, probe.ts, keysCheck.ts, pairFlow.ts,
+  // paired.ts, unlock.ts, liveHub.ts, inbox.ts, push/setup.ts,
+  // push/taps.ts); this wires them to the native views and draws the hub.
   import { onMount } from "svelte";
   import { Capacitor } from "@capacitor/core";
   import { assets } from "$app/paths";
@@ -17,18 +17,24 @@
   import { runKeysCheck } from "$shell/keys/keysCheck";
   import { BundleView } from "$shell/native/bundleView";
   import { DeviceKeys } from "$shell/native/deviceKeys";
+  import { Push } from "$shell/native/push";
   import { QrScanner } from "$shell/native/qrScanner";
   import { Workstations } from "$shell/native/workstations";
   import { coreOnce, phonePairFlow } from "$shell/pairing/phonePairing";
   import { webSocketOpener, type WebSocketConstructor } from "$shell/pairing/relaySocket";
   import { PROBE_WORKSTATION, createProbeBench, runProbe, type ProbeBench } from "$shell/probe/probe";
+  import { readNotifyLink } from "$shell/push/decrypt";
+  import { notifyLine, setUpNotifications, type NotifySetup } from "$shell/push/setup";
+  import { gatewayClient } from "$shell/push/gateway";
+  import { createHandover, handOver, notifyWord } from "$shell/push/handover";
+  import { clearsFor, pendingTap, stepTap, type PendingTap } from "$shell/push/taps";
   import Hub from "$shell/surfaces/Hub.svelte";
   import KeysPanel from "$shell/surfaces/KeysPanel.svelte";
   import PairingSheet from "$shell/surfaces/PairingSheet.svelte";
   import { endpointFor } from "$shell/visit/endpoints";
   import { createVisits } from "$shell/visit/visit";
   import { leavesVisitOnLock, returnFor, stepReturn, type PendingReturn } from "$shell/unlock/leaveOnLock";
-  import { connectionsAllowed, unlockNotice } from "$shell/unlock/unlock";
+  import { connectionsAllowed, unlockNotice, type UnlockState } from "$shell/unlock/unlock";
 
   const PROBE_TIMEOUT_MS = 30_000;
 
@@ -171,6 +177,88 @@
     }
   }
 
+  /// Notifications on this phone: checked at launch, asked for only on
+  /// the owner's tap.
+  let notifySetup = $state<NotifySetup>({ state: "checking" });
+  const pushDeps = { push: Push, platform: Capacitor.getPlatform() === "android" ? "android" : "ios" } as const;
+  function turnOnNotifications(): void {
+    notifySetup = { state: "asking" };
+    void setUpNotifications(pushDeps, true).then((setup) => (notifySetup = setup));
+  }
+
+  /// Each paired Workstation handed this phone's permission to notify it,
+  /// once notifications are on and while it is connected.
+  const handover = createHandover({
+    client: gatewayClient((r) => Push.gateway(r)),
+    hand: (id, permission) => {
+      const connection = unlocked?.connectionSource(id).current();
+      return connection ? handOver(connection, permission) : null;
+    },
+    keep: (record) => Push.keepRegistration({ record: JSON.stringify(record) }),
+    now: () => Math.floor(Date.now() / 1000),
+    log: (line) => {
+      if (debugBuild) console.log(line);
+    },
+  });
+  const handoverStatus = handover.status;
+  $effect(() => {
+    handover.use(notifySetup.state === "on" ? $state.snapshot(notifySetup.kept) : null);
+  });
+  // Again whenever a Workstation's state moves: one that just connected
+  // is one that can be handed its permission now.
+  $effect(() => {
+    const states = Object.entries($live ?? {}).map(([id, s]) => `${id}:${s.state}`).join(" ");
+    void states;
+    handover.sync(paired.map((ws) => ws.id));
+  });
+  const notifyRows = $derived(
+    notifySetup.state === "on"
+      ? paired.map((ws) => ({
+          id: ws.id,
+          name: ws.name,
+          word: notifyWord($handoverStatus[ws.id]),
+          muted: $handoverStatus[ws.id] === "off",
+        }))
+      : []
+  );
+
+  /// A tapped notification, waiting for the Unlock and for its
+  /// Workstation's connection. Not reactive, like `pendingReturn`.
+  let tapped: PendingTap | null = null;
+  function openTap(link: string): void {
+    // Where the owner is going now, not back where the lock left them.
+    pendingReturn = null;
+    const landing = readNotifyLink(link);
+    if (!landing) {
+      // Nothing opened that push, or it was a resolve: it lands on the hub.
+      tapped = null;
+      void visits.close();
+      return;
+    }
+    tapped = pendingTap(landing);
+    if ($unlockState) stepTapped($unlockState);
+  }
+  function stepTapped(unlock: UnlockState): void {
+    const step = stepTap(tapped, unlock, hubWorkstations(paired, $live ?? {}), Date.now());
+    tapped = step.pending;
+    if (step.notice) notice = step.notice;
+    if (step.open) void visits.open(step.open.workstation, step.open.landing);
+  }
+  $effect(() => {
+    if ($unlockState) stepTapped($unlockState);
+  });
+
+  // A notification about an item the desk has dealt with leaves the
+  // screen once its Workstation answers without it -- whether or not its
+  // resolve push arrived.
+  let cleared = new Map<string, string>();
+  $effect(() => {
+    if (!native) return;
+    const { clears, sent } = clearsFor($live ?? {}, cleared);
+    cleared = sent;
+    for (const clear of clears) void Push.clearDelivered(clear).catch(() => {});
+  });
+
   async function loadPaired(): Promise<void> {
     try {
       paired = await store.list();
@@ -199,6 +287,16 @@
           if (status.debugBuild) {
             console.log(`[gavin-shell] hub lists ${paired.length} paired: ${paired.map((ws) => ws.id).join(" ") || "none"}`);
           }
+          // Once the pairings are read: a tap that launched the app names
+          // one, and is held natively until this listens.
+          void Push.addListener("opened", (tap) => {
+            if (status.debugBuild) console.log(`[gavin-shell] notification tapped: ${tap.link}`);
+            openTap(tap.link);
+          }).catch(() => {});
+          void setUpNotifications(pushDeps, false).then((setup) => {
+            notifySetup = setup;
+            if (status.debugBuild) console.log(`[gavin-shell] notifications: ${setup.state}`);
+          });
           if (status.checkRequested) return runKeysCheck({ keys: DeviceKeys, log: (line) => console.log(line) });
           const { text } = await QrScanner.scriptedCode().catch(() => ({ text: null }));
           if (text) {
@@ -236,6 +334,10 @@
   onUnlock={() => unlocked?.requestUnlock()}
   {notice}
   onDismissNotice={() => (notice = null)}
+  notifications={notifyLine(notifySetup)}
+  onNotifications={turnOnNotifications}
+  {notifyRows}
+  onToggleNotify={(id, muted) => handover.setMuted(id, muted)}
 >
   {#if debugBuild}
     <KeysPanel keys={DeviceKeys} />

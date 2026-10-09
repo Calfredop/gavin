@@ -13,6 +13,13 @@ const config: CapacitorConfig = {
   ios: {
     // The page places itself around the notch (viewport-fit=cover).
     contentInset: "never",
+    // The notification centre's delegate is the shell's own, PushTaps,
+    // set before launch ends (AppDelegate.swift). Left on, the bridge
+    // takes it over as it loads, for a router that hands pushes to a
+    // handler only Capacitor's push plugin registers: a notification
+    // arriving with the app in front would show nothing, and a tap would
+    // never reach the hub.
+    handleApplicationNotifications: false,
   },
   android: {
     allowMixedContent: false,

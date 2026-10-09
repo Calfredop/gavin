@@ -296,8 +296,8 @@ holding that Workstation's notification key:
 
 | | iOS | Android |
 |---|---|---|
-| where | a keychain item a Workstation, `AfterFirstUnlockThisDeviceOnly`, never synchronised | one file in `noBackupFilesDir`, sealed by a Keystore AES-GCM key |
-| why readable while locked | the notification service extension will open pushes on a locked phone | the same, for the FCM handler |
+| where | a keychain item a Workstation, `AfterFirstUnlockThisDeviceOnly`, never synchronised, in the group the app shares with its Notification Service Extension (`SharedKeychain.swift`) | one file in `noBackupFilesDir`, sealed by a Keystore AES-GCM key |
+| why readable while locked | the notification service extension opens pushes on a locked phone | the same, for the FCM handler (not yet written) |
 | gone with | the Device's keys (`deleteKeys`, and the first launch after a reinstall) | the Device's keys, and an uninstall |
 
 ### The scripted pairing
@@ -594,6 +594,60 @@ Workstations (`devstack.mjs hub`), then launches it: the Unlock must ask
 once and both answer ready; another app in front must lock both; back in
 front it must ask again and both answer again.
 
+## Notifications
+
+```
+scripts/notify-fixture.sh     # the extension's open against the daemon's seal (macOS)
+```
+
+The hub's Notifications row asks iOS to notify only when the owner taps
+`Turn on notifications`, and says what iOS answered; at every launch after
+that it fetches this install's APNs token without asking, and tells the
+Push gateway (`push/setup.ts`, `push/registration.ts`). The gateway's calls
+are native (`Push.gateway`): the gateway answers no CORS, and the hub's
+page is another origin. Its registration -- the Device id and secret that
+mint permissions to notify this phone -- is kept in the keychain, in the
+app's own group, and goes with the Device's keys.
+
+Once they are on, each paired Workstation is handed this phone's send
+permission (`push/handover.ts`): minted at the gateway per Workstation,
+renewed before it runs out, kept with the registration, and handed over
+the live connection as `SetThisDeviceSendPermission` (protocol v67) once
+per app run. The Notifications row lists each Workstation with what it
+can do ("Notifies", "Set up when it connects", or "Update Gavin at the
+desk" for one older than v67) and a Turn off that cancels its permission
+at the gateway and tells it, silencing that Workstation alone.
+
+A push is opened before iOS shows it, by the Notification Service
+Extension (`ios/App/NotificationService/`, an app-extension target embedded
+in the app): it tries each paired Workstation's notification key from the
+shared keychain group, drops a counter at or below the highest it has shown
+from that key, and replaces the gateway's placeholder with the
+Workstation's name and the item's text. It writes where a tap lands into
+the notification (`gavin://ws/<id>/session/<sid>?workspace=<w>`, or
+`/card?path=…`), which `push/decrypt.ts` reads back; the hub opens it once
+the Unlock and that Workstation's connection are there (`push/taps.ts`),
+or lands on the hub when nothing opened the push. A resolve removes the
+item's notification. A notification also leaves once its Workstation
+answers what is waiting without its item, resolve or not: the desk pushes
+under its attention items' ids.
+
+Both the tap and a notification shown with the app in front go through
+the notification centre's delegate, `PushTaps`, which `AppDelegate` sets
+before launch ends. `capacitor.config.ts` turns
+`ios.handleApplicationNotifications` off for it: left on, Capacitor's
+bridge takes the delegate over as it loads, and its router, with no push
+plugin registered, shows nothing in front and drops every tap.
+
+The format is `crates/daemon/src/notify_crypto.rs`'s, and the extension's
+Swift (`NotifyOpen.swift`, Foundation and CryptoKit only) is held to it by
+`test-fixtures/companion-notify`, which the daemon's suite seals from and
+`notify-fixture.sh` opens; `push/fixture.test.ts` runs that script on a Mac.
+What the Apple team, the App IDs and the filtering entitlement have to be,
+and why `simctl push` cannot test the extension, is
+`docs/companion-mobile.md`'s "Push notifications (iOS)". Android has no
+push yet: its calls reject, and the hub shows no Notifications row.
+
 ## What is here, and what is not
 
 The hub lists the paired Workstations, live while unlocked, with the
@@ -603,5 +657,6 @@ bundle and each paired Workstation's served one. The Device's keys
 (companion-22), and served, signed, cached bundles with landing on an
 inbox item (companion-23) are here. What the bundle can do once open is
 the bundle's own README's: a board to read, with the rest of the surfaces
-(companion-26 to -30) still to come. Notifications and the Push gateway
-are not here either.
+(companion-26 to -30) still to come. On iOS the shell asks to notify,
+registers with the Push gateway, hands each Workstation its permission
+and opens pushes (above).

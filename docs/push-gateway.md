@@ -14,7 +14,8 @@ The Relay (byte-copy rendezvous, separate service) is [`relay.md`](relay.md).
 1. **The Device registers** its APNs or FCM token with the gateway and gets
    back a Device id and a Device secret.
 2. **The Device mints one send permission per Workstation** and hands it to
-   that Workstation over their encrypted channel. The permission names the
+   that Workstation over their encrypted channel (`SetThisDeviceSendPermission`,
+   protocol v67, which the daemon stores on that Device's own row). The permission names the
    Device, not its token, so it survives the token changing.
 3. **The Workstation's daemon posts ciphertext** with the permission. The
    ciphertext is sealed with the notification key that Workstation and Device
@@ -222,10 +223,12 @@ suite checks this.
 
 ## Not yet settled
 
-- **"Resolved" pushes on iOS.** An item handled at the desk should leave the
-  phone. Every push is a visible alert today, and an extension that decrypts
-  a "resolved" message has no sanctioned way to show nothing. Ticket 25 decides
-  between a background push type and the notification-filtering entitlement.
+- **"Resolved" pushes on iOS.** Ticket 25 chose the notification-filtering
+  entitlement over a background push type, so every push stays an alert the
+  extension runs for. The extension removes the item's notification either
+  way; showing nothing for the resolve itself waits on Apple granting the
+  entitlement (`docs/companion-mobile.md`, "Push notifications (iOS)"), and
+  until then it shows as a passive line the hub clears.
 - **Registration abuse on a public instance.** Anyone can register a Device.
   The permission cap bounds what one Device can store, but nothing bounds how
   many Devices one caller registers. A per-address limit belongs in front of

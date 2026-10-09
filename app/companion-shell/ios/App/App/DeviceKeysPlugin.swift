@@ -507,12 +507,15 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
 
     /// The keys, and the Workstations paired with them: a record names
     /// the Device those keys made, and without them this phone is not it.
+    /// The push registration goes too: every permission it minted was
+    /// handed to a Workstation that paired those keys.
     static func deleteAll() {
         SecItemDelete([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: hardwareTag] as CFDictionary)
         for service in [softwareService, noiseService] {
             SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
         }
         WorkstationsPlugin.deleteAll()
+        PushPlugin.deleteRegistration()
     }
 
     // MARK: reading

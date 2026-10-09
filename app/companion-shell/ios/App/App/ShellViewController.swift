@@ -42,12 +42,13 @@ class ShellViewController: CAPBridgeViewController {
 
     /// The shell's plugins. Registered on this bridge and no other: a
     /// bundle's webview has none, so neither the bundle view, the Device's
-    /// keys, the camera nor the paired Workstations are within a bundle's
-    /// reach.
+    /// keys, the camera, the paired Workstations nor push are within a
+    /// bundle's reach.
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(BundleViewPlugin())
         bridge?.registerPluginInstance(DeviceKeysPlugin())
         bridge?.registerPluginInstance(QrScannerPlugin())
         bridge?.registerPluginInstance(WorkstationsPlugin())
+        bridge?.registerPluginInstance(PushPlugin())
     }
 }

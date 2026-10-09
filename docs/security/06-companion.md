@@ -772,6 +772,15 @@ leaves the phone.
 - Ciphertext is padded to fixed buckets, and the send permission's id is unlinkable to
   the daemon's rendezvous id.
 
+**The hand-over (v67).** The Device mints one permission per Workstation and hands it
+over its own connection to that Workstation (`SetThisDeviceSendPermission`). The request
+names no Device: the daemon stores the permission on the row of the Device whose
+connection carried it, as `RemoveThisDevice` removes only that row, so one Device can
+neither set nor clear another's. An empty permission clears it. Turning one Workstation
+off on the phone does that and cancels the permission at the gateway, which silences that
+Workstation and no other. The daemon refuses a permission an `Authorization` header could
+not carry.
+
 **Revocation.** Revoking a Device deletes its notification key and permission on the
 Workstation, so the Workstation stops sending. The permission itself lives at the
 gateway until it expires or the Device cancels it (a lost phone cannot). Expiry
@@ -782,9 +791,12 @@ Workstation's keys.
 screen reads it. The platform's own preview setting governs; whether the Companion adds a
 "hide contents" mode is Q9.
 
-**Open, from the gateway card:** "resolved" on iOS. Every push is a visible
-mutable-content alert today, so a background push type or the filtering entitlement has to
-be chosen without weakening the generic-fallback rule above.
+**"Resolved" on iOS: the filtering entitlement.** Every push stays a mutable-content
+alert, so the extension runs for every one and the generic-fallback rule above holds. The
+extension removes the resolved item's notification; showing nothing for the resolve itself
+needs `com.apple.developer.usernotifications.filtering`, which Apple grants on request.
+Until a build carries it, a resolve shows as a passive line that names no item and makes
+no sound (`docs/companion-mobile.md`, "Push notifications (iOS)").
 
 ### 5.7 The dev key and the dev-Relay guard (relaxes 05 §11 Q12)
 

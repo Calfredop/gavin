@@ -8,7 +8,7 @@
   // Unlock (held at the top while it is asked for), the hub's lines, the
   // Workstations and Pair, then what is waiting -- a count, its totals
   // per kind and the first few, with the whole list a screen of its own
-  // (InboxList) -- then a debug build's keys panel.
+  // (InboxList) -- then notifications, then a debug build's keys panel.
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import type { InboxRow } from "$shell/hub/inbox";
   import { inboxPreview, totalsLine } from "$shell/hub/inboxView";
@@ -45,6 +45,15 @@
     /// A line from the hub itself, dismissable.
     notice?: string | null;
     onDismissNotice?: () => void;
+    /// Whether this phone notifies, and the button that turns it on
+    /// (`push/setup.ts`); null where it says nothing.
+    notifications?: { text: string; action: string | null } | null;
+    onNotifications?: () => void;
+    /// Once notifications are on: each paired Workstation, whether it can
+    /// notify this phone, and the switch that turns it off or on for it
+    /// alone (`push/handover.ts`).
+    notifyRows?: { id: string; name: string; word: string; muted: boolean }[];
+    onToggleNotify?: (id: string, muted: boolean) => void;
     /// At the foot: a debug build's keys panel.
     children?: Snippet;
   }
@@ -64,6 +73,10 @@
     onUnlock = () => {},
     notice = null,
     onDismissNotice = () => {},
+    notifications = null,
+    onNotifications = () => {},
+    notifyRows = [],
+    onToggleNotify = () => {},
     children,
   }: Props = $props();
 
@@ -169,6 +182,31 @@
             {#if preview.more > 0}
               <button type="button" class="action wide" onclick={() => onList(true)}>Show all {inbox.length}</button>
             {/if}
+          {/if}
+        </section>
+      {/if}
+
+      {#if notifications}
+        <section class="section" aria-labelledby="hub-notifications">
+          <h2 class="total" id="hub-notifications">Notifications</h2>
+          <p class="totals">{notifications.text}</p>
+          {#if notifications.action}
+            <button type="button" class="action wide" onclick={onNotifications}>{notifications.action}</button>
+          {/if}
+          {#if notifyRows.length > 0}
+            <ul class="cards">
+              {#each notifyRows as row (row.id)}
+                <li class="notify-row">
+                  <span class="notify-name">
+                    <span class="name">{row.name}</span>
+                    <span class="summary">{row.word}</span>
+                  </span>
+                  <button type="button" class="action" onclick={() => onToggleNotify(row.id, !row.muted)}>
+                    {row.muted ? "Turn on" : "Turn off"}
+                  </button>
+                </li>
+              {/each}
+            </ul>
           {/if}
         </section>
       {/if}
@@ -326,6 +364,17 @@
     border-radius: 6px;
     background: var(--surface-base);
     font-size: 0.8125rem;
+  }
+  .notify-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .notify-name {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
   }
   .total {
     margin: 0;
