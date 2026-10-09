@@ -31,15 +31,24 @@ describe("the Workstations hub's list", () => {
         id: paired.id,
         name: "Studio Mac",
         demo: false,
-        summary: "Unlock to connect.",
+        // The Unlock's banner says what to do, once, over all of them.
+        summary: "",
         state: "locked",
         label: "Locked",
+        waiting: 0,
         openable: false,
         tryNow: false,
       },
-      DEMO_WORKSTATION,
+      { ...DEMO_WORKSTATION, summary: "" },
     ]);
     expect(DEMO_WORKSTATION.openable).toBe(true);
+  });
+
+  it("keeps the Demo's description until a real Workstation is paired, then makes it one line", () => {
+    expect(hubWorkstations()[0].summary).toBe(DEMO_WORKSTATION.summary);
+    expect(DEMO_WORKSTATION.summary).not.toBe("");
+    const list = hubWorkstations([paired]);
+    expect(list[list.length - 1]).toEqual({ ...DEMO_WORKSTATION, summary: "" });
   });
 
   it("shows each paired Workstation's live state: ready, desktop app not running, asleep", () => {
@@ -58,7 +67,8 @@ describe("the Workstations hub's list", () => {
     expect(list.slice(0, 3).map((ws) => ws.openable)).toEqual([true, false, false]);
     expect(list.map((ws) => ws.tryNow ?? false)).toEqual([false, true, true, false]);
     expect(list.slice(0, 3).map((ws) => [ws.state, ws.label, ws.summary])).toEqual([
-      ["ready", "Ready", "1 waiting on you."],
+      // The count is the card's, not a sentence under it.
+      ["ready", "Ready", ""],
       [
         "desktop-app-not-running",
         "Desktop app not running",
@@ -66,6 +76,7 @@ describe("the Workstations hub's list", () => {
       ],
       ["asleep", "Asleep", "Its Relay has not heard from it: it is asleep, or remote access is off at the desk."],
     ]);
+    expect(list.map((ws) => ws.waiting)).toEqual([1, 0, 0, 0]);
     expect(DEMO_WORKSTATION.label).toBe("Ready");
   });
 

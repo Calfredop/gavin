@@ -139,6 +139,18 @@
     if ($unlockState && leavesVisitOnLock($unlockState, $visitState)) void visits.close();
   });
 
+  const inbox = $derived(
+    $unlockState && connectionsAllowed($unlockState) && paired.length > 0 ? combinedInbox(paired, $live ?? {}) : null
+  );
+
+  /// The whole inbox, on a screen of its own (InboxList).
+  let listing = $state(false);
+  // Locked, or the last item dealt with: the list goes, or the next item
+  // would bring it back unasked.
+  $effect(() => {
+    if (!inbox?.length) listing = false;
+  });
+
   function openItem(row: InboxRow): void {
     const ws = hubWorkstations(paired, $live ?? {}).find((w) => w.id === row.workstationId);
     if (!ws) return;
@@ -206,8 +218,10 @@
   onTryNow={(ws) => unlocked?.tryNow(ws.id)}
   onDismiss={() => void visits.close()}
   onPair={native ? () => void pairing.start() : null}
-  inbox={$unlockState && connectionsAllowed($unlockState) && paired.length > 0 ? combinedInbox(paired, $live ?? {}) : null}
+  {inbox}
   onOpenItem={openItem}
+  {listing}
+  onList={(open) => (listing = open)}
   unlockNotice={$unlockState ? unlockNotice($unlockState, paired.length > 0) : null}
   onUnlock={() => unlocked?.requestUnlock()}
   {notice}

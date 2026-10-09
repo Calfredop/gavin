@@ -10,6 +10,20 @@ body {
   color: var(--text);
 }
 
+/* One spacing scale for what a thumb lays out, in 8px steps (a CSS px is
+   a point on an iPhone): the gutter at the screen's edge, the space
+   between sections, between rows and inside a group of buttons. 8px is
+   also the least between two tap targets. `--space-half` is for the gap
+   between a row's own lines, never between two targets. The hub is held
+   to it (the shell's surfaces/spacing.test.ts). */
+:root {
+  --space-half: 4px;
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+}
+
 html {
   /* 16px at the phone's default text size, so `rem` is what the surfaces
      were written in, and that times the text size the person picked in

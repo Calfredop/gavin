@@ -1,7 +1,8 @@
 <script lang="ts">
   // The keys panel, a debug build's only: a thin template over
-  // keys/keysPanel.ts. It sits under the Workstations until pairing
-  // (companion-21) makes and uses the keys for real.
+  // keys/keysPanel.ts. Closed, at the hub's foot: pairing makes and uses
+  // the keys for real, and this is for looking at them, never in the way
+  // of Pair.
   import { onMount } from "svelte";
   import type { DeviceKeysPlugin } from "$shell/native/deviceKeys";
   import { panelAction, statusLines, type PanelAction, type PanelLine } from "$shell/keys/keysPanel";
@@ -36,8 +37,8 @@
   onMount(() => void refresh());
 </script>
 
-<section class="keys" aria-label="Device keys">
-  <h2>Device keys <span class="tag">debug</span></h2>
+<details class="keys">
+  <summary>Device keys <span class="tag">debug</span></summary>
   {#each lines as line}
     <p class="line tone-{line.tone}">{line.text}</p>
   {/each}
@@ -49,20 +50,34 @@
   {#if result}
     <p class="line tone-{result.tone}" role="status">{result.text}</p>
   {/if}
-</section>
+</details>
 
 <style>
   .keys {
-    padding: 20px 16px 24px;
-    border-top: 1px solid var(--border);
+    margin: var(--space-3) var(--space-2) 0;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
-  h2 {
+  summary {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 0 0 10px;
-    font-size: 0.9375rem;
+    gap: var(--space-1);
+    color: var(--text-muted);
+    font-size: 0.875rem;
     font-weight: 600;
+    list-style: none;
+  }
+  summary::-webkit-details-marker {
+    display: none;
+  }
+  summary::after {
+    margin-left: auto;
+    content: "Show";
+    font-weight: 400;
+  }
+  .keys[open] summary::after {
+    content: "Hide";
   }
   .tag {
     padding: 2px 6px;
@@ -76,7 +91,7 @@
     text-transform: uppercase;
   }
   .line {
-    margin: 0 0 8px;
+    margin: 0 0 var(--space-1);
     font-size: 0.8125rem;
     line-height: 1.45;
   }
@@ -92,12 +107,13 @@
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    margin: 12px 0;
+    gap: var(--space-1);
+    margin: var(--space-1) 0 var(--space-2);
   }
   .action {
+    flex: 1 1 0;
     min-height: 44px;
-    padding: 0 16px;
+    padding: 0 var(--space-2);
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--surface-raised);

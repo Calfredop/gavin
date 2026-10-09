@@ -17,8 +17,12 @@ export interface HubWorkstation {
   id: string;
   name: string;
   demo: boolean;
-  /// The line under the name.
+  /// The line under the name: what is wrong, and what to do. Empty where
+  /// the state says it all -- ready, or locked under the Unlock's banner.
   summary: string;
+  /// How many items it has waiting on the human; none unless it is
+  /// ready.
+  waiting?: number;
   state: WorkstationState;
   /// The state, in words.
   label: string;
@@ -39,8 +43,13 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   summary: "Sample workspaces, cards and agents to explore. Nothing to pair.",
   state: "ready",
   label: liveLabel({ state: "ready", items: [] }),
+  waiting: 0,
   openable: true,
 };
+
+/// Once a real Workstation is paired the Demo is one line, last: it is
+/// still there to explore, and no longer what the hub is for.
+const DEMO_COMPACT: HubWorkstation = { ...DEMO_WORKSTATION, summary: "" };
 
 const LOCKED: LiveState = { state: "locked" };
 
@@ -57,14 +66,15 @@ export function hubWorkstations(
         id: ws.id,
         name: ws.name,
         demo: false,
-        summary: liveSummary(state),
+        summary: state.state === "ready" || state.state === "locked" ? "" : liveSummary(state),
         state: state.state,
         label: liveLabel(state),
+        waiting: state.state === "ready" ? state.items.length : 0,
         openable: state.state === "ready",
         tryNow: tryNowOffered(state),
       };
     }),
-    DEMO_WORKSTATION,
+    paired.length > 0 ? DEMO_COMPACT : DEMO_WORKSTATION,
   ];
 }
 

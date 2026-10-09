@@ -2,7 +2,7 @@
 order: 17408
 kind: task
 title: Companion hub: the Workstations list and Pair a Workstation sit 35 screens below a long inbox
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -18,8 +18,10 @@ Found on a physical iPhone 16 Pro (iOS 27.0) by `companion-iphone-smoke-tests.md
 - Keep `Pair a Workstation` reachable without scrolling.
 - Update `companion-shell` tests that read the section order, and the README's hub description.
 
+**Outcome.** Delivered inside its umbrella, `companion-workstations-hub-ui-optimization.md` (Done, uncommitted with it on 10-09); nothing further was built here. `Hub.svelte` now leads with a card per Workstation (state, `N waiting`, `Try now`) and a full-width `Pair a Workstation`, then `N waiting on you` with per-kind totals, the first three items and `Show all N`, then `Device keys` closed. `Show all` opens `InboxList.svelte`: grouped, filtered by kind, windowed (about 27 live rows at any length), each tap through the unchanged `openItem`. `surfaces/hub.test.ts` holds the section order with 210 items, the cap, the bounded list at 5,000, and the locked layout; the README's hub section says the same. Verified 10-09: `companion-shell:test` 308/308, `companion-shell:check` 0 errors. Smoothness is measured in desktop WebKit (worst frame 26–29 ms); the iPhone figure is the umbrella's open item.
+
 **Acceptance.**
-- [ ] With 195 inbox items, opening a Workstation and starting a pairing each take one tap from the top of the hub
-- [ ] The inbox is still fully reachable and still lands on its card or terminal
-- [ ] Scrolling stays smooth with the full list
+- [x] With 195 inbox items, opening a Workstation and starting a pairing each take one tap from the top of the hub
+- [x] The inbox is still fully reachable and still lands on its card or terminal
+- [x] Scrolling stays smooth with the full list
 - [ ] Human test: on the phone with a long inbox, open a Workstation without scrolling

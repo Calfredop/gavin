@@ -554,6 +554,26 @@ ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
   connecting, asleep, unreachable, or whose desktop app is not running
   adds nothing. Tapping an item opens its Workstation, once a paired one
   can be opened (companion-23); until then the hub says so.
+- **The hub's layout** (`src/shell/surfaces/Hub.svelte`, over
+  `src/shell/hub/inboxView.ts`) leads with its own jobs, so a long inbox
+  never buries them (it did: 210 items put the Workstations, Pair and
+  Unlock 35 screens down). In order: the Unlock's banner, held at the top
+  while it is shown; the hub's own lines; a card per Workstation (its
+  state, its waiting count, `Try now`), the Demo last and one line once a
+  real one is paired, and `Pair a Workstation`; then `N waiting on you`
+  with the totals per kind and the first three items, and `Show all N`;
+  then, in a debug build, `Device keys`, closed. `Show all` opens the
+  whole inbox on a screen of its own (`InboxList.svelte`): grouped by
+  Workstation, then workspace (headed by name where the Workstation sends
+  one), filtered by kind, each item two lines at most, and windowed --
+  only the entries within a screen of the view are drawn, about 27
+  whatever the length. Its header's `Workstations` leads back; neither
+  platform's back gesture does (the shell has no `@capacitor/app`, and
+  iOS's swipe is off), as it does not for the pairing sheet either.
+  Spacing is phone.css's `--space-*` scale, 8px steps, with a step
+  between any two tap targets; `surfaces/spacing.test.ts` holds it, and
+  `surfaces/hub.test.ts` draws the order, the capped and full inbox and
+  the locked hub.
 
 `src/shell/hub/unlockedHub.ts` wires the two to the plugin; the page only
 draws them. A debug build logs each step (`[gavin-unlock]`, `[gavin-hub]`).
