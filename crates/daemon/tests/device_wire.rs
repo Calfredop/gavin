@@ -2066,7 +2066,7 @@ fn a_daemon_that_was_never_told_has_remote_access_off() {
     let relay = LocalRelay::start();
     let mut workstation = Workstation::start(&relay);
     match workstation.command.request(&Request::ListDevices) {
-        Response::Devices { remote_access_enabled, relay_url, relay_admission_set, devices } => {
+        Response::Devices { remote_access_enabled, relay_url, relay_admission_set, devices, .. } => {
             assert!(!remote_access_enabled);
             assert_eq!(relay_url, None);
             assert!(!relay_admission_set);
@@ -3483,4 +3483,39 @@ fn turning_remote_access_off_drops_a_connected_device() {
     eventually("the daemon took the Relay up again", || relay.relay.stats().workstations == 1);
     device.connect(&paired).unwrap();
     assert_eq!(workstation.connected(), paired.device_id);
+}
+
+/// v67, over the Device wire: a Device hands this Workstation its send
+/// permission, and the desk's list says that Device -- and only that one
+/// -- can be notified. Taking it back with an empty one says so too.
+#[test]
+fn a_device_hands_over_its_send_permission_over_the_wire() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "phone");
+    let tablet = device(&relay, "tablet");
+    let phone_paired = workstation.pair(&phone);
+    let _tablet_paired = workstation.pair(&tablet);
+
+    let mut connection = phone.connect(&phone_paired).unwrap();
+    assert_eq!(workstation.connected(), phone_paired.device_id);
+    let notifies = |workstation: &mut Workstation| -> Vec<(String, bool)> {
+        let mut rows: Vec<_> = workstation.devices().into_iter().map(|d| (d.name, d.notifies)).collect();
+        rows.sort();
+        rows
+    };
+
+    let hand = |permission: &str| Request::SetThisDeviceSendPermission { permission: permission.into() };
+    match connection.request(&hand("v1.claims.signature"), SOON) {
+        Ok(Response::Ok) => {}
+        other => panic!("expected the permission to be kept, got {other:?}"),
+    }
+    assert_eq!(notifies(&mut workstation), vec![("phone".into(), true), ("tablet".into(), false)]);
+
+    match connection.request(&hand(""), SOON) {
+        Ok(Response::Ok) => {}
+        other => panic!("expected the permission to be taken back, got {other:?}"),
+    }
+    assert_eq!(notifies(&mut workstation), vec![("phone".into(), false), ("tablet".into(), false)]);
 }

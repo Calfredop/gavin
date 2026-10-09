@@ -67,6 +67,19 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v67 is Companion notifications reaching a phone (`companion-ios-push-is-
+/// not-wired-end-to-end.md`). A Device hands this Workstation the send
+/// permission it minted for it at the Push gateway with
+/// `SetThisDeviceSendPermission`, which names no Device: the permission is
+/// stored on the row of the Device whose connection it arrived on, as
+/// `RemoveThisDevice` removes only that row. One new TYPE, gated by
+/// `min_version_for`; the shell, which sends it, reads an older daemon's
+/// refusal as a Workstation too old to notify. Two replies widen with it:
+/// `Response::Devices.push_gateway_url` and `DeviceInfo.notifies`, which
+/// the desk's Settings reads behind `FEATURE_MIN_VERSION.pushGateway` --
+/// an older daemon sends neither, and "no gateway, notifies nobody" is a
+/// claim it cannot back.
+///
 /// v66 is Playwright's browser installed on an ssh host by the host's own
 /// daemon (`PlaywrightMachineStatus`, `InstallPlaywrightBrowser`), which
 /// the desktop cannot do from its side of the link. Two new request
@@ -813,7 +826,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 66;
+pub const PROTOCOL_VERSION: u32 = 67;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1846,6 +1859,18 @@ pub enum Request {
     /// away.
     RemoveThisDevice,
 
+    /// A Device hands this Workstation the send permission it minted for
+    /// it at the Push gateway (v67), or takes it back with an empty one.
+    ///
+    /// It names no Device, for `RemoveThisDevice`'s reason: whose row
+    /// holds the permission is decided by the connection it arrived on,
+    /// so a Device sets its own and nobody else's, and a connection that
+    /// is no Device's is refused. `SetDeviceSendPermission` is the desk's
+    /// way to the same column.
+    SetThisDeviceSendPermission {
+        permission: String,
+    },
+
     /// A Device asks the daemon to invoke a desktop Tauri command (v54).
     ///
     /// The daemon checks `command` against the Remote role table
@@ -2425,6 +2450,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         // matters is the role: `server::authorize` allows it to `remote`,
         // and the handler refuses a connection that carries no Device.
         Request::RemoveThisDevice => 53,
+
+        // A Device handing over its send permission (v67). Sent by a
+        // Device over the Device wire and by nothing in the desktop app;
+        // the shell reads an older daemon's refusal as a Workstation too
+        // old to notify. The gate that matters besides is the role, as
+        // for `RemoveThisDevice`.
+        Request::SetThisDeviceSendPermission { .. } => 67,
 
         // Forwarding gated desktop commands (v54). Five new TYPES: three
         // a Device sends, two the desktop's forwarding connection sends.
@@ -3139,6 +3171,11 @@ pub enum Response {
         relay_url: Option<String>,
         #[serde(default)]
         relay_admission_set: bool,
+        /// Where this daemon posts Companion notifications (v67), or
+        /// `None` when it posts none. Not a secret: a gateway's URL
+        /// authenticates nobody.
+        #[serde(default)]
+        push_gateway_url: Option<String>,
     },
     /// The answer to `GetRelayState` (v61).
     RelayState { state: RelayState },
@@ -3567,6 +3604,12 @@ pub struct DeviceInfo {
     /// memory on the daemon, like `last_refusal`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<DevicePresence>,
+    /// Whether this Workstation holds a send permission from this Device
+    /// (v67): whether the desk's notifications can reach it. Absent from
+    /// an older daemon's reply, which reads as `false` and cannot be
+    /// trusted to mean it (`FEATURE_MIN_VERSION.pushGateway`).
+    #[serde(default)]
+    pub notifies: bool,
 }
 
 /// Where a Device is on this Workstation and what it is doing there (v63),
@@ -5708,6 +5751,37 @@ mod tests {
         ));
     }
 
+    /// A Device handing over its send permission names only the
+    /// permission: the connection it arrives on says whose it is. The
+    /// shell writes this JSON by hand (`src/shell/push/handover.ts`).
+    #[test]
+    fn set_this_device_send_permission_names_nobody_and_is_gated_at_67() {
+        let req = Request::SetThisDeviceSendPermission { permission: "v1.a.b".into() };
+        let json = r#"{"type":"SetThisDeviceSendPermission","permission":"v1.a.b"}"#;
+        assert_eq!(serde_json::to_string(&req).unwrap(), json);
+        assert_eq!(min_version_for(&req), 67);
+        assert!(matches!(
+            serde_json::from_str::<Request>(json).unwrap(),
+            Request::SetThisDeviceSendPermission { permission } if permission == "v1.a.b"
+        ));
+    }
+
+    /// A v66 daemon's `Devices` carries neither v67 field: no gateway URL,
+    /// and no Device that notifies.
+    #[test]
+    fn an_older_devices_reply_reads_as_no_gateway_and_nobody_notified() {
+        let older = r#"{"type":"Devices","devices":[{"deviceId":"d1","name":"Phone","role":"remote",
+            "createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}],
+            "remote_access_enabled":true,"relay_url":null,"relay_admission_set":false}"#;
+        match serde_json::from_str::<Response>(older).unwrap() {
+            Response::Devices { devices, push_gateway_url, .. } => {
+                assert_eq!(push_gateway_url, None);
+                assert!(!devices[0].notifies);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     /// Forwarding requests are gated at 54 and round-trip on the wire.
     #[test]
     fn invoke_desktop_and_friends_are_gated_at_54() {
@@ -6018,6 +6092,7 @@ mod tests {
             stale: false,
             last_refusal: None,
             presence: None,
+            notifies: false,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["deviceId"], "dev-1");
@@ -7598,7 +7673,11 @@ mod tests {
         // checked and installed by an ssh host's own daemon. New request
         // TYPES; the only sender is the app's Playwright step, which reads
         // the gate's refusal as "an older host" and names the command.
-        assert_eq!(PROTOCOL_VERSION, 66);
+        // v67: Request::SetThisDeviceSendPermission -- a Device handing
+        // over its Push gateway permission. One new TYPE.
+        // `Devices.push_gateway_url` and `DeviceInfo.notifies` widen
+        // replies, behind FEATURE_MIN_VERSION.pushGateway.
+        assert_eq!(PROTOCOL_VERSION, 67);
     }
 
     #[test]
@@ -8115,6 +8194,8 @@ mod tests {
             Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
             // v53: a Device removing itself.
             Request::RemoveThisDevice,
+            // v67: a Device handing over its send permission.
+            Request::SetThisDeviceSendPermission { permission: "v1.p.s".into() },
             // v54: forwarding gated desktop commands.
             Request::InvokeDesktop {
                 command: "get_board".into(),
@@ -8217,7 +8298,8 @@ mod tests {
     /// (SetHeadroomWorkspaces), v49=4 (the three Companion notification
     /// requests and HeadroomSavings), v50=1 (HeadroomReach), v53=1
     /// (RemoveThisDevice), v54=5 (forwarding desktop commands), v55=2 (the
-    /// attention request), plus Unknown.
+    /// attention request), v67=1 (SetThisDeviceSendPermission), plus
+    /// Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -8310,6 +8392,9 @@ mod tests {
         // PlaywrightMachineStatus, InstallPlaywrightBrowser -- the browser
         // installed on an ssh host by its own daemon.
         expected.insert(66, 2);
+        // SetThisDeviceSendPermission -- a Device handing over its send
+        // permission.
+        expected.insert(67, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

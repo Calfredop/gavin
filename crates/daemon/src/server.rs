@@ -1734,6 +1734,10 @@ pub struct SessionManager {
     /// above and unlike `trust`: it holds no file and cannot fail, and a
     /// manager whose dial was never started simply has nobody listening.
     remote_wake: Arc<crate::remote::Wake>,
+    /// Where Companion notifications wait to be sealed and posted, one
+    /// batch at a time and in the order the desk sent them
+    /// (`queue_companion_push`). Started by the first batch.
+    push_queue: Mutex<Option<std::sync::mpsc::Sender<Vec<crate::companion_push::CompanionPushEvent>>>>,
     /// Which Relays this daemon may use; see `protocol::RelayUrl::parse_for`.
     /// A test may pin it, since the test build is a dev build.
     build_profile: Mutex<protocol::BuildProfile>,
@@ -2106,6 +2110,7 @@ impl SessionManager {
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
             remote_wake: Arc::new(crate::remote::Wake::default()),
+            push_queue: Mutex::new(None),
             build_profile: Mutex::new(protocol::BuildProfile::current()),
             relay_state: Mutex::new(protocol::RelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
@@ -3115,6 +3120,9 @@ impl SessionManager {
             .map(|d| protocol::DeviceInfo {
                 last_refusal: refusals.get(&d.device_id).cloned(),
                 presence: presences.get(&d.device_id),
+                // What `push_companion_notify` would post to: a
+                // permission, on a row still trusted.
+                notifies: !d.is_revoked() && d.send_permission.as_deref().is_some_and(|p| !p.is_empty()),
                 // Computed here, by the daemon that enforces it, rather
                 // than left for the app to re-derive from `last_seen_at`
                 // -- see `protocol::DeviceInfo`. Read before the row is
@@ -3134,6 +3142,7 @@ impl SessionManager {
             relay_url: settings.relay_url,
             // Whether, never what. See `Response::Devices`.
             relay_admission_set: settings.relay_admission.is_some(),
+            push_gateway_url: trust.push_gateway_url()?,
         })
     }
 
@@ -3256,7 +3265,50 @@ impl SessionManager {
         Ok(accepted)
     }
 
+    /// Seals and posts `events` on the push worker, in the order batches
+    /// arrive, and returns at once. One worker, because each push takes
+    /// the Device's next counter from the trust store and stores it back
+    /// after the post: two batches posted side by side would seal under
+    /// the same counter, and the phone drops the second as a replay. And
+    /// off the connection's thread, because a post waits on the gateway,
+    /// which may be slow or gone, and the desk asking must not.
+    pub fn queue_companion_push(self: &Arc<Self>, events: Vec<crate::companion_push::CompanionPushEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        let mut queue = self.push_queue.lock().unwrap();
+        let sender = queue.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<crate::companion_push::CompanionPushEvent>>();
+            // Weak: the manager owns the sender, so the worker ends when
+            // the manager does, rather than keeping it alive.
+            let manager = Arc::downgrade(self);
+            std::thread::Builder::new()
+                .name("gavin-companion-push".into())
+                .spawn(move || {
+                    while let Ok(batch) = rx.recv() {
+                        let Some(manager) = manager.upgrade() else { break };
+                        if let Err(e) =
+                            manager.push_companion_notify(&crate::companion_push::UreqTransport, &batch)
+                        {
+                            eprintln!("gavin-daemon: companion push: {e}");
+                        }
+                    }
+                })
+                .expect("spawn the companion push worker");
+            tx
+        });
+        let _ = sender.send(events);
+    }
+
+    /// `SetPushGatewayUrl`: an `http(s)://` URL with a host, or none. The
+    /// one place the rule lives -- the desk's field shows this refusal.
     pub fn set_push_gateway_url(&self, url: Option<String>) -> anyhow::Result<()> {
+        let url = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        if let Some(url) = &url {
+            push_gateway_url_problem(url).map_or(Ok(()), |problem| {
+                Err(anyhow::anyhow!("gavin-daemon: {problem}"))
+            })?;
+        }
         self.trust_or_err()?.set_push_gateway_url(url.as_deref())
     }
 
@@ -3265,6 +3317,13 @@ impl SessionManager {
         device_id: &str,
         permission: String,
     ) -> anyhow::Result<()> {
+        // It goes into an Authorization header as it is: a Device must not
+        // be able to store something that header cannot carry.
+        if permission.len() > MAX_SEND_PERMISSION_BYTES
+            || !permission.bytes().all(|b| b.is_ascii_graphic())
+        {
+            anyhow::bail!("gavin-daemon: that is not a send permission the Push gateway issues");
+        }
         let trust = self.trust_or_err()?;
         if permission.is_empty() {
             if !trust.clear_send_permission(device_id)? {
@@ -6340,39 +6399,11 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetDeviceSendPermission { device_id, permission } => manager
             .set_device_send_permission(&device_id, permission)
             .map(|_| Response::Ok),
-        Request::PushCompanionNotify { events } => {
-            let mapped: Vec<crate::companion_push::CompanionPushEvent> = events
-                .into_iter()
-                .map(|e| match e {
-                    protocol::CompanionNotifyEvent::Notify {
-                        id,
-                        kind,
-                        text,
-                        workspace_id,
-                        target,
-                    } => crate::companion_push::CompanionPushEvent::Notify {
-                        id,
-                        kind,
-                        text,
-                        workspace_id,
-                        target: match target {
-                            protocol::CompanionNotifyTarget::Session { session_id } => {
-                                crate::notify_crypto::NotifyTarget::Session { session_id }
-                            }
-                            protocol::CompanionNotifyTarget::Card { path } => {
-                                crate::notify_crypto::NotifyTarget::Card { path }
-                            }
-                        },
-                    },
-                    protocol::CompanionNotifyEvent::Resolve { id } => {
-                        crate::companion_push::CompanionPushEvent::Resolve { id }
-                    }
-                })
-                .collect();
-            manager
-                .push_companion_notify(&crate::companion_push::UreqTransport, &mapped)
-                .map(|_| Response::Ok)
-        }
+        // Queued from the connection loop, which holds the manager's Arc
+        // (`queue_companion_push`). Here only for a caller without one.
+        Request::PushCompanionNotify { events } => manager
+            .push_companion_notify(&crate::companion_push::UreqTransport, &push_events(events))
+            .map(|_| Response::Ok),
         // -- Headroom (v46) -------------------------------------------
         //
         // Every one answers with the status AFTER what it did. None of
@@ -6422,6 +6453,8 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         // identity: which Device "this" is. Reaching here means it
         // arrived with none.
         Request::RemoveThisDevice => Err(not_a_device()),
+        // The same, for whose permission it is.
+        Request::SetThisDeviceSendPermission { .. } => Err(not_a_device_to_notify()),
         // Forwarding (v54) is intercepted in the connection loop: invoke
         // needs the forwarding writer and a waiter, listen needs this
         // connection's writer, and the desktop's answers land on the
@@ -6887,9 +6920,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::CreateWorkspacePath { .. }
         | Request::RenameWorkspacePath { .. }
         | Request::TrashWorkspacePath { .. }
-        // A Device removing itself (v53). An agent is not a Device and
-        // holds none to remove.
+        // A Device removing itself (v53), or handing over its send
+        // permission (v67). An agent is not a Device and holds neither.
         | Request::RemoveThisDevice
+        | Request::SetThisDeviceSendPermission { .. }
         // Forwarding (v54): a Device's, or the desktop's answer to one.
         | Request::InvokeDesktop { .. }
         | Request::ListenDesktop { .. }
@@ -6906,7 +6940,8 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
     }
 }
 
-/// What a `remote` connection may do: remove itself, ask the daemon to
+/// What a `remote` connection may do: remove itself, hand over its send
+/// permission (v67), ask the daemon to
 /// forward a gated desktop command or listen for a desktop event, ask
 /// the attention request, and fetch the Companion bundle (ADR 0005).
 ///
@@ -6921,11 +6956,67 @@ fn remote_allows(req: &Request) -> bool {
     matches!(
         req,
         Request::RemoveThisDevice
+            | Request::SetThisDeviceSendPermission { .. }
             | Request::InvokeDesktop { .. }
             | Request::ListenDesktop { .. }
             | Request::UnlistenDesktop { .. }
             | Request::GetAttention { .. }
             | Request::GetCompanionBundle { .. }
+    )
+}
+
+/// The desk's notification events as the push worker seals them.
+fn push_events(events: Vec<protocol::CompanionNotifyEvent>) -> Vec<crate::companion_push::CompanionPushEvent> {
+    events
+        .into_iter()
+        .map(|e| match e {
+            protocol::CompanionNotifyEvent::Notify { id, kind, text, workspace_id, target } => {
+                crate::companion_push::CompanionPushEvent::Notify {
+                    id,
+                    kind,
+                    text,
+                    workspace_id,
+                    target: match target {
+                        protocol::CompanionNotifyTarget::Session { session_id } => {
+                            crate::notify_crypto::NotifyTarget::Session { session_id }
+                        }
+                        protocol::CompanionNotifyTarget::Card { path } => {
+                            crate::notify_crypto::NotifyTarget::Card { path }
+                        }
+                    },
+                }
+            }
+            protocol::CompanionNotifyEvent::Resolve { id } => {
+                crate::companion_push::CompanionPushEvent::Resolve { id }
+            }
+        })
+        .collect()
+}
+
+/// The longest send permission a Device may hand over. The gateway's are
+/// a few hundred bytes (`v1.<claims>.<signature>`).
+const MAX_SEND_PERMISSION_BYTES: usize = 2048;
+
+/// Why `url` is not a Push gateway this daemon will post to, or `None`.
+fn push_gateway_url_problem(url: &str) -> Option<&'static str> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    let Some(rest) = rest else {
+        return Some("a Push gateway URL starts with https:// (or http:// for one on this network)");
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() || host.starts_with(':') || url.chars().any(char::is_whitespace) {
+        return Some("that Push gateway URL names no host");
+    }
+    None
+}
+
+/// What `SetThisDeviceSendPermission` is answered on a connection that
+/// carries no Device.
+fn not_a_device_to_notify() -> anyhow::Error {
+    anyhow::anyhow!(
+        "gavin-daemon: only a Device can hand over its own send permission -- the desk sets one with SetDeviceSendPermission"
     )
 }
 
@@ -7458,6 +7549,29 @@ fn serve_connection(
             manager.shutdown_device_connections(|token, id| id == device_id && Some(token) != own);
             answered?;
             break;
+        }
+
+        // Intercepted for `RemoveThisDevice`'s reason: the permission is
+        // stored on this connection's own Device, which the request does
+        // not name.
+        if let Request::SetThisDeviceSendPermission { permission } = &req {
+            let resp = match identity.device_id.as_deref() {
+                None => Response::Error { message: not_a_device_to_notify().to_string() },
+                Some(device_id) => match manager.set_device_send_permission(device_id, permission.clone()) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => Response::Error { message: e.to_string() },
+                },
+            };
+            write_message(&mut *writer.lock().unwrap(), &resp)?;
+            continue;
+        }
+
+        // Answered once queued: the posts wait on the Push gateway, and
+        // run one batch at a time (`queue_companion_push`).
+        if let Request::PushCompanionNotify { events } = req {
+            manager.queue_companion_push(push_events(events));
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
         }
 
         // Forwarding (v54): a Device asks the daemon to run a desktop
@@ -8773,6 +8887,8 @@ mod tests {
                 "ListenDesktop",
                 "RemoveThisDevice",
                 "RemoveThisDevice",
+                "SetThisDeviceSendPermission",
+                "SetThisDeviceSendPermission",
                 "UnlistenDesktop",
                 "UnlistenDesktop",
             ]
@@ -8962,6 +9078,7 @@ mod tests {
             Request::GetProtocolVersion,
             Request::Shutdown,
             Request::RemoveThisDevice,
+            Request::SetThisDeviceSendPermission { permission: "v1.a.b".into() },
             Request::InvokeDesktop {
                 command: "get_board".into(),
                 args: serde_json::json!({}),
@@ -11609,6 +11726,122 @@ mod tests {
         }
     }
 
+    // -- A Device's send permission (v67) ------------------------------
+
+    /// A Device hands over its own send permission, and nobody else's:
+    /// the request names no Device, and the connection says whose row.
+    #[test]
+    fn a_device_hands_over_its_own_send_permission_and_no_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let permission = |id: &str| manager.trust().unwrap().device(id).unwrap().unwrap().send_permission;
+        let notifies = |id: &str| match manager.list_devices().unwrap() {
+            Response::Devices { devices, .. } => devices.iter().find(|d| d.device_id == id).unwrap().notifies,
+            other => panic!("expected Devices, got {other:?}"),
+        };
+
+        let mut device = adopt(&manager, "dev-1");
+        let hand = |permission: &str| Request::SetThisDeviceSendPermission { permission: permission.into() };
+        assert!(matches!(device.request(&hand("v1.claims.sig")), Response::Ok));
+        assert_eq!(permission("dev-1").as_deref(), Some("v1.claims.sig"));
+        assert_eq!(permission("dev-2"), None);
+        assert!(notifies("dev-1"));
+        assert!(!notifies("dev-2"));
+
+        // Something an Authorization header cannot carry is refused.
+        match device.request(&hand("v1 two words")) {
+            Response::Error { message } => assert!(message.contains("send permission"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert_eq!(permission("dev-1").as_deref(), Some("v1.claims.sig"));
+
+        // Empty takes it back: the Device turned this Workstation off.
+        assert!(matches!(device.request(&hand("")), Response::Ok));
+        assert_eq!(permission("dev-1"), None);
+        assert!(!notifies("dev-1"));
+    }
+
+    /// An `app` connection is no Device: it has no row of its own to set,
+    /// and the desk's way to a Device's row is `SetDeviceSendPermission`.
+    #[test]
+    fn a_connection_that_is_no_device_has_no_permission_to_hand_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        let mut app = connect_as_app(&manager);
+        match app.request(&Request::SetThisDeviceSendPermission { permission: "v1.a.b".into() }) {
+            Response::Error { message } => assert!(message.contains("only a Device"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert_eq!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().send_permission, None);
+    }
+
+    #[test]
+    fn a_push_gateway_url_is_http_with_a_host_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let url = |m: &SessionManager| match m.list_devices().unwrap() {
+            Response::Devices { push_gateway_url, .. } => push_gateway_url,
+            other => panic!("expected Devices, got {other:?}"),
+        };
+        manager.set_push_gateway_url(Some(" https://push.example/ ".into())).unwrap();
+        assert_eq!(url(&manager).as_deref(), Some("https://push.example/"));
+        manager.set_push_gateway_url(Some("http://192.168.1.20:8080".into())).unwrap();
+        for refused in ["push.example", "ftp://push.example", "https://", "https://:8080", "https://a b"] {
+            assert!(manager.set_push_gateway_url(Some(refused.into())).is_err(), "{refused:?} was kept");
+        }
+        assert_eq!(url(&manager).as_deref(), Some("http://192.168.1.20:8080"));
+        manager.set_push_gateway_url(Some("  ".into())).unwrap();
+        assert_eq!(url(&manager), None);
+    }
+
+    /// The push worker posts batches one at a time and in order, each
+    /// under the Device's next counter: posted side by side, two would
+    /// seal under the same one and the phone would drop the second.
+    #[test]
+    fn queued_pushes_post_in_order_under_rising_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        let gateway = crate::companion_push::testing::Gateway::answering(202, "");
+        manager.set_push_gateway_url(Some(gateway.url())).unwrap();
+        manager.set_device_send_permission("dev-1", "perm-1".into()).unwrap();
+
+        let notify = |id: &str| crate::companion_push::CompanionPushEvent::Notify {
+            id: id.into(),
+            kind: "waiting".into(),
+            text: format!("{id} waits"),
+            workspace_id: "w".into(),
+            target: crate::notify_crypto::NotifyTarget::Session { session_id: id.into() },
+        };
+        manager.queue_companion_push(vec![notify("a")]);
+        manager.queue_companion_push(vec![crate::companion_push::CompanionPushEvent::Resolve { id: "a".into() }]);
+        manager.queue_companion_push(vec![notify("b")]);
+
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while gateway.posts().len() < 3 {
+            assert!(Instant::now() < deadline, "{} of 3 pushes posted", gateway.posts().len());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let opened: Vec<_> = gateway
+            .posts()
+            .iter()
+            .map(|post| {
+                assert_eq!(post.permission, "perm-1");
+                let opened = crate::notify_crypto::open(&[1; 32], &post.ciphertext).unwrap();
+                (opened.counter, opened.body.id)
+            })
+            .collect();
+        assert_eq!(opened, vec![(0, "a".to_string()), (1, "a".to_string()), (2, "b".to_string())]);
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while manager.trust().unwrap().device("dev-1").unwrap().unwrap().notify_counter != 3 {
+            assert!(Instant::now() < deadline, "the counter was not stored");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Pairing again replaces both of a Device's keys. A connection it
     /// already holds was proved with the hardware key it had, which is
     /// no longer the Device's: it goes, and the Device connects again
@@ -12654,7 +12887,7 @@ mod tests {
             Response::Ok
         ));
         match app.request(&Request::ListDevices) {
-            Response::Devices { remote_access_enabled, relay_url, devices, relay_admission_set } => {
+            Response::Devices { remote_access_enabled, relay_url, devices, relay_admission_set, .. } => {
                 assert!(remote_access_enabled);
                 assert_eq!(relay_url.as_deref(), Some("wss://relay.example/gavin"));
                 assert!(devices.is_empty());

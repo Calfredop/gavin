@@ -3487,6 +3487,9 @@ pub struct DeviceList {
     /// Whether the daemon holds an admission token for the Relay, never
     /// the token. `false` from a daemon older than v52, which holds none.
     pub relay_admission_set: bool,
+    /// Where the daemon posts Companion notifications (v67); `None` from
+    /// an older daemon, which cannot say (FEATURE_MIN_VERSION.pushGateway).
+    pub push_gateway_url: Option<String>,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3571,9 +3574,13 @@ pub async fn list_devices(
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::Devices { devices, remote_access_enabled, relay_url, relay_admission_set } => {
-            Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set })
-        }
+        Response::Devices {
+            devices,
+            remote_access_enabled,
+            relay_url,
+            relay_admission_set,
+            push_gateway_url,
+        } => Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set, push_gateway_url }),
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
     }
