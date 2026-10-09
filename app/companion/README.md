@@ -476,6 +476,30 @@ section folds, diff layout and worktree choice are saved with
 `setGitViewPrefs`, which is the desk's layout — so the phone always reads the
 workspace's root checkout.
 
+**Commit via agent asks; the desk runs.** The desk's button runs the
+`builtin:commit` prompt in a hidden headless agent and writes the run down
+with `setGitViewPrefs` so a restart can adopt it — layout the phone never
+saves, and a launch wall whose queue only the desk's window drains. So the
+phone runs none of it: `state/agentCommit.ts` sends one
+`agent_commit_for_device`, the host tells the desk's windows
+(`agent-commit-requested`, `app/src-tauri/src/device_commit.rs`) and waits,
+and the window that runs the workspace — the one that would run its rails —
+runs its own `commitViaAgent` (`$lib/companion/deviceCommit.ts`) and answers
+with the session or why not. A refusal is said on the phone in the desk's
+words: the launch wall refuses there rather than queueing, and so does a
+desk tab on another checkout than the root the phone reads. The run the
+phone draws is the desk's record (`gitView.agentCommit`, which arrives with
+the workspaces), put into the phone's own Git view through `showAgentCommit`,
+so the desk's phase, elapsed time and blocker read it as their own and the
+commit box holds while the agent commits; a run started at the desk shows the
+same way. Its end is judged by the tree it left, read again. Show opens the
+hidden session in the phone's terminal (no page holds it, so the workspace's
+record does); Stop goes through the desk's own Stop, never a `kill_session`,
+which the desk's watch would read as a failure and might retry. The Demo
+Workstation plays the desk (`demo/agentCommit.ts`): a scripted agent that
+reads the changes on one tick and commits them all on the next.
+`seam/agentCommit.test.ts` drives it over the wire.
+
 **Files** (`PhoneFiles.svelte` over `phoneFiles.ts`): one folder at a time
 over the desktop's tree state (`fileTree.ts`), and a file opened in the
 desktop's own `FileEditor`, which reads, autosaves and watches as at the desk,

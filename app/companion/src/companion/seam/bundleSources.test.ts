@@ -260,7 +260,18 @@ describe("the Git surface", () => {
     }
   );
 
-  it.each(["setGitViewPrefs", "switchWorktree", "setGraphAll", "commitViaAgent", "openMergeTool"])(
+  // Commit via agent is the desk's to run (`state/agentCommit.ts` asks
+  // for it): its kill would reach the run's watch as a failure, and its
+  // reveal moves the desk's tabs.
+  it.each([
+    "setGitViewPrefs",
+    "switchWorktree",
+    "setGraphAll",
+    "commitViaAgent",
+    "stopAgentCommit",
+    "revealAgentCommit",
+    "openMergeTool",
+  ])(
     "never reaches for %s",
     (action) => {
       expect(git()).not.toMatch(new RegExp(`\\b${action}\\b`));

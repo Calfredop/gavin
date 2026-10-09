@@ -252,6 +252,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("git_apply_patch", RemoteAllowance::Allowed),
     ("git_discard_files", RemoteAllowance::Allowed),
     ("git_commit", RemoteAllowance::Allowed),
+    // "Commit via agent" from a Device: the ask, which the desk window that
+    // runs the workspace answers with its own run, and that window's answer
+    // -- which only a desk window has to give.
+    ("agent_commit_for_device", RemoteAllowance::Allowed),
+    ("answer_agent_commit_request", RemoteAllowance::Refused), // meaningless away from the desk
     ("git_init", RemoteAllowance::Allowed),
     ("git_watch", RemoteAllowance::Allowed),
     ("git_unwatch", RemoteAllowance::Allowed),

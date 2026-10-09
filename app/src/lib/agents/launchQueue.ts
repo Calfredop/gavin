@@ -199,6 +199,16 @@ export function launchBlockedReason(): string | null {
   return gateBlockedReason(get(launchGateVerdict));
 }
 
+/// Why a launch a Device asked for is refused at the wall, or null while
+/// starts are allowed. Refused rather than queued: a queue drains only in
+/// the window holding it, and the Device would never hear it start. Said
+/// the same wherever the wall is asked on a Device's behalf -- by the
+/// phone for a card's run, by the desk for a commit the phone asked for.
+export function deviceLaunchRefusal(): string | null {
+  const why = launchBlockedReason();
+  return why ? `The Workstation is holding new agents: ${why}` : null;
+}
+
 /// What a press that started `count` agents in this workspace would
 /// cost, ready for a confirm dialog.
 ///

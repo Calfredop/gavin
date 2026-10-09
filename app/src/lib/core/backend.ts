@@ -764,6 +764,29 @@ export function unwatchBrowserForDevice(sessionId: string, watcher: string): Pro
   return invoke("unwatch_browser_for_device", { sessionId, watcher });
 }
 
+/// What a Device asks of a workspace's "Commit via agent": a run in the
+/// checkout it names, or a Stop for the run it names.
+export type DeviceCommitRequest = { action: "start"; cwd: string } | { action: "stop"; sessionId: string };
+
+/// A Device's "Commit via agent" (the Companion, through the forwarding
+/// connection). The desk window that runs the workspace runs it as its
+/// own press and answers: a start with the hidden session it began, a
+/// stop with null, and a refusal as the rejection's sentence.
+export function agentCommitForDevice(
+  workspaceId: string,
+  request: DeviceCommitRequest
+): Promise<{ sessionId: string; startedAt: number } | null> {
+  return invoke("agent_commit_for_device", { workspaceId, ...request });
+}
+
+/// A desk window's answer to `agent-commit-requested`, by its id.
+export function answerAgentCommitRequest(
+  id: number,
+  answer: { refused: string } | { value: unknown }
+): Promise<void> {
+  return invoke("answer_agent_commit_request", { id, answer });
+}
+
 /// Every agent browser running now, on every daemon the app talks to: the
 /// read-back for `browser-changed`. A daemon below v65 is left out.
 export function listBrowsers(): Promise<LiveBrowser[]> {

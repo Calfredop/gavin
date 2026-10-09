@@ -46,6 +46,7 @@
   import { hydrateRuns as hydrateCriticalReviewRuns } from "$lib/review/criticalReviewState";
   import { startFindingsRailAutoBuild } from "$lib/review/criticalReviewFindingsRailActions";
   import { startCompanionAttentionPublisher } from "$lib/companion/attentionPublisher";
+  import { startDeviceCommitRequests } from "$lib/companion/deviceCommit";
   import { showAlert } from "$lib/core/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/core/settings";
@@ -109,6 +110,7 @@
   let unlistenClose: (() => void) | null = null;
   let stopFindingsRailAutoBuild: (() => void) | null = null;
   let stopCompanionAttention: (() => void) | null = null;
+  let stopDeviceCommits: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
@@ -391,6 +393,9 @@
     uninstallLineClipboard = installLineClipboard();
     stopFindingsRailAutoBuild = startFindingsRailAutoBuild();
     stopCompanionAttention = startCompanionAttentionPublisher();
+    // A phone's "Commit via agent": the window that runs the workspace
+    // runs it, so every window listens and one answers.
+    void startDeviceCommitRequests().then((stop) => (stopDeviceCommits = stop));
   });
 
   onDestroy(() => {
@@ -400,6 +405,7 @@
     uninstallLineClipboard?.();
     stopFindingsRailAutoBuild?.();
     stopCompanionAttention?.();
+    stopDeviceCommits?.();
     teardown();
   });
 </script>

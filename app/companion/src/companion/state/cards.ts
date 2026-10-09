@@ -13,7 +13,7 @@
 import { get } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { nowStore } from "$lib/agents/agentPauseState";
-import { launchBlockedReason, type NewLaunchIntent } from "$lib/agents/launchQueue";
+import { deviceLaunchRefusal, type NewLaunchIntent } from "$lib/agents/launchQueue";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import type { Column } from "$lib/board/kanban";
 import { cardSessionFor, kanbanState } from "$lib/board/kanbanState";
@@ -67,8 +67,8 @@ export const DEVICE_LAUNCH_HOST: CardLaunchHost = {
     return "jumped";
   },
   hold(_intent: NewLaunchIntent) {
-    const why = launchBlockedReason();
-    return why ? { go: false, error: `The Workstation is holding new agents: ${why}` } : { go: true };
+    const why = deviceLaunchRefusal();
+    return why ? { go: false, error: why } : { go: true };
   },
   place(workspaceId, sessionId) {
     recordStarted(sessionId, workspaceId);

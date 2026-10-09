@@ -65,6 +65,9 @@ export const DESK_ONLY_COMMANDS = [
   // desk opens for it (`watch_browser_for_device`, state/browser.ts).
   "watch_browser",
   "unwatch_browser",
+  // A desk window's answer to a Device's "Commit via agent". The Device
+  // asks (`agent_commit_for_device`); only a desk window has an answer.
+  "answer_agent_commit_request",
 ] as const;
 
 const LAYOUT_SAVING: ReadonlySet<string> = new Set(LAYOUT_SAVING_COMMANDS);

@@ -179,8 +179,15 @@ function holdsSession(ws: Workspace, sessionId: string): boolean {
   return (
     ws.mainSessionId === sessionId ||
     ws.pages.some((p) => allSessionIds(p.layout).includes(sessionId)) ||
-    get(startedHere)[sessionId] === ws.id
+    get(startedHere)[sessionId] === ws.id ||
+    commitAgentOf(ws) === sessionId
   );
+}
+
+/// The hidden agent the desk is committing a workspace with: on no page,
+/// and opened from the Git surface's Show the agent.
+function commitAgentOf(ws: Workspace): string | null {
+  return ws.gitView?.agentCommit?.sessionId ?? null;
 }
 
 /// Every session the view could have open in a workspace.
@@ -189,6 +196,8 @@ function sessionsOf(ws: Workspace | undefined): string[] {
   const ids = ws.pages.flatMap((p) => allSessionIds(p.layout));
   if (ws.mainSessionId) ids.push(ws.mainSessionId);
   for (const [id, workspaceId] of Object.entries(get(startedHere))) if (workspaceId === ws.id) ids.push(id);
+  const committing = commitAgentOf(ws);
+  if (committing) ids.push(committing);
   return ids;
 }
 
@@ -345,6 +354,13 @@ export async function addWorkspace(folder: string, setup: FolderSetup | null): P
   // two lands first.
   adoptWorkspaces(await backend.getWorkspacesState());
   openWorkspace(added.id);
+}
+
+/// The workspaces read again, for a caller that must hold what the desk
+/// wrote before it answered: the write's `workspaces-synced` and the
+/// answer reach the phone by separate ways.
+export async function readWorkspacesAgain(): Promise<void> {
+  adoptWorkspaces(await backend.getWorkspacesState());
 }
 
 /// Another writer's change to one workspace's settings -- the desk, or

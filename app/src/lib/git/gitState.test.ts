@@ -72,6 +72,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 vi.mock("$lib/core/notifications", () => ({ maybeNotifyAgentCommit: vi.fn().mockResolvedValue(undefined) }));
+// The wall a Device's press is refused at, open unless a test closes it.
+// The queue the desk's own press waits in is the real one.
+vi.mock("$lib/agents/launchQueue", async (original) => ({
+  ...(await original<typeof import("$lib/agents/launchQueue")>()),
+  deviceLaunchRefusal: vi.fn(() => null),
+}));
 vi.mock("$lib/core/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
@@ -143,7 +149,10 @@ import {
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
   stopAgentCommit, agentCommitStopping, agentCommitElapsed,
   adoptAgentCommits,
+  commitViaAgentForDevice, stopAgentCommitForDevice, watchesAgentCommit,
+  showAgentCommit, concludeShownAgentCommit,
 } from "$lib/git/gitState";
+import { deviceLaunchRefusal, queuedCount } from "$lib/agents/launchQueue";
 import { maybeNotifyAgentCommit } from "$lib/core/notifications";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "$lib/git/git";
 
@@ -1687,5 +1696,177 @@ describe("agentCommitBlocker", () => {
     expect(agentCommitBlocker(view, "")).toMatch(/no verified headless mode/);
     expect(agentCommitBlocker({ ...view, busy: "Stage" }, HEADLESS)).toBe("Another git operation is running");
     expect(agentCommitBlocker({ ...view, status: { unstaged: [], staged: [] } }, HEADLESS)).toBe("Nothing to commit");
+  });
+});
+
+// The phone's "Commit via agent" (decision A): the phone asks, and the
+// desk window that runs the workspace runs its own commit and answers.
+describe("a Device's commit via agent", () => {
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  function workspaceAt(rootPath: string, worktree?: string): void {
+    layoutState.set({
+      workspaces: [{ id: "ws", name: "gavin", rootPath, pages: [], gitView: worktree ? { worktree } : undefined }],
+      activeWorkspaceId: null,
+      interruptedSessionIds: new Set(),
+    } as never);
+  }
+
+  function exitWith(code: number): void {
+    sessionExits.set(new Map([["agent-1", code]]));
+  }
+
+  beforeEach(() => {
+    workspaceAt("/r");
+  });
+
+  it("starts the desk's own run and answers with its session", async () => {
+    ensureGitView("ws", "/r");
+    const answer = await commitViaAgentForDevice("ws", "/r");
+    expect(answer).toEqual({ sessionId: "agent-1", startedAt: expect.any(Number) });
+    // The desk's run: in this window's view, written down for a restart,
+    // and hidden as a press's is.
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+    expect(vi.mocked(backend.createSession).mock.calls[0]![0]).toBe("/r");
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", {
+      agentCommit: { sessionId: "agent-1", cwd: "/r", retries: 0, startedAt: expect.any(Number) },
+    });
+    expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
+    expect(watchesAgentCommit("ws", "agent-1")).toBe(true);
+    exitWith(0);
+    await flush();
+  });
+
+  it("makes the view on the Git tab's checkout when this window never opened one", async () => {
+    expect(get(gitStore)["ws"]).toBeUndefined();
+    expect(await commitViaAgentForDevice("ws", "/r")).toMatchObject({ sessionId: "agent-1" });
+    expect(get(gitStore)["ws"].cwd).toBe("/r");
+    exitWith(0);
+    await flush();
+  });
+
+  it("refuses rather than commit in a checkout the phone is not looking at", async () => {
+    workspaceAt("/r", "/wt/feat");
+    const answer = await commitViaAgentForDevice("ws", "/r");
+    expect(answer).toEqual({
+      refused: "The desk's Git tab is on feat, not r: commit from the desk, or switch the tab back",
+    });
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses at the launch wall instead of queueing, and says why", async () => {
+    vi.mocked(deviceLaunchRefusal).mockReturnValueOnce("The Workstation is holding new agents: Held: memory is critical");
+    ensureGitView("ws", "/r");
+    expect(await commitViaAgentForDevice("ws", "/r")).toEqual({
+      refused: "The Workstation is holding new agents: Held: memory is critical",
+    });
+    expect(queuedCount("ws")).toBe(0);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+  });
+
+  it("refuses what the desk's button would be disabled for, in the button's words", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValueOnce({ unstaged: [], staged: [] });
+    expect(await commitViaAgentForDevice("ws", "/r")).toEqual({ refused: "Nothing to commit" });
+
+    vi.mocked(resolvedAgentFor).mockReturnValueOnce({ ...vi.mocked(resolvedAgentFor)("ws"), headlessArgs: "" } as never);
+    expect(await commitViaAgentForDevice("ws", "/r")).toEqual({
+      refused: "This workspace's agent has no verified headless mode",
+    });
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second run while the first is going", async () => {
+    ensureGitView("ws", "/r");
+    await commitViaAgentForDevice("ws", "/r");
+    expect(await commitViaAgentForDevice("ws", "/r")).toEqual({ refused: "A commit agent is already running" });
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    exitWith(0);
+    await flush();
+  });
+
+  it("says a failed spawn rather than going quiet", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.createSession).mockRejectedValueOnce(new Error("no pty"));
+    expect(await commitViaAgentForDevice("ws", "/r")).toEqual({ refused: "Commit via agent failed: no pty" });
+  });
+
+  it("stops through the window's own Stop, so the exit reads as the human's doing", async () => {
+    ensureGitView("ws", "/r");
+    await commitViaAgentForDevice("ws", "/r");
+    expect(await stopAgentCommitForDevice("ws", "agent-1")).toBeNull();
+    expect(backend.killSession).toHaveBeenCalledWith("agent-1");
+    expect(agentCommitStopping(get(gitStore)["ws"])).toBe(true);
+    exitWith(137);
+    await flush();
+    expect(get(gitStore)["ws"].error).toBe("Commit via agent stopped");
+    expect(maybeNotifyAgentCommit).not.toHaveBeenCalled();
+  });
+
+  it("does not stop a run it is not watching", async () => {
+    ensureGitView("ws", "/r");
+    expect(await stopAgentCommitForDevice("ws", "agent-9")).toBe("That commit agent is not running at the desk");
+    expect(backend.killSession).not.toHaveBeenCalled();
+  });
+});
+
+// The other half: a view that only WATCHES a run another window started
+// -- the phone drawing the desk's.
+describe("a run another window watches", () => {
+  const RUN = { sessionId: "agent-1", startedAt: 1_000, stopping: false };
+
+  async function viewOf(next: StatusResult = status): Promise<void> {
+    vi.mocked(backend.gitStatus).mockResolvedValue(next);
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+  }
+
+  it("is drawn as this view's own, and holds the commit box like one", async () => {
+    await viewOf();
+    showAgentCommit("ws", RUN);
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+    expect(agentCommitElapsed(get(gitStore)["ws"], 13_000)).toBe("12s");
+    expect(agentCommitBlocker(get(gitStore)["ws"], "-p")).toBeNull();
+  });
+
+  it("writes nothing when nothing changed, so a follower of the store cannot answer itself", async () => {
+    await viewOf();
+    showAgentCommit("ws", RUN);
+    const seen = vi.fn();
+    const stop = gitStore.subscribe(seen);
+    seen.mockClear();
+    showAgentCommit("ws", { ...RUN });
+    expect(seen).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("ends in Committed when the tree it left is clean", async () => {
+    vi.useFakeTimers();
+    try {
+      await viewOf();
+      showAgentCommit("ws", RUN);
+      vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+      await concludeShownAgentCommit("ws", false);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("done");
+      vi.advanceTimersByTime(AGENT_COMMIT_FLASH_MS);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says what was left, or that it was stopped, in the desk's words", async () => {
+    await viewOf();
+    showAgentCommit("ws", RUN);
+    await concludeShownAgentCommit("ws", false);
+    expect(get(gitStore)["ws"].error).toBe("Commit via agent left 4 changes uncommitted");
+
+    showAgentCommit("ws", RUN);
+    await concludeShownAgentCommit("ws", true);
+    expect(get(gitStore)["ws"].error).toBe("Commit via agent stopped");
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
   });
 });

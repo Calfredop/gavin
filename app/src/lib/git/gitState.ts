@@ -32,7 +32,7 @@ import {
   resumeDelayMs,
 } from "$lib/agents/autoResume";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
-import { holdOrQueue, type CommitIntent } from "$lib/agents/launchQueue";
+import { deviceLaunchRefusal, holdOrQueue, type CommitIntent } from "$lib/agents/launchQueue";
 import type {
   ApplyMode,
   Area,
@@ -692,11 +692,14 @@ export function agentCommitElapsed(view: GitViewState | null, now: number): stri
 export function agentCommitBlocker(view: GitViewState | null, headlessArgs: string): string | null {
   if (!view) return "No repository";
   if (!headlessArgs.trim()) return "This workspace's agent has no verified headless mode";
-  if (view.busy || view.op) return "Another git operation is running";
+  if (view.busy || view.op) return OTHER_GIT_OP;
   const dirty = (view.status?.unstaged.length ?? 0) + (view.status?.staged.length ?? 0);
   if (dirty === 0) return "Nothing to commit";
   return null;
 }
+
+const OTHER_GIT_OP = "Another git operation is running";
+const AGENT_COMMIT_RUNNING = "A commit agent is already running";
 
 /// How much of a hidden run's output is kept for the error message.
 /// Long enough for the agent's closing paragraph, short enough to read
@@ -759,22 +762,55 @@ export async function commitViaAgent(
   /// the launch wall. Asking again there would re-queue it for ever.
   options: { queued?: boolean } = {}
 ): Promise<boolean> {
+  const launched = await launchAgentCommit(workspaceId, retries, options.queued ? "cleared" : "queue");
+  return "verdict" in launched ? launched.verdict : false;
+}
+
+/// What the launch wall does to a run: the desk's own press waits in the
+/// queue, a Device's is refused there (that queue drains only in the
+/// window holding it, so the Device would never hear the run start), and
+/// a drained intent has already cleared it.
+type AgentCommitWall = "queue" | "refuse" | "cleared";
+
+/// A run as its launch leaves it: the hidden session started and written
+/// down, with the wait and the verdict still to come -- or why it did not
+/// start, null where the toolbar already says why (a queued press, which
+/// the queue's own strip names).
+type AgentCommitLaunch =
+  | { sessionId: string; startedAt: number; verdict: Promise<boolean> }
+  | { refused: string | null };
+
+/// The first half of a run: everything up to the session existing and its
+/// record being written. Split from the wait so a Device's press can be
+/// answered as soon as there is a session to name.
+async function launchAgentCommit(
+  workspaceId: string,
+  retries: number,
+  wall: AgentCommitWall
+): Promise<AgentCommitLaunch> {
   const s = current(workspaceId);
-  if (!s || s.busy || s.op || s.agentCommit) return false;
+  if (!s) return { refused: NO_GIT_VIEW };
+  if (s.agentCommit) return { refused: AGENT_COMMIT_RUNNING };
+  if (s.busy || s.op) return { refused: OTHER_GIT_OP };
   // The launch wall. Hidden or not, this is an agent process tree, and
   // what it competes with for memory is a build somebody else's agent
   // started. Before the `agentCommit` marker is written, so a queued
   // commit leaves the Git tab exactly as it found it rather than
   // spinning on a run that has not started.
-  if (!options.queued && holdOrQueue({ kind: "commit", workspaceId, label: "commit", retries })) {
-    return false;
+  if (wall === "queue" && holdOrQueue({ kind: "commit", workspaceId, label: "commit", retries })) {
+    return { refused: null };
+  }
+  if (wall === "refuse") {
+    const why = deviceLaunchRefusal();
+    if (why) return { refused: why };
   }
   const agent = resolvedAgentFor(workspaceId);
   const prompt = mustPromptBody("builtin:commit", workspaceId);
   const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, prompt);
   if (!command) {
-    noteError(workspaceId, `Commit via agent needs a headless agent — ${agent.profileId} has none`);
-    return false;
+    const why = `Commit via agent needs a headless agent — ${agent.profileId} has none`;
+    noteError(workspaceId, why);
+    return { refused: why };
   }
   const startedAt = Date.now();
   update(workspaceId, (st) => ({
@@ -794,8 +830,9 @@ export async function commitViaAgent(
       profileIdForLaunch(agent)
     );
   } catch (e) {
-    update(workspaceId, (st) => ({ ...st, agentCommit: null, error: `Commit via agent failed: ${errorText(e)}` }));
-    return false;
+    const why = `Commit via agent failed: ${errorText(e)}`;
+    update(workspaceId, (st) => ({ ...st, agentCommit: null, error: why }));
+    return { refused: why };
   }
   const tail = await captureTail(sessionId);
   // Cosmetic and best-effort: it only matters once the human reveals the
@@ -808,7 +845,7 @@ export async function commitViaAgent(
   // Written down BEFORE the wait, because the window may not survive it.
   await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd, retries, startedAt });
 
-  return watchAgentCommit(workspaceId, sessionId, tail);
+  return { sessionId, startedAt, verdict: watchAgentCommit(workspaceId, sessionId, tail) };
 }
 
 /// The half of a run that happens after it is launched: wait, then judge.
@@ -861,7 +898,7 @@ async function watchAgentCommit(
   // worth saying: the agent may have committed half the tree before it
   // wedged, and the Changes list now shows exactly what is left.
   if (stopped) {
-    noteError(workspaceId, "Commit via agent stopped");
+    noteError(workspaceId, AGENT_COMMIT_STOPPED);
     return false;
   }
 
@@ -870,8 +907,7 @@ async function watchAgentCommit(
   // The working tree is the fact, so it is what gets checked -- saying
   // "Committed" over a tree that is still dirty would be a lie the
   // human only catches by looking.
-  const after = current(workspaceId);
-  const left = (after?.status?.unstaged.length ?? 0) + (after?.status?.staged.length ?? 0);
+  const left = changesLeft(current(workspaceId));
   const said = tail.text();
   const quoted = said ? ` — ${said}` : "";
   if (code !== 0) {
@@ -887,16 +923,31 @@ async function watchAgentCommit(
     return false;
   }
   if (left > 0) {
-    noteError(workspaceId, `Commit via agent left ${left} change${left === 1 ? "" : "s"} uncommitted${quoted}`);
+    noteError(workspaceId, `${leftUncommitted(left)}${quoted}`);
     void announceVerdict(workspaceId, { kind: "left-dirty", changes: left });
     return false;
   }
-  update(workspaceId, (st) => ({ ...st, agentCommitDone: true }));
+  flashAgentCommitDone(workspaceId);
   void announceVerdict(workspaceId, { kind: "committed" });
+  return true;
+}
+
+const AGENT_COMMIT_STOPPED = "Commit via agent stopped";
+
+function changesLeft(view: GitViewState | null): number {
+  return (view?.status?.unstaged.length ?? 0) + (view?.status?.staged.length ?? 0);
+}
+
+function leftUncommitted(left: number): string {
+  return `Commit via agent left ${left} change${left === 1 ? "" : "s"} uncommitted`;
+}
+
+/// The button's "Committed", for AGENT_COMMIT_FLASH_MS.
+function flashAgentCommitDone(workspaceId: string): void {
+  update(workspaceId, (st) => ({ ...st, agentCommitDone: true }));
   setTimeout(() => {
     update(workspaceId, (st) => (st.agentCommitDone ? { ...st, agentCommitDone: false } : st));
   }, AGENT_COMMIT_FLASH_MS);
-  return true;
 }
 
 /// Re-run a commit prompt that failed for a reason worth another try.
@@ -1110,6 +1161,113 @@ export async function revealAgentCommit(workspaceId: string): Promise<void> {
   if (!location) return;
   await switchWorkspaceView(location.workspaceId, "terminal");
   await switchToSessionInPage(location.workspaceId, location.pageId, sessionId);
+}
+
+// ---- a Device's commit via agent -------------------------------------------
+
+/// What a Device's "Commit via agent" is answered with: the hidden session
+/// this window started, or why it started none.
+export type DeviceAgentCommit = { sessionId: string; startedAt: number } | { refused: string };
+
+/// A Device's "Commit via agent", run by this window as its own button
+/// would run it. The Device only asks -- what it starts, the desk runs,
+/// as with a rail -- so the run, its record and its verdict are this
+/// window's: the desk shows the same run the phone does, and a restart
+/// adopts it the same way.
+///
+/// What differs from a press is what the human cannot see from here.
+/// The launch wall refuses rather than queues; a view on another checkout
+/// refuses rather than committing somewhere the phone is not looking; and
+/// every refusal comes back as a sentence, because a phone has no
+/// tooltip and no banner of this window's reaches it.
+export async function commitViaAgentForDevice(workspaceId: string, cwd: string): Promise<DeviceAgentCommit> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return { refused: "This workspace is no longer on the Workstation" };
+  // A view this window never opened is made on the checkout the Git tab
+  // would make it on, so opening the tab later finds the run instead of
+  // replacing the view and abandoning it.
+  if (!current(workspaceId)) {
+    const target = ws.gitView?.worktree ?? ws.rootPath;
+    if (target) ensureGitView(workspaceId, target);
+  }
+  const s = current(workspaceId);
+  if (!s) return { refused: NO_GIT_VIEW };
+  if (s.cwd !== cwd) {
+    return {
+      refused: `The desk's Git tab is on ${folderName(s.cwd)}, not ${folderName(cwd)}: commit from the desk, or switch the tab back`,
+    };
+  }
+  if (s.agentCommit) return { refused: AGENT_COMMIT_RUNNING };
+  // Read first: the blocker judges the tree, and this view may not have
+  // been read since the phone's was.
+  await refresh(workspaceId);
+  const blocker = agentCommitBlocker(current(workspaceId), resolvedAgentFor(workspaceId).headlessArgs);
+  if (blocker) return { refused: blocker };
+  const launched = await launchAgentCommit(workspaceId, 0, "refuse");
+  if ("refused" in launched) return { refused: launched.refused ?? "Commit via agent did not start" };
+  return { sessionId: launched.sessionId, startedAt: launched.startedAt };
+}
+
+/// Whether this window watches the run `sessionId` names -- the one
+/// window a Device's Stop is for.
+export function watchesAgentCommit(workspaceId: string, sessionId: string): boolean {
+  return current(workspaceId)?.agentCommit?.sessionId === sessionId;
+}
+
+/// A Device's Stop, through this window's own. A bare `kill_session`
+/// from the phone would reach the watch as an exit like any other --
+/// "failed (exit 137)" in the banner, and a candidate for the automatic
+/// retry -- where this one is read as the human's doing. Null once the
+/// kill is on its way, else why not.
+export async function stopAgentCommitForDevice(workspaceId: string, sessionId: string): Promise<string | null> {
+  const run = current(workspaceId)?.agentCommit;
+  if (run?.sessionId !== sessionId) return "That commit agent is not running at the desk";
+  if (run.stopping) return null;
+  if (await stopAgentCommit(workspaceId)) return null;
+  return current(workspaceId)?.error ?? "Could not stop the commit agent";
+}
+
+// ---- a run another window watches -------------------------------------------
+
+type AgentCommitRun = NonNullable<GitViewState["agentCommit"]>;
+
+/// Draws a run another window started and is watching -- a Device
+/// showing the desk's -- as this view's own, so everything that reads the
+/// phase reads it: the button's states, how long it has been going, and
+/// the commit box held while the agent commits. Never judged here: the
+/// window that started it waits for it, writes the verdict and clears the
+/// record, and `concludeShownAgentCommit` reads what that left.
+export function showAgentCommit(workspaceId: string, run: AgentCommitRun | null): void {
+  const s = current(workspaceId);
+  // Every `update` is a new store value, and a caller that follows this
+  // store would otherwise answer its own write for ever.
+  if (!s || sameRun(s.agentCommit, run)) return;
+  update(workspaceId, (st) => ({ ...st, agentCommit: run, agentCommitDone: run ? false : st.agentCommitDone }));
+}
+
+function sameRun(a: AgentCommitRun | null, b: AgentCommitRun | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.sessionId === b.sessionId && a.startedAt === b.startedAt && a.stopping === b.stopping;
+}
+
+/// The end of a run `showAgentCommit` drew, told from the tree it left,
+/// read again: a view that only watched has no exit code and none of the
+/// run's output -- those are in the banner of the window that ran it --
+/// but the working tree is the fact either way.
+export async function concludeShownAgentCommit(workspaceId: string, stopped: boolean): Promise<void> {
+  showAgentCommit(workspaceId, null);
+  update(workspaceId, (st) => ({ ...st, error: null }));
+  await refresh(workspaceId);
+  // A read that failed has said so, and a tree it did not read is no
+  // verdict.
+  if (current(workspaceId)?.error) return;
+  if (stopped) {
+    noteError(workspaceId, AGENT_COMMIT_STOPPED);
+    return;
+  }
+  const left = changesLeft(current(workspaceId));
+  if (left > 0) noteError(workspaceId, leftUncommitted(left));
+  else flashAgentCommitDone(workspaceId);
 }
 
 // ---- SP2: long ops, refs actions, nav selection ----------------------------

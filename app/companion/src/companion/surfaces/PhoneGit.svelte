@@ -4,7 +4,13 @@
   // op bar, the file rows, the commit box and the diff are the desktop's
   // own components -- the desk's `GitHubView` is not, because its columns,
   // folds and diff layout are saved in the desk's layout.
-  import { ArrowDown, ArrowUp, Download, GitBranch, RefreshCw } from "@lucide/svelte";
+  import { ArrowDown, ArrowUp, Bot, Check, Download, Eye, GitBranch, RefreshCw, Square } from "@lucide/svelte";
+  import {
+    agentDefaultsStore,
+    agentModelDefaultsStore,
+    agentProfilesStore,
+    trustedAgentConfigs,
+  } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import GitOpBar from "$lib/git/GitOpBar.svelte";
   import {
@@ -20,11 +26,15 @@
     select,
     startWatching,
   } from "$lib/git/gitState";
+  import { askDeskToCommit, askDeskToStop, commitAgentArgs, followAgentCommit } from "$companion/state/agentCommit";
   import { onReconnect, reachability, shownError } from "$companion/state/reachability";
+  import { launchTables, loadLaunchTables } from "$companion/state/sessions";
+  import { openTerminal } from "$companion/state/workstation";
   import PhoneGitBranches from "$companion/surfaces/PhoneGitBranches.svelte";
   import PhoneGitChanges from "$companion/surfaces/PhoneGitChanges.svelte";
   import PhoneGitDiff from "$companion/surfaces/PhoneGitDiff.svelte";
   import {
+    agentCommitControl,
     branchLine,
     changesCount,
     gitLocked,
@@ -51,6 +61,27 @@
   const file = $derived(view ? openFile(view) : null);
   const error = $derived(shownError(view?.error, $reachability));
 
+  // The desk's "Commit via agent", run at the desk (`state/agentCommit.ts`).
+  // The clock behind "Committing… 12s" ticks only while a run does.
+  let now = $state(Date.now());
+  const agentArgs = $derived(
+    commitAgentArgs(
+      $launchTables,
+      $trustedAgentConfigs(workspace.id),
+      $agentProfilesStore,
+      $agentModelDefaultsStore,
+      $agentDefaultsStore.defaultAgent
+    )
+  );
+  const agent = $derived(view ? agentCommitControl(view, agentArgs, now) : null);
+  const agentRunning = $derived(agent?.shows === "running");
+  $effect(() => {
+    if (!agentRunning) return;
+    now = Date.now();
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+
   let pane = $state<GitPane>("changes");
 
   // The checkout this reads is always the workspace's root. The desk can
@@ -62,6 +93,17 @@
     if (!target) return;
     ensureGitView(id, target);
     void refresh(id);
+  });
+
+  // The agent a commit would run, read as a New agent reads it, and the
+  // desk's run drawn here while the surface is up.
+  $effect(() => {
+    void loadLaunchTables();
+  });
+  $effect(() => {
+    const id = workspace.id;
+    if (!root) return;
+    return followAgentCommit(id);
   });
 
   // Read again when the connection comes back, once, with the banner
@@ -140,6 +182,56 @@
     </div>
     {#if note}
       <p class="hint">{note}</p>
+    {/if}
+
+    {#if agent}
+      <div class="agent">
+        {#if agent.shows === "running"}
+          <span class="agent-state" role="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            {agent.label}
+            {#if agent.elapsed}<span class="elapsed">{agent.elapsed}</span>{/if}
+          </span>
+          {#if agent.canShow && agent.session}
+            {@const session = agent.session}
+            <button
+              type="button"
+              class="agent-button"
+              aria-label="Show the agent"
+              onclick={() => openTerminal(session)}
+            >
+              <Eye size={16} />
+              Show
+            </button>
+            <button
+              type="button"
+              class="agent-button"
+              aria-label="Stop the commit agent"
+              disabled={!agent.canStop}
+              onclick={() => void askDeskToStop(workspace.id)}
+            >
+              <Square size={14} />
+              Stop
+            </button>
+          {/if}
+        {:else if agent.shows === "done"}
+          <span class="agent-state done" role="status" aria-live="polite">
+            <Check size={16} />
+            {agent.label}
+          </span>
+        {:else}
+          <button
+            type="button"
+            class="agent-button"
+            disabled={agent.blocker !== null}
+            onclick={() => void askDeskToCommit(workspace.id)}
+          >
+            <Bot size={16} />
+            {agent.label}
+          </button>
+          {#if agent.blocker}<span class="agent-why">{agent.blocker}</span>{/if}
+        {/if}
+      </div>
     {/if}
 
     <GitOpBar workspaceId={workspace.id} />
@@ -325,6 +417,70 @@
     font-size: 0.75rem;
     font-variant-numeric: tabular-nums;
     text-align: center;
+  }
+  /* Commit via agent: the button with why it is off beside it, or the
+     run with Show and Stop. Wraps, as the sync row does. */
+  .agent {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 8px;
+  }
+  .agent-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 0.875rem;
+  }
+  .agent-button:disabled {
+    opacity: 0.45;
+  }
+  .agent-button:active:not(:disabled) {
+    background: var(--surface-hover);
+  }
+  .agent-why {
+    flex: 1 1 10em;
+    color: var(--text-subtle);
+    font-size: 0.75rem;
+  }
+  .agent-state {
+    display: inline-flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+  .agent-state.done {
+    color: var(--success-text);
+  }
+  /* Tabular, so the clock does not shuffle Show and Stop each second. */
+  .elapsed {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
+  }
+  .spinner {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--border-accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .hint {
     margin: -2px 0 8px;

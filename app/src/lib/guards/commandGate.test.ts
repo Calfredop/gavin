@@ -304,6 +304,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   unwatch_browser: ["ordinary"],
   watch_browser_for_device: ["ordinary"],
   unwatch_browser_for_device: ["ordinary"],
+  // A Device's "Commit via agent": the ask, which the desk window that
+  // runs the workspace answers with its own press (or Stop) -- a hidden
+  // agent that commits and never pushes -- and that window's answer.
+  agent_commit_for_device: ["ordinary"],
+  answer_agent_commit_request: ["ordinary"],
   list_browsers: ["ordinary"],
   get_playwright_pane_open: ["ordinary"],
   set_playwright_pane_open: ["ordinary"],

@@ -200,6 +200,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "git_apply_patch",
     "git_discard_files",
     "git_commit",
+    "agent_commit_for_device",
+    "answer_agent_commit_request",
     "git_init",
     "git_watch",
     "git_unwatch",

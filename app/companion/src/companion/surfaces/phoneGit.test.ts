@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BranchInfo, RefsSnapshot, RepoInfo, StatusResult } from "$lib/git/git";
 import { initialState, type GitViewState } from "$lib/git/gitState";
 import {
+  agentCommitControl,
   branchLine,
   changeSections,
   changesCount,
@@ -249,5 +250,66 @@ describe("the Branches pane", () => {
 
   it("asks before merging, naming both branches", () => {
     expect(mergeQuestion(ready(), "feat/x")).toBe("Merge feat/x into main?");
+  });
+});
+
+describe("Commit via agent", () => {
+  const HEADLESS = "-p";
+
+  it("is a button the desk's blocker rules, said beside it", () => {
+    expect(agentCommitControl(ready(), HEADLESS, 0)).toEqual({
+      shows: "button",
+      label: "Commit via agent",
+      elapsed: null,
+      blocker: null,
+      canShow: false,
+      canStop: false,
+      session: null,
+    });
+    expect(agentCommitControl(ready(), "", 0).blocker).toBe("This workspace's agent has no verified headless mode");
+    expect(agentCommitControl(ready({ busy: "Stage" }), HEADLESS, 0).blocker).toBe("Another git operation is running");
+    expect(agentCommitControl(ready({ status: { unstaged: [], staged: [] } }), HEADLESS, 0).blocker).toBe(
+      "Nothing to commit"
+    );
+  });
+
+  it("waits for the agent settings rather than calling the agent headless-less", () => {
+    expect(agentCommitControl(ready(), null, 0).blocker).toBe("Reading the Workstation’s agent settings…");
+  });
+
+  it("says Committing… with how long, from the press until the session, and offers Show and Stop once there is one", () => {
+    const starting = ready({ agentCommit: { sessionId: null, startedAt: 1_000, stopping: false } });
+    expect(agentCommitControl(starting, HEADLESS, 4_000)).toMatchObject({
+      shows: "running",
+      label: "Committing…",
+      elapsed: "3s",
+      canShow: false,
+      canStop: false,
+    });
+    const running = ready({ agentCommit: { sessionId: "agent-1", startedAt: 1_000, stopping: false } });
+    expect(agentCommitControl(running, HEADLESS, 62_000)).toMatchObject({
+      label: "Committing…",
+      elapsed: "1m 1s",
+      canShow: true,
+      canStop: true,
+      session: "agent-1",
+    });
+  });
+
+  it("says Stopping… and takes Stop away once it is asked for", () => {
+    const stopping = ready({ agentCommit: { sessionId: "agent-1", startedAt: null, stopping: true } });
+    expect(agentCommitControl(stopping, HEADLESS, 0)).toMatchObject({
+      label: "Stopping…",
+      elapsed: null,
+      canShow: true,
+      canStop: false,
+    });
+  });
+
+  it("says Committed after a run that emptied the tree", () => {
+    expect(agentCommitControl(ready({ agentCommitDone: true }), HEADLESS, 0)).toMatchObject({
+      shows: "done",
+      label: "Committed",
+    });
   });
 });

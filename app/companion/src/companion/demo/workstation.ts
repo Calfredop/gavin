@@ -20,6 +20,7 @@ import {
 } from "$companion/channel/messages";
 import type { ChannelEndpoint } from "$companion/channel/port";
 import { ACTIVITY } from "$companion/demo/activity";
+import { runCommitAgents } from "$companion/demo/agentCommit";
 import { turnPage } from "$companion/demo/browser";
 import { COMMANDS, DemoFailure, type DemoContext } from "$companion/demo/commands";
 import { runAllRails } from "$companion/demo/railCommands";
@@ -128,6 +129,9 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
       // The desk's scheduler, as time passes at the desk: a card the
       // human moved to Done from the phone moves its rail on.
       runAllRails(demo);
+      // ...and a commit agent the phone asked the desk for moves on,
+      // after anything the step above changed, so its commit takes it.
+      runCommitAgents(demo);
     },
 
     reach(next) {

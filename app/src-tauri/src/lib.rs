@@ -10,6 +10,7 @@ mod companion_bundle;
 mod config;
 mod confirm_gate;
 mod daemon;
+mod device_commit;
 mod edge_expand;
 mod fileviewer;
 mod forwarding;
@@ -97,6 +98,7 @@ pub fn run() {
         .manage(remote::SessionHosts::default())
         .manage(browser_view::BrowserWatches::default())
         .manage(forwarding::Forwarding::default())
+        .manage(device_commit::DeviceCommitRequests::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -322,6 +324,8 @@ pub fn run() {
             git::git_apply_patch,
             git::git_discard_files,
             git::git_commit,
+            device_commit::agent_commit_for_device,
+            device_commit::answer_agent_commit_request,
             git::git_init,
             git::git_watch,
             git::git_unwatch,
