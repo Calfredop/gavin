@@ -38,6 +38,8 @@
   } from "$lib/core/devicesPanel";
   import type { PresenceNaming } from "$lib/core/devicePresence";
   import { daemonCompat, layoutState } from "$lib/core/layoutState";
+  import { ownedCountByDevice } from "$lib/core/sessionOwnership";
+  import { ownershipBlocked, sessionOwners } from "$lib/core/sessionOwnershipState";
   import { sessionLabel } from "$lib/core/paths";
   import {
     connectedDevices,
@@ -65,6 +67,8 @@
   const presenceGate = $derived(presenceBlocked($daemonCompat));
   // And for whether notifications reach a Device (v67).
   const notifyGate = $derived(pushGatewayBlocked($daemonCompat));
+  // And for locking a session to the Device working in it (v68).
+  const ownerGate = $derived(ownershipBlocked($daemonCompat));
 
   let pairing = $state<PairingState>(PAIRING_IDLE);
   let pairingError = $state<string | null>(null);
@@ -79,7 +83,9 @@
     sessionName: (id) => sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, id),
   });
   const rows = $derived(
-    $deviceList ? panelRows($deviceList.devices, $connectedDevices, nowMs, $devicePresences, naming) : []
+    $deviceList
+      ? panelRows($deviceList.devices, $connectedDevices, nowMs, $devicePresences, naming, ownedCountByDevice($sessionOwners))
+      : []
   );
   const pairingGate = $derived(pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState));
   const relayLine = $derived(relayStatus($deviceRelayState, nowMs));
@@ -315,6 +321,7 @@
                 </button>
               </span>
               {#if row.presence}<span class="presence">{row.presence}</span>{/if}
+              {#if row.owns}<span class="presence">{row.owns}</span>{/if}
             </li>
           {/each}
         </ul>
@@ -323,6 +330,12 @@
         {/if}
         {#if presenceGate}
           <p class="hint">Where each Device is, and what it started, is not shown. {presenceGate}</p>
+        {/if}
+        {#if ownerGate}
+          <p class="hint">
+            Sessions are not locked to the Device working in them: two Devices and the desk can type into one at
+            once. {ownerGate}
+          </p>
         {/if}
         {#if notifyGate}
           <p class="hint">Which Devices this Workstation can notify is not shown. {notifyGate}</p>

@@ -9,11 +9,22 @@
   // `sessionId` is fixed for the life of the component, as TerminalPane's
   // is: the page rebuilds this for another session.
   import { flushSync, onMount } from "svelte";
-  import { ArrowDownToLine, Globe, Keyboard, Power, Send, Type } from "@lucide/svelte";
+  import { ArrowDownToLine, ArrowRightLeft, Globe, Keyboard, Lock, Power, Send, Type } from "@lucide/svelte";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { askConfirm, showAlert } from "$lib/core/dialog";
-  import { layoutState } from "$lib/core/layoutState";
+  import { daemonCompat, layoutState } from "$lib/core/layoutState";
+  import { handOverTargets, lockDetail, lockTitle, ownsSession, takeLabel } from "$lib/core/sessionOwnership";
+  import {
+    handOver,
+    liveDevices,
+    lockBySessionId,
+    ownerClock,
+    ownershipBlocked,
+    ownershipViewer,
+    sessionOwners,
+    takeOver,
+  } from "$lib/core/sessionOwnershipState";
   import { sessionLabel } from "$lib/core/paths";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { DEFAULT_TERMINAL_FONT_SIZE } from "$lib/terminal/terminalFont";
@@ -24,7 +35,7 @@
   import { browserShown, browserViews, hideBrowser, showBrowser } from "$companion/state/browser";
   import { endSession } from "$companion/state/sessions";
   import { watchTurn } from "$companion/state/turn";
-  import { sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
+  import { sendAsOwner, sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
   import { closeTerminal } from "$companion/state/workstation";
   import PhoneBrowser from "$companion/surfaces/PhoneBrowser.svelte";
   import { browserButton } from "$companion/surfaces/phoneBrowser";
@@ -85,6 +96,30 @@
   const browserUp = $derived($browserShown === sessionId);
   const browser = $derived(browserButton($browserViews[sessionId], browserUp));
 
+  /// The session lock (v68): another Device owns this session, so the dock
+  /// is the lock bar instead -- the terminal still scrolls under it. While
+  /// this phone owns it, the header offers to hand it on.
+  const lock = $derived($lockBySessionId[sessionId] ?? null);
+  const mine = $derived(ownsSession($sessionOwners, sessionId, $ownershipViewer));
+  const ownerGate = $derived(ownershipBlocked($daemonCompat));
+  const targets = $derived(handOverTargets($liveDevices, $sessionOwners, sessionId, $ownershipViewer));
+  let handingOver = $state(false);
+  let taking = $state(false);
+  /// What the last send or ownership change had to say: a refusal, or why
+  /// a take did not happen. Cleared by the next one.
+  let notice = $state<string | null>(null);
+
+  async function take(): Promise<void> {
+    taking = true;
+    notice = await takeOver(sessionId);
+    taking = false;
+  }
+
+  async function handTo(target: string | null): Promise<void> {
+    handingOver = false;
+    notice = await handOver(sessionId, target);
+  }
+
   function toggleBrowser(): void {
     if (browserUp) hideBrowser(sessionId);
     else void showBrowser(sessionId);
@@ -106,11 +141,31 @@
 
   // A write the Workstation refused has nothing to tell the human that
   // the terminal does not already show: what was typed did not appear.
+  // Except a refusal by the session's owner (v68), which `sendAsOwner`
+  // turns into a lock and a sentence.
   const ignore = (): void => {};
 
+  /// Sends through the owner check, saying what came of it.
+  function owned(send: () => Promise<void>): Promise<boolean> {
+    notice = null;
+    return sendAsOwner(sessionId, send).then(
+      (result) => {
+        if (!result.sent) notice = result.notice;
+        return result.sent;
+      },
+      () => false
+    );
+  }
+
+  /// The line goes, and the field empties at once; if the session's owner
+  /// refused it, what was written comes back to be sent once it is ours.
   function submit(): void {
-    void sendLine(sessionId, draft, modes()).catch(ignore);
+    const line = draft;
+    const shape = modes();
     draft = "";
+    void owned(() => sendLine(sessionId, line, shape)).then((sent) => {
+      if (!sent && draft === "") draft = line;
+    });
   }
 
   let repliedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -119,18 +174,20 @@
     replied = true;
     clearTimeout(repliedTimer);
     repliedTimer = setTimeout(() => (replied = false), REPLIED_FOR_MS);
-    void sendReply(sessionId, answer, modes()).catch(ignore);
+    const shape = modes();
+    void owned(() => sendReply(sessionId, answer, shape));
   }
 
   function key(id: KeyId): void {
     ctrlArmed = false;
-    void sendKey(sessionId, id, modes()).catch(ignore);
+    const shape = modes();
+    void owned(() => sendKey(sessionId, id, shape));
   }
 
   function symbol(ch: string): void {
     const typed = sendTyped(sessionId, ch, ctrlArmed);
     ctrlArmed = typed.ctrlArmed;
-    void typed.sent.catch(ignore);
+    void owned(() => typed.sent);
   }
 
   /// The terminal's own input: taken by the soft keyboard in raw mode,
@@ -275,6 +332,11 @@
     {/if}
   {/snippet}
   {#snippet actions()}
+    {#if mine && !ownerGate}
+      <span class="hand-over">
+        <IconButton icon={ArrowRightLeft} label="Hand over to…" size={18} onclick={() => (handingOver = true)} />
+      </span>
+    {/if}
     {#if browser}
       <span class="browser-button">
         <IconButton
@@ -298,7 +360,14 @@
     <PhoneBrowser {sessionId} onClose={() => hideBrowser(sessionId)} />
   {/if}
   <div class="frame" bind:this={frame} use:tap={onFrameTap}>
-    <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} fontSize={terminalFontSize(DEFAULT_TERMINAL_FONT_SIZE, $textScale)} />
+    <TerminalPane
+      bind:this={pane}
+      {sessionId}
+      visible={true}
+      focused={false}
+      lockBar={false}
+      fontSize={terminalFontSize(DEFAULT_TERMINAL_FONT_SIZE, $textScale)}
+    />
     {#if behind}
       <button type="button" class="latest" use:press={{ onPress: latest }}>
         <ArrowDownToLine size={14} />
@@ -308,8 +377,42 @@
   </div>
 </div>
 
+{#if handingOver}
+  <!-- Who to pass the session to: the other connected Devices, and the
+       desk. Only Devices with a live connection are offered -- a hand-over
+       one never sees would strand the session (decision 7). -->
+  <div class="sheet" role="dialog" aria-label="Hand over to…">
+    <div class="sheet-dim" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <p class="sheet-title">Hand over to…</p>
+      {#each targets as target (target?.deviceId ?? "desk")}
+        <button type="button" class="sheet-choice" use:press={{ onPress: () => void handTo(target?.deviceId ?? null) }}>
+          {target ? target.name : "The desk"}
+        </button>
+      {:else}
+        <p class="sheet-empty">No other Device is connected.</p>
+      {/each}
+      <button type="button" class="sheet-choice cancel" use:press={{ onPress: () => (handingOver = false) }}>Cancel</button>
+    </div>
+  </div>
+{/if}
+
 <div class="dock">
-  {#if dock === "compose"}
+  {#if notice}
+    <p class="notice" role="status">{notice}</p>
+  {/if}
+  {#if lock}
+    <div class="lock-bar" role="status">
+      <Lock size={18} aria-hidden="true" />
+      <span class="lock-words">
+        <strong>{lockTitle(lock)}</strong>
+        <span>{lockDetail(lock, $ownerClock)}</span>
+      </span>
+      <button type="button" class="take" disabled={taking} use:press={{ onPress: () => void take() }}>
+        {takeLabel($ownershipViewer)}
+      </button>
+    </div>
+  {:else if dock === "compose"}
     <div class="replies-row">
       <div class="replies" role="group" aria-label="Quick replies">
         {#if !replied}
@@ -414,6 +517,9 @@
         {/each}
       </div>
     {/if}
+  {/if}
+  {#if ownerGate}
+    <p class="notice">Sessions are not locked to one Device on this Workstation. {ownerGate}</p>
   {/if}
 </div>
 
@@ -627,7 +733,114 @@
     outline: 2px solid var(--border-focus);
     outline-offset: 1px;
   }
+  /* The lock bar takes the dock's place while another Device owns the
+     session: the same height as the compose row, so the terminal above
+     is not refitted -- a refit would resize the owner's PTY. */
+  .lock-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    color: var(--text);
+  }
+  .lock-words {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .lock-words strong,
+  .lock-words span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lock-words strong {
+    font-size: 0.9375rem;
+  }
+  .lock-words span {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+  }
+  .take {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 16px;
+    border: none;
+    border-radius: 8px;
+    background: var(--surface-accent);
+    color: var(--accent-text);
+    font: inherit;
+    font-weight: 600;
+  }
+  .take:disabled {
+    opacity: 0.45;
+  }
+  .notice {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+  }
+
+  /* Fixed over the whole page, so it spans the page's side insets and
+     keeps clear of them itself, as the New card sheet does. */
+  .sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  }
+  .sheet-dim {
+    position: absolute;
+    inset: 0;
+    background: var(--surface-sunken);
+    opacity: 0.6;
+  }
+  .sheet-body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border-strong);
+    border-radius: 12px 12px 0 0;
+    background: var(--surface-raised);
+  }
+  .sheet-title {
+    margin: 0 0 4px;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+  }
+  .sheet-empty {
+    margin: 0;
+    color: var(--text-muted);
+  }
+  .sheet-choice {
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-base);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+  }
+  .sheet-choice.cancel {
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .take:global(.pressed),
+  .sheet-choice:global(.pressed) {
+    background: var(--surface-hover);
+  }
+
   /* A thumb's worth, around the desk's own button. */
+  .hand-over :global(.icon-button),
   .browser-button :global(.icon-button),
   .end :global(.icon-button) {
     min-width: 44px;

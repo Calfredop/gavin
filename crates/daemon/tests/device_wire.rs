@@ -96,6 +96,9 @@ struct Desk {
     /// forwarded command that names a workspace can send one, so a test
     /// that is about something else must be able to read past them.
     presences: std::collections::VecDeque<(String, protocol::DevicePresence)>,
+    /// Ownership pushes (v68) likewise, for `ownership_of`: a Device's
+    /// input or start can send one.
+    owners: std::collections::VecDeque<protocol::SessionOwnership>,
 }
 
 impl Desk {
@@ -114,7 +117,13 @@ impl Desk {
         stream.set_read_timeout(Some(SOON)).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
         let mut desk =
-            Self { stream, reader, refusals: Default::default(), presences: Default::default() };
+            Self {
+                stream,
+                reader,
+                refusals: Default::default(),
+                presences: Default::default(),
+                owners: Default::default(),
+            };
         match desk.request(&Request::Hello {
             client: "app".into(),
             protocol_version: version,
@@ -153,6 +162,7 @@ impl Desk {
                 Response::DevicePresenceChanged { device_id, presence } => {
                     self.presences.push_back((device_id, presence))
                 }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
                 other => return other,
             }
         }
@@ -173,6 +183,7 @@ impl Desk {
                 Response::DevicePresenceChanged { device_id, presence } => {
                     return (device_id, presence)
                 }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
                 other => panic!("expected DevicePresenceChanged, got {other:?}"),
             }
         }
@@ -206,6 +217,7 @@ impl Desk {
                 Response::DevicePresenceChanged { device_id, presence } => {
                     self.presences.push_back((device_id, presence))
                 }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
                 other => panic!("expected DevicePresenceChanged, got {other:?}"),
             }
         }
@@ -241,7 +253,43 @@ impl Desk {
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     return (device_id, refusal)
                 }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
                 other => panic!("expected DeviceRefusalChanged, got {other:?}"),
+            }
+        }
+    }
+
+    /// Reads ownership pushes (v68) until one for `session_id` satisfies
+    /// `check`, and returns it; like `presence_of`, the ones before it are
+    /// the steps that led there, and other sessions' are kept.
+    fn ownership_of(
+        &mut self,
+        session_id: &str,
+        check: impl Fn(&protocol::SessionOwnership) -> bool,
+    ) -> protocol::SessionOwnership {
+        let deadline = Instant::now() + SOON;
+        loop {
+            let found = self.owners.iter().position(|o| o.session_id == session_id && check(o));
+            if let Some(at) = found {
+                let heard = self.owners.remove(at).unwrap();
+                // What came before it for this session is spent.
+                self.owners.retain(|o| o.session_id != session_id);
+                return heard;
+            }
+            assert!(Instant::now() < deadline, "no ownership push for {session_id} came true");
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    self.presences.push_back((device_id, presence))
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                // A Device connecting or hanging up is what moves an owner
+                // into and out of its grace, so those pushes come between.
+                Response::DeviceConnected { .. } | Response::DeviceDisconnected { .. } => {}
+                other => panic!("expected SessionOwnerChanged, got {other:?}"),
             }
         }
     }
@@ -255,6 +303,10 @@ impl Desk {
                 Ok(Some(Response::RelayStateChanged { .. })) => continue,
                 Ok(Some(Response::DeviceRefusalChanged { device_id, refusal })) => {
                     self.refusals.push_back((device_id, refusal));
+                    continue;
+                }
+                Ok(Some(Response::SessionOwnerChanged { ownership })) => {
+                    self.owners.push_back(ownership);
                     continue;
                 }
                 other => break other,
@@ -1426,6 +1478,218 @@ fn an_app_older_than_the_bump_is_not_sent_the_presence_push() {
         older.hears_no_presence_for(QUIET),
         "an app that speaks v62 was sent a v63 push"
     );
+}
+
+// -- session ownership (v68) --------------------------------------------
+
+/// What `command` was refused with: the owner refusal its error carries.
+fn refused(connection: &mut Connection, command: &str, args: serde_json::Value) -> protocol::OwnerRefusal {
+    match connection
+        .request(&Request::InvokeDesktop { command: command.into(), args }, SOON)
+        .unwrap()
+    {
+        Response::DesktopResult { value: None, error: Some(error) } => protocol::OwnerRefusal::from_error(&error)
+            .unwrap_or_else(|| panic!("{command} was refused, but not by the session's owner: {error}")),
+        other => panic!("expected {command} to be refused, got {other:?}"),
+    }
+}
+
+/// `set_session_owner` as a Device asks it, answered by the daemon.
+fn take(
+    connection: &mut Connection,
+    session_id: &str,
+    to: Option<&str>,
+    expect: Option<&str>,
+) -> protocol::SessionOwnership {
+    let args = serde_json::json!({ "sessionId": session_id, "to": to, "expect": expect, "force": true });
+    serde_json::from_value(invoked(connection, "set_session_owner", args).expect("an ownership")).unwrap()
+}
+
+fn owner_id(ownership: &protocol::SessionOwnership) -> Option<&str> {
+    ownership.owner.as_ref().map(|o| o.device_id.as_str())
+}
+
+/// Seam 1 (v68): two Devices, one session. The one that typed first owns
+/// it and the other is refused, naming it, without the desk ever seeing
+/// the keystroke; a Take over and a Hand over move it, and each time the
+/// one left behind is the one refused. The desk hears every change, and
+/// takes it back as the desk.
+#[test]
+fn one_session_takes_input_from_one_device_at_a_time() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let tablet = device(&relay, "Seam one iPad");
+    let paired_phone = workstation.pair(&phone);
+    let paired_tablet = workstation.pair(&tablet);
+    let (phone_id, tablet_id) = (paired_phone.device_id.clone(), paired_tablet.device_id.clone());
+    let mut phone_conn = phone.connect(&paired_phone).unwrap();
+    assert_eq!(workstation.connected(), phone_id);
+    let mut tablet_conn = tablet.connect(&paired_tablet).unwrap();
+    assert_eq!(workstation.connected(), tablet_id);
+    let stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+    let typed = |data: &str| serde_json::json!({ "sessionId": "s1", "data": data });
+    let keystrokes = |stand_in: &StandIn| stand_in.received().iter().filter(|(c, _)| c == "write_input").count();
+
+    // The phone types into a session nobody owns, and so owns it.
+    invoked(&mut phone_conn, "write_input", typed("ls"));
+    let claimed = workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    assert_eq!(owner_id(&claimed), Some(phone_id.as_str()));
+    assert_eq!(claimed.owner.as_ref().unwrap().name, "Seam one iPhone");
+    assert_eq!(claimed.reason, protocol::OwnerChange::Claimed);
+
+    // The tablet is refused, naming the phone, and the desk sees nothing.
+    match refused(&mut tablet_conn, "write_input", typed("rm")) {
+        protocol::OwnerRefusal::Owned { owner, .. } => assert_eq!(owner.name, "Seam one iPhone"),
+        other => panic!("expected Owned, got {other:?}"),
+    }
+    assert!(matches!(
+        refused(&mut tablet_conn, "queue_input", serde_json::json!({ "sessionId": "s1", "text": "go" })),
+        protocol::OwnerRefusal::Owned { .. }
+    ));
+    assert_eq!(keystrokes(&stand_in), 1, "only the phone's keystroke reached the desk");
+
+    // The tablet takes over: answered by the daemon, as the tablet.
+    let taken = take(&mut tablet_conn, "s1", Some(&tablet_id), Some(&phone_id));
+    assert_eq!(owner_id(&taken), Some(tablet_id.as_str()));
+    assert_eq!(taken.changed_by.as_deref(), Some(tablet_id.as_str()));
+    assert_eq!(taken.reason, protocol::OwnerChange::TookOver);
+    let heard = workstation.push.ownership_of("s1", |o| o.reason == protocol::OwnerChange::TookOver);
+    assert_eq!(heard, taken, "the desk is told the same");
+    assert!(matches!(refused(&mut phone_conn, "write_input", typed("x")), protocol::OwnerRefusal::Owned { .. }));
+    invoked(&mut tablet_conn, "write_input", typed("pwd"));
+    assert_eq!(keystrokes(&stand_in), 2);
+
+    // The phone takes it back, then hands it to the tablet on purpose.
+    take(&mut phone_conn, "s1", Some(&phone_id), Some(&tablet_id));
+    let handed = take(&mut phone_conn, "s1", Some(&tablet_id), Some(&phone_id));
+    assert_eq!(handed.reason, protocol::OwnerChange::HandedOver);
+    assert_eq!(owner_id(&handed), Some(tablet_id.as_str()));
+    assert!(matches!(refused(&mut phone_conn, "write_input", typed("x")), protocol::OwnerRefusal::Owned { .. }));
+
+    // A Device reads back who owns what, who it is, and who it could hand
+    // a session to.
+    let list: protocol::session_owner::SessionOwnersList =
+        serde_json::from_value(invoked(&mut phone_conn, "list_session_owners", serde_json::json!({})).unwrap())
+            .unwrap();
+    assert_eq!(list.you.as_deref(), Some(phone_id.as_str()));
+    assert_eq!(list.owners.iter().map(owner_id).collect::<Vec<_>>(), [Some(tablet_id.as_str())]);
+    let mut live: Vec<&str> = list.devices.iter().map(|d| d.device_id.as_str()).collect();
+    live.sort();
+    let mut both = [phone_id.as_str(), tablet_id.as_str()];
+    both.sort();
+    assert_eq!(live, both);
+
+    // The desk takes it back, as the desk; now neither Device owns it.
+    let back = match workstation.command.request(&Request::SetSessionOwner {
+        id: "s1".into(),
+        to: None,
+        expect: Some(tablet_id.clone()),
+        force: true,
+    }) {
+        Response::SessionOwnership { ownership } => ownership,
+        other => panic!("expected SessionOwnership, got {other:?}"),
+    };
+    assert_eq!((back.owner.as_ref(), back.changed_by.as_ref()), (None, None));
+    // A Take over that still expects the tablet lost the race to the desk.
+    let late = serde_json::json!({ "sessionId": "s1", "to": phone_id, "expect": tablet_id, "force": true });
+    assert!(matches!(
+        refused(&mut phone_conn, "set_session_owner", late),
+        protocol::OwnerRefusal::Changed { owner: None, .. }
+    ));
+}
+
+/// A session a Device started is that Device's, and one whose owner is
+/// revoked goes back to the desk at once rather than after a grace.
+#[test]
+fn a_started_session_is_its_devices_until_the_device_is_revoked() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let tablet = device(&relay, "Seam one iPad");
+    let paired_phone = workstation.pair(&phone);
+    let paired_tablet = workstation.pair(&tablet);
+    let mut phone_conn = phone.connect(&paired_phone).unwrap();
+    assert_eq!(workstation.connected(), paired_phone.device_id);
+    let mut tablet_conn = tablet.connect(&paired_tablet).unwrap();
+    assert_eq!(workstation.connected(), paired_tablet.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    let started = invoked(&mut phone_conn, "create_session", serde_json::json!({ "cwd": "/work/phone" }));
+    let session_id = started.unwrap().as_str().unwrap().to_string();
+    let owned = workstation.push.ownership_of(&session_id, |o| o.owner.is_some());
+    assert_eq!(owned.reason, protocol::OwnerChange::Started);
+    assert_eq!(owner_id(&owned), Some(paired_phone.device_id.as_str()));
+    let typed = serde_json::json!({ "sessionId": session_id, "data": "x" });
+    assert!(matches!(refused(&mut tablet_conn, "write_input", typed.clone()), protocol::OwnerRefusal::Owned { .. }));
+
+    let resp = workstation.command.request(&Request::RevokeDevice { device_id: paired_phone.device_id.clone() });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    let released = workstation.push.ownership_of(&session_id, |o| o.owner.is_none());
+    assert_eq!(released.reason, protocol::OwnerChange::Revoked);
+    // Free for the taking: the tablet's next keystroke claims it.
+    invoked(&mut tablet_conn, "write_input", typed);
+    let claimed = workstation.push.ownership_of(&session_id, |o| o.owner.is_some());
+    assert_eq!(owner_id(&claimed), Some(paired_tablet.device_id.as_str()));
+}
+
+/// An app older than v68 is sent nothing it cannot parse: the owner push
+/// would be read as the reply to its next request. The current desk hears
+/// the same change.
+#[test]
+fn an_app_older_than_the_bump_is_not_sent_the_owner_push() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut older = workstation.push_speaking(protocol::SESSION_OWNERS_MIN_VERSION - 1);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut connection, "write_input", serde_json::json!({ "sessionId": "s1", "data": "x" }));
+    workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    let heard_one = {
+        older.stream.set_read_timeout(Some(QUIET)).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut older.reader) {
+                Ok(Some(Response::SessionOwnerChanged { .. })) => break true,
+                Ok(Some(_)) => continue,
+                _ => break false,
+            }
+        }
+    };
+    assert!(!heard_one, "an app that speaks v67 was sent a v68 push");
+}
+
+/// The owner going away is not the owner losing the session: it keeps it
+/// through the grace, and the desk is told when the grace runs out.
+#[test]
+fn an_owner_that_hangs_up_keeps_its_session_through_the_grace() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut phone_conn = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut phone_conn, "write_input", serde_json::json!({ "sessionId": "s1", "data": "x" }));
+    workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    drop(phone_conn);
+    let away = workstation.push.ownership_of("s1", |o| o.owner.as_ref().is_some_and(|o| o.away_since.is_some()));
+    let owner = away.owner.unwrap();
+    assert_eq!(owner.device_id, paired.device_id);
+    assert_eq!(owner.releases_at, owner.away_since.map(|at| at + protocol::session_owner::OWNER_GRACE_SECS));
+
+    // Back inside the grace: its own again.
+    let _phone_conn = phone.connect(&paired).unwrap();
+    let back = workstation.push.ownership_of("s1", |o| o.owner.as_ref().is_some_and(|o| o.away_since.is_none()));
+    assert_eq!(owner_id(&back), Some(paired.device_id.as_str()));
 }
 
 // -- attention request (companion-14) -----------------------------------

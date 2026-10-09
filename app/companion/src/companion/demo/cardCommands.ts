@@ -28,6 +28,7 @@ import {
   withHumanOutcome,
 } from "$companion/demo/cardFiles";
 import { DemoFailure, text, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import { inputFromThisPhone } from "$companion/demo/owners";
 import type { DemoRepo } from "$companion/demo/repo";
 import { type as typeInto } from "$companion/demo/sessions";
 import { announceFiles, announceRepo, repoHolding } from "$companion/demo/watches";
@@ -378,6 +379,7 @@ export const CARD_COMMANDS: Record<string, DemoCommand> = {
     const sessionId = text(args, "sessionId");
     const program = demo.state.terminals[sessionId]?.program;
     if (!program) throw new DemoFailure(`unknown session: ${sessionId}`);
+    inputFromThisPhone(demo, sessionId);
     const queued = demo.state.queuedInputs.filter((q) => q.sessionId !== sessionId);
     const mine = demo.state.queuedInputs.filter((q) => q.sessionId === sessionId);
     if (program.kind === "agent" && program.ask.kind === "composer" && mine.length === 0) {

@@ -25,6 +25,7 @@ pub mod companion_bundle;
 pub mod device_wire;
 pub mod relay;
 pub mod remote_commands;
+pub mod session_owner;
 
 // Where agent CLIs install themselves. Pure -- the home directory is
 // handed in rather than read -- so it needs no `os` feature either.
@@ -40,6 +41,9 @@ pub use attention::{
 };
 pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
+pub use session_owner::{
+    LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, SESSION_OWNERS_MIN_VERSION,
+};
 
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
@@ -66,6 +70,20 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v68 is session ownership (`2026-10-09-session-ownership.md`, ADR 0008):
+/// a session takes input from one Owner at a time, a Device or the desk,
+/// and the daemon refuses a Device's input into a session another holds.
+/// Two new request TYPES -- `SetSessionOwner` (take over, hand over,
+/// release) and `ListSessionOwners` (the read-back, with the Devices a
+/// session can be handed to) -- gated by `min_version_for`, and one push,
+/// `SessionOwnerChanged`, sent only to an app whose `Hello` speaks 68
+/// (`SESSION_OWNERS_MIN_VERSION`). No payload widened, so
+/// `MIN_COMPATIBLE_VERSION` stands. A Device reaches both through
+/// `InvokeDesktop`, as commands the daemon answers itself
+/// (`RemoteAllowance::Daemon`): forwarded, the desk would apply them as
+/// the desk. An older daemon locks nothing, and the surfaces that would
+/// show the lock say why it is missing (`FEATURE_MIN_VERSION.sessionOwnership`).
 ///
 /// v67 is Companion notifications reaching a phone (`companion-ios-push-is-
 /// not-wired-end-to-end.md`). A Device hands this Workstation the send
@@ -826,7 +844,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 67;
+pub const PROTOCOL_VERSION: u32 = 68;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1871,6 +1889,35 @@ pub enum Request {
         permission: String,
     },
 
+    /// Makes `to` the owner of session `id` (v68): a Device's id, or
+    /// `None` for the desk. Take over is `to` naming the caller (or `None`
+    /// from the desk), Hand over names another Device, Release is `None`
+    /// from the owner. Answered with `SessionOwnership`, or an `Error`
+    /// carrying an `OwnerRefusal` (`session_owner`).
+    ///
+    /// `expect` is the owner the caller saw when it decided, `None` for
+    /// the desk: if it has changed since, the answer is `Changed`, which
+    /// is how two Devices racing a Take over get exactly one winner.
+    /// `force` passes the `Busy` question once the caller has asked its
+    /// human. A Device sends it as the `set_session_owner` desktop
+    /// command, which the daemon answers itself with the Device's
+    /// identity; the desk sends it on its own connection, as the desk.
+    SetSessionOwner {
+        id: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        expect: Option<String>,
+        #[serde(default)]
+        force: bool,
+    },
+
+    /// Every session a Device owns, the Devices a session can be handed
+    /// to, and which Device is asking (v68). Answered with
+    /// `SessionOwners`. The read-back for a window that reloaded, or a
+    /// Device that connected, after the pushes went by.
+    ListSessionOwners,
+
     /// A Device asks the daemon to invoke a desktop Tauri command (v54).
     ///
     /// The daemon checks `command` against the Remote role table
@@ -2457,6 +2504,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // old to notify. The gate that matters besides is the role, as
         // for `RemoveThisDevice`.
         Request::SetThisDeviceSendPermission { .. } => 67,
+
+        // Session ownership (v68). Two new TYPES, so this match is the
+        // whole wire gate: an older daemon is never asked, and locks
+        // nothing. FEATURE_MIN_VERSION.sessionOwnership is what makes the
+        // surfaces say so rather than draw a lock that is not there.
+        Request::SetSessionOwner { .. } | Request::ListSessionOwners => 68,
 
         // Forwarding gated desktop commands (v54). Five new TYPES: three
         // a Device sends, two the desktop's forwarding connection sends.
@@ -3197,6 +3250,24 @@ pub enum Response {
     /// A session appearing in `presence.started` is how the desk learns a
     /// Device started it, and places it as a tab labelled with the Device.
     DevicePresenceChanged { device_id: String, presence: DevicePresence },
+    /// `SetSessionOwner`'s answer (v68): the session's ownership after
+    /// the change, or as it already stood when nothing changed.
+    SessionOwnership { ownership: SessionOwnership },
+    /// `ListSessionOwners`'s answer (v68). `owners` holds only sessions a
+    /// Device owns -- a session not listed is the desk's. `devices` are
+    /// the Devices with a live connection, and `you` the asking Device
+    /// (`None` at the desk).
+    SessionOwners {
+        owners: Vec<SessionOwnership>,
+        devices: Vec<LiveDevice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        you: Option<String>,
+    },
+    /// Push (v68): a session's ownership changed, whole. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` said it speaks
+    /// `SESSION_OWNERS_MIN_VERSION` or more; the desk offers it on to the
+    /// Devices that listen (`session-owner-changed`).
+    SessionOwnerChanged { ownership: SessionOwnership },
     /// Push to every live `app` connection (v61): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -7677,7 +7748,9 @@ mod tests {
         // over its Push gateway permission. One new TYPE.
         // `Devices.push_gateway_url` and `DeviceInfo.notifies` widen
         // replies, behind FEATURE_MIN_VERSION.pushGateway.
-        assert_eq!(PROTOCOL_VERSION, 67);
+        // v68: SetSessionOwner + ListSessionOwners and the
+        // SessionOwnerChanged push -- session ownership. Two new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 68);
     }
 
     #[test]
@@ -8196,6 +8269,9 @@ mod tests {
             Request::RemoveThisDevice,
             // v67: a Device handing over its send permission.
             Request::SetThisDeviceSendPermission { permission: "v1.p.s".into() },
+            // v68: session ownership.
+            Request::SetSessionOwner { id: "s".into(), to: Some("d1".into()), expect: None, force: false },
+            Request::ListSessionOwners,
             // v54: forwarding gated desktop commands.
             Request::InvokeDesktop {
                 command: "get_board".into(),
@@ -8298,8 +8374,8 @@ mod tests {
     /// (SetHeadroomWorkspaces), v49=4 (the three Companion notification
     /// requests and HeadroomSavings), v50=1 (HeadroomReach), v53=1
     /// (RemoveThisDevice), v54=5 (forwarding desktop commands), v55=2 (the
-    /// attention request), v67=1 (SetThisDeviceSendPermission), plus
-    /// Unknown.
+    /// attention request), v67=1 (SetThisDeviceSendPermission), v68=2
+    /// (session ownership), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -8395,6 +8471,8 @@ mod tests {
         // SetThisDeviceSendPermission -- a Device handing over its send
         // permission.
         expected.insert(67, 1);
+        // SetSessionOwner, ListSessionOwners -- session ownership.
+        expected.insert(68, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

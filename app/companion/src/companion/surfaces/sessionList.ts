@@ -28,6 +28,9 @@ export interface SessionRow {
   /// What the badge says, in its own words without the axis: "working",
   /// "waiting for you", "stopped — <the agent's sentence>".
   said: string;
+  /// The Device working in it (v68), when that is not this one: the row
+  /// says so beside a lock, as the terminal will.
+  lockedBy: string | null;
 }
 
 export interface SessionGroup {
@@ -70,6 +73,9 @@ export interface SessionListInput {
   /// what says the desk has had long enough. Without them nothing is said.
   startedAt?: Record<string, number>;
   now?: number;
+  /// Who each session is locked by for this Device, by name
+  /// (`lockBySessionId`). Absent: nothing is locked.
+  lockedBy?: Record<string, string>;
 }
 
 /// An indicator's words after its axis ("Agent · working" → "working").
@@ -90,7 +96,15 @@ function row(input: SessionListInput, id: string): SessionRow {
     : status === "failed"
       ? agentFailedIndicator(input.failureReasonById[id])
       : agentIndicator(status);
-  return { id, name, folder: folder === name ? null : folder, status, badge, said: detailOf(badge) };
+  return {
+    id,
+    name,
+    folder: folder === name ? null : folder,
+    status,
+    badge,
+    said: detailOf(badge),
+    lockedBy: input.lockedBy?.[id] ?? null,
+  };
 }
 
 /// The workspace's sessions in groups: its own agent, then each page's

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { Lock } from "@lucide/svelte";
   import * as backend from "$lib/core/backend";
+  import { lockDetail, lockTitle, takeLabel } from "$lib/core/sessionOwnership";
+  import { lockBySessionId, ownerClock, ownershipViewer, takeOver } from "$lib/core/sessionOwnershipState";
   import { fitWorthTaking } from "$lib/terminal/terminalFit";
   import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "$lib/terminal/terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
@@ -16,12 +19,32 @@
   // measurements to the new one. Both call sites therefore rebuild it:
   // Pane.svelte with an {#each} keyed by sessionId, MainAgentPanel with
   // a {#key}. terminalPaneSession.test.ts holds every call site to it.
+  // `lockBar`: whether this pane draws the session lock's bar itself. The
+  // dim is always drawn; the Companion's terminal draws its own bar where
+  // its input dock goes, and passes false.
   let {
     sessionId,
     visible,
     focused,
     fontSize,
-  }: { sessionId: string; visible: boolean; focused: boolean; fontSize: number } = $props();
+    lockBar = true,
+  }: { sessionId: string; visible: boolean; focused: boolean; fontSize: number; lockBar?: boolean } = $props();
+
+  // The session lock (v68): another Device owns this session, so this
+  // window's keystrokes are dropped (`setInputGate`) and the screen is
+  // dimmed under a bar that says who has it and takes it. Scrolling and
+  // selection still reach the terminal -- the dim lets the pointer through
+  // -- and the bar floats over the terminal's foot rather than taking rows
+  // from it: a refit here would resize the owner's PTY.
+  const lock = $derived($lockBySessionId[sessionId] ?? null);
+  let taking = $state(false);
+  let takeError = $state<string | null>(null);
+
+  async function take(): Promise<void> {
+    taking = true;
+    takeError = await takeOver(sessionId);
+    taking = false;
+  }
 
   let mountPoint: HTMLDivElement;
   let term: Terminal;
@@ -97,6 +120,21 @@
 
 <div class="pane" class:inactive={!visible}>
   <div class="term" bind:this={mountPoint}></div>
+  {#if lock}
+    <div class="lock-dim" aria-hidden="true"></div>
+    {#if lockBar}
+      <div class="lock-bar" role="status">
+        <Lock size={14} aria-hidden="true" />
+        <div class="lock-words">
+          <strong>{lockTitle(lock)}</strong>
+          <span>{takeError ?? lockDetail(lock, $ownerClock)}</span>
+        </div>
+        <button type="button" class="take" disabled={taking} onclick={() => void take()}>
+          {takeLabel($ownershipViewer)}
+        </button>
+      </div>
+    {/if}
+  {/if}
 </div>
 
 <style>
@@ -118,6 +156,65 @@
     min-height: 0;
     position: relative;
     overflow: hidden;
+  }
+  .lock-dim {
+    position: absolute;
+    inset: 0;
+    background: var(--surface-sunken);
+    opacity: 0.45;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .lock-bar {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 0.9em;
+  }
+  .lock-words {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .lock-words strong,
+  .lock-words span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lock-words span {
+    color: var(--text-muted);
+    font-size: 0.9em;
+  }
+  .take {
+    flex: none;
+    background: var(--surface-accent);
+    color: var(--accent-text);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .take:focus-visible {
+    outline: 2px solid var(--border-accent);
+    outline-offset: 1px;
+  }
+  .take:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .inactive {
     visibility: hidden;

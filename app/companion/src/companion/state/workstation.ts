@@ -19,6 +19,7 @@ import { fetchBoard } from "$lib/board/kanbanState";
 import * as backend from "$lib/core/backend";
 import { gavinTrees, initGavinListeners, refreshGavinTree } from "$lib/core/gavinState";
 import {
+  daemonCompat,
   handleCwdChanged,
   handleSessionStatusChanged,
   layoutState,
@@ -26,6 +27,7 @@ import {
   reloadAppSettings,
 } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
+import { refreshSessionOwners, watchSessionOwners } from "$lib/core/sessionOwnershipState";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import { rereadAfterOtherWindowWrote } from "$lib/orchestration/orchestrationState";
 import { allSessionIds } from "$lib/panes/layout";
@@ -565,6 +567,16 @@ export async function connectWorkstation(
     // Which agents' browsers are running, for the button beside each
     // terminal; their frames are listened for only while a view is up.
     stops.push(await startBrowserViews());
+    // Which Device each session takes input from (v68): the lock on a
+    // terminal another Device owns, and the keys it drops.
+    stops.push(watchSessionOwners());
+    // The Workstation's daemon as its desk classified it, which every
+    // `featureBlockedReason` the desk's modules ask reads. Best-effort, as
+    // at the desk: a desk that cannot say leaves the gates open.
+    void backend
+      .daemonCompat()
+      .then((compat) => daemonCompat.set(compat))
+      .catch(() => {});
 
     const data = await backend.getWorkspacesState();
     const workstationId = capabilities.workstation.id;
@@ -612,6 +624,7 @@ export async function connectWorkstation(
         .then(adoptWorkspaces)
         .catch(() => {});
       void loadSessions(true);
+      void refreshSessionOwners();
       reassertBrowserViews();
     })
   );

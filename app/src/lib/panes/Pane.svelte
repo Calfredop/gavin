@@ -43,6 +43,8 @@
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import { deviceNameBySessionId, typingBySessionId } from "$lib/core/devicesState";
+  import { lockBySessionId } from "$lib/core/sessionOwnershipState";
+  import { lockTitle } from "$lib/core/sessionOwnership";
   import { typingText } from "$lib/core/devicePresence";
   import { dirtyPaths } from "$lib/files/fileEditing";
   import { showAlert } from "$lib/core/dialog";
@@ -68,6 +70,7 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
+    deviceOwnsIndicator,
     deviceTypingIndicator,
     gitIndicator,
     headroomIndicator,
@@ -334,9 +337,14 @@
   // exactly what the session is.
   // The presence marker (companion-16): a Device is typing into this
   // terminal right now. devicePresence.ts decides when; this only asks.
+  // A Device owning it (v68) is the same axis, and said only while nobody
+  // is typing: the typing marker is the more urgent of the two, and its
+  // owner is in the lock on the terminal either way.
   function tabDeviceBadge(sessionId: string): Indicator | null {
     const names = $typingBySessionId[sessionId];
-    return names?.length ? deviceTypingIndicator(typingText(names)) : null;
+    if (names?.length) return deviceTypingIndicator(typingText(names));
+    const owner = $lockBySessionId[sessionId];
+    return owner ? deviceOwnsIndicator(lockTitle(owner)) : null;
   }
 
   function tabHeadroomBadge(sessionId: string): Indicator | null {

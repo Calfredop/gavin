@@ -16,6 +16,7 @@ import * as workspace from "$lib/core/workspace";
 import type { SessionBaseline } from "$lib/core/backend";
 import * as layout from "$lib/panes/layout";
 import { closeBrowser } from "$companion/demo/browser";
+import { sessionEndedOwner } from "$companion/demo/owners";
 import type { DemoContext } from "$companion/demo/commands";
 import { DEMO } from "$companion/demo/sampleData";
 import { COMPOSER, LEAVE_COMPOSER, prompt, rows, said } from "$companion/demo/transcripts";
@@ -410,6 +411,7 @@ export function end(demo: DemoContext, sessionId: string): void {
   // Its browser goes with it, and is said to have gone first, as the
   // daemon ends the browser before the session's exit reaches the desk.
   closeBrowser(demo, sessionId);
+  sessionEndedOwner(demo, sessionId);
   demo.emit("session-exited", [sessionId, 0]);
 
   let data = state.workspaces;

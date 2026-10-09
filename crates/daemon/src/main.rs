@@ -10,6 +10,7 @@ mod kanban;
 mod memory_index;
 mod orchestration;
 mod osc;
+mod ownership;
 mod pairing;
 mod presence;
 mod proc;
@@ -158,6 +159,9 @@ fn serve() -> anyhow::Result<()> {
     // otherwise -- so on a machine that never turned it on, this starts a
     // thread that opens no socket.
     remote::spawn(&manager);
+    // Hands a pocketed phone's sessions back to the desk once its grace
+    // runs out (v68, `ownership.rs`).
+    server::spawn_owner_lapse(&manager);
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

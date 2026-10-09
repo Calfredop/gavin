@@ -5473,6 +5473,13 @@ pub(crate) fn attach_and_relay(
                         (device_id, presence),
                     );
                 }
+                // A session's owner changed (v68), whole: what locks the
+                // terminal a Device holds, and -- offered on through the
+                // forwarding connection -- what flips the Device that just
+                // lost it. Only sent to an app that speaks 68.
+                Response::SessionOwnerChanged { ownership } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-owner-changed", ownership);
+                }
                 // The dial's state changed (v61). The payload is the state
                 // itself, so the section redraws without asking again.
                 Response::RelayStateChanged { state } => {
@@ -5862,6 +5869,51 @@ pub async fn send_queued_input(
         Request::SendQueuedInput { id: session_id, queued_id },
     )
     .await
+}
+
+/// Makes `to` the owner of a session (v68): a Device's id, or `None` for
+/// the desk. Take back is `to: None` here; Hand over names a Device.
+/// `expect` is the owner the desk saw when the human pressed, and `force`
+/// passes the "typing right now" question once they have answered it.
+///
+/// Always the LOCAL daemon, whatever host the session runs on: ownership
+/// is kept where the Devices connect. The desk is the caller -- a
+/// Device's call of the same name is answered by the daemon itself
+/// (`RemoteAllowance::Daemon`), as that Device. A refusal comes back as
+/// the daemon's message, which carries the `OwnerRefusal` the webview
+/// reads (`sessionOwnership.ts`).
+#[tauri::command]
+pub async fn set_session_owner(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+    session_id: String,
+    to: Option<String>,
+    expect: Option<String>,
+    force: Option<bool>,
+) -> Result<protocol::SessionOwnership, String> {
+    let req = Request::SetSessionOwner { id: session_id, to, expect, force: force.unwrap_or(false) };
+    match state.lanes(current_compat(&compat)).request(req).await.map_err(|e| e.to_string())? {
+        Response::SessionOwnership { ownership } => Ok(ownership),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected SessionOwnership, got {other:?}")),
+    }
+}
+
+/// Every session a Device owns, the Devices with a live connection, and
+/// (here, always none) the asking Device: the read-back for a window that
+/// reloaded after the `session-owner-changed` pushes went by (v68).
+#[tauri::command]
+pub async fn list_session_owners(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::session_owner::SessionOwnersList, String> {
+    match state.lanes(current_compat(&compat)).request(Request::ListSessionOwners).await.map_err(|e| e.to_string())? {
+        Response::SessionOwners { owners, devices, you } => {
+            Ok(protocol::session_owner::SessionOwnersList { owners, devices, you })
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected SessionOwners, got {other:?}")),
+    }
 }
 
 #[tauri::command]

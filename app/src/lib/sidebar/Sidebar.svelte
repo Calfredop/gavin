@@ -11,6 +11,7 @@
   import DevicesPanel from "$lib/core/DevicesPanel.svelte";
   import { DEVICES_LABEL, devicesBadgeTip } from "$lib/core/devicesPanel";
   import { deviceNameBySessionId, devicesBadgeText, watchDevices } from "$lib/core/devicesState";
+  import { watchSessionOwners } from "$lib/core/sessionOwnershipState";
   import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import {
     armRequest,
@@ -203,6 +204,9 @@
   // The badge counts connected Devices while the panel is closed, so the
   // pushes are heard here, for the life of the sidebar.
   onMount(() => watchDevices());
+  // Who owns each session (v68): locks this window's terminals and input
+  // surfaces while a Device works in one.
+  onMount(() => watchSessionOwners());
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and

@@ -49,6 +49,7 @@ import {
   Hourglass,
   LoaderCircle,
   Lock,
+  LockKeyhole,
   MessageCircleQuestionMark,
   Minus,
   OctagonAlert,
@@ -775,6 +776,7 @@ export function deviceIndicator(state: DeviceIndicatorState, why?: string | null
 // shield, because it says nothing about trust. `devicePresence.ts` decides
 // when it is up and whose names it carries.
 const DEVICE_TYPING = make("device", "typing", Smartphone, "accent", "a Device is typing here");
+const DEVICE_OWNS = make("device", "owns", LockKeyhole, "accent", "a Device is working on this");
 
 /// The marker on a terminal a Device is typing into. `who` -- "Pixel is
 /// typing" -- goes in the bubble after the axis.
@@ -782,6 +784,15 @@ export function deviceTypingIndicator(who?: string | null): Indicator {
   if (!who) return DEVICE_TYPING;
   const tip = `${AXIS_LABEL.device} · ${who}`;
   return { ...DEVICE_TYPING, tip, label: tip };
+}
+
+/// The marker on a terminal a Device owns (v68): locked for this window
+/// until it is taken back. `who` -- "iPhone is working on this" -- goes in
+/// the bubble after the axis.
+export function deviceOwnsIndicator(who?: string | null): Indicator {
+  if (!who) return DEVICE_OWNS;
+  const tip = `${AXIS_LABEL.device} · ${who}`;
+  return { ...DEVICE_OWNS, tip, label: tip };
 }
 
 // ---- attention ---------------------------------------------------------
@@ -872,5 +883,6 @@ export function allIndicators(): Indicator[] {
     ...RELAY_STATES.map((state) => RELAY[state]),
     ...DEVICE_STATES.map((state) => DEVICE[state]),
     DEVICE_TYPING,
+    DEVICE_OWNS,
   ];
 }

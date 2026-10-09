@@ -19,6 +19,7 @@ import type { GavinTree } from "$lib/core/gavin";
 import { AGENT_COMMIT_COMMANDS } from "$companion/demo/agentCommit";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { BROWSER_COMMANDS } from "$companion/demo/browser";
+import { inputFromThisPhone, OWNER_COMMANDS } from "$companion/demo/owners";
 import { CARD_COMMANDS } from "$companion/demo/cardCommands";
 import { FILE_COMMANDS } from "$companion/demo/fileCommands";
 import { GIT_COMMANDS } from "$companion/demo/gitCommands";
@@ -119,7 +120,9 @@ const WORK: Record<string, DemoCommand> = {
   // The sessions themselves (sessions.ts). Typing is answered once the
   // session has written what it writes back, as a PTY's echo is.
   write_input: (args, demo): Answer<"writeInput"> => {
-    type(demo, sessionId(args, demo), typeof args.data === "string" ? args.data : "");
+    const id = sessionId(args, demo);
+    inputFromThisPhone(demo, id);
+    type(demo, id, typeof args.data === "string" ? args.data : "");
   },
   // Every terminal a phone opens is sized to the phone; the demo's
   // scripts do not reflow, so a size is taken and nothing else.
@@ -274,4 +277,5 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...CARD_COMMANDS,
   ...RAIL_COMMANDS,
   ...BROWSER_COMMANDS,
+  ...OWNER_COMMANDS,
 };

@@ -40,6 +40,26 @@ _Avoid_: phone, client, paired phone
 Where a Device is on a Workstation and what it is doing there: the workspace it last worked in, the session it is typing into, and the sessions it started. The daemon reads it off the commands the Device has the desktop app run, so a Device never reports its own.
 _Avoid_: activity, status (that is a session's), online (that is being connected)
 
+**Owner**:
+The one Device whose input a session takes, or the desk when no Device holds it. A Device becomes the owner of a session it starts, or of a session the desk holds that it sends input to. A courtesy, not a security boundary: anyone who can type can take the session in one tap.
+_Avoid_: holder, controller, lock holder, driver
+
+**Locked**:
+How a session looks to everyone but its owner: they can read and scroll it, but their input is refused until they take it.
+_Avoid_: read-only (the terminal still scrolls and selects), busy, disabled
+
+**Take over**:
+Making yourself a session's owner while someone else owns it. At the desk it is called **Take back**. If the owner typed a moment ago, you are asked to confirm.
+_Avoid_: steal, grab, claim (that is what typing into a session nobody owns does)
+
+**Hand over**:
+The owner passing a session on purpose to another connected Device, or to the desk.
+_Avoid_: transfer, share, give
+
+**Release**:
+The owner giving a session back to the desk. It also happens without being asked: when the session ends, when the owning Device is revoked, and after a short grace once the owning Device has no connection.
+_Avoid_: unlock, drop
+
 **Workstations hub**:
 The Companion's home screen: every paired Workstation with its state, and one attention inbox across all of them.
 _Avoid_: hub (on its own, that is the desktop app's view one level above any workspace), home, dashboard

@@ -1,7 +1,7 @@
 ---
 order: 23552
 title: Sessions worked by a Device lock for everyone else, with a take-over CTA and Device-to-Device hand-off
-status: To Do
+status: In Progress
 priority: high
 attachments: docs/superpowers/specs/2026-09-27-companion-design.md,docs/adr/0003-companion-drives-the-desktop-app.md,docs/adr/0004-one-unlock-gives-full-control.md,CONTEXT.md,.gavin-root/plans/archive/companion-16-presence-and-phone-sessions.md,crates/daemon/src/presence.rs
 complexity: intricate
@@ -50,26 +50,35 @@ Part of `companion.md`. Requested by the owner during `companion-iphone-smoke-te
 - Demo Workstation: it needs a second scripted Device so the overlay and the hand-off can be shown to App Review and driven in suites.
 - Notifications: a hand-over aimed at a Device that is in the background is a candidate for a push (decide in the spec; out of the first slice if it complicates companion-25).
 
+## Status (2026-10-09)
+
+Built as protocol v68 and uncommitted in the shared tree. The seven decisions take the recommendations, and the owner confirmed them on 2026-10-09. The "desk injected input" notice is deferred to `companion-owner-overlay-says-when-the-desk-injected-input.md`. Green: `cargo test` for protocol, the daemon's ownership/forwarding tests and Seam 1 (63), plus the other crates; the wasm checks; `npm test` (7850), `companion:test` (876), both `check`s with 0 errors, and both builds.
+
+The human tests below need the daemon rebuilt and restarted, and the app installed (for gavin-mcp). Until then the running daemon is v67, and the desk and the phone both say ownership is unavailable. In the Demo Workstation the lock can be seen without any of that: the scripted "iPad (demo)" owns the field notes' agent.
+
 ## Plan
 
-- [ ] Spec: `docs/superpowers/specs/<date>-session-ownership.md` with the seven decisions answered, the state machine (unowned, owned, grace, taken) and the error shapes
-- [ ] Glossary and, if needed, an ADR
-- [ ] Protocol: variants, push, `PROTOCOL_VERSION`, `min_version_for`, and the wasm/companion-core types
-- [ ] Daemon: ownership module with unit tests for every transition (claim, take over, transfer, release on revoke, grace, session end, two racing claimants)
-- [ ] Daemon: enforcement on the three input commands for forwarded Devices and for local clients; typed refusal
-- [ ] Seam 1 test in `crates/daemon/tests/device_wire.rs`: two test Devices, one session, take over and hand-off, the loser's input refused
-- [ ] Desk: pure module `sessionOwnership.ts` plus tests, the overlay component, tab/sidebar markers, Devices panel, `featureBlockedReason` consumers
-- [ ] Companion: terminal overlay, Sessions list, Hand over sheet, refusal handling in compose and quick replies, Demo second Device, seam tests
-- [ ] Every input path audited against the lock (list them in the PR description)
+- [x] Spec: `docs/superpowers/specs/2026-10-09-session-ownership.md` with the seven decisions answered, the state machine (unowned, owned, grace, taken) and the error shapes
+- [x] Glossary and, if needed, an ADR (CONTEXT.md: Owner, Locked, Take over, Hand over, Release; ADR 0008)
+- [x] Protocol: variants, push, `PROTOCOL_VERSION`, `min_version_for`, and the wasm/companion-core types (v68: `protocol::session_owner`, `SetSessionOwner`/`ListSessionOwners`/`SessionOwnerChanged`, `RemoteAllowance::Daemon`; the core and wasm need nothing new, a Device reaches both through `InvokeDesktop`)
+- [x] Daemon: ownership module with unit tests for every transition (claim, take over, transfer, release on revoke, grace, session end, two racing claimants)
+- [x] Daemon: enforcement on the three input commands for forwarded Devices and for local clients; typed refusal (Devices refused in `invoke_desktop`; the desk exempt per decision 2 and held at its own surfaces; `OwnerRefusal` in the error string)
+- [x] Seam 1 test in `crates/daemon/tests/device_wire.rs`: two test Devices, one session, take over and hand-off, the loser's input refused
+- [x] Desk: pure module `sessionOwnership.ts` plus tests, the overlay component, tab/sidebar markers, Devices panel, `featureBlockedReason` consumers (`sessionOwnershipState.ts`; lock bar + dim in `TerminalPane`; owner form of the tab's Device marker -- the sidebar draws no typing marker to extend; "owns N sessions" and the v68 note in the Devices panel)
+- [x] Companion: terminal overlay, Sessions list, Hand over sheet, refusal handling in compose and quick replies, Demo second Device, seam tests (`seam/ownership.test.ts`; demo tablet owns `s-notes-sync`; the bundle now reads `daemon_compat` at connect, which no Companion gate did before)
+- [x] Every input path audited against the lock (list them in the PR description) -- the table is in the spec, "The input-path audit"
 - [ ] Human test: iPhone owns a session, the desk shows the overlay naming the iPhone; Take back at the desk locks the iPhone
 - [ ] Human test: iPhone owns a session, the iPad (or a second Simulator) opens it, sees the overlay, takes over; the iPhone flips to locked; the iPhone takes it back
 - [ ] Human test: lock the owning phone; after the grace the desk can type without tapping anything, and Take over still works before it
 
 ## Acceptance
 
-- [ ] Two Devices cannot type into one session at the same time; the daemon refuses the non-owner
+- [x] Two Devices cannot type into one session at the same time; the daemon refuses the non-owner
 - [ ] A locked terminal shows the owner's Device name and a Take over / Take back CTA on the desk and on a Device
 - [ ] Ownership moves iPhone to iPad by pulling and by handing over, and both Devices' screens agree within a second
-- [ ] A pocketed or revoked owner never strands a session
-- [ ] Rails, auto-resume and the follow-up queue behave as decided
-- [ ] An older daemon degrades with a stated reason, not silently
+- [x] A pocketed or revoked owner never strands a session
+- [x] Rails, auto-resume and the follow-up queue behave as decided
+- [x] An older daemon degrades with a stated reason, not silently
+- [x] Decision: Confirm the seven ownership decisions as built (spec docs/superpowers/specs/2026-10-09-session-ownership.md): all seven take the card's bracketed recommendation; the one deviation is that the 'desk injected input' notice on the overlay is deferred to a follow-up card because the daemon cannot tell a rail's input from a Device's forwarded input without widening an existing request.
+  Options: A) Confirm all seven as built B) Change one (say which in the answer)
+  Answer (2026-10-09): Confirm all seven as built

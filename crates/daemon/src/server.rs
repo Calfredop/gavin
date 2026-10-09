@@ -1705,6 +1705,11 @@ pub struct SessionManager {
     /// Each Device's presence (v63), read off the commands it has had the
     /// desktop run (`presence.rs`). In memory, for the refusals' reason.
     device_presence: Mutex<crate::presence::Presences>,
+    /// Which Device each session takes input from (v68, `ownership.rs`).
+    /// In memory, for presence's reason. Leaf lock, but for the trust-
+    /// store read that names a Device taking a session: nothing takes
+    /// this while holding the trust store.
+    session_owners: Mutex<crate::ownership::Owners>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -1945,9 +1950,38 @@ impl Drop for DeviceConnectionSlot<'_> {
         // After the removal, so an app that reacts by listing devices
         // cannot still see the connection it was told had gone.
         if let Some(conn) = gone {
+            // Its last connection gone, the sessions it owns wait out the
+            // grace for it (v68). A Device holds several connections, and
+            // one of them closing is not the Device going away.
+            if !self.manager.device_is_live(&conn.device_id) {
+                let away = self
+                    .manager
+                    .session_owners
+                    .lock()
+                    .unwrap()
+                    .device_away(&conn.device_id, crate::remote::epoch_seconds());
+                self.manager.announce_owners(away);
+            }
             self.manager
                 .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
         }
+    }
+}
+
+/// Ticks the owners' grace (v68): once a second, every session whose
+/// owning Device stayed away past it goes back to the desk, with nobody
+/// asking. Weak, so the ticker does not keep the manager alive.
+pub fn spawn_owner_lapse(manager: &Arc<SessionManager>) {
+    let manager = Arc::downgrade(manager);
+    let spawned = std::thread::Builder::new().name("owner-lapse".into()).spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        match manager.upgrade() {
+            Some(manager) => manager.lapse_session_owners(),
+            None => break,
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("gavin-daemon: could not start the session owners' grace: {e}");
     }
 }
 
@@ -2106,6 +2140,7 @@ impl SessionManager {
             app_connections: Mutex::new(HashMap::new()),
             device_refusals: Mutex::new(HashMap::new()),
             device_presence: Mutex::new(crate::presence::Presences::default()),
+            session_owners: Mutex::new(crate::ownership::Owners::default()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
@@ -2361,6 +2396,9 @@ impl SessionManager {
         // push by listing devices cannot see a device the daemon has not
         // finished registering.
         self.push_to_apps(&Response::DeviceConnected { device_id: device_id.to_string() });
+        // Back inside the grace: its sessions are its own again (v68).
+        let back = self.session_owners.lock().unwrap().device_back(device_id);
+        self.announce_owners(back);
         Ok(token)
     }
 
@@ -2539,7 +2577,12 @@ impl SessionManager {
 
     /// Check the command table, hand an allowed call to the desktop, and
     /// wait for its `ForwardResult`.
-    fn invoke_desktop(&self, command: &str, args: serde_json::Value) -> Response {
+    ///
+    /// `device_id` is the Device asking, from its connection. Its input
+    /// is held to the session's owner before anything reaches the desk
+    /// (`ownership.rs`), and the commands the table marks `Daemon` are
+    /// answered here, as that Device.
+    fn invoke_desktop(&self, device_id: Option<&str>, command: &str, args: serde_json::Value) -> Response {
         match protocol::allowance_for(command) {
             None => Response::Error {
                 message: format!("gavin-daemon: unknown desktop command `{command}`"),
@@ -2547,7 +2590,11 @@ impl SessionManager {
             Some(protocol::RemoteAllowance::Refused) => Response::Error {
                 message: format!("gavin-daemon: remote role may not invoke `{command}`"),
             },
+            Some(protocol::RemoteAllowance::Daemon) => self.answer_in_daemon(device_id, command, &args),
             Some(protocol::RemoteAllowance::Allowed) => {
+                if let Some(refusal) = device_id.and_then(|device_id| self.device_input(device_id, command, &args)) {
+                    return Response::DesktopResult { value: None, error: Some(refusal.to_error()) };
+                }
                 let what = format!("`{command}`");
                 let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
                 match self.ask_desktop(&what, FORWARD_BUDGET, push) {
@@ -2745,6 +2792,18 @@ impl SessionManager {
         at: i64,
     ) {
         const REFUSAL_PUSH_EVERY: i64 = 30;
+        // A refusal that ends the Device's trust hands its sessions back
+        // now (v68). `Busy` and `Unlock` do not: that Device is still
+        // trusted, and its grace is what covers it.
+        {
+            use protocol::device_wire::ConnectRefusal;
+            if matches!(
+                reason,
+                ConnectRefusal::NotPaired | ConnectRefusal::Revoked | ConnectRefusal::Stale | ConnectRefusal::PairAgain
+            ) {
+                self.release_device_sessions(device_id);
+            }
+        }
         let refusal = protocol::DeviceRefusal { reason, at };
         let previous = self
             .device_refusals
@@ -2762,6 +2821,147 @@ impl SessionManager {
         );
     }
 
+    // -- session ownership (v68, `ownership.rs`) ----------------------
+
+    /// A Device's name as the trust store holds it, or its id when the
+    /// store has no row for it.
+    fn device_name(&self, device_id: &str) -> String {
+        self.trust()
+            .and_then(|trust| trust.device(device_id).ok().flatten())
+            .map(|d| d.name)
+            .unwrap_or_else(|| device_id.to_string())
+    }
+
+    /// The Devices with a live connection, each once: who a session can
+    /// be handed to.
+    fn live_devices(&self) -> Vec<protocol::LiveDevice> {
+        let ids: std::collections::BTreeSet<String> =
+            self.device_connections.lock().unwrap().values().map(|c| c.device_id.clone()).collect();
+        ids.into_iter().map(|device_id| protocol::LiveDevice { name: self.device_name(&device_id), device_id }).collect()
+    }
+
+    fn device_is_live(&self, device_id: &str) -> bool {
+        self.device_connections.lock().unwrap().values().any(|c| c.device_id == device_id)
+    }
+
+    /// Tells the desks that can be told; they offer it on to the Devices
+    /// that listen (`session-owner-changed`).
+    fn announce_owners(&self, changes: Vec<protocol::SessionOwnership>) {
+        for ownership in changes {
+            self.push_to_apps_speaking(
+                protocol::SESSION_OWNERS_MIN_VERSION,
+                &Response::SessionOwnerChanged { ownership },
+            );
+        }
+    }
+
+    /// A Device's forwarded input, held to the session's owner: the
+    /// refusal to answer it with, or `None` to forward it -- having made
+    /// the Device the owner if nobody was.
+    fn device_input(&self, device_id: &str, command: &str, args: &serde_json::Value) -> Option<protocol::OwnerRefusal> {
+        if !crate::presence::INPUT_COMMANDS.contains(&command) {
+            return None;
+        }
+        let session_id = args.get("sessionId").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty())?;
+        let caller = crate::ownership::Caller { device_id, name: || self.device_name(device_id) };
+        let now = crate::remote::epoch_seconds();
+        let outcome = self.session_owners.lock().unwrap().device_input(caller, session_id, now);
+        match outcome {
+            Ok(claimed) => {
+                self.announce_owners(claimed.into_iter().collect());
+                None
+            }
+            Err(refusal) => Some(refusal),
+        }
+    }
+
+    /// The desk's own input into a session (`WriteInput` on one of its
+    /// connections): what a Take over of a session nobody owns asks about.
+    fn note_desk_input(&self, session_id: &str) {
+        self.session_owners.lock().unwrap().desk_input(session_id, crate::remote::epoch_seconds());
+    }
+
+    /// `SetSessionOwner`, from a Device or (`None`) the desk.
+    fn set_session_owner(
+        &self,
+        caller: Option<&str>,
+        session_id: &str,
+        to: Option<&str>,
+        expect: Option<&str>,
+        force: bool,
+    ) -> Result<protocol::SessionOwnership, protocol::OwnerRefusal> {
+        // Named before the lock: a trust-store read, kept out from under
+        // it.
+        let to = to.map(|device_id| (device_id, self.device_name(device_id)));
+        let now = crate::remote::epoch_seconds();
+        let outcome = self.session_owners.lock().unwrap().set(
+            caller,
+            session_id,
+            to,
+            expect,
+            force,
+            |device_id| self.device_is_live(device_id),
+            now,
+        );
+        let (ownership, changed) = outcome?;
+        if changed {
+            self.announce_owners(vec![ownership.clone()]);
+        }
+        Ok(ownership)
+    }
+
+    /// `ListSessionOwners`'s three parts, for `caller`.
+    fn list_session_owners(&self, caller: Option<&str>) -> protocol::session_owner::SessionOwnersList {
+        protocol::session_owner::SessionOwnersList {
+            owners: self.session_owners.lock().unwrap().list(),
+            devices: self.live_devices(),
+            you: caller.map(str::to_string),
+        }
+    }
+
+    /// A command the table marks `Daemon`, answered here as `device_id`
+    /// with the arguments the webview's `invoke` would pass.
+    fn answer_in_daemon(&self, device_id: Option<&str>, command: &str, args: &serde_json::Value) -> Response {
+        let text = |key: &str| args.get(key).and_then(serde_json::Value::as_str).filter(|s| !s.is_empty());
+        let answer = match command {
+            "set_session_owner" => match text("sessionId") {
+                None => Err("gavin-daemon: set_session_owner needs a sessionId".to_string()),
+                Some(session_id) => {
+                    let force = args.get("force").and_then(serde_json::Value::as_bool) == Some(true);
+                    self.set_session_owner(device_id, session_id, text("to"), text("expect"), force)
+                        .map(|ownership| serde_json::to_value(ownership).unwrap_or_default())
+                        .map_err(|refusal| refusal.to_error())
+                }
+            },
+            "list_session_owners" => Ok(serde_json::to_value(self.list_session_owners(device_id)).unwrap_or_default()),
+            other => Err(format!("gavin-daemon: `{other}` is not answered by the daemon")),
+        };
+        match answer {
+            Ok(value) => Response::DesktopResult { value: Some(value), error: None },
+            Err(error) => Response::DesktopResult { value: None, error: Some(error) },
+        }
+    }
+
+    /// Every session whose owner stayed away past the grace, back to the
+    /// desk. Ticked by `spawn_owner_lapse`.
+    fn lapse_session_owners(&self) {
+        let lapsed = self.session_owners.lock().unwrap().lapse(crate::remote::epoch_seconds());
+        self.announce_owners(lapsed);
+    }
+
+    /// `device_id` may not connect again: the sessions it owns go back to
+    /// the desk now, not after a grace it cannot come back inside.
+    fn release_device_sessions(&self, device_id: &str) {
+        let released = self.session_owners.lock().unwrap().release_device(device_id, crate::remote::epoch_seconds());
+        self.announce_owners(released);
+    }
+
+    /// A session ended: whoever owned it no longer does.
+    fn end_session_owner(&self, session_id: &str) {
+        let ended = self.session_owners.lock().unwrap().session_ended(session_id, crate::remote::epoch_seconds());
+        self.announce_owners(ended.into_iter().collect());
+    }
+
     /// Records a command the desktop ran for `device_id`, and tells the
     /// desks that can be told when its presence changed (v63). See
     /// `presence.rs` for what counts.
@@ -2773,6 +2973,14 @@ impl SessionManager {
         value: Option<&serde_json::Value>,
     ) {
         let now = crate::remote::epoch_seconds();
+        // A session a Device started is that Device's (v68).
+        if command == "create_session" {
+            if let Some(session_id) = value.and_then(serde_json::Value::as_str).filter(|id| !id.is_empty()) {
+                let name = self.device_name(device_id);
+                let started = self.session_owners.lock().unwrap().started(device_id, name, session_id, now);
+                self.announce_owners(vec![started]);
+            }
+        }
         let changed =
             self.device_presence.lock().unwrap().observe(device_id, command, args, value, now);
         if let Some(presence) = changed {
@@ -3382,6 +3590,7 @@ impl SessionManager {
             trust.revoke(device_id)?
         };
         let connections_dropped = self.shutdown_device_connections(|_, id| id == device_id);
+        self.release_device_sessions(device_id);
         Ok(Revocation { newly_revoked, connections_dropped })
     }
 
@@ -3401,6 +3610,17 @@ impl SessionManager {
             trust.revoke_all()?
         };
         let connections_dropped = self.shutdown_device_connections(|_, _| true);
+        let owners: std::collections::BTreeSet<String> = self
+            .session_owners
+            .lock()
+            .unwrap()
+            .list()
+            .into_iter()
+            .filter_map(|o| o.owner.map(|owner| owner.device_id))
+            .collect();
+        for device_id in owners {
+            self.release_device_sessions(&device_id);
+        }
         // A pairing in progress was for the key that has just gone: the
         // QR names it, and a Device that pinned it would hold a row no
         // connection could ever match. The offer goes, which also ends
@@ -4931,6 +5151,7 @@ impl SessionManager {
     /// grace loop on a thread that owes somebody a reply.
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
         self.forget_session(id)?;
+        self.end_session_owner(id);
         self.screens.lock().unwrap().remove(id);
         self.failure_patterns.lock().unwrap().remove(id);
         self.osc133_distrusted.lock().unwrap().remove(id);
@@ -5857,6 +6078,7 @@ impl SessionManager {
             if let Some(w) = removed {
                 let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
             }
+            manager.end_session_owner(&id);
             // The screen (and failure_patterns / acknowledged_failures /
             // slept_mid_turn) are NOT dropped here. A kept-open shell tool
             // tab still needs Snapshot to answer after the PTY is gone --
@@ -5912,6 +6134,19 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.set_queued_inputs(&id, &queued_ids)
         }
         Request::SendQueuedInput { id, queued_id } => manager.send_queued_input(&id, &queued_id),
+        // On a desk connection: the desk is the caller. A Device's
+        // connection is refused these (`remote_allows`) and reaches the
+        // same rule through `InvokeDesktop`, as itself.
+        Request::SetSessionOwner { id, to, expect, force } => {
+            Ok(match manager.set_session_owner(None, &id, to.as_deref(), expect.as_deref(), force) {
+                Ok(ownership) => Response::SessionOwnership { ownership },
+                Err(refusal) => Response::Error { message: refusal.to_error() },
+            })
+        }
+        Request::ListSessionOwners => {
+            let list = manager.list_session_owners(None);
+            Ok(Response::SessionOwners { owners: list.owners, devices: list.devices, you: list.you })
+        }
         Request::ResizeSession { id, cols, rows } => manager
             .resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
@@ -6787,6 +7022,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ListQueuedInputs
         | Request::SetQueuedInputs { .. }
         | Request::SendQueuedInput { .. }
+        // Taking a session from a Device is the human's gesture, at the
+        // desk or on a Device; an agent has no Device to take it as.
+        | Request::SetSessionOwner { .. }
+        | Request::ListSessionOwners
         | Request::ResizeSession { .. }
         | Request::KillSession { .. }
         | Request::Attach { .. }
@@ -7545,6 +7784,7 @@ fn serve_connection(
             // connection left open for it would be one the desk has no
             // row to revoke.
             let answered = write_message(&mut *writer.lock().unwrap(), &Response::Ok);
+            manager.release_device_sessions(&device_id);
             let own = device_slot.as_ref().map(|slot| slot.token);
             manager.shutdown_device_connections(|token, id| id == device_id && Some(token) != own);
             answered?;
@@ -7579,7 +7819,7 @@ fn serve_connection(
         // the result comes back on the forwarding connection as
         // `ForwardResult`.
         if let Request::InvokeDesktop { command, args } = req {
-            let resp = manager.invoke_desktop(&command, args.clone());
+            let resp = manager.invoke_desktop(identity.device_id.as_deref(), &command, args.clone());
             write_message(&mut *writer.lock().unwrap(), &resp)?;
             // After the answer, so the Device is not kept waiting on the
             // desk being told. Only a Device has a presence: the desk's
@@ -7663,6 +7903,20 @@ fn serve_connection(
             manager.complete_bundle(call_id, manifest, offset, data);
             write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
             continue;
+        }
+
+        // The desk typing into a session (v68): what a Device that would
+        // take a session nobody owns is asked about first. Only keystrokes
+        // -- a queued follow-up is a rail or a card as often as a person --
+        // and not the desk's terminal describing itself: with a program
+        // tracking the mouse, every pointer move over its tab is a write,
+        // and a phone would be told the desk is typing while nobody is.
+        // A Device's connection cannot send this request at all
+        // (`remote_allows`), so every one is the desk's.
+        if let Request::WriteInput { id, data } = &req {
+            if !is_focus_report(data.as_bytes()) && !is_mouse_report(data.as_bytes()) {
+                manager.note_desk_input(id);
+            }
         }
 
         if let Request::Attach { id } = req {
@@ -19635,6 +19889,110 @@ mod forwarding_tests {
         }
     }
 
+    fn refusal_of(answer: Response) -> protocol::OwnerRefusal {
+        match answer {
+            Response::DesktopResult { value: None, error: Some(error) } => protocol::OwnerRefusal::from_error(&error)
+                .unwrap_or_else(|| panic!("not an owner refusal: {error}")),
+            other => panic!("expected a refused DesktopResult, got {other:?}"),
+        }
+    }
+
+    fn typed(session_id: &str) -> serde_json::Value {
+        serde_json::json!({ "sessionId": session_id, "data": "x" })
+    }
+
+    /// The forwarded call a desk was handed, answered as done.
+    fn answer_forward(manager: &SessionManager, desk: &mut BufReader<Stream>) -> String {
+        match read_message::<_, Response>(desk).unwrap() {
+            Some(Response::ForwardCommand { call_id, command, .. }) => {
+                manager.complete_forward(call_id, None, None);
+                command
+            }
+            other => panic!("expected a forwarded command, got {other:?}"),
+        }
+    }
+
+    /// v68: a Device's input into a session another Device owns is
+    /// refused naming the owner, and never reaches the desk -- which is
+    /// what makes the lock more than a picture.
+    #[test]
+    fn a_devices_input_into_a_session_another_device_owns_never_reaches_the_desk() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let (_token, mut desk) = desk(&manager);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| manager.invoke_desktop(Some("iphone"), "write_input", typed("s1")));
+            assert_eq!(answer_forward(&manager, &mut desk), "write_input");
+            assert!(matches!(first.join().unwrap(), Response::DesktopResult { error: None, .. }));
+        });
+        for command in ["write_input", "queue_input", "send_queued_input"] {
+            match refusal_of(manager.invoke_desktop(Some("ipad"), command, typed("s1"))) {
+                protocol::OwnerRefusal::Owned { session_id, owner } => {
+                    assert_eq!((session_id.as_str(), owner.device_id.as_str()), ("s1", "iphone"));
+                }
+                other => panic!("expected Owned for {command}, got {other:?}"),
+            }
+        }
+        desk.get_ref().set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        assert!(read_message::<_, Response>(&mut desk).is_err(), "a refused input reached the desk");
+        // What is not input is nobody's to lock: a kill from the phone
+        // must never wait on one.
+        std::thread::scope(|scope| {
+            let resize = scope.spawn(|| manager.invoke_desktop(Some("ipad"), "resize_session", typed("s1")));
+            desk.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            assert_eq!(answer_forward(&manager, &mut desk), "resize_session");
+            assert!(matches!(resize.join().unwrap(), Response::DesktopResult { error: None, .. }));
+        });
+    }
+
+    /// The ownership commands are the daemon's to answer, as the Device on
+    /// the connection: with no desk at all, the iPad takes the session
+    /// over as itself -- forwarded, the desk would have taken it.
+    #[test]
+    fn a_take_over_is_answered_by_the_daemon_as_the_device_that_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        // No desk: the claim stands though the keystroke went nowhere.
+        manager.invoke_desktop(Some("iphone"), "write_input", typed("s1"));
+        let take = serde_json::json!({ "sessionId": "s1", "to": "ipad", "expect": "iphone", "force": true });
+        match manager.invoke_desktop(Some("ipad"), "set_session_owner", take.clone()) {
+            Response::DesktopResult { value: Some(value), error: None } => {
+                let ownership: protocol::SessionOwnership = serde_json::from_value(value).unwrap();
+                assert_eq!(ownership.owner.unwrap().device_id, "ipad");
+                assert_eq!(ownership.changed_by.as_deref(), Some("ipad"));
+                assert_eq!(ownership.reason, protocol::OwnerChange::TookOver);
+            }
+            other => panic!("expected the new ownership, got {other:?}"),
+        }
+        // The same press a moment later, from a Device that still saw the
+        // iPhone there, lost the race.
+        assert!(matches!(
+            refusal_of(manager.invoke_desktop(Some("pixel"), "set_session_owner", take)),
+            protocol::OwnerRefusal::Changed { owner: Some(_), .. }
+        ));
+        match manager.invoke_desktop(Some("ipad"), "list_session_owners", serde_json::json!({})) {
+            Response::DesktopResult { value: Some(value), error: None } => {
+                let list: protocol::session_owner::SessionOwnersList = serde_json::from_value(value).unwrap();
+                assert_eq!(list.you.as_deref(), Some("ipad"));
+                assert_eq!(list.owners.len(), 1);
+                assert_eq!(list.owners[0].owner.as_ref().unwrap().device_id, "ipad");
+            }
+            other => panic!("expected the owners, got {other:?}"),
+        }
+    }
+
+    /// A phone typing into a session the desk is typing in is asked first.
+    #[test]
+    fn a_device_typing_where_the_desk_just_typed_is_asked_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        manager.note_desk_input("s1");
+        assert!(matches!(
+            refusal_of(manager.invoke_desktop(Some("iphone"), "write_input", typed("s1"))),
+            protocol::OwnerRefusal::Busy { owner: None, .. }
+        ));
+    }
+
     #[test]
     fn with_no_desk_connected_the_answer_says_so() {
         let dir = tempfile::tempdir().unwrap();
@@ -19657,7 +20015,7 @@ mod forwarding_tests {
         let manager = manager_with_budget(&dir, Duration::from_millis(200));
         let (_token, _desk) = desk(&manager);
         assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotAnswering));
-        match manager.invoke_desktop("resize_session", serde_json::json!({})) {
+        match manager.invoke_desktop(None, "resize_session", serde_json::json!({})) {
             Response::Error { message } => assert!(message.contains("did not answer in time"), "{message}"),
             other => panic!("expected an Error, got {other:?}"),
         }

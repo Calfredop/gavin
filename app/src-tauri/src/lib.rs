@@ -246,6 +246,8 @@ pub fn run() {
             session::list_queued_inputs,
             session::set_queued_inputs,
             session::send_queued_input,
+            session::set_session_owner,
+            session::list_session_owners,
             session::set_board_tabs,
             session::set_card_tabs,
             session::set_plan_frontmatter_field,

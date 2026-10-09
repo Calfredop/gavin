@@ -275,6 +275,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   list_queued_inputs: ["ordinary"],
   set_queued_inputs: ["ordinary"],
   send_queued_input: ["ordinary"],
+  // Session ownership (v68): who may type into a session. From the desk the
+  // desk asks as itself; a Device's call is answered by the daemon as that
+  // Device (`RemoteAllowance::Daemon`), so neither is a gate's to hold.
+  set_session_owner: ["ordinary"],
+  list_session_owners: ["ordinary"],
   set_board_tabs: ["ordinary"],
   set_card_tabs: ["ordinary"],
   set_plan_frontmatter_field: ["ordinary"],

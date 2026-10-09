@@ -26,6 +26,8 @@ import type { DemoRepo } from "$companion/demo/repo";
 import { sampleCardFiles } from "$companion/demo/sampleCards";
 import { projectFiles, sampleRepos } from "$companion/demo/sampleProjects";
 import type { DemoTerminal } from "$companion/demo/sessions";
+import { sampleOwners } from "$companion/demo/owners";
+import type { SessionOwner } from "$lib/core/sessionOwnership";
 import { sampleTerminals } from "$companion/demo/transcripts";
 
 export const DEMO = {
@@ -86,6 +88,9 @@ export interface DemoState {
   terminals: Record<string, DemoTerminal>;
   /// The agents' browsers that are running, by session (browser.ts).
   browsers: Record<string, DemoBrowser>;
+  /// Which Device each session takes input from, by session: only the
+  /// sessions a Device owns (owners.ts).
+  owners: Record<string, SessionOwner>;
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
@@ -438,6 +443,7 @@ export function sampleState(): DemoState {
     queuedInputs: [],
     terminals: sampleTerminals(DEMO.home),
     browsers: sampleBrowsers(),
+    owners: sampleOwners(),
     launched: 0,
     settings: sampleSettings(),
   };

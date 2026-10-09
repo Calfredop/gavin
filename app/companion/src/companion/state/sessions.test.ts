@@ -300,8 +300,10 @@ describe("sessions, at the wire", () => {
     const sent = demo.commands();
     expect(sent.filter((cmd) => (LAYOUT_SAVING_COMMANDS as readonly string[]).includes(cmd))).toEqual([]);
     expect([...new Set(sent)].filter((cmd) => !cmd.startsWith("get_") && cmd !== "worktree_setup").sort()).toEqual(
-      // `list_browsers`: the read-back of the agents' browsers, at connect.
-      ["agent_profiles", "create_session", "kill_session", "list_browsers"].sort()
+      // `list_browsers`: the read-back of the agents' browsers, at connect;
+      // `daemon_compat` and `list_session_owners`, the daemon's verdict and
+      // who owns each session (v68), likewise.
+      ["agent_profiles", "create_session", "daemon_compat", "kill_session", "list_browsers", "list_session_owners"].sort()
     );
   });
 });

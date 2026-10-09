@@ -3,10 +3,11 @@
   // over sessionList.ts (what each row says) and state/sessions.ts (what
   // opening one does).
   import { onMount } from "svelte";
-  import { Bot, ChevronRight, Play, SquareTerminal } from "@lucide/svelte";
+  import { Bot, ChevronRight, Lock, Play, SquareTerminal } from "@lucide/svelte";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { showAlert } from "$lib/core/dialog";
   import { layoutState } from "$lib/core/layoutState";
+  import { lockBySessionId } from "$lib/core/sessionOwnershipState";
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { onReconnect } from "$companion/state/reachability";
@@ -50,6 +51,7 @@
       agentStartedHere: $agentStartedHere[workspace.id],
       startedAt: $startedAt,
       now,
+      lockedBy: Object.fromEntries(Object.entries($lockBySessionId).map(([id, owner]) => [id, owner.name])),
     })
   );
 
@@ -133,6 +135,9 @@
                 <span class="text">
                   <span class="name">{row.name}</span>
                   <span class="said">{row.said}{#if row.folder}<span class="folder">{` · ${row.folder}`}</span>{/if}</span>
+                  {#if row.lockedBy}
+                    <span class="locked"><Lock size={12} aria-hidden="true" />{row.lockedBy} is working on this</span>
+                  {/if}
                 </span>
                 <ChevronRight size={18} />
               </button>
@@ -252,5 +257,16 @@
   }
   .folder {
     color: var(--text-subtle);
+  }
+  .locked {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accent-text);
+    font-size: 0.8125rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

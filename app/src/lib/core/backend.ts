@@ -33,6 +33,7 @@ import type { SessionStatus } from "$lib/core/notifications";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
+import type { SessionOwnersList, SessionOwnership } from "$lib/core/sessionOwnership";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
@@ -873,6 +874,27 @@ export function setQueuedInputs(sessionId: string, queuedIds: string[]): Promise
 /// the override for an agent the human has decided not to wait for.
 export function sendQueuedInput(sessionId: string, queuedId: string): Promise<QueuedInput[]> {
   return invoke("send_queued_input", { sessionId, queuedId });
+}
+
+/// Makes `to` the owner of a session (v68): a Device's id, or null for the
+/// desk. `expect` is the owner the caller saw when it decided -- a change
+/// that lost the race is refused with who won -- and `force` passes the
+/// "typing right now" question once the human has answered it. From the
+/// desk this is the desk asking; from a Device the daemon answers it as
+/// that Device. A refusal is the error, read by `ownerRefusalFrom`.
+export function setSessionOwner(
+  sessionId: string,
+  to: string | null,
+  expect: string | null,
+  force = false
+): Promise<SessionOwnership> {
+  return invoke("set_session_owner", { sessionId, to, expect, force });
+}
+
+/// Every session a Device owns, the Devices with a live connection, and
+/// which Device is asking (v68): the read-back for the owner pushes.
+export function listSessionOwners(): Promise<SessionOwnersList> {
+  return invoke("list_session_owners");
 }
 
 export function resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {

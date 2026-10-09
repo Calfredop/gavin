@@ -122,6 +122,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "list_queued_inputs",
     "set_queued_inputs",
     "send_queued_input",
+    "set_session_owner",
+    "list_session_owners",
     "set_board_tabs",
     "set_card_tabs",
     "set_plan_frontmatter_field",

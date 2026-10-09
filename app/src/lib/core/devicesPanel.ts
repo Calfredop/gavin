@@ -27,6 +27,7 @@ import {
 } from "$lib/core/remoteAccess";
 import type { DeviceIndicatorState } from "$lib/ui/indicators";
 import { presenceLine, type PresenceNaming, type Presences } from "$lib/core/devicePresence";
+import { ownsText } from "$lib/core/sessionOwnership";
 
 /// The footer row's label and the panel's title. One constant, so the row
 /// and the panel cannot name themselves differently.
@@ -176,6 +177,8 @@ export interface PanelRow extends DeviceRow {
   refusal: RefusalNotice | null;
   /// Where it is and what it is doing (`devicePresence.ts`'s line), or null.
   presence: string | null;
+  /// "owns 2 sessions" (v68), or null for none.
+  owns: string | null;
   /// Whether the desk's notifications reach it (v67). Only drawn where
   /// `pushGatewayBlocked` is null.
   notifies: boolean;
@@ -183,13 +186,15 @@ export interface PanelRow extends DeviceRow {
 
 /// The list the panel draws: `deviceRows`' order and dimming, plus whether
 /// each row is connected now. A revoked or stale row is never "connected".
-/// With `naming`, each row also carries its presence line.
+/// With `naming`, each row also carries its presence line; with `owned`
+/// (sessions per Device, `ownedCountByDevice`), how many sessions it owns.
 export function panelRows(
   devices: DeviceInfo[],
   connected: ReadonlySet<string>,
   nowMs: number,
   presences: Presences = {},
-  naming: PresenceNaming | null = null
+  naming: PresenceNaming | null = null,
+  owned: Record<string, number> = {}
 ): PanelRow[] {
   const live = new Set(devices.filter(admitted).map((d) => d.deviceId));
   const byId = new Map(devices.map((d) => [d.deviceId, d]));
@@ -202,6 +207,7 @@ export function panelRows(
       state: isConnected ? "Connected" : `seen ${row.lastSeen}`,
       refusal: refusalNotice(byId.get(row.deviceId)!, nowMs),
       presence: naming ? presenceLine(presences[row.deviceId], isConnected, naming, nowMs) : null,
+      owns: ownsText(owned[row.deviceId]),
       notifies: !row.dimmed && byId.get(row.deviceId)!.notifies === true,
     };
   });

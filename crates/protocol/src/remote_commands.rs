@@ -15,6 +15,13 @@
 pub enum RemoteAllowance {
     Allowed,
     Refused,
+    /// Allowed, and answered by the daemon itself with the asking
+    /// Device's identity rather than forwarded (v68). The desktop runs a
+    /// forwarded command as the desk, so a command whose answer depends
+    /// on WHO asks -- taking a session over -- cannot be forwarded. The
+    /// desk's webview calls the same name, and its host sends the
+    /// daemon's own request for it.
+    Daemon,
 }
 
 /// Every desktop command name and whether the Remote role may call it.
@@ -38,6 +45,10 @@ pub fn allowance_for(command: &str) -> Option<RemoteAllowance> {
 const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
 
     ("write_input", RemoteAllowance::Allowed),
+    // Session ownership (v68). Answered by the daemon, which alone knows
+    // which Device is asking; see `RemoteAllowance::Daemon`.
+    ("set_session_owner", RemoteAllowance::Daemon),
+    ("list_session_owners", RemoteAllowance::Daemon),
     ("resize_session", RemoteAllowance::Allowed),
     ("create_session", RemoteAllowance::Allowed),
     ("kill_session", RemoteAllowance::Allowed),
@@ -357,6 +368,14 @@ mod tests {
         assert_eq!(allowance_for("set_workspace_settings"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("add_workspace"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("set_workspaces_state"), Some(RemoteAllowance::Refused));
+    }
+
+    /// Who is taking a session over is the Device on the connection, which
+    /// only the daemon knows: forwarded, the desk would take it.
+    #[test]
+    fn session_ownership_is_answered_by_the_daemon() {
+        assert_eq!(allowance_for("set_session_owner"), Some(RemoteAllowance::Daemon));
+        assert_eq!(allowance_for("list_session_owners"), Some(RemoteAllowance::Daemon));
     }
 
     #[test]

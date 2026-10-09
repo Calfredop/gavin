@@ -129,7 +129,14 @@ describe("what the bundle takes from the desktop's layout state", () => {
       ]
     );
     expect(importedFrom(companionSource("companion/state/workstation.ts"), "$lib/core/layoutState").sort()).toEqual(
-      ["handleCwdChanged", "handleSessionStatusChanged", "layoutState", "loadAgentProfiles", "reloadAppSettings"]
+      [
+        "daemonCompat",
+        "handleCwdChanged",
+        "handleSessionStatusChanged",
+        "layoutState",
+        "loadAgentProfiles",
+        "reloadAppSettings",
+      ]
     );
     expect(
       importedFrom(codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte")), "$lib/core/layoutState")

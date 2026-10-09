@@ -663,6 +663,17 @@ export const FEATURE_MIN_VERSION = {
   // Settings section's Push gateway field reads before it draws or saves,
   // and which the Devices panel reads before it draws the word.
   pushGateway: 67,
+  // Session ownership (v68, ADR 0008): `SetSessionOwner` and
+  // `ListSessionOwners` are new TYPES and `SessionOwnerChanged` a push. An
+  // older daemon locks nothing -- two Devices and the desk type into one
+  // session together, as before -- so a surface that would draw the lock or
+  // offer Take over / Hand over has to say ownership is missing rather than
+  // show a session as free that nobody is guarding.
+  //
+  // Consumers: `sessionOwnershipState.ts`'s `ownershipBlocked`, which the
+  // Devices panel reads to say so under the list, and which the Companion's
+  // terminal reads for its lock bar and its Hand over button.
+  sessionOwnership: 68,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -207,3 +207,13 @@ describe("a Device's presence on its row", () => {
     expect(source("DevicesPanel.svelte")).toContain("presenceBlocked(");
   });
 });
+
+describe("how many sessions a Device owns (v68)", () => {
+  it("is said on its row, and nothing for a Device that owns none", () => {
+    const rows = panelRows([dev("a"), dev("b")], new Set(["a"]), NOW, {}, null, { a: 2 });
+    expect(rows.map((r) => [r.deviceId, r.owns])).toEqual([
+      ["a", "owns 2 sessions"],
+      ["b", null],
+    ]);
+  });
+});

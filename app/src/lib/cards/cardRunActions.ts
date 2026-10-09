@@ -52,6 +52,7 @@ import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
+import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent, type NewLaunchIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
@@ -1000,6 +1001,10 @@ export async function pasteToMainAgent(
   // a command, and the queue would hold a message that can never be
   // delivered (`interrupted` is never cleared).
   if (target.interrupted) return INTERRUPTED_REASON;
+  // Another Device working in the workspace agent (v68): said, not pasted
+  // into the middle of what it is typing.
+  const locked = inputLockedReason(mainSessionId);
+  if (locked) return locked;
   if (!target.blockedReason && shouldQueueForMainAgent(target.status)) {
     return queueFollowUp(mainSessionId, target, prompt);
   }

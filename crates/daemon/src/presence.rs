@@ -29,7 +29,8 @@ pub const STARTED_KEPT: usize = 8;
 
 /// The commands that send input to a session. `queue_input` counts: it is
 /// the compose field's send, which is how the Companion types by default.
-const INPUT_COMMANDS: &[&str] = &["write_input", "queue_input", "send_queued_input"];
+/// Also the commands a session's owner is held to (`ownership.rs`).
+pub const INPUT_COMMANDS: &[&str] = &["write_input", "queue_input", "send_queued_input"];
 
 #[derive(Default)]
 pub struct Presences {
