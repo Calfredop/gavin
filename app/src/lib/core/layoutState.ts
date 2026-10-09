@@ -3442,6 +3442,7 @@ function clearMainSession(workspaceId: string): void {
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   terminalRegistry.destroyTerminal(sessionId);
+  hideMainBrowser(sessionId);
   void persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
@@ -3572,6 +3573,31 @@ export function openFollowUpsInSplit(
   });
 }
 
+/// The main agents whose Home cell shows their browser under the terminal
+/// (`MainAgentPanel`), by session: a restarted agent is a new session, so
+/// it starts with its browser hidden rather than inheriting the last one's.
+///
+/// Not persisted. A page's browser pane is a tab, and the layout keeps it;
+/// this is a property of a cell that has no layout to keep it in. After a
+/// relaunch the chip still lights from the read-back, and one press brings
+/// the browser back.
+export const mainBrowserOpen = hotState(
+  "mainBrowserOpen",
+  () => writable<ReadonlySet<string>>(new Set()),
+  hotBag
+);
+
+/// Hides a main agent's browser: the cell gives the terminal its full
+/// height back. The chip shows it again.
+export function hideMainBrowser(sessionId: string): void {
+  mainBrowserOpen.update((open) => {
+    if (!open.has(sessionId)) return open;
+    const next = new Set(open);
+    next.delete(sessionId);
+    return next;
+  });
+}
+
 /// An agent's browser, live, split beside the terminal it belongs to
 /// (`browserView.ts`). Keyed by the session like the follow-up queue, and
 /// deduped the same way: one browser pane per session per page.
@@ -3582,10 +3608,17 @@ export function openFollowUpsInSplit(
 /// assuming the active one, and takes the focus only when `focus` says a
 /// human asked: a pane appearing must not take the keyboard from someone
 /// typing in another one. Resolves whether a pane is open beside the
-/// session now: false when no page in this window holds the session (a
-/// workspace's main agent lives outside every page tree).
+/// session now: false when nothing in this window holds the session.
+///
+/// A workspace's main agent lives outside every page tree, in its Home
+/// cell, which has no tab bar to add a tab to: its browser opens as that
+/// cell's lower half instead (`mainBrowserOpen`).
 export async function openBrowserInSplit(sessionId: string, focus: boolean): Promise<boolean> {
   const state = get(layoutState);
+  if (state.workspaces.some((w) => w.mainSessionId === sessionId)) {
+    mainBrowserOpen.update((open) => (open.has(sessionId) ? open : new Set(open).add(sessionId)));
+    return true;
+  }
   const found = workspace.findSessionLocation(state, sessionId);
   const page = found
     ? state.workspaces.find((w) => w.id === found.workspaceId)?.pages.find((p) => p.id === found.pageId)

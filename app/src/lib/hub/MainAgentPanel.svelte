@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { MessageSquarePlus } from "@lucide/svelte";
+  import { tick } from "svelte";
+  import { Globe, MessageSquarePlus } from "@lucide/svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
+  import BrowserPane from "$lib/panes/BrowserPane.svelte";
   import FollowUpQueueView from "$lib/agents/FollowUpQueueView.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
@@ -12,7 +14,11 @@
     setAgentField,
     resolvedAgentFor,
     terminalFontSizeDefault,
+    mainBrowserOpen,
+    hideMainBrowser,
   } from "$lib/core/layoutState";
+  import { chipFor } from "$lib/panes/browserView";
+  import { browserBlocked, browserViews } from "$lib/panes/browserViewState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
@@ -54,6 +60,27 @@
     pane?.fit();
   }
 
+  // The agent's browser (`browserView.ts`). Every other terminal opens it
+  // as a tab split beside it; this cell has no tab bar, so it opens as the
+  // cell's lower half and the chip is what hides it again -- which is why
+  // the chip stays while it is open, even once the browser has stopped.
+  const browserStore = browserViews.views;
+  const browserOpen = $derived(sessionId !== null && $mainBrowserOpen.has(sessionId));
+  const browserChip = $derived(
+    sessionId ? chipFor($browserStore[sessionId], $browserBlocked(sessionId)) : null
+  );
+  function toggleBrowser(): void {
+    if (!sessionId) return;
+    if (browserOpen) hideMainBrowser(sessionId);
+    else void browserViews.openFromChip(sessionId);
+  }
+  // Opening or hiding it changes the terminal's height but not the cell's,
+  // so HomeHubView's observer on the cell never sees it.
+  $effect(() => {
+    void browserOpen;
+    void tick().then(() => pane?.fit());
+  });
+
   function start(): void {
     void setAgentField(workspaceId, "command", commandDraft).then(() => startMainAgent(workspaceId));
   }
@@ -83,6 +110,17 @@
     <span class="label">Main agent</span>
     {#if sessionId}
       <div class="head-actions">
+        {#if browserOpen || browserChip}
+          <IconButton
+            icon={Globe}
+            label={browserOpen ? "Hide this agent's browser" : "Show this agent's browser"}
+            tip={browserOpen ? "Hide this agent's browser" : browserChip?.tip}
+            tone="accent"
+            active={browserOpen}
+            size={13}
+            onclick={toggleBrowser}
+          />
+        {/if}
         <!-- The reason hangs on the wrapper: a disabled element never
              fires mouseenter, so it could not explain itself. -->
         <span use:tooltip={queueBlocked ?? undefined}>
@@ -120,6 +158,11 @@
         <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} {fontSize} />
       {/key}
     </div>
+    {#if browserOpen}
+      <div class="browser">
+        <BrowserPane {sessionId} visible={true} />
+      </div>
+    {/if}
   {:else}
     <div class="idle">
       <p>No agent running in this workspace.</p>
@@ -197,8 +240,18 @@
   }
   .terminal {
     position: relative;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
+  }
+  /* Half the cell, under the terminal rather than beside it: the cell
+     already shares its row with the summaries, and a landscape page
+     squeezed beside a terminal in what is left would leave both
+     unreadable. */
+  .browser {
+    position: relative;
+    flex: 1 1 0;
+    min-height: 0;
+    border-top: 1px solid var(--border);
   }
   .idle {
     flex: 1 1 auto;

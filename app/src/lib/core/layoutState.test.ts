@@ -247,6 +247,8 @@ import {
   openCardInSplit,
   openFollowUpsInSplit,
   openBrowserInSplit,
+  mainBrowserOpen,
+  hideMainBrowser,
   setWorkspacePlaywrightPaneOpen,
   setCardTabPath,
   retargetCardTabs,
@@ -1335,6 +1337,43 @@ describe("openBrowserInSplit", () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     expect(await openBrowserInSplit("elsewhere", false)).toBe(false);
     expect(get(layoutState).cardTabsById).toEqual({});
+  });
+
+  describe("the main agent", () => {
+    beforeEach(() => mainBrowserOpen.set(new Set()));
+
+    it("opens its browser in its Home cell rather than as a tab", async () => {
+      // It lives outside every page tree, so there is no tab bar to add
+      // a tab to -- and the auto-open must still have somewhere to land.
+      setState([{ ...ws("ws-1", [page("page-1", leaf(["a"]))]), mainSessionId: "main-1" }], "ws-1", "a");
+
+      expect(await openBrowserInSplit("main-1", false)).toBe(true);
+
+      expect(get(mainBrowserOpen).has("main-1")).toBe(true);
+      expect(get(layoutState).cardTabsById).toEqual({});
+      expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toEqual(["a"]);
+      expect(get(layoutState).focusedSessionId).toBe("a");
+    });
+
+    it("hides it and shows it again", async () => {
+      setState([{ ...ws("ws-1", []), mainSessionId: "main-1" }], "ws-1", null);
+      await openBrowserInSplit("main-1", false);
+
+      hideMainBrowser("main-1");
+      expect(get(mainBrowserOpen).has("main-1")).toBe(false);
+
+      expect(await openBrowserInSplit("main-1", true)).toBe(true);
+      expect(get(mainBrowserOpen).has("main-1")).toBe(true);
+    });
+
+    it("loses it when the agent exits, so a restarted agent starts without one", async () => {
+      setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", mainSessionId: "main-1" }], "ws-1", null);
+      await openBrowserInSplit("main-1", false);
+
+      handleSessionExited("main-1");
+
+      expect(get(mainBrowserOpen).size).toBe(0);
+    });
   });
 });
 

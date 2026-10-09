@@ -31,6 +31,7 @@ Done = `npm test`, `npm run check` and `npm run build` pass. File `Human test:` 
 
 - [ ] Human test: an agent's browser pane beside its tab reads well in both themes — the address row shows the page URL with "View only" at its end, the page is scaled to fit the pane without distortion, and once the browser stops its last frame is dimmed under the "The browser stopped" note
 - [ ] Human test: the globe chip sits in the tab bar's actions only while the active terminal's agent has a browser running, its tooltip names the page, and Settings → Agent browser (app-wide and in a workspace's Settings tab) shows the Live view picker with a Default row that names what it inherits
+- [ ] Human test: on the Home tab, the main agent's header shows the globe chip while its browser runs; pressing it puts the browser in the lower half of the agent's cell, under the terminal, with the chip shown pressed, and pressing it again gives the terminal its full height back
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
