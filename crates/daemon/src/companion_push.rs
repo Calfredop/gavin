@@ -78,10 +78,20 @@ impl PushTransport for UreqTransport {
     ) -> Result<TransportReply, String> {
         let url = format!("{}/v1/push", gateway_url.trim_end_matches('/'));
         let response = ureq::post(&url)
+            // A gateway that does not answer must not hold the push
+            // worker, and every batch queued behind it, for good.
+            .timeout(std::time::Duration::from_secs(15))
             .set("Authorization", &format!("Bearer {permission}"))
             .set("Content-Type", "application/octet-stream")
-            .send_bytes(ciphertext)
-            .map_err(|e| e.to_string())?;
+            .send_bytes(ciphertext);
+        // ureq answers a 4xx or 5xx as an error that still carries the
+        // response: the gateway's refusal code is in it, and `map_reply`
+        // is what decides whether the permission is dropped.
+        let response = match response {
+            Ok(response) => response,
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(e) => return Err(e.to_string()),
+        };
         let status = response.status();
         let retry_after_secs = response
             .header("Retry-After")
@@ -399,5 +409,93 @@ mod tests {
         assert_eq!(devices[1].send_permission, "perm-b");
         assert_eq!(gateway.posts().len(), 1);
         assert_eq!(gateway.posts()[0].permission, "perm-b");
+    }
+
+    /// The live transport, against a gateway that refuses: ureq answers a
+    /// 4xx as an error, and the refusal's code has to come out of it, or
+    /// a cancelled permission is never dropped.
+    #[test]
+    fn the_live_transport_reads_the_gateways_refusal() {
+        let gateway = testing::Gateway::answering(401, r#"{"error":"permission_cancelled"}"#);
+        let reply = UreqTransport.post_ciphertext(&gateway.url(), "perm-x", b"sealed").unwrap();
+        assert_eq!(reply.status, 401);
+        assert_eq!(reply.error_code.as_deref(), Some("permission_cancelled"));
+        assert_eq!(
+            map_reply(reply),
+            PushOutcome::DropPermission { code: "permission_cancelled".into() }
+        );
+        let posted = gateway.posts();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].permission, "perm-x");
+        assert_eq!(posted[0].ciphertext, b"sealed");
+    }
+
+    #[test]
+    fn the_live_transport_reads_an_accepted_push() {
+        let gateway = testing::Gateway::answering(202, "");
+        let reply = UreqTransport.post_ciphertext(&gateway.url(), "perm-x", b"sealed").unwrap();
+        assert_eq!(map_reply(reply), PushOutcome::Accepted);
+    }
+}
+
+/// A Push gateway on loopback for the live transport's tests: plain
+/// HTTP, every `POST /v1/push` answered the same way and recorded.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::RecordedPush;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    pub struct Gateway {
+        port: u16,
+        posts: Arc<Mutex<Vec<RecordedPush>>>,
+    }
+
+    impl Gateway {
+        pub fn answering(status: u16, body: &'static str) -> Gateway {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let posts = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&posts);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { return };
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0usize;
+                    let mut permission = String::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        let lower = line.to_ascii_lowercase();
+                        if let Some(v) = lower.strip_prefix("content-length:") {
+                            length = v.trim().parse().unwrap_or(0);
+                        }
+                        if lower.starts_with("authorization:") {
+                            permission = line["authorization:".len()..].trim().trim_start_matches("Bearer ").to_string();
+                        }
+                    }
+                    let mut ciphertext = vec![0u8; length];
+                    let _ = reader.read_exact(&mut ciphertext);
+                    recorded.lock().unwrap().push(RecordedPush { permission, ciphertext });
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            Gateway { port, posts }
+        }
+
+        pub fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        pub fn posts(&self) -> Vec<RecordedPush> {
+            self.posts.lock().unwrap().clone()
+        }
     }
 }
