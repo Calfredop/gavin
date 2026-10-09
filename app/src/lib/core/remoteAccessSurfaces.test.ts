@@ -306,11 +306,26 @@ describe("the admission token", () => {
   });
 });
 
+describe("Direct connection", () => {
+  // The entry and its consumer (CLAUDE.md: the entry alone is a dead
+  // gate): the switch, and the state read, are both behind it.
+  it("is greyed against a daemon older than v69", () => {
+    expect(FEATURE_MIN_VERSION.directAccess).toBe(69);
+    expect(MODULE).toContain('featureBlockedReason(compat, "directAccess")');
+    expect(VIEW).toContain("directAccessBlocked($daemonCompat)");
+    expect(VIEW).toMatch(/disabled=\{remoteAccessGate !== null \|\| directGate !== null \|\| devices === null\}/);
+    expect(VIEW).toContain("void saveDirectAccess(e.currentTarget.checked)");
+    expect(VIEW).toContain('listen<DirectState>("direct-state-changed"');
+  });
+});
+
 describe("Pair a device", () => {
   // A QR drawn with remote access off points a Device at a Relay the
   // daemon is not connected to.
   it("is offered only when a Device could pair", () => {
-    expect(PANEL).toContain("pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState)");
+    expect(PANEL).toContain(
+      "pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState, $deviceDirectState)"
+    );
     // `relayDial` is a gate like any other: the entry, and a consumer.
     expect(MODULE).toContain('featureBlockedReason(compat, "relayDial")');
     expect(FEATURE_MIN_VERSION.relayDial).toBe(52);

@@ -14,6 +14,15 @@ Notifications keep working through your own Relay at no cost: the Push
 gateway is a separate service, reached directly by the Device and the
 daemon, and does not depend on which Relay carries the session.
 
+**You may not need one.** If your phone is always on the same network as
+your Mac, or both are on one Tailscale tailnet, turn on **Direct
+connection** in Settings → Remote access instead: the daemon listens for
+your Devices itself, and there is nothing to host, no token to mint and no
+certificate to renew. The direct path needs the Device and the Workstation
+on one network or tailnet; a Relay is what reaches the Mac from anywhere
+else. The two work side by side: a Device tries the direct address first
+and the Relay after it. See `docs/relay.md`, "When you do not need one".
+
 ## 1. Get the image, by digest
 
 Every release publishes two images to GitHub's container registry:

@@ -71,6 +71,20 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v69 is the direct listener (ADR 0009, `companion-direct-listener`): a
+/// Device reaches its Workstation over the same network or tailnet with
+/// no Relay, through a TLS WebSocket the daemon answers itself. Two new
+/// request TYPES -- `SetDirectAccess` (the switch) and `GetDirectState`
+/// (where the listener stands) -- gated by `min_version_for`, and one
+/// push, `DirectStateChanged`, sent only to an app whose `Hello` speaks 69
+/// (`DIRECT_ACCESS_MIN_VERSION`). `Response::Devices` widens with
+/// `direct_access_enabled`, defaulted, which an older daemon never sends
+/// and which reads as off. The pairing QR gains `direct` and `directPin`,
+/// which an older Device ignores. No request widened, so
+/// `MIN_COMPATIBLE_VERSION` stands; the Settings switch owes
+/// `FEATURE_MIN_VERSION.directAccess` for the copy against an older
+/// daemon, which would answer the new type `Unsupported`.
+///
 /// v68 is session ownership (`2026-10-09-session-ownership.md`, ADR 0008):
 /// a session takes input from one Owner at a time, a Device or the desk,
 /// and the daemon refuses a Device's input into a session another holds.
@@ -844,7 +858,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 68;
+pub const PROTOCOL_VERSION: u32 = 69;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -912,6 +926,32 @@ pub enum RelayState {
     #[serde(other)]
     Unknown,
 }
+
+/// Where the daemon's direct listener stands (v69, ADR 0009).
+///
+/// `Listening.addresses` are the URLs the next pairing QR would carry --
+/// what a Device is told to dial -- and are worked out again every few
+/// seconds, since a LAN address can change under a listener that stays
+/// bound. `Failed.why` is a sentence, like `RelayState::Failed`'s.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DirectState {
+    /// Remote access or direct connection is off: no port is open.
+    NotWanted,
+    /// Bound, and answering Devices on `port`.
+    Listening { port: u16, addresses: Vec<String> },
+    /// The port could not be bound, and another try is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The first version that has a direct listener: `SetDirectAccess`,
+/// `GetDirectState`, the `DirectStateChanged` push, and the pairing QR's
+/// `direct` and `directPin`. The daemon compares an app's `Hello` version
+/// with this before it writes the push.
+pub const DIRECT_ACCESS_MIN_VERSION: u32 = 69;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -1864,6 +1904,22 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_admission: Option<String>,
     },
+    /// Whether this daemon listens for Devices directly (v69, ADR 0009),
+    /// beside or instead of the Relay. Takes effect only while remote
+    /// access is on; the listener binds within moments of the switch and
+    /// lets go of the port, and of every connection it carried, when
+    /// either switch goes off.
+    ///
+    /// A request of its own rather than a field on `SetRemoteAccess`:
+    /// an older daemon would parse the widened request and drop the
+    /// field, and `min_version_for` could not see it.
+    SetDirectAccess {
+        enabled: bool,
+    },
+    /// Where the direct listener stands (v69). Answered with
+    /// `Response::DirectState`; every change after is pushed as
+    /// `DirectStateChanged`.
+    GetDirectState,
 
     /// A Device removes itself from this Workstation (v53): its row is
     /// deleted and every connection it holds is dropped.
@@ -2537,6 +2593,10 @@ pub fn min_version_for(req: &Request) -> u32 {
         // new TYPE, so this arm is its whole wire gate; the Settings
         // section owes FEATURE_MIN_VERSION.relayState for the copy.
         Request::GetRelayState => 61,
+        // The direct listener (v69, ADR 0009). Two new TYPES, so these
+        // arms are the wire gate; the Settings switch owes
+        // FEATURE_MIN_VERSION.directAccess for its copy.
+        Request::SetDirectAccess { .. } | Request::GetDirectState => 69,
 
         Request::Shutdown => 12,
 
@@ -3229,9 +3289,16 @@ pub enum Response {
         /// authenticates nobody.
         #[serde(default)]
         push_gateway_url: Option<String>,
+        /// Whether direct connection is switched on (v69). Absent from an
+        /// older daemon's reply, which reads as off -- and that daemon
+        /// listens for nobody.
+        #[serde(default)]
+        direct_access_enabled: bool,
     },
     /// The answer to `GetRelayState` (v61).
     RelayState { state: RelayState },
+    /// The answer to `GetDirectState` (v69).
+    DirectState { state: DirectState },
     /// Push (v62): a paired Device was refused a connection, and this is
     /// its new last refusal. Not cleared by the Device connecting later:
     /// a copied key that failed its proof and then the real phone
@@ -3272,6 +3339,11 @@ pub enum Response {
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
     RelayStateChanged { state: RelayState },
+    /// Push (v69): the direct listener's state changed. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` said it
+    /// speaks `DIRECT_ACCESS_MIN_VERSION` or more, for the reason
+    /// `DeviceRefusalChanged` is.
+    DirectStateChanged { state: DirectState },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -3845,6 +3917,23 @@ pub struct PairingQr {
     /// has lapsed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_admission: Option<String>,
+    /// Where this daemon's direct listener answers (v69, ADR 0009):
+    /// `wss://` URLs, in the order to try them, BEFORE the Relays in
+    /// `rendezvous`. Empty, and omitted, unless direct connection is on
+    /// and the listener is bound.
+    ///
+    /// Apart from `rendezvous` rather than mixed into it, because an
+    /// entry here is trusted on another footing: by `direct_pin`, not by
+    /// a certificate authority. A Device older than v69 never sees one,
+    /// and dials its Relays as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct: Vec<String>,
+    /// The SHA-256 of the direct listener's TLS certificate, lowercase
+    /// hex (`relay::certificate_pin`). A Device trusts that certificate
+    /// on the `direct` addresses and nowhere else. Not a secret: the
+    /// certificate is sent to anyone who opens a connection to the port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_pin: Option<String>,
 }
 
 impl PairingQr {
@@ -5750,6 +5839,8 @@ mod tests {
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
             relay_admission: None,
+            direct: Vec::new(),
+            direct_pin: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -5792,6 +5883,8 @@ mod tests {
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
             relay_admission: Some("let-me-in".into()),
+            direct: Vec::new(),
+            direct_pin: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -5807,6 +5900,72 @@ mod tests {
         // still parses: the Device then has no token to present.
         let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":[],"protocolVersion":44}"#;
         assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
+    }
+
+    /// The two fields the direct listener added (v69, ADR 0009): where it
+    /// answers, and the hash of the certificate it answers with. Neither
+    /// is a credential -- the certificate is handed to anyone who opens
+    /// the port -- and both are omitted when direct connection is off,
+    /// so a QR with no listener is the QR it was before.
+    #[test]
+    fn the_qr_carries_the_direct_listener_when_there_is_one() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: Vec::new(),
+            protocol_version: PROTOCOL_VERSION,
+            relay_admission: None,
+            direct: vec!["wss://100.79.93.51:8445".into(), "wss://192.168.1.20:8445".into()],
+            direct_pin: Some("cc".repeat(32)),
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "direct", "directPin", "protocolVersion", "rendezvous", "secret"]
+        );
+        assert_eq!(v["direct"][0], "wss://100.79.93.51:8445");
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+
+        // A QR drawn by a daemon older than v69 has neither, and still
+        // parses: the Device then has only its Relays.
+        let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":["wss://r.example"],"protocolVersion":68}"#;
+        let parsed = PairingQr::parse(old).unwrap();
+        assert!(parsed.direct.is_empty());
+        assert_eq!(parsed.direct_pin, None);
+    }
+
+    #[test]
+    fn the_direct_listener_requests_are_gated_at_69_and_its_state_round_trips() {
+        assert_eq!(min_version_for(&Request::SetDirectAccess { enabled: true }), 69);
+        assert_eq!(min_version_for(&Request::GetDirectState), 69);
+        assert_eq!(DIRECT_ACCESS_MIN_VERSION, 69);
+        assert!(DIRECT_ACCESS_MIN_VERSION <= PROTOCOL_VERSION);
+        assert_eq!(
+            serde_json::to_string(&Request::SetDirectAccess { enabled: false }).unwrap(),
+            r#"{"type":"SetDirectAccess","enabled":false}"#
+        );
+
+        let listening =
+            DirectState::Listening { port: 8445, addresses: vec!["wss://10.0.0.4:8445".into()] };
+        let v = serde_json::to_value(&listening).unwrap();
+        assert_eq!(v["state"], "listening");
+        assert_eq!(v["port"], 8445);
+        assert_eq!(serde_json::from_value::<DirectState>(v).unwrap(), listening);
+        assert_eq!(
+            serde_json::to_value(DirectState::NotWanted).unwrap(),
+            serde_json::json!({ "state": "not_wanted" })
+        );
+        let newer: DirectState = serde_json::from_str(r#"{"state":"paused"}"#).unwrap();
+        assert_eq!(newer, DirectState::Unknown);
+
+        // An older daemon's `Devices` has no switch, and reads as off.
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices { direct_access_enabled, .. } => assert!(!direct_access_enabled),
+            other => panic!("expected Devices, got {other:?}"),
+        }
     }
 
     /// A Device deleting its own row: it names no Device, because the
@@ -7750,7 +7909,11 @@ mod tests {
         // replies, behind FEATURE_MIN_VERSION.pushGateway.
         // v68: SetSessionOwner + ListSessionOwners and the
         // SessionOwnerChanged push -- session ownership. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 68);
+        // v69: SetDirectAccess + GetDirectState and the DirectStateChanged
+        // push -- the direct listener (ADR 0009). Two new TYPES;
+        // `Devices.direct_access_enabled` widens a reply, behind
+        // FEATURE_MIN_VERSION.directAccess.
+        assert_eq!(PROTOCOL_VERSION, 69);
     }
 
     #[test]
@@ -8310,6 +8473,9 @@ mod tests {
             },
             // v61: whether the daemon reached its Relay.
             Request::GetRelayState,
+            // v69: the direct listener.
+            Request::SetDirectAccess { enabled: true },
+            Request::GetDirectState,
             // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
@@ -8473,6 +8639,8 @@ mod tests {
         expected.insert(67, 1);
         // SetSessionOwner, ListSessionOwners -- session ownership.
         expected.insert(68, 2);
+        // SetDirectAccess, GetDirectState -- the direct listener.
+        expected.insert(69, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

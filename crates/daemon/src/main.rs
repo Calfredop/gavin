@@ -1,6 +1,7 @@
 mod bridge;
 mod browser;
 mod connect;
+mod direct;
 mod gavin;
 mod git_status;
 mod git_watch;
@@ -159,6 +160,10 @@ fn serve() -> anyhow::Result<()> {
     // otherwise -- so on a machine that never turned it on, this starts a
     // thread that opens no socket.
     remote::spawn(&manager);
+    // The direct listener (ADR 0009), on the same terms: it binds a port
+    // only while the store says remote access AND direct connection are
+    // on, and otherwise sleeps.
+    direct::spawn(&manager);
     // Hands a pocketed phone's sessions back to the desk once its grace
     // runs out (v68, `ownership.rs`).
     server::spawn_owner_lapse(&manager);

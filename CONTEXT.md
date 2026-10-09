@@ -92,6 +92,10 @@ _Avoid_: mobile permissions, remote access (as the name of the permission)
 The server that carries encrypted traffic between a Workstation and its Devices without being able to read it.
 _Avoid_: proxy, tunnel, server
 
+**Direct connection**:
+A Device reaching its Workstation with no Relay, over the same network or a Tailscale tailnet, through a listener the daemon runs itself. Opt-in, and tried before the Relay.
+_Avoid_: LAN mode, local relay, embedded relay
+
 **Push gateway**:
 The publisher's service that delivers encrypted notifications to Devices through Apple and Google, and the only holder of the publisher's push credentials.
 _Avoid_: notification server, push server

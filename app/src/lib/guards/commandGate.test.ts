@@ -114,6 +114,13 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // A read of the dial's state; the admission token is in no answer.
   get_relay_state: ["ordinary"],
   set_remote_access: ["ordinary"],
+  // The direct listener (ADR 0009), by `set_remote_access`'s reasoning:
+  // turning it on removes no work and ends no process, a Device that
+  // reaches it still needs `confirm_pairing` to become one, and gating
+  // the switch would gate turning the port off. The state read carries
+  // addresses and a port, which the QR prints anyway.
+  get_direct_state: ["ordinary"],
+  set_direct_access: ["ordinary"],
   // Where the daemon posts notifications, and what it posts (v49/v67).
   // Neither removes work or ends a process. A gateway of a script's
   // choosing is handed sealed payloads it holds no key for, and the send

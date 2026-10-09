@@ -27,6 +27,10 @@ snow = "0.10.0"
 # none of the Relay itself -- the daemon runs no async runtime, and with
 # `server` off this brings none in.
 gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"] }
+# The direct listener's certificate (`direct.rs`, ADR 0009): minted once,
+# self-signed, and trusted by a pin rather than a CA. The version and
+# provider seam 1 already builds for its Relay's certificate.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # Verifying a Device's hardware signature (`unlock.rs`): ECDSA over
 # P-256. Already built, at this version, under the TLS the dial above
 # runs on, so naming it here adds nothing to what is compiled.

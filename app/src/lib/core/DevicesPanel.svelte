@@ -45,8 +45,10 @@
     connectedDevices,
     deviceList,
     devicePresences,
+    deviceDirectState,
     deviceRelayState,
     devicesFailure,
+    refreshDeviceDirect,
     refreshDeviceList,
     refreshDeviceRelay,
   } from "$lib/core/devicesState";
@@ -87,7 +89,9 @@
       ? panelRows($deviceList.devices, $connectedDevices, nowMs, $devicePresences, naming, ownedCountByDevice($sessionOwners))
       : []
   );
-  const pairingGate = $derived(pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState));
+  const pairingGate = $derived(
+    pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState, $deviceDirectState)
+  );
   const relayLine = $derived(relayStatus($deviceRelayState, nowMs));
   const relayBadge = $derived(
     relayLine.badge === null
@@ -101,6 +105,7 @@
   onMount(() => {
     void refreshDeviceList();
     void refreshDeviceRelay();
+    void refreshDeviceDirect();
     // The pairing question is heard only while this panel is open: the
     // daemon refuses a pairing outright when no `app` connection is live,
     // and a question nobody is being asked is not a notification -- it is a

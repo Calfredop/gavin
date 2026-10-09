@@ -3490,6 +3490,9 @@ pub struct DeviceList {
     /// Where the daemon posts Companion notifications (v67); `None` from
     /// an older daemon, which cannot say (FEATURE_MIN_VERSION.pushGateway).
     pub push_gateway_url: Option<String>,
+    /// Whether direct connection is switched on (v69); `false` from an
+    /// older daemon, which has no listener (FEATURE_MIN_VERSION.directAccess).
+    pub direct_access_enabled: bool,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3580,7 +3583,15 @@ pub async fn list_devices(
             relay_url,
             relay_admission_set,
             push_gateway_url,
-        } => Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set, push_gateway_url }),
+            direct_access_enabled,
+        } => Ok(DeviceList {
+            devices,
+            remote_access_enabled,
+            relay_url,
+            relay_admission_set,
+            push_gateway_url,
+            direct_access_enabled,
+        }),
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
     }
@@ -3604,6 +3615,42 @@ pub async fn get_relay_state(
         Response::Error { message } => Err(message),
         other => Err(format!("expected RelayState, got {other:?}")),
     }
+}
+
+/// Where the daemon's direct listener stands (v69, ADR 0009). The Settings
+/// section's read on open; every change after arrives as the
+/// `direct-state-changed` event.
+#[tauri::command]
+pub async fn get_direct_state(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::DirectState, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetDirectState)
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::DirectState { state } => Ok(state),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected DirectState, got {other:?}")),
+    }
+}
+
+/// The Direct connection switch (v69, ADR 0009). The daemon listens while
+/// it and remote access are both on, and lets go when either goes off.
+#[tauri::command]
+pub async fn set_direct_access(
+    enabled: bool,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetDirectAccess { enabled })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
 }
 
 /// Revoke one device: the daemon marks the row and drops every live
@@ -5484,6 +5531,11 @@ pub(crate) fn attach_and_relay(
                 // itself, so the section redraws without asking again.
                 Response::RelayStateChanged { state } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "relay-state-changed", state);
+                }
+                // The direct listener's state changed (v69). Whole, like
+                // the dial's; only sent to an app that speaks 69.
+                Response::DirectStateChanged { state } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "direct-state-changed", state);
                 }
                 // A session's browser launched, navigated, changed tab or
                 // (`None`) stopped (v65): what lights the tab's browser chip

@@ -27,11 +27,11 @@ use protocol::device_wire::{ConnectRefusal, PairingVerdict};
 use protocol::relay::{rendezvous_id, RefusalReason, RelayHello, PURPOSE_CONNECT, PURPOSE_PAIR};
 use protocol::transport::{Endpoint, Stream};
 use protocol::{
-    read_message, write_message, ConnectionKind, DeviceInfo, HelloAuth, PairingQr, Request,
-    Response,
+    read_message, write_message, ConnectionKind, DeviceInfo, DirectState, HelloAuth, PairingQr,
+    Request, Response,
 };
 use std::io::{BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -155,7 +155,7 @@ impl Desk {
     fn next(&mut self) -> Response {
         loop {
             match self.next_raw() {
-                Response::RelayStateChanged { .. } => {}
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -176,7 +176,7 @@ impl Desk {
                 return heard;
             }
             match self.next_raw() {
-                Response::RelayStateChanged { .. } => {}
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -210,7 +210,7 @@ impl Desk {
             }
             assert!(Instant::now() < deadline, "no presence push for {device_id} came true");
             match self.next_raw() {
-                Response::RelayStateChanged { .. } => {}
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -249,7 +249,7 @@ impl Desk {
                 return heard;
             }
             match self.next_raw() {
-                Response::RelayStateChanged { .. } => {}
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     return (device_id, refusal)
                 }
@@ -278,7 +278,7 @@ impl Desk {
             }
             assert!(Instant::now() < deadline, "no ownership push for {session_id} came true");
             match self.next_raw() {
-                Response::RelayStateChanged { .. } => {}
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -300,7 +300,9 @@ impl Desk {
         self.stream.set_read_timeout(Some(within)).unwrap();
         let heard = loop {
             match read_message::<_, Response>(&mut self.reader) {
-                Ok(Some(Response::RelayStateChanged { .. })) => continue,
+                Ok(Some(Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. })) => {
+                    continue
+                }
                 Ok(Some(Response::DeviceRefusalChanged { device_id, refusal })) => {
                     self.refusals.push_back((device_id, refusal));
                     continue;
@@ -381,6 +383,10 @@ impl Workstation {
             // concerned. Nothing in the daemon knows it is under test.
             .env("SSL_CERT_FILE", &roots)
             .env_remove("SSL_CERT_DIR")
+            // The direct listener's port, chosen by the system: many of
+            // these daemons run at once, and the developer's own dev
+            // daemon may hold the dev build's port.
+            .env("GAVIN_DIRECT_PORT", "0")
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
         // The browsers stay where the machine keeps them: the temporary
@@ -3290,6 +3296,7 @@ fn meeting(relay: &LocalRelay, key: &[u8]) -> RelayDial {
     RelayDial {
         url: relay.url(),
         hello: RelayHello::device(TOKEN, &rendezvous_id(key), PURPOSE_CONNECT),
+        pin: None,
     }
 }
 
@@ -3782,4 +3789,280 @@ fn a_device_hands_over_its_send_permission_over_the_wire() {
         other => panic!("expected the permission to be taken back, got {other:?}"),
     }
     assert_eq!(notifies(&mut workstation), vec![("phone".into(), false), ("tablet".into(), false)]);
+}
+
+// -- the direct listener (ADR 0009) ------------------------------------------
+
+/// The store's row for a meta key, read the way another daemon sharing
+/// the file would.
+fn stored(workstation: &Workstation, key: &str) -> Vec<u8> {
+    workstation
+        .store()
+        .query_row("SELECT value FROM trust_meta WHERE key = ?1", [key], |row| row.get(0))
+        .unwrap()
+}
+
+impl Workstation {
+    /// Turns direct connection on, and waits until the listener is bound.
+    /// Returns its port. Remote access is the caller's to turn on.
+    fn listen_directly(&mut self) -> u16 {
+        let resp = self.command.request(&Request::SetDirectAccess { enabled: true });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let deadline = Instant::now() + SOON;
+        loop {
+            if let DirectState::Listening { port, .. } = self.direct_state() {
+                return port;
+            }
+            assert!(Instant::now() < deadline, "the listener never bound; its log:\n{}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn direct_state(&mut self) -> DirectState {
+        match self.command.request(&Request::GetDirectState) {
+            Response::DirectState { state } => state,
+            other => panic!("expected DirectState, got {other:?}"),
+        }
+    }
+
+    /// The pin of the certificate the listener serves, from the store.
+    fn direct_pin(&self) -> String {
+        let row = stored(self, "direct_tls");
+        let length = u32::from_be_bytes(row[..4].try_into().unwrap()) as usize;
+        protocol::relay::certificate_pin(&row[4..4 + length])
+    }
+
+    /// This Workstation's static key, from the store -- without drawing a
+    /// QR, which would put a pairing on offer.
+    fn key(&self) -> Vec<u8> {
+        stored(self, "static_public_key")
+    }
+
+    /// Presses "Pair a device" with the listener bound, and hands back the
+    /// QR with its direct addresses pointed at loopback: the ones the
+    /// daemon worked out are this machine's LAN and tailnet, which a test
+    /// cannot count on, and loopback reaches the same listener.
+    fn direct_offer(&mut self, port: u16) -> PairingQr {
+        let mut offer = PairingQr::parse(&self.offer()).unwrap();
+        if let Some(pin) = &offer.direct_pin {
+            assert_eq!(*pin, self.direct_pin(), "the QR pins the certificate the listener serves");
+            for address in &offer.direct {
+                assert!(address.starts_with("wss://") && address.ends_with(&format!(":{port}")), "{address}");
+            }
+        }
+        offer.direct = vec![format!("wss://127.0.0.1:{port}")];
+        offer.direct_pin = Some(self.direct_pin());
+        offer
+    }
+
+    /// Pairs `device` through `offer`: the scan, the six digits, Confirm.
+    fn pair_through(&mut self, device: &TestDevice, offer: &PairingQr) -> PairedWorkstation {
+        let pairing = device.pair_with(offer).unwrap();
+        let (device_id, _, desk_code) = self.asked();
+        assert_eq!(pairing.code, desk_code, "the two screens must show the same code");
+        let resp = self.command.request(&Request::ConfirmPairing { device_id: device_id.clone() });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let paired = pairing.paired(SOON).unwrap();
+        assert_eq!(paired.device_id, device_id);
+        paired
+    }
+}
+
+/// The card's point: with no Relay anywhere, a Device pairs over the
+/// listener, connects over it, and is given the Remote role -- the same
+/// role, through the same loop, as through a Relay.
+#[test]
+fn a_device_pairs_and_connects_directly_with_no_relay() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+
+    let offer = workstation.direct_offer(port);
+    assert!(offer.rendezvous.is_empty(), "no Relay was named: {offer:?}");
+    assert_eq!(offer.relay_admission, None, "there is no Relay to admit to");
+
+    let device = TestDevice::new("Direct iPhone").unwrap();
+    let paired = workstation.pair_through(&device, &offer);
+    assert_eq!(paired.direct, offer.direct);
+    assert_eq!(paired.direct_pin, offer.direct_pin);
+    assert_eq!(workstation.device_names(), vec!["Direct iPhone".to_string()]);
+
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(connection.device_id, paired.device_id);
+    assert_eq!(workstation.connected(), paired.device_id);
+    for request in refused_to_a_device() {
+        assert_refused(&mut connection, &request);
+    }
+    connection.close();
+    assert_eq!(workstation.disconnected(), paired.device_id);
+
+    // A Device connects as often as it likes.
+    let mut again = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_refused(&mut again, &Request::ListSessions);
+}
+
+/// "Refuse anything that is not a Device hello before any state is
+/// touched": every hello but a Device's for THIS Workstation's key is
+/// refused by name, the way a Relay refuses it, and the desk hears
+/// nothing of any of them.
+#[test]
+fn the_direct_listener_refuses_what_is_not_a_device_hello_for_this_workstation() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let url = format!("wss://127.0.0.1:{port}");
+    let options = DialOptions { pin: Some(workstation.direct_pin()), ..DialOptions::default() };
+    let ours = rendezvous_id(&workstation.key());
+    let refused = |hello: RelayHello| match dial(&url, &hello, &options) {
+        Err(DialError::Refused(reason)) => reason,
+        Err(other) => panic!("{hello:?} was not refused by name: {other}"),
+        Ok(_) => panic!("{hello:?} was let in"),
+    };
+
+    // A daemon registering, as it would with a Relay.
+    assert_eq!(refused(RelayHello::workstation(TOKEN, &ours)), RefusalReason::Version);
+    // A Device looking for another Workstation, or for this one under a
+    // key that has since been rotated.
+    assert_eq!(
+        refused(RelayHello::device("", &rendezvous_id(&[9u8; 32]), PURPOSE_CONNECT)),
+        RefusalReason::Offline
+    );
+    // A pairing with no QR on the desk.
+    assert_eq!(refused(RelayHello::device("", &ours, PURPOSE_PAIR)), RefusalReason::Unclaimed);
+    // A purpose this build does not serve.
+    assert_eq!(refused(RelayHello::device("", &ours, "forward")), RefusalReason::Unclaimed);
+
+    assert!(workstation.push.hears_nothing_for(Duration::from_millis(300)));
+    assert_eq!(workstation.devices(), vec![]);
+}
+
+/// A socket that opens and says nothing holds one of the listener's
+/// places only until the hello deadline.
+#[test]
+fn a_peer_that_never_says_hello_is_let_go() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+
+    let mut silent = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    silent.set_read_timeout(Some(SOON)).unwrap();
+    let started = Instant::now();
+    let read = silent.read(&mut [0u8; 1]);
+    let took = started.elapsed();
+    assert!(
+        matches!(&read, Ok(0)) || matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset),
+        "{read:?}"
+    );
+    assert!(took >= Duration::from_secs(4), "let go before the deadline: {took:?}");
+    assert!(took < Duration::from_secs(10), "held past the deadline: {took:?}");
+}
+
+/// The listener holds a fixed number of sockets at once. One over is
+/// closed on before TLS, and the places come back as the others end.
+#[test]
+fn a_connection_over_the_direct_listeners_cap_is_closed_on() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let url = format!("wss://127.0.0.1:{port}");
+    let options = DialOptions {
+        pin: Some(workstation.direct_pin()),
+        hello_timeout: Duration::from_secs(3),
+        ..DialOptions::default()
+    };
+    // A hello the listener refuses by name: proof it was read.
+    let elsewhere = RelayHello::device("", &rendezvous_id(&[9u8; 32]), PURPOSE_CONNECT);
+
+    // Sixteen sockets that say nothing, each holding a place until its
+    // hello deadline.
+    let held: Vec<TcpStream> =
+        (0..16).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    match dial(&url, &elsewhere, &options) {
+        Err(DialError::Refused(reason)) => panic!("a connection over the cap was read: {reason}"),
+        Err(_) => {}
+        Ok(_) => panic!("a connection over the cap was let in"),
+    }
+
+    drop(held);
+    eventually("the places came back", || {
+        matches!(dial(&url, &elsewhere, &options), Err(DialError::Refused(RefusalReason::Offline)))
+    });
+}
+
+/// Turning direct connection off closes the port and lets go of every
+/// Device the listener was carrying.
+#[test]
+fn turning_direct_connection_off_closes_the_port_and_drops_the_device() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let offer = workstation.direct_offer(port);
+    let device = TestDevice::new("Direct iPhone").unwrap();
+    let paired = workstation.pair_through(&device, &offer);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: false });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+
+    assert!(connection.is_dropped(SOON), "the Device was still carried");
+    assert_eq!(workstation.disconnected(), paired.device_id);
+    eventually("the port was closed", || TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+}
+
+/// The address a Device kept from pairing is tried first, and when it
+/// does not answer the Relay carries the connection instead.
+#[test]
+fn a_device_whose_direct_address_does_not_answer_falls_back_to_the_relay() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let port = workstation.listen_directly();
+
+    let offer = workstation.direct_offer(port);
+    assert_eq!(offer.rendezvous, vec![relay.url()]);
+    let device = device(&relay, "Direct iPhone");
+    let paired = workstation.pair_through(&device, &offer);
+    assert_eq!(relay.relay.stats().streams, 0, "the pairing went direct");
+
+    // Direct connection off: the address the Device kept answers nothing.
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: false });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    eventually("the port was closed", || TcpStream::connect(("127.0.0.1", port)).is_err());
+
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_eq!(relay.relay.stats().streams, 1, "the connection came through the Relay");
+    assert_refused(&mut connection, &Request::ListSessions);
+}
+
+/// Off unless asked for: remote access on is not enough, and direct
+/// connection on is not enough without it. Nothing listens, and the QR
+/// names no direct address.
+#[test]
+fn nothing_listens_unless_remote_access_and_direct_connection_are_both_on() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    std::thread::sleep(QUIET);
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+    let offer = PairingQr::parse(&workstation.offer()).unwrap();
+    assert!(offer.direct.is_empty(), "{offer:?}");
+    assert_eq!(offer.direct_pin, None);
+
+    workstation.set_remote_access(false, None, None);
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: true });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    std::thread::sleep(QUIET);
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+    match workstation.command.request(&Request::ListDevices) {
+        Response::Devices { direct_access_enabled, remote_access_enabled, .. } => {
+            assert!(direct_access_enabled, "the switch reads back as set");
+            assert!(!remote_access_enabled);
+        }
+        other => panic!("expected Devices, got {other:?}"),
+    }
 }

@@ -17,7 +17,13 @@ import { derived, get, writable, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/core/backend";
 import { daemonCompat, layoutState, placeDeviceStartedSession } from "$lib/core/layoutState";
-import type { DeviceList, DevicePresence, RelayState } from "$lib/core/remoteAccess";
+import {
+  directAccessBlocked,
+  type DeviceList,
+  type DevicePresence,
+  type DirectState,
+  type RelayState,
+} from "$lib/core/remoteAccess";
 import {
   devicesAskable,
   devicesBadge,
@@ -39,6 +45,9 @@ import { runsRailsFor } from "$lib/shell/appDuty";
 const list = writable<DeviceList | null>(null);
 const connected = writable<ReadonlySet<string>>(new Set());
 const relay = writable<RelayState | null>(null);
+/// Where the direct listener stands (v69, ADR 0009): what lets the panel
+/// draw a QR with no Relay set.
+const direct = writable<DirectState | null>(null);
 const failure = writable<string | null>(null);
 /// Every Device's presence (v63): seeded by the list read, replaced per
 /// Device by each push, which carries the whole of it.
@@ -50,6 +59,7 @@ const typingClock = writable(Date.now());
 export const deviceList: Readable<DeviceList | null> = { subscribe: list.subscribe };
 export const connectedDevices: Readable<ReadonlySet<string>> = { subscribe: connected.subscribe };
 export const deviceRelayState: Readable<RelayState | null> = { subscribe: relay.subscribe };
+export const deviceDirectState: Readable<DirectState | null> = { subscribe: direct.subscribe };
 export const devicesFailure: Readable<string | null> = { subscribe: failure.subscribe };
 
 export const devicePresences: Readable<Presences> = { subscribe: presences.subscribe };
@@ -107,6 +117,17 @@ export async function refreshDeviceRelay(): Promise<void> {
     relay.set(await backend.getRelayState());
   } catch {
     relay.set(null); // not knowing is not a failure to connect
+  }
+}
+
+/// A no-op against a daemon older than v69, which has no listener to ask
+/// about and would answer `Unsupported`.
+export async function refreshDeviceDirect(): Promise<void> {
+  if (directAccessBlocked(get(daemonCompat)) !== null) return;
+  try {
+    direct.set(await backend.getDirectState());
+  } catch {
+    direct.set(null); // not knowing is not "not listening"
   }
 }
 
@@ -182,6 +203,7 @@ export function watchDevices(): () => void {
     // rather than patched: the panel then draws one account of the store.
     listen<[string, unknown]>("device-refusal-changed", () => void refreshDeviceList()),
     listen<RelayState>("relay-state-changed", (event) => relay.set(event.payload)),
+    listen<DirectState>("direct-state-changed", (event) => direct.set(event.payload)),
   ];
   // The first read waits for a verdict (see refreshDeviceList).
   const unsubscribe = daemonCompat.subscribe(() => {

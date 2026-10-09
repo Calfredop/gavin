@@ -130,9 +130,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("reject_pairing", RemoteAllowance::Refused), // Trust
     ("list_devices", RemoteAllowance::Refused), // Trust
     ("get_relay_state", RemoteAllowance::Refused), // Trust: the desk's own dial
+    ("get_direct_state", RemoteAllowance::Refused), // Trust: the desk's own listener
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust
+    ("set_direct_access", RemoteAllowance::Refused), // Trust
     ("set_push_gateway_url", RemoteAllowance::Refused), // Trust: where the desk posts
     ("push_companion_notify", RemoteAllowance::Refused), // the desk decides what to notify
     ("daemon_compat", RemoteAllowance::Allowed),
@@ -343,6 +345,8 @@ mod tests {
             "revoke_device",
             "revoke_all_devices",
             "set_remote_access",
+            "set_direct_access",
+            "get_direct_state",
             "set_push_gateway_url",
             "push_companion_notify",
             "set_workspaces_state",

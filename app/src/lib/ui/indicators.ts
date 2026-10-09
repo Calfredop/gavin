@@ -111,6 +111,7 @@ export type IndicatorAxis =
   | "usage"
   | "headroom"
   | "relay"
+  | "direct"
   | "device";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
@@ -128,6 +129,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   usage: "Usage",
   headroom: "Headroom",
   relay: "Relay",
+  direct: "Direct connection",
   device: "Device",
 };
 
@@ -740,6 +742,29 @@ export function relayIndicator(state: RelayIndicatorState, why?: string | null):
   const base = RELAY[state];
   if (state !== "failed" || !why) return base;
   const tip = `${AXIS_LABEL.relay} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
+// ---- direct ------------------------------------------------------------
+// Whether the daemon's direct listener is bound (ADR 0009), under the
+// Direct connection switch in Settings. The relay's glyphs, for the same
+// question asked of a different wire: `remoteAccess.ts` owns the words.
+
+const DIRECT = {
+  not_wanted: make("direct", "not_wanted", Cable, "neutral", "not listening — it is off"),
+  listening: make("direct", "listening", Plug, "success", "listening"),
+  failed: make("direct", "failed", Unplug, "danger", "could not listen"),
+};
+
+export const DIRECT_STATES = ["not_wanted", "listening", "failed"] as const;
+export type DirectIndicatorState = (typeof DIRECT_STATES)[number];
+
+/// The badge for one of the listener's three states. A `why` for a
+/// failure goes in the bubble, as the relay's does.
+export function directIndicator(state: DirectIndicatorState, why?: string | null): Indicator {
+  const base = DIRECT[state];
+  if (state !== "failed" || !why) return base;
+  const tip = `${AXIS_LABEL.direct} · ${why}`;
   return { ...base, tip, label: tip };
 }
 

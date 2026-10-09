@@ -46,34 +46,77 @@ pub enum PairingEvent {
     Finished(PairingVerdict),
 }
 
-/// Where a Device finds its Workstation: a Relay to dial, and the first
-/// frame to send it.
+/// Where a Device finds its Workstation: a Relay, or the Workstation's
+/// own direct listener (ADR 0009), to dial, and the first frame to send
+/// it -- the same frame either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayDial {
     /// Dialled exactly as it is.
     pub url: String,
     pub hello: RelayHello,
+    /// For a direct listener, the one certificate to trust there
+    /// (`protocol::relay::certificate_pin`): no root and no host name.
+    /// `None` for a Relay, trusted as the platform trusts it.
+    pub pin: Option<String>,
 }
 
-/// The Relays a pairing QR names, in the order to try them.
+/// Where to dial a pairing QR's Workstation, in the order to try: its
+/// direct listener's addresses, then its Relays.
 ///
-/// An entry of the rendezvous list that is not a Relay URL this build may
-/// dial is left out rather than refused: the list is where a direct
-/// address will sit beside the Relay's, and a Device that cannot use one
-/// entry can still use the next.
+/// An entry that is not one this build may dial is left out rather than
+/// refused, so a Device that cannot use one entry can still use the next.
+/// See `dials` for which those are.
 pub fn relay_dials(offer: &PairingQr) -> Result<Vec<RelayDial>, CoreError> {
     let workstation_key = workstation_key(offer)?;
-    let rendezvous = relay::rendezvous_id(&workstation_key);
-    let token = offer.relay_admission.as_deref().unwrap_or("");
-    Ok(offer
-        .rendezvous
-        .iter()
-        .filter_map(|url| RelayUrl::parse(url).ok())
-        .map(|url| RelayDial {
-            url: url.url,
-            hello: RelayHello::device(token, &rendezvous, relay::PURPOSE_PAIR),
-        })
-        .collect())
+    Ok(dials(
+        &workstation_key,
+        &offer.direct,
+        offer.direct_pin.as_deref(),
+        &offer.rendezvous,
+        offer.relay_admission.as_deref(),
+        relay::PURPOSE_PAIR,
+    ))
+}
+
+/// Where to dial the Workstation holding `workstation_key`, for
+/// `purpose`, in the order to try: the direct addresses, then the Relays.
+///
+/// A direct address is dialled with the pin and an EMPTY admission
+/// token: the token is the Relay's, and a LAN address a Mac has since
+/// given up could be anyone's. One with no pin to trust it by, or that
+/// is not `wss://`, is left out -- a pin is a certificate to check, and
+/// there is nothing else to trust a direct listener by. A Relay is
+/// dialled with the token, as before.
+pub(crate) fn dials(
+    workstation_key: &[u8],
+    direct: &[String],
+    direct_pin: Option<&str>,
+    relays: &[String],
+    relay_admission: Option<&str>,
+    purpose: &str,
+) -> Vec<RelayDial> {
+    let rendezvous = relay::rendezvous_id(workstation_key);
+    let pin = direct_pin.map(|pin| pin.trim().to_ascii_lowercase()).filter(|pin| {
+        pin.len() == 64 && pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    let direct = pin.iter().flat_map(|pin| {
+        direct
+            .iter()
+            .filter_map(|url| RelayUrl::parse(url).ok())
+            .filter(|url| url.secure)
+            .map(|url| RelayDial {
+                url: url.url,
+                hello: RelayHello::device("", &rendezvous, purpose),
+                pin: Some(pin.clone()),
+            })
+    });
+    let token = relay_admission.unwrap_or("");
+    let relays = relays.iter().filter_map(|url| RelayUrl::parse(url).ok()).map(|url| RelayDial {
+        url: url.url,
+        hello: RelayHello::device(token, &rendezvous, purpose),
+        pin: None,
+    });
+    direct.chain(relays).collect()
 }
 
 fn workstation_key(offer: &PairingQr) -> Result<Vec<u8>, CoreError> {
@@ -414,6 +457,8 @@ mod tests {
                 rendezvous: vec!["wss://relay.example/gavin".into()],
                 protocol_version: protocol::PROTOCOL_VERSION,
                 relay_admission: Some("let-me-in".into()),
+                direct: Vec::new(),
+                direct_pin: None,
             }
         }
 
@@ -945,6 +990,27 @@ mod tests {
         offer.relay_admission = None;
         let dials = relay_dials(&offer).unwrap();
         assert_eq!(dials[0].hello.admission().unwrap().1, "");
+    }
+
+    /// A QR with only a direct listener and no Relay (ADR 0009) still has
+    /// somewhere to pair: the listener, by its pin.
+    #[test]
+    fn a_qr_with_only_a_direct_listener_is_paired_there() {
+        let workstation = Workstation::new(0x33, [0x44; 32]);
+        let mut offer = workstation.offer();
+        offer.rendezvous = Vec::new();
+        offer.relay_admission = None;
+        offer.direct = vec!["wss://192.168.1.20:8445".into()];
+        offer.direct_pin = Some("cd".repeat(32));
+
+        let dials = relay_dials(&offer).unwrap();
+        assert_eq!(dials.len(), 1);
+        assert_eq!(dials[0].url, "wss://192.168.1.20:8445");
+        assert_eq!(dials[0].pin.as_deref(), Some("cd".repeat(32).as_str()));
+        assert_eq!(
+            dials[0].hello,
+            RelayHello::device("", &relay::rendezvous_id(&workstation.keys.public), relay::PURPOSE_PAIR)
+        );
     }
 
     #[test]

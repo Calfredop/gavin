@@ -1751,6 +1751,10 @@ pub struct SessionManager {
     /// the desk asks for it from a connection's, and pushes follow every
     /// change (`set_relay_state`).
     relay_state: Mutex<protocol::RelayState>,
+    /// Where the direct listener stands (ADR 0009), written by
+    /// `direct.rs` and read by `GetDirectState`, for `relay_state`'s
+    /// reasons.
+    direct_state: Mutex<protocol::DirectState>,
     /// Hands out `PendingPairing::ticket`.
     next_pairing_ticket: AtomicU64,
     /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
@@ -2148,6 +2152,7 @@ impl SessionManager {
             push_queue: Mutex::new(None),
             build_profile: Mutex::new(protocol::BuildProfile::current()),
             relay_state: Mutex::new(protocol::RelayState::NotWanted),
+            direct_state: Mutex::new(protocol::DirectState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(None),
@@ -2179,7 +2184,29 @@ impl SessionManager {
         self.push_to_apps(&Response::RelayStateChanged { state });
     }
 
-    /// What `remote.rs` waits on. See `remote_wake`.
+    /// Where the direct listener stands. See `direct_state`.
+    pub fn direct_state(&self) -> protocol::DirectState {
+        self.direct_state.lock().unwrap().clone()
+    }
+
+    /// Records where the listener stands and, if that is a change, tells
+    /// every live app that speaks v69. The listener works its addresses
+    /// out again every few seconds; a repeat pushes nothing.
+    pub fn set_direct_state(&self, state: protocol::DirectState) {
+        {
+            let mut held = self.direct_state.lock().unwrap();
+            if *held == state {
+                return;
+            }
+            *held = state.clone();
+        }
+        self.push_to_apps_speaking(
+            protocol::DIRECT_ACCESS_MIN_VERSION,
+            &Response::DirectStateChanged { state },
+        );
+    }
+
+    /// What `remote.rs` and `direct.rs` wait on. See `remote_wake`.
     pub fn remote_wake(&self) -> Arc<crate::remote::Wake> {
         Arc::clone(&self.remote_wake)
     }
@@ -3010,15 +3037,25 @@ impl SessionManager {
     /// time, so one secret is live at a time -- and an offer left behind
     /// by an abandoned dialog is a valid secret nobody is watching.
     pub fn begin_pairing(&self) -> anyhow::Result<Response> {
-        let (daemon_public_key, settings) = {
+        let (daemon_public_key, settings, direct_identity) = {
             let trust = self.trust_or_err()?;
-            (trust.static_public_key()?, trust.remote_access()?)
+            (trust.static_public_key()?, trust.remote_access()?, trust.direct_identity()?)
         };
         let rendezvous = settings.rendezvous();
         // The token goes with the Relay it admits to. With no Relay to
         // present it to, it would be a credential drawn on a screen for
         // nothing.
         let relay_admission = if rendezvous.is_empty() { None } else { settings.relay_admission };
+        // The direct listener's addresses, if it is listening now (ADR
+        // 0009): worked out afresh, since the one the QR is drawn from is
+        // the one the Device will keep. A listener that is switched on
+        // but could not bind its port is not offered -- a Device would
+        // spend its first try on an address nothing answers.
+        let direct = match self.direct_state() {
+            protocol::DirectState::Listening { port, .. } => crate::direct::addresses(port),
+            _ => Vec::new(),
+        };
+        let direct_pin = (!direct.is_empty()).then(|| direct_identity.pin());
         let offer = crate::pairing::PairingOffer::mint(crate::trust::now_us())?;
         let qr = protocol::PairingQr {
             daemon_public_key: crate::pairing::hex_encode(&daemon_public_key),
@@ -3026,6 +3063,8 @@ impl SessionManager {
             rendezvous,
             protocol_version: protocol::PROTOCOL_VERSION,
             relay_admission,
+            direct,
+            direct_pin,
         };
         let expires_at = offer.expires_at_us / 1_000_000;
         *self.pending_offer.lock().unwrap() = Some(offer);
@@ -3351,6 +3390,7 @@ impl SessionManager {
             // Whether, never what. See `Response::Devices`.
             relay_admission_set: settings.relay_admission.is_some(),
             push_gateway_url: trust.push_gateway_url()?,
+            direct_access_enabled: trust.direct_enabled()?,
         })
     }
 
@@ -3409,6 +3449,24 @@ impl SessionManager {
         }
         // After the store's lock is let go: the dial reads the store the
         // moment it wakes.
+        self.remote_wake.poke();
+        Ok(())
+    }
+
+    /// `SetDirectAccess`: store the direct listener's switch, and wake
+    /// it (ADR 0009). Like `set_remote_access`, nothing here binds a
+    /// port: `direct.rs` re-reads the store and takes the port up, or lets
+    /// go of it, on its own.
+    pub fn set_direct_access(&self, enabled: bool) -> anyhow::Result<()> {
+        {
+            let trust = self.trust_or_err()?;
+            trust.set_direct_enabled(enabled)?;
+            // Minted now rather than at the listener's first bind, so a
+            // failure to make one is said to the human who asked.
+            if enabled {
+                trust.direct_identity()?;
+            }
+        }
         self.remote_wake.poke();
         Ok(())
     }
@@ -6614,6 +6672,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }
         Request::ListDevices => manager.list_devices(),
         Request::GetRelayState => Ok(Response::RelayState { state: manager.relay_state() }),
+        Request::GetDirectState => Ok(Response::DirectState { state: manager.direct_state() }),
+        Request::SetDirectAccess { enabled } => {
+            manager.set_direct_access(enabled).map(|_| Response::Ok)
+        }
         // Answered `Ok` rather than with what changed: the app refetches
         // the list, which is the only account of the store that cannot
         // disagree with the store.
@@ -7102,9 +7164,11 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::RejectPairing { .. }
         | Request::ListDevices
         | Request::GetRelayState
+        | Request::GetDirectState
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }
+        | Request::SetDirectAccess { .. }
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. }
         | Request::PushCompanionNotify { .. }
@@ -7308,6 +7372,7 @@ fn is_privileged(req: &Request) -> bool {
             | Request::RevokeDevice { .. }
             | Request::RevokeAllDevices
             | Request::SetRemoteAccess { .. }
+            | Request::SetDirectAccess { .. }
             | Request::SetPushGatewayUrl { .. }
             | Request::SetDeviceSendPermission { .. }
             | Request::PushCompanionNotify { .. }
@@ -13472,6 +13537,8 @@ mod tests {
             rendezvous: Vec::new(),
             protocol_version: protocol::PROTOCOL_VERSION,
             relay_admission: None,
+            direct: Vec::new(),
+            direct_pin: None,
         };
 
         let mut slow = park_a_handshake(&manager);

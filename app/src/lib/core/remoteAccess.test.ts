@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   ADMISSION_NOTE,
+  DIRECT_NOTE,
   KEEP_RUNNING_NOTE,
   NO_DEVICES,
   PAIRING_IDLE,
@@ -14,6 +15,8 @@ import {
   admissionToSave,
   countdownLabel,
   deviceRows,
+  directAccessBlocked,
+  directStatus,
   formatSas,
   knownDevice,
   pairingClosed,
@@ -747,5 +750,59 @@ describe("whether the daemon reached its Relay", () => {
     expect(relayStateBlocked(knows)).toBeNull();
     const reason = relayStateBlocked({ daemonVersion: needed - 1, appVersion: needed, degraded: true });
     expect(reason).toContain(`v${needed}`);
+  });
+});
+
+describe("the direct listener (ADR 0009)", () => {
+  const needed = FEATURE_MIN_VERSION.directAccess;
+  const knows = { daemonVersion: needed, appVersion: needed, degraded: false };
+  const listening = { state: "listening" as const, port: 8445, addresses: ["wss://100.79.93.51:8445"] };
+  const noRelay: DeviceList = {
+    devices: [],
+    remoteAccessEnabled: true,
+    relayUrl: null,
+    relayAdmissionSet: false,
+    directAccessEnabled: true,
+  };
+
+  it("is gated at v69, and names the version against an older daemon", () => {
+    expect(needed).toBe(69);
+    expect(directAccessBlocked(null)).toBeNull();
+    expect(directAccessBlocked(knows)).toBeNull();
+    const reason = directAccessBlocked({ daemonVersion: needed - 1, appVersion: needed, degraded: true });
+    expect(reason).toContain(`v${needed}`);
+  });
+
+  it("says where a phone paired now will look", () => {
+    expect(directStatus(null).badge).toBeNull();
+    expect(directStatus({ state: "unknown" }).badge).toBeNull();
+    expect(directStatus({ state: "not_wanted" })).toMatchObject({ badge: "not_wanted", text: "Not listening" });
+    const line = directStatus(listening);
+    expect(line).toMatchObject({ badge: "listening", text: "Listening on port 8445" });
+    expect(line.detail).toContain("wss://100.79.93.51:8445");
+    expect(directStatus({ ...listening, addresses: [] }).detail).toContain("nowhere to reach it directly");
+    const failed = directStatus({ state: "failed", why: "could not listen on port 8445: Address already in use" });
+    expect(failed.badge).toBe("failed");
+    expect(failed.detail).toContain("Address already in use");
+  });
+
+  it("lets a listening Workstation pair with no Relay set", () => {
+    expect(pairingUnavailable(noRelay, knows, null, listening)).toBeNull();
+    // Not listening, or nothing to give the phone: the Relay rules apply.
+    expect(pairingUnavailable(noRelay, knows, null, { state: "not_wanted" })).toContain("Relay URL");
+    expect(pairingUnavailable(noRelay, knows, null, { ...listening, addresses: [] })).toContain("Relay URL");
+    expect(pairingUnavailable(noRelay, knows, null, null)).toContain("Relay URL");
+    // Remote access off is still off.
+    expect(pairingUnavailable({ ...noRelay, remoteAccessEnabled: false }, knows, null, listening)).toContain(
+      "Turn remote access on"
+    );
+    // A Relay that is down does not stop a listener that is up.
+    const relayDown = { ...noRelay, relayUrl: "wss://relay.example" };
+    expect(pairingUnavailable(relayDown, knows, { state: "failed", why: "no" }, listening)).toBeNull();
+  });
+
+  it("says the phone needs to be on the same network or tailnet, and to pair again", () => {
+    expect(DIRECT_NOTE).toContain("tailnet");
+    expect(DIRECT_NOTE).toContain("Pair again");
   });
 });

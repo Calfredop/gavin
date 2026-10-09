@@ -77,6 +77,20 @@ pub fn rendezvous_id(workstation_public_key: &[u8]) -> String {
     crate::hex_encode(&h.finalize())
 }
 
+/// The pin a pairing QR carries for the direct listener's certificate
+/// (ADR 0009, `PairingQr::direct_pin`):
+///
+/// ```text
+/// pin = hex(SHA-256(the certificate, DER))
+/// ```
+///
+/// The whole certificate rather than its key, so that every platform
+/// computes it from what its TLS stack hands over without parsing it:
+/// the DER as it arrived.
+pub fn certificate_pin(certificate_der: &[u8]) -> String {
+    crate::hex_encode(&Sha256::digest(certificate_der))
+}
+
 /// Whether `s` has the shape of a rendezvous id: 64 lowercase hex digits.
 pub fn is_rendezvous_id(s: &str) -> bool {
     is_lower_hex(s, 64)
@@ -424,7 +438,11 @@ fn name_or_ipv4(host: &str) -> Result<Option<std::net::Ipv4Addr>, RelayUrlError>
     Ok(None)
 }
 
-fn address_is_local(address: std::net::IpAddr) -> bool {
+/// Whether `address` is this machine or this network: loopback, a
+/// private or link-local address, or one Tailscale hands out. What
+/// `RelayUrl` calls a local host, and what the daemon's direct listener
+/// takes a connection from (ADR 0009).
+pub fn address_is_local(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
@@ -482,6 +500,17 @@ mod tests {
 
     /// Two purposes, and the Relay reads neither: each is a label it
     /// forwards. Both have to be labels it WILL forward.
+    /// Pinned for the reason the rendezvous id is: the shell's native
+    /// side computes the same digest from the certificate its TLS stack
+    /// hands it, and a change here would strand every direct address.
+    #[test]
+    fn the_certificate_pin_is_the_hash_of_the_der() {
+        let pin = certificate_pin(b"not really a certificate");
+        assert_eq!(pin.len(), 64);
+        assert_eq!(pin, crate::hex_encode(&Sha256::digest(b"not really a certificate")));
+        assert!(pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    }
+
     #[test]
     fn a_stream_is_for_pairing_or_for_connecting() {
         assert_eq!(PURPOSE_PAIR, "pair");

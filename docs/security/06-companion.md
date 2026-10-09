@@ -655,7 +655,9 @@ Workstation*, one streaming and one request/reply (05 §8); five Devices per Wor
 Unchanged: the daemon dials out and holds a WebSocket over TLS; Noise `IK`
 (`Noise_IK_25519_ChaChaPoly_BLAKE2s`); AEAD frames with per-direction counters, padded
 to 256 bytes, rekeyed hourly or at 2^16 frames; the plaintext is the daemon's JSON.
-Direct LAN and Tailscale are out of scope for this work (spec).
+Direct LAN and Tailscale were out of scope for this work (spec); ADR 0009 adds them as
+the same path minus the Relay: a TLS listener in the daemon with a certificate the
+pairing QR pins, admitting only peers on this network or tailnet.
 
 **Amendments.**
 

@@ -135,6 +135,10 @@
     relayAdmissionBlocked,
     relayStateBlocked,
     relayStatus,
+    DIRECT_NOTE,
+    directAccessBlocked,
+    directStatus,
+    type DirectState,
     relayUrlHint,
     relayUrlToSave,
     remoteAccessBlocked,
@@ -144,7 +148,7 @@
   } from "$lib/core/remoteAccess";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { DEVICES_LABEL } from "$lib/core/devicesPanel";
-  import { relayIndicator } from "$lib/ui/indicators";
+  import { directIndicator, relayIndicator } from "$lib/ui/indicators";
   import { profilesInUse } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
@@ -490,6 +494,42 @@
         )
   );
 
+  /// The direct listener (ADR 0009): its switch rides in the device list,
+  /// and where it stands is read once and then followed by the daemon's
+  /// `direct-state-changed` push, as the Relay's is. Null until read, and
+  /// for good against a daemon too old to have one.
+  const directGate = $derived(directAccessBlocked($daemonCompat));
+  let directState = $state<DirectState | null>(null);
+  const directLine = $derived(directStatus(directState));
+  const directBadge = $derived(
+    directLine.badge === null
+      ? null
+      : directIndicator(directLine.badge, directState?.state === "failed" ? directState.why : null)
+  );
+
+  async function refreshDirectState(): Promise<void> {
+    if (remoteAccessGate !== null || directGate !== null) return;
+    try {
+      directState = await backend.getDirectState();
+    } catch {
+      directState = null;
+    }
+  }
+
+  /// The Direct connection switch. Optimistic like the Remote access
+  /// switch, and rolled back the same way when the write fails.
+  async function saveDirectAccess(enabled: boolean): Promise<void> {
+    const before = devices;
+    devicesError = null;
+    if (devices) devices = { ...devices, directAccessEnabled: enabled };
+    try {
+      await backend.setDirectAccess(enabled);
+    } catch (e) {
+      devices = before;
+      devicesError = String(e instanceof Error ? e.message : e);
+    }
+  }
+
   async function refreshRelayState(): Promise<void> {
     if (remoteAccessGate !== null || relayGate !== null) return;
     try {
@@ -530,6 +570,10 @@
     if (remoteAccessGate !== null || relayGate !== null || relayState !== null) return;
     void refreshRelayState();
   });
+  $effect(() => {
+    if (remoteAccessGate !== null || directGate !== null || directState !== null) return;
+    void refreshDirectState();
+  });
 
   // The Relay's state is the one push this section still hears: pairing
   // and the connect pushes moved to the Devices panel with the list.
@@ -538,7 +582,13 @@
       relayState = event.payload;
       nowMs = Date.now();
     });
-    return () => void stop.then((off) => off());
+    const stopDirect = listen<DirectState>("direct-state-changed", (event) => {
+      directState = event.payload;
+    });
+    return () => {
+      void stop.then((off) => off());
+      void stopDirect.then((off) => off());
+    };
   });
 
   /// The switch and the relay go together: the request carries both, so
@@ -739,6 +789,8 @@
         "Relay URL",
         "relay",
         "Admission token",
+        "Direct connection",
+        "Tailscale",
         "Push gateway",
         "notifications",
         "push",
@@ -1686,6 +1738,35 @@
           <span class="warn">{pushGatewayError}</span>
         {:else if pushGatewayGate && remoteAccessGate === null}
           <span class="warn">{pushGatewayGate}</span>
+        {/if}
+      </p>
+
+      <!-- The direct listener (ADR 0009). Its own gate on top of the
+           section's: a daemon older than v69 has no switch to set. -->
+      <h3 class="sub">Direct connection</h3>
+      <span use:tooltip={remoteAccessGate ?? directGate ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={remoteAccessGate !== null || directGate !== null || devices === null}
+            checked={devices?.directAccessEnabled ?? false}
+            onchange={(e) => void saveDirectAccess(e.currentTarget.checked)}
+          />
+          Direct connection
+        </label>
+      </span>
+      {#if directBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={directBadge} text={directLine.text} />
+          {#if directLine.detail}
+            <span class="detail">{directLine.detail}</span>
+          {/if}
+        </p>
+      {/if}
+      <p class="hint">
+        {DIRECT_NOTE}
+        {#if directGate && remoteAccessGate === null}
+          <span class="warn">{directGate}</span>
         {/if}
       </p>
 

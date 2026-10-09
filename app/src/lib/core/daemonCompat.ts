@@ -624,6 +624,18 @@ export const FEATURE_MIN_VERSION = {
   // Relay URL, and which `pairingUnavailable` reads so that an older
   // daemon's silence is not taken for a Relay that failed.
   relayState: 61,
+  // The direct listener (v69, ADR 0009): `SetDirectAccess` and
+  // `GetDirectState` are new request TYPES an older daemon answers
+  // `Unsupported`, and `Devices.directAccessEnabled` is a widened reply it
+  // never sends -- which would read as "off" for a daemon that has no
+  // switch to be off.
+  //
+  // Consumer: `remoteAccess.ts`'s `directAccessBlocked`, which the
+  // Settings section reads before it draws or sends the Direct connection
+  // switch and before it asks where the listener stands, and which
+  // `pairingUnavailable` reads before it lets a listener stand in for the
+  // Relay.
+  directAccess: 69,
   // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
   // and the `DeviceRefusalChanged` push are v62. An older daemon sends
   // neither, and a row with no refusal reads as "nothing was refused" --

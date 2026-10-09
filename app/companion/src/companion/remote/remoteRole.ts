@@ -33,9 +33,11 @@ export const DESK_ONLY_COMMANDS = [
   "reject_pairing",
   "list_devices",
   "get_relay_state",
+  "get_direct_state",
   "revoke_device",
   "revoke_all_devices",
   "set_remote_access",
+  "set_direct_access",
   "set_require_local_token",
   // Where the desk posts notifications, and what it posts: the desk
   // decides, from the window holding the app's duties.

@@ -119,6 +119,9 @@ export interface DeviceList {
   /// Where the daemon posts Companion notifications (v67), or null for
   /// nowhere. Absent from an older daemon, which cannot say.
   pushGatewayUrl?: string | null;
+  /// Whether direct connection is switched on (v69, ADR 0009). Absent
+  /// from an older daemon, which listens for nobody.
+  directAccessEnabled?: boolean;
 }
 
 /// `BeginPairing`'s answer.
@@ -761,6 +764,70 @@ export function relayStatus(state: RelayState | null, nowMs: number): RelayStatu
   }
 }
 
+// -- the direct listener (ADR 0009) -------------------------------------
+
+/// Where the daemon's direct listener stands, as `protocol::DirectState`
+/// puts it on the wire (v69). `addresses` are the `wss://` URLs the next
+/// pairing QR would carry. `unknown` is a state a newer daemon reports.
+export type DirectState =
+  | { state: "not_wanted" }
+  | { state: "listening"; port: number; addresses: string[] }
+  | { state: "failed"; why: string }
+  | { state: "unknown" };
+
+/// The switch's gate, and the state's: a daemon older than v69 answers
+/// `Unsupported` to both, and listens for nobody whatever it is told.
+/// Null when the daemon is new enough or no verdict yet.
+export function directAccessBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "directAccess");
+}
+
+/// The Direct connection switch's own line.
+export const DIRECT_NOTE =
+  "Lets a paired phone on the same network or Tailscale tailnet as this Mac connect straight to it, with no Relay. Takes effect while remote access is on. The daemon listens on a port of its own, and only for devices on this network or tailnet; the connection is encrypted end to end, and the pairing QR carries what a phone needs to trust it. A phone that cannot reach it falls back to the Relay, if one is set. Pair again after turning this on, so the phone learns where to find it.";
+
+/// What the row under the switch says, and the badge state to draw it
+/// with: `RelayStatus`'s shape. `detail` names the addresses a phone
+/// paired now will be given, which is the one thing the human needs to
+/// check -- that it is the network the phone will be on.
+export interface DirectStatus {
+  badge: "not_wanted" | "listening" | "failed" | null;
+  text: string;
+  detail: string | null;
+}
+
+export function directStatus(state: DirectState | null): DirectStatus {
+  if (state === null) return { badge: null, text: "", detail: null };
+  switch (state.state) {
+    case "not_wanted":
+      return {
+        badge: "not_wanted",
+        text: "Not listening",
+        detail: "Remote access or direct connection is off.",
+      };
+    case "listening":
+      return {
+        badge: "listening",
+        text: `Listening on port ${state.port}`,
+        detail:
+          state.addresses.length > 0
+            ? `A phone paired now will try ${state.addresses.join(", ")}.`
+            : "This Mac has no address on a local network or tailnet, so a phone has nowhere to reach it directly.",
+      };
+    case "failed":
+      return { badge: "failed", text: "Could not listen", detail: `${state.why}. Trying again.` };
+    default:
+      // A state a newer daemon reports: say nothing rather than guess.
+      return { badge: null, text: "", detail: null };
+  }
+}
+
+/// Whether a QR drawn now carries a direct address: the listener is bound
+/// and this Mac has an address a phone could dial. Unknown is not yes.
+function directPairable(direct: DirectState | null): boolean {
+  return direct?.state === "listening" && direct.addresses.length > 0;
+}
+
 // -- whether pairing can work -------------------------------------------
 
 /// Why a QR drawn now could not pair anything, or null when it could.
@@ -779,7 +846,8 @@ export function relayStatus(state: RelayState | null, nowMs: number): RelayStatu
 export function pairingUnavailable(
   list: DeviceList | null,
   compat: DaemonCompat | null,
-  relay: RelayState | null = null
+  relay: RelayState | null = null,
+  direct: DirectState | null = null
 ): string | null {
   const blocked = featureBlockedReason(compat, "relayDial");
   if (blocked !== null) return blocked;
@@ -787,6 +855,10 @@ export function pairingUnavailable(
   if (!list.remoteAccessEnabled) {
     return "Turn remote access on first — a Device pairs through the Relay, and with this off the daemon is not connected to it.";
   }
+  // The direct listener is a way in on its own (ADR 0009): with it bound
+  // and an address to give, the QR pairs a Device on this network or
+  // tailnet whatever the Relay is doing.
+  if (directPairable(direct) && directAccessBlocked(compat) === null) return null;
   if (list.relayUrl === null) {
     return "Set a Relay URL first — a Device pairs through the Relay.";
   }

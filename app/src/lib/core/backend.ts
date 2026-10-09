@@ -40,7 +40,7 @@ import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/works
 import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
-import type { DeviceList, PairingOffer, RelayState } from "$lib/core/remoteAccess";
+import type { DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
@@ -142,6 +142,18 @@ export function listDevices(): Promise<DeviceList> {
 /// arrive as the `relay-state-changed` event.
 export function getRelayState(): Promise<RelayState> {
   return invoke("get_relay_state");
+}
+
+/// Where the daemon's direct listener stands (v69, ADR 0009). Changes
+/// after this read arrive as the `direct-state-changed` event.
+export function getDirectState(): Promise<DirectState> {
+  return invoke("get_direct_state");
+}
+
+/// The Direct connection switch. The daemon acts on it: on, while remote
+/// access is on too, it listens for Devices on this network or tailnet.
+export function setDirectAccess(enabled: boolean): Promise<void> {
+  return invoke("set_direct_access", { enabled });
 }
 
 export function revokeDevice(deviceId: string): Promise<void> {

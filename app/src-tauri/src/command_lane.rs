@@ -174,6 +174,7 @@ fn is_unsolicited(resp: &Response) -> bool {
             | Response::DeviceConnected { .. }
             | Response::DeviceDisconnected { .. }
             | Response::RelayStateChanged { .. }
+            | Response::DirectStateChanged { .. }
             | Response::DeviceRefusalChanged { .. }
             | Response::DevicePresenceChanged { .. }
             | Response::SessionOwnerChanged { .. }
@@ -1459,6 +1460,7 @@ mod tests {
                     | "DeviceConnected"
                     | "DeviceDisconnected"
                     | "RelayStateChanged"
+                    | "DirectStateChanged"
                     | "DeviceRefusalChanged"
                     | "DevicePresenceChanged"
                     | "SessionOwnerChanged"

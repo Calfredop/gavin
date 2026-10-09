@@ -17,7 +17,10 @@ Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte
   source belongs behind the feature too.
 - `crates/daemon` — `gavin-daemon`: PTYs, SQLite, the `.gavin*` watcher,
   orchestration state, and the dial to the Relay (`remote.rs`), which runs
-  only while the trust store says remote access is on
+  only while the trust store says remote access is on — beside it the
+  direct listener (`direct.rs`, ADR 0009), a TLS port a Device on the same
+  network or tailnet reaches with no Relay, bound only while Direct
+  connection is on too
 - `crates/gavin-mcp` — the `gavin_*` MCP server
 - `crates/gavin-relay` — the Relay (feature `server`, the workspace's one
   async crate) and the blocking dial the daemon and the test Device share
@@ -110,7 +113,10 @@ build that widens `config.json` writes a shape the other then reads. They share
 means that with remote access on BOTH daemons dial the Relay and register
 under the same rendezvous id. The Relay announces a Device's stream to both,
 and the one whose desk is showing the pairing QR is the one that picks it up
-(`SessionManager::has_pairing_offer`). A paired Device's CONNECTION either can
+(`SessionManager::has_pairing_offer`). The direct listener is not shared that
+way: each daemon binds its own port (8445 release, 8446 dev; `GAVIN_DIRECT_PORT`
+overrides, and seam 1 sets it to 0), and the QR names the port of the daemon
+whose desk drew it. A paired Device's CONNECTION either can
 serve: the one with a desktop app connected picks it up at once, and one with
 nobody at the desk waits a moment first (`remote::deference`). Neither daemon can tell the other what
 it wrote there, so `remote.rs` re-reads the settings every two seconds rather

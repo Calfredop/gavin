@@ -97,6 +97,14 @@ const META_RELAY_URL: &str = "remote_access_relay_url";
 /// row is simply not there, and not there reads as "none".
 const META_RELAY_ADMISSION: &str = "remote_access_relay_admission";
 const META_PUSH_GATEWAY_URL: &str = "push_gateway_url";
+/// Whether the direct listener is wanted (ADR 0009). A row of its own
+/// rather than a field of `RemoteAccess`: `SetRemoteAccess` writes that
+/// struct whole, and an app older than v69 would write it without this.
+const META_DIRECT_ENABLED: &str = "remote_access_direct";
+/// The direct listener's certificate and its key, in one row
+/// (`DirectIdentity::to_row`) so that two daemons minting at once cannot
+/// end up holding one's certificate and the other's key.
+const META_DIRECT_TLS: &str = "direct_tls";
 
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
@@ -359,6 +367,61 @@ impl RemoteAccess {
     }
 }
 
+/// The direct listener's TLS identity (ADR 0009): a self-signed P-256
+/// certificate, DER, and its private key, PKCS#8 DER.
+///
+/// Self-signed, because what trusts it is a Device that pinned its hash
+/// from the pairing QR (`protocol::relay::certificate_pin`), and nothing
+/// else ever will. Its dates are rcgen's defaults and nobody checks them:
+/// a pin has no clock in it, for the reason 05 §5 gives against
+/// certificates on a laptop that sleeps for a week.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DirectIdentity {
+    pub certificate: Vec<u8>,
+    pub private_key: Vec<u8>,
+}
+
+impl DirectIdentity {
+    fn mint() -> anyhow::Result<Self> {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+        let mut params = rcgen::CertificateParams::new(vec!["gavin-workstation".to_string()])?;
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Gavin Workstation");
+        let certificate = params.self_signed(&key)?;
+        Ok(Self { certificate: certificate.der().to_vec(), private_key: key.serialize_der() })
+    }
+
+    /// `[certificate length, u32 BE][certificate][key]`.
+    fn to_row(&self) -> Vec<u8> {
+        let mut row = Vec::with_capacity(4 + self.certificate.len() + self.private_key.len());
+        row.extend_from_slice(&(self.certificate.len() as u32).to_be_bytes());
+        row.extend_from_slice(&self.certificate);
+        row.extend_from_slice(&self.private_key);
+        row
+    }
+
+    fn from_row(row: &[u8]) -> Option<Self> {
+        let length = u32::from_be_bytes(row.get(..4)?.try_into().ok()?) as usize;
+        let certificate = row.get(4..4 + length)?.to_vec();
+        let private_key = row.get(4 + length..)?.to_vec();
+        (!certificate.is_empty() && !private_key.is_empty())
+            .then_some(Self { certificate, private_key })
+    }
+
+    /// What a pairing QR carries for it.
+    pub fn pin(&self) -> String {
+        protocol::relay::certificate_pin(&self.certificate)
+    }
+}
+
+/// Never the private key.
+impl std::fmt::Debug for DirectIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectIdentity").field("pin", &self.pin()).finish_non_exhaustive()
+    }
+}
+
 /// The daemon's paired devices and its own static key pair.
 ///
 /// Not `Sync` (it holds a `rusqlite::Connection`), and held the way
@@ -579,6 +642,44 @@ impl TrustStore {
         self.set_meta(META_PUSH_GATEWAY_URL, url.unwrap_or("").trim().as_bytes())
     }
 
+    /// Whether the direct listener is switched on (ADR 0009). It listens
+    /// only while remote access is on as well; absent means off.
+    pub fn direct_enabled(&self) -> anyhow::Result<bool> {
+        Ok(self.meta(META_DIRECT_ENABLED)?.map(|v| v == b"1").unwrap_or(false))
+    }
+
+    pub fn set_direct_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        self.set_meta(META_DIRECT_ENABLED, if enabled { b"1" } else { b"0" })
+    }
+
+    /// The direct listener's certificate and key, minted the first time
+    /// they are asked for.
+    ///
+    /// Inserted only if absent, and then read back: the dev and release
+    /// daemons share this file, and two that mint at once must both end
+    /// up serving the one that was kept, or a Device pinned to one would
+    /// be refused by the other.
+    pub fn direct_identity(&self) -> anyhow::Result<DirectIdentity> {
+        if let Some(identity) = self.meta(META_DIRECT_TLS)?.as_deref().and_then(DirectIdentity::from_row) {
+            return Ok(identity);
+        }
+        let minted = DirectIdentity::mint()?;
+        // A row that is there but does not read is replaced: it is not an
+        // identity anyone could have pinned.
+        if self.meta(META_DIRECT_TLS)?.is_some() {
+            self.set_meta(META_DIRECT_TLS, &minted.to_row())?;
+        } else {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO trust_meta (key, value) VALUES (?1, ?2)",
+                params![META_DIRECT_TLS, minted.to_row()],
+            )?;
+        }
+        self.meta(META_DIRECT_TLS)?
+            .as_deref()
+            .and_then(DirectIdentity::from_row)
+            .ok_or_else(|| anyhow::anyhow!("devices.sqlite: the direct listener's certificate did not keep"))
+    }
+
     // -- devices -------------------------------------------------------
 
     /// Every device, revoked ones included, oldest first.
@@ -777,6 +878,10 @@ impl TrustStore {
             params![now_us],
         )?;
         self.write_fresh_keypair()?;
+        // The direct listener's certificate goes with the key (ADR 0009):
+        // every Device that pinned the old one has to pair again anyway,
+        // and the next pairing pins the one minted for it.
+        self.conn.execute("DELETE FROM trust_meta WHERE key = ?1", params![META_DIRECT_TLS])?;
         self.static_public_key()
     }
 
@@ -1650,6 +1755,53 @@ mod tests {
         assert!(!store.remote_access().unwrap().enabled);
         assert!(store.remote_access().unwrap().relay_url.is_none());
         assert!(store.remote_access().unwrap().rendezvous().is_empty());
+    }
+
+    /// The direct listener's switch (ADR 0009) is off until it is turned
+    /// on, and turning remote access on or off does not touch it.
+    #[test]
+    fn direct_connection_is_off_until_it_is_switched_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert!(!store.direct_enabled().unwrap());
+        store.set_direct_enabled(true).unwrap();
+        store
+            .set_remote_access(&RemoteAccess { enabled: false, relay_url: None, relay_admission: None })
+            .unwrap();
+        assert!(open_store(&dir).direct_enabled().unwrap(), "kept across a reopen and a SetRemoteAccess");
+        store.set_direct_enabled(false).unwrap();
+        assert!(!store.direct_enabled().unwrap());
+    }
+
+    /// One certificate for the store, whoever asks first: the dev and
+    /// release daemons share the file, and a Device pinned to the
+    /// certificate one of them served must be let in by the other.
+    #[test]
+    fn the_direct_certificate_is_minted_once_and_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = open_store(&dir).direct_identity().unwrap();
+        let second = open_store(&dir).direct_identity().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.pin().len(), 64);
+        // It is a certificate and key the listener can serve.
+        gavin_relay::direct::server_config(&first.certificate, &first.private_key).unwrap();
+        // A row that does not read is replaced rather than served.
+        let store = open_store(&dir);
+        store.set_meta(META_DIRECT_TLS, b"\x00\x00").unwrap();
+        let replaced = store.direct_identity().unwrap();
+        assert_ne!(replaced, first);
+        assert_eq!(open_store(&dir).direct_identity().unwrap(), replaced);
+    }
+
+    /// "Revoke all" strands every Device that pinned the old key, so the
+    /// certificate goes with it.
+    #[test]
+    fn revoke_all_mints_a_new_direct_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let before = store.direct_identity().unwrap();
+        store.revoke_all().unwrap();
+        assert_ne!(store.direct_identity().unwrap().pin(), before.pin());
     }
 
     /// The switch and the URL are independent, which is the whole reason
