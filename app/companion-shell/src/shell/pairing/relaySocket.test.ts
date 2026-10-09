@@ -24,6 +24,51 @@ class FakeSocket implements WebSocketLike {
 
 const open = webSocketOpener(FakeSocket);
 
+describe("a dial to a Workstation's own listener (ADR 0009)", () => {
+  const PIN = "ab".repeat(32);
+
+  it("is refused as unreachable, and opens nothing, when this build cannot trust a pin", async () => {
+    const before = FakeSocket.last;
+    await expect(open("wss://192.168.1.20:8445", 1000, PIN)).rejects.toMatchObject({ failure: "unreachable" });
+    expect(FakeSocket.last).toBe(before);
+  });
+
+  it("has the platform trust the pinned certificate before the socket is opened", async () => {
+    const asked: Array<[string, string, FakeSocket | undefined]> = [];
+    const pinned = webSocketOpener(FakeSocket, async (url, pin) => {
+      asked.push([url, pin, FakeSocket.last]);
+    });
+    const before = FakeSocket.last;
+    const opening = pinned("wss://192.168.1.20:8445", 1000, PIN);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(asked).toEqual([["wss://192.168.1.20:8445", PIN, before]]);
+    FakeSocket.last.onopen?.({});
+    await opening;
+    expect(FakeSocket.last.url).toBe("wss://192.168.1.20:8445");
+  });
+
+  it("opens nothing when the platform will not trust it", async () => {
+    const pinned = webSocketOpener(FakeSocket, async () => {
+      throw new Error("no such plugin");
+    });
+    const before = FakeSocket.last;
+    await expect(pinned("wss://192.168.1.20:8445", 1000, PIN)).rejects.toMatchObject({ failure: "unreachable" });
+    expect(FakeSocket.last).toBe(before);
+  });
+
+  it("asks nothing of the platform for a Relay", async () => {
+    let asked = 0;
+    const pinned = webSocketOpener(FakeSocket, async () => {
+      asked++;
+    });
+    const opening = pinned("wss://relay.example", 1000, null);
+    FakeSocket.last.onopen?.({});
+    await opening;
+    expect(asked).toBe(0);
+  });
+});
+
 describe("a Device's leg to a Relay", () => {
   it("opens, reads text and binary frames in order, and asks for binary as bytes", async () => {
     const opening = open("ws://127.0.0.1:8443", 1000);

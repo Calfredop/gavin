@@ -28,7 +28,7 @@ import {
 } from "$shell/core/core";
 import { errorCode, readiness, refusalText, type Refusal } from "$shell/keys/deviceKeys";
 import type { DeviceKeysPlugin } from "$shell/native/deviceKeys";
-import { RelayLegError, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
+import { RelayLegError, dialTimeout, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
 
 export type PairingKeys = Pick<DeviceKeysPlugin, "status" | "createKeys" | "publicKeys" | "noiseKey" | "sign">;
 
@@ -214,7 +214,7 @@ async function sign(keys: PairingKeys, handshakeHash: string): Promise<string> {
 /// answered `ready`. A Relay that cannot be reached, or refuses, is
 /// passed over for the next; the last reason is the one told.
 async function dialFirst(
-  dials: Array<{ url: string; hello: string }>,
+  dials: Array<{ url: string; hello: string; pin?: string | null }>,
   readReply: CoreExchange["relayReply"],
   deps: PairingDeps,
   timeoutMs: number,
@@ -223,21 +223,26 @@ async function dialFirst(
   let problem = "";
   for (const dial of dials) {
     checkAborted(deps.signal);
+    // A direct address (ADR 0009) gets a short wait: the Relay, if the QR
+    // named one, is still to come after it.
+    const within = dialTimeout(dial.pin, timeoutMs);
     let socket: RelaySocket;
     try {
-      socket = await deps.open(dial.url, timeoutMs);
+      socket = await deps.open(dial.url, within, dial.pin ?? null);
       track(socket);
       if (deps.signal?.aborted) socket.close();
       checkAborted(deps.signal);
     } catch (e) {
       if (e instanceof Stop) throw e;
-      problem = `Could not reach the Relay at ${dial.url}. Check that this phone is online, and that the Relay is running.`;
+      problem = dial.pin
+        ? `Could not reach the Workstation at ${dial.url}. Is this phone on the same network or tailnet as it?`
+        : `Could not reach the Relay at ${dial.url}. Check that this phone is online, and that the Relay is running.`;
       if (!(e instanceof RelayLegError)) problem += ` (${message(e)})`;
       continue;
     }
     try {
       socket.send(dial.hello);
-      const reply = await socket.next(timeoutMs);
+      const reply = await socket.next(within);
       if (reply.kind === "text") {
         const read = coreStep(() => readReply(reply.text));
         if (read.reply === "ready") return socket;

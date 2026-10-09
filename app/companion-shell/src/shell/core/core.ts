@@ -42,10 +42,15 @@ export class CoreError extends Error {
   }
 }
 
-/// A Relay to dial, and the text frame to open with.
+/// A Relay -- or a Workstation's own direct listener (ADR 0009) -- to
+/// dial, and the text frame to open with.
 export interface RelayDial {
   url: string;
   hello: string;
+  /// For a direct listener, the SHA-256 (hex) of the one certificate to
+  /// trust at `url`, and nothing else; null for a Relay, which is trusted
+  /// as the platform trusts it. Absent from a core older than v69.
+  pin?: string | null;
 }
 
 export interface PairingStart {
@@ -64,6 +69,11 @@ export interface KeptWorkstation {
   workstationKey: string;
   relays: string[];
   relayAdmission: string | null;
+  /// The Workstation's direct listener (ADR 0009): its addresses, tried
+  /// before the Relays, and the pin its certificate is trusted by. Absent
+  /// from a record kept before v69.
+  direct?: string[];
+  directPin?: string | null;
   deviceId: string;
   /// What the Workstation seals this Device's notifications with. Secret.
   notificationKey: string;
@@ -138,6 +148,8 @@ export interface CoreExchange {
     workstationKey: string;
     relays: string[];
     relayAdmission: string | null;
+    direct?: string[];
+    directPin?: string | null;
     noisePrivateKey: string;
     /// Fresh random bytes, at least `CONNECT_ENTROPY` of them.
     entropy: Uint8Array;
@@ -233,12 +245,14 @@ function exchangeOver(exports: Exports): CoreExchange {
     },
     pairingReceive: (arrived) => events<PairingEvent>(call({ op: "pairing-receive", bytes: toHex(arrived) })),
     pairingProve: (signature) => events<PairingEvent>(call({ op: "pairing-prove", signature })),
-    connectStart({ workstationKey, relays, relayAdmission, noisePrivateKey, entropy }) {
+    connectStart({ workstationKey, relays, relayAdmission, direct, directPin, noisePrivateKey, entropy }) {
       const started = call({
         op: "connect-start",
         workstationKey,
         relays,
         relayAdmission,
+        direct: direct ?? [],
+        directPin: directPin ?? null,
         noisePrivateKey,
         entropy: toHex(entropy),
       }) as { send: string; dials: RelayDial[] };

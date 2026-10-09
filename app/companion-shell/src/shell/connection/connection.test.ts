@@ -4,8 +4,14 @@
 // `hub.e2e.ts`'s.
 import { describe, expect, it, vi } from "vitest";
 import { CoreError, type ConnectEvent, type CoreExchange, type CoreModule } from "$shell/core/core";
-import { connect, refusalIsFinal, type ConnectDeps, type ConnectTarget } from "$shell/connection/connection";
-import { RelayLegError, type RelayMessage, type RelaySocket } from "$shell/pairing/relaySocket";
+import {
+  CONNECTION_TIMEOUTS,
+  connect,
+  refusalIsFinal,
+  type ConnectDeps,
+  type ConnectTarget,
+} from "$shell/connection/connection";
+import { DIRECT_DIAL_MS, RelayLegError, type RelayMessage, type RelaySocket } from "$shell/pairing/relaySocket";
 
 const HASH = "ab".repeat(32);
 const TARGET: ConnectTarget = { workstationKey: "42".repeat(32), relays: ["ws://127.0.0.1:8443"], relayAdmission: "let-me-in" };
@@ -15,7 +21,7 @@ const DIAL = { url: "ws://127.0.0.1:8443", hello: '{"role":"device","purpose":"c
 /// said: 2 message two, 5 connected, 6 a refusal, 7 a line of the
 /// protocol (`lines` says which), 8 connected with a line in the same
 /// read, 9 bytes the core cannot open.
-function scriptedCore(options: { dials?: Array<typeof DIAL>; refusal?: ConnectEvent } = {}) {
+function scriptedCore(options: { dials?: Array<typeof DIAL & { pin?: string }>; refusal?: ConnectEvent } = {}) {
   const sent: string[] = [];
   const lines: string[] = [];
   const exchange: CoreExchange = {
@@ -217,6 +223,30 @@ describe("connecting to a paired Workstation", () => {
     expect(await connect(TARGET, deps(scriptedCore().core, [leg([READY, byte(2)])], gone))).toEqual({
       outcome: "failed",
       problem: "This phone no longer holds its Device keys. Pair it again.",
+    });
+  });
+
+  // ADR 0009: the address kept from pairing is tried first, with its pin
+  // and a short wait, and the Relay after it.
+  it("dials a direct address first with its pin and a short wait, then the Relay", async () => {
+    const DIRECT = { url: "wss://192.168.1.20:8445", hello: DIAL.hello, pin: "ab".repeat(32) };
+    const { core } = scriptedCore({ dials: [DIRECT, DIAL] });
+    const relay = leg([READY, byte(2), byte(5)]);
+    const d = deps(core, [new RelayLegError("unreachable", "no route"), relay]);
+    const outcome = await connect(TARGET, d);
+    expect(outcome.outcome).toBe("connected");
+    expect(d.open).toHaveBeenNthCalledWith(1, DIRECT.url, DIRECT_DIAL_MS, DIRECT.pin);
+    expect(d.open).toHaveBeenNthCalledWith(2, DIAL.url, CONNECTION_TIMEOUTS.relayMs, null);
+    if (outcome.outcome === "connected") outcome.connection.close();
+  });
+
+  it("says to check the network when a direct address is all there was, and it did not answer", async () => {
+    const DIRECT = { url: "wss://192.168.1.20:8445", hello: DIAL.hello, pin: "ab".repeat(32) };
+    const { core } = scriptedCore({ dials: [DIRECT] });
+    const outcome = await connect(TARGET, deps(core, [new RelayLegError("unreachable", "no route")]));
+    expect(outcome).toEqual({
+      outcome: "unreachable",
+      problem: "Could not reach it at wss://192.168.1.20:8445. Is this phone on the same network or tailnet as the Workstation?",
     });
   });
 

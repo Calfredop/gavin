@@ -34,6 +34,9 @@ describe("a paired Workstation, as the hub keeps it", () => {
       name: "Workstation",
       pairedAt: 1000,
       ...kept("01".repeat(32)),
+      // A core older than v69 hands back no direct listener: none kept.
+      direct: [],
+      directPin: null,
     });
     const second = keepPairing(kept("02".repeat(32)), [first], 2000);
     expect(second.name).toBe("Workstation 2");
@@ -44,6 +47,23 @@ describe("a paired Workstation, as the hub keeps it", () => {
     const before = { ...keepPairing(kept(), [], 1000), name: "Studio Mac" };
     const again = keepPairing({ ...kept(), deviceId: "dev-2", notificationKey: "6b".repeat(32) }, [before], 5000);
     expect(again).toMatchObject({ id: before.id, name: "Studio Mac", deviceId: "dev-2", pairedAt: 5000 });
+  });
+
+  // ADR 0009: the direct listener's addresses and pin are kept with the
+  // Relays, and a record kept before them still reads.
+  it("keeps the direct listener the QR named, and reads a record kept before it", () => {
+    const withDirect = { ...kept(), direct: ["wss://192.168.1.20:8445"], directPin: "cd".repeat(32) };
+    const record = keepPairing(withDirect, [], 1);
+    expect(record.direct).toEqual(["wss://192.168.1.20:8445"]);
+    expect(record.directPin).toBe("cd".repeat(32));
+    expect(readRecord(JSON.stringify(record))).toEqual(record);
+
+    const { direct: _d, directPin: _p, ...old } = record;
+    expect(readRecord(JSON.stringify(old))).toEqual({ ...record, direct: [], directPin: null });
+
+    expect(readRecord(JSON.stringify({ ...record, direct: "wss://192.168.1.20:8445" }))).toBeNull();
+    expect(readRecord(JSON.stringify({ ...record, direct: [7] }))).toBeNull();
+    expect(readRecord(JSON.stringify({ ...record, directPin: 7 }))).toBeNull();
   });
 
   it("renames, trimmed and bounded, and keeps the old name for an empty one", () => {

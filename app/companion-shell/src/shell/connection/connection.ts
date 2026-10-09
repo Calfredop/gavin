@@ -31,12 +31,12 @@ import {
 } from "$shell/core/core";
 import { errorCode } from "$shell/keys/deviceKeys";
 import type { DeviceKeysPlugin, UnlockPlugin } from "$shell/native/deviceKeys";
-import { RelayLegError, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
+import { RelayLegError, dialTimeout, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
 
 export type ConnectionKeys = Pick<DeviceKeysPlugin, "noiseKey"> & Pick<UnlockPlugin, "signUnlocked">;
 
 /// What the shell kept at pairing that a connection needs.
-export type ConnectTarget = Pick<KeptWorkstation, "workstationKey" | "relays" | "relayAdmission">;
+export type ConnectTarget = Pick<KeptWorkstation, "workstationKey" | "relays" | "relayAdmission" | "direct" | "directPin">;
 
 export type ConnectOutcome =
   | { outcome: "connected"; connection: Connection; deviceId: string }
@@ -132,6 +132,8 @@ export async function connect(target: ConnectTarget, deps: ConnectDeps): Promise
           workstationKey: target.workstationKey,
           relays: target.relays,
           relayAdmission: target.relayAdmission,
+          direct: target.direct ?? [],
+          directPin: target.directPin ?? null,
           noisePrivateKey,
           entropy,
         })
@@ -141,7 +143,7 @@ export async function connect(target: ConnectTarget, deps: ConnectDeps): Promise
       entropy.fill(0);
     }
     if (started.dials.length === 0) {
-      throw new Ended({ outcome: "failed", problem: "It names no Relay this phone may dial. Pair it again." });
+      throw new Ended({ outcome: "failed", problem: "It names no Relay or address this phone may dial. Pair it again." });
     }
 
     socket = await dialFirst(started.dials, exchange, deps, timeouts.relayMs, (trying) => {
@@ -212,33 +214,40 @@ async function dialFirst(
   let problem = "";
   for (const dial of dials) {
     checkAborted(deps.signal);
+    // A direct address (ADR 0009) is the Workstation itself, and gets a
+    // short wait: the Relay is still to come after it.
+    const direct = Boolean(dial.pin);
+    const within = dialTimeout(dial.pin, timeoutMs);
+    const answering = direct ? `The Workstation at ${dial.url}` : `Its Relay at ${dial.url}`;
     let socket: RelaySocket;
     try {
-      socket = await deps.open(dial.url, timeoutMs);
+      socket = await deps.open(dial.url, within, dial.pin ?? null);
       track(socket);
       if (deps.signal?.aborted) socket.close();
       checkAborted(deps.signal);
     } catch (e) {
       if (e instanceof Ended) throw e;
-      problem = `Could not reach its Relay at ${dial.url}. Check that this phone is online.`;
+      problem = direct
+        ? `Could not reach it at ${dial.url}. Is this phone on the same network or tailnet as the Workstation?`
+        : `Could not reach its Relay at ${dial.url}. Check that this phone is online.`;
       continue;
     }
     try {
       socket.send(dial.hello);
-      const reply = await socket.next(timeoutMs);
+      const reply = await socket.next(within);
       if (reply.kind === "text") {
         const read = coreStep(() => exchange.relayReply(reply.text));
         if (read.reply === "ready") return socket;
         if (read.reply === "refused" && read.reason === "offline") asleep = true;
-        else if (read.reply === "refused") problem = `Its Relay turned the connection away: ${read.message}.`;
-        else problem = `Its Relay at ${dial.url} answered in a way this Companion does not understand.`;
+        else if (read.reply === "refused") problem = `${direct ? "It" : "Its Relay"} turned the connection away: ${read.message}.`;
+        else problem = `${answering} answered in a way this Companion does not understand.`;
       } else {
-        problem = `Its Relay at ${dial.url} did not answer as a Relay does.`;
+        problem = `${answering} did not answer as it should.`;
       }
     } catch (e) {
       if (e instanceof Ended) throw e;
       checkAborted(deps.signal);
-      problem = `Its Relay at ${dial.url} did not answer: ${messageOf(e)}.`;
+      problem = `${answering} did not answer: ${messageOf(e)}.`;
     }
     socket.close();
   }
