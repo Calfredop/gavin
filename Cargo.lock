@@ -133,6 +133,7 @@ dependencies = [
  "toml 0.8.2",
  "toml_edit 0.22.27",
  "trash",
+ "tungstenite",
  "url",
  "windows 0.61.3",
 ]

@@ -220,8 +220,16 @@ const STDERR_KEEP: usize = 4096;
 
 fn spawn_bridge(cfg: &SshConfig) -> anyhow::Result<Bridge> {
     let (program, args) = ssh_command(cfg)?;
-    let mut child = crate::program::command(&program)
-        .args(&args)
+    let mut command = crate::program::command(&program);
+    command.args(&args);
+    spawn_bridge_from(command, &cfg.host)
+}
+
+/// `spawn_bridge` with the command already made: `ssh_command`'s, or in a
+/// test `gavin-daemon bridge` itself, which is what ssh runs on the host.
+fn spawn_bridge_from(mut command: std::process::Command, host: &str) -> anyhow::Result<Bridge> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -266,7 +274,7 @@ fn spawn_bridge(cfg: &SshConfig) -> anyhow::Result<Bridge> {
             let said = stderr_tail.lock().unwrap().trim().to_string();
             anyhow::bail!(
                 "ssh {} did not start a gavin bridge{}",
-                cfg.host,
+                host,
                 if said.is_empty() { String::new() } else { format!(": {said}") }
             );
         }
@@ -284,6 +292,52 @@ fn spawn_bridge(cfg: &SshConfig) -> anyhow::Result<Bridge> {
     // pump takes the BufReader and not the raw pipe.
     let stream = pump(reader, stdin)?;
     Ok(Bridge { stream, banner, child, stderr: stderr_tail })
+}
+
+/// The ssh process behind a connection of a caller's own
+/// (`RemoteLink::own_connection`). Dropping it ends the process; the
+/// connection's reader holds it, so it goes when the reading does.
+pub struct BridgeProcess {
+    child: Child,
+}
+
+impl Drop for BridgeProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A bridge presented as the app, the way `establish` presents the link's
+/// two: `Hello` with the token the bridge read on the host, its proof
+/// checked. Read a byte at a time, so nothing the daemon sends after the
+/// ack is swallowed. A daemon too old for `Hello`, or one with no token,
+/// is spoken to as `local`, as the link is.
+fn present_own(bridge: Bridge, compat: &DaemonCompat, kind: protocol::ConnectionKind) -> anyhow::Result<(Stream, BridgeProcess)> {
+    let Bridge { mut stream, banner, child, .. } = bridge;
+    let process = BridgeProcess { child };
+    if let Some(token) = banner.daemon_token.as_deref() {
+        if compat.daemon_version >= crate::session::HELLO_MIN_VERSION {
+            let nonce = protocol::random_hex(16)?;
+            protocol::write_message(&mut stream, &crate::session::app_hello(token, &nonce, kind))?;
+            let mut reader = BufReader::with_capacity(1, &mut stream);
+            let ack = protocol::read_message(&mut reader)?
+                .ok_or_else(|| anyhow::anyhow!("the host's daemon closed the connection during the Hello"))?;
+            crate::session::verify_app_ack(ack, token, &nonce)?;
+        }
+    }
+    Ok((stream, process))
+}
+
+/// `RemoteLink::own_connection` through a bridge started by `command`
+/// rather than ssh: a test runs `gavin-daemon bridge` itself.
+#[cfg(test)]
+pub(crate) fn own_connection_from(
+    command: std::process::Command,
+    compat: &DaemonCompat,
+    kind: protocol::ConnectionKind,
+) -> anyhow::Result<(Stream, BridgeProcess)> {
+    present_own(spawn_bridge_from(command, "the test host")?, compat, kind)
 }
 
 static NEXT_LINK_ID: AtomicU64 = AtomicU64::new(1);
@@ -308,11 +362,27 @@ pub struct RemoteLink {
     /// The host's `gavin-mcp`, from the banner; what an ssh workspace's
     /// MCP config names so the agent running there finds its tools.
     pub mcp_path: Option<String>,
+    /// How the link was dialled, for a connection of a caller's own to the
+    /// same daemon (`own_connection`).
+    ssh: SshConfig,
     children: Mutex<Vec<Child>>,
     stderr: Vec<Arc<Mutex<String>>>,
 }
 
 impl RemoteLink {
+    /// A connection to this host's daemon of the caller's own, beside the
+    /// link's two: one more ssh process, for a stream that has to END on
+    /// its own. The link's streaming connection has no unwatch -- what is
+    /// asked there runs until the session or the link does -- so a stream
+    /// held only for a while, the phone's view of a browser here
+    /// (`browser_view`), is dialled like this and closed to stop it.
+    ///
+    /// Blocks for as long as ssh takes to connect, so never on a thread
+    /// anything else waits behind.
+    pub fn own_connection(&self, kind: protocol::ConnectionKind) -> anyhow::Result<(Stream, BridgeProcess)> {
+        present_own(spawn_bridge(&self.ssh)?, &self.compat, kind)
+    }
+
     /// This host's daemon as a command sends it requests, gated on THIS
     /// daemon's version like every request the app sends it.
     pub fn lanes(&self) -> DaemonLanes {
@@ -962,6 +1032,7 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
         home,
         host_os,
         mcp_path: banner.mcp_path.clone(),
+        ssh: cfg.clone(),
         children: Mutex::new(vec![streaming_child, command_child]),
         stderr: vec![streaming_stderr, command_stderr],
     });
@@ -1425,6 +1496,7 @@ mod tests {
             home: "/home/me".to_string(),
             host_os: "linux".to_string(),
             mcp_path: None,
+            ssh: SshConfig { host: host.to_string(), daemon_path: None },
             children: Mutex::new(Vec::new()),
             // The far end of the command pair is dropped by the caller;
             // nothing here reads it.

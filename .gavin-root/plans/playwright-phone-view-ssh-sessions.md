@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Phone live view of an agent's browser in an ssh workspace
-status: To Do
+status: In Progress
 priority: low
 complexity: complex
 ---
@@ -12,3 +12,5 @@ Make the phone view work for an ssh session too. First read `docs/superpowers/sp
 - (b) A second streaming connection to the host for phone frames only, held only while a Device lease is live, which costs a second ssh process.
 
 Prove it with an isolated daemon behind a local `gavin-daemon bridge` (the pattern in `crates/daemon/tests/playwright.rs`). Then file `Human test:` — an ssh workspace's agent's browser shows live on the phone.
+
+- [ ] Human test: On an iPhone in the Companion, open the terminal of an agent in an ssh workspace (host daemon v65 or newer) while it uses its browser: the globe shows that browser live within a few seconds and follows its pages, while the desk's own pane of the same browser keeps working

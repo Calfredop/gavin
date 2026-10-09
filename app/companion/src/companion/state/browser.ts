@@ -47,19 +47,18 @@ const PHONE_OPENS: PaneOpenSetting = "chip";
 /// (`reassertBrowserViews`).
 export const WATCH_RETRY_MS = 5000;
 
-/// Why the phone cannot show a session's browser, or null. An ssh
-/// session's browser runs on its host, whose one streaming connection
-/// carries the desk's frames; the desk cannot open a phone's beside them.
+/// Why the phone cannot show a session's browser, or null. Only this
+/// Workstation's daemon is asked here. An ssh session's browser runs on
+/// its host, whose daemon version and link the desk knows and the phone
+/// does not, so the desk answers the watch with the host's reason itself
+/// (`browser_view.rs`), and the view shows it as it shows any refusal.
 export function phoneBrowserBlocked(
   workspaces: Workspace[],
   compat: DaemonCompat | null,
   sessionId: string
 ): string | null {
   const id = workspaceIdForSession({ workspaces }, sessionId);
-  const ws = workspaces.find((w) => w.id === id);
-  if (isSshWorkspace(ws)) {
-    return `This agent's browser runs on ${ws.ssh.host}, and a phone is shown only the browsers of this Workstation's own agents.`;
-  }
+  if (isSshWorkspace(workspaces.find((w) => w.id === id))) return null;
   return featureBlockedReason(compat, "playwrightBrowser");
 }
 

@@ -124,4 +124,8 @@ tempfile = "3"
 # dispatch suite (companion-13). Features merge into the dependency above
 # for `cargo test`.
 tauri = { version = "2", features = ["test"] }
+# The agent's side of a real browser for `browser_view`'s bridge test: the
+# Playwright MCP's CDP calls, through the host daemon's proxy. The
+# daemon's own dependency, so nothing new is fetched.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 

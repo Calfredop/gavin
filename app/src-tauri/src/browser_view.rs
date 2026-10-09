@@ -33,9 +33,20 @@
 //! for it. Nothing tells the desk a phone has gone -- locked, out of
 //! range, its page closed -- so a Device's watch is a LEASE, renewed
 //! while its view is on screen and let go when nobody has renewed it for
-//! `DEVICE_LEASE`. Only for a session on this machine: an ssh session's
-//! frames ride the host's one streaming connection, where a phone-size
-//! stream would arrive indistinguishable from the desk-size one.
+//! `DEVICE_LEASE`.
+//!
+//! **A Device's view of an ssh session** cannot ride the host's streaming
+//! connection the desk's does: a `BrowserFrame` does not say its size, so
+//! the phone's frames would be indistinguishable there from the desk's,
+//! and that connection has no unwatch, so a lease running out could not
+//! stop the host's screencast. So it gets a connection of its own to the
+//! host's daemon (`RemoteLink::own_connection`) -- one more ssh process,
+//! only while a lease holds -- which is the local view's own connection
+//! with ssh in front: frames on it are the phone's, and closing it is the
+//! unwatch. ssh takes a moment to connect, and forwarded commands run one
+//! at a time, so the dial happens off the watch: the watch is answered
+//! at once and the first frame arrives like the rest; a dial that failed
+//! is said to every watch until one succeeds.
 //!
 //! Also the app-wide half of the pane's open setting, read and written
 //! straight to config.json (`AppConfig::playwright_pane_open`).
@@ -52,7 +63,7 @@ use protocol::{read_message, write_message, BrowserViewSize, ConnectionKind, Liv
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::remote::Route;
+use crate::remote::{BridgeProcess, RemoteLink, Route};
 use crate::session::{current_compat, CommandConnection, DaemonCompat, DaemonCompatState};
 
 /// The rate the desk asks of the daemon it runs beside: the desk size's
@@ -136,6 +147,10 @@ struct DeviceStream {
     last: Option<BrowserFrame>,
     /// Always the stream's own connection: `Shared` only until it dials.
     conn: Conn,
+    /// Why a host's stream could not be dialled, until a dial succeeds.
+    /// The dial happens off the watch, so this is how its failure reaches
+    /// the views: every watch meanwhile is answered with it.
+    problem: Option<String>,
 }
 
 impl DeviceStream {
@@ -299,6 +314,11 @@ impl Registry {
     /// stream.
     fn watch_device(&mut self, session_id: &str, watcher: &str, now: Instant) -> (Start, Option<BrowserFrame>) {
         let stream = self.devices.entry(session_id.to_string()).or_default();
+        // A view back after every lease ran out -- a phone that went away
+        // without letting go -- is not told what failed for the last one.
+        if !stream.held(now) {
+            stream.problem = None;
+        }
         stream.leases.insert(watcher.to_string(), now + DEVICE_LEASE);
         let start = match stream.conn {
             Conn::Dialing(_) | Conn::Live { .. } => Start::Nothing,
@@ -317,9 +337,33 @@ impl Registry {
         match self.devices.get_mut(session_id) {
             Some(device) if matches!(device.conn, Conn::Dialing(d) if d == id) => {
                 device.conn = Conn::Live { id, stream };
+                device.problem = None;
                 Ok(())
             }
             _ => Err(stream),
+        }
+    }
+
+    /// A host's dial `id` failed, off the watch that started it. Unlike a
+    /// local dial's failure the leases stay: the views are still asking,
+    /// and the next watch both dials again and is told why the last one
+    /// could not.
+    fn device_dial_refused(&mut self, session_id: &str, id: u64, problem: String) {
+        if let Some(device) = self.devices.get_mut(session_id) {
+            if matches!(device.conn, Conn::Dialing(d) if d == id) {
+                device.conn = Conn::Shared;
+                device.problem = Some(problem);
+            }
+        }
+    }
+
+    /// What a watch of the session's stream is answered with instead of
+    /// its frame: why the last dial failed, while no stream is up.
+    fn device_problem(&self, session_id: &str) -> Option<String> {
+        let device = self.devices.get(session_id)?;
+        match device.conn {
+            Conn::Live { .. } => None,
+            _ => device.problem.clone(),
         }
     }
 
@@ -486,11 +530,21 @@ fn dial(session_id: &str, compat: &DaemonCompat, size: BrowserViewSize, max_fps:
             .ok_or_else(|| anyhow::anyhow!("the daemon closed the connection during the browser view's Hello"))?;
         crate::session::verify_app_ack(ack, &token, &nonce)?;
     }
-    write_message(&mut stream, &request)?;
-    // The connect's handshake deadline is lifted: an idle page sends
-    // nothing for as long as it stays idle.
+    send_watch(stream, &request)
+}
+
+/// Sends the watch on a connection already presented as the app. The
+/// connect's handshake deadline is lifted: an idle page sends nothing for
+/// as long as it stays idle.
+fn send_watch(mut stream: Stream, request: &Request) -> anyhow::Result<Stream> {
+    write_message(&mut stream, request)?;
     let _ = stream.set_read_timeout(None);
     Ok(stream)
+}
+
+/// The watch a Device's stream sends: the phone's size, at its rate.
+fn phone_watch(session_id: &str) -> Request {
+    Request::WatchBrowser { session_id: session_id.to_string(), size: BrowserViewSize::Phone, max_fps: DEVICE_FPS }
 }
 
 /// What a local watch's connection carries, until it ends.
@@ -580,7 +634,8 @@ pub(crate) fn relay_gone(app: &AppHandle, session_id: &str) {
 /// with how long the lease lasts. Frames go to the Devices as
 /// `browser-frame`.
 ///
-/// Off the main thread: the first watch dials and handshakes a connection.
+/// Off the main thread: the first watch of a session here dials and
+/// handshakes a connection. A host's is dialled on a thread of its own.
 #[tauri::command]
 pub async fn watch_browser_for_device(
     session_id: String,
@@ -593,55 +648,126 @@ pub async fn watch_browser_for_device(
 }
 
 fn watch_for_device(app: &AppHandle, session_id: &str, watcher: &str) -> Result<DeviceBrowserWatch, String> {
-    if let Route::Remote(link) = crate::remote::route_for_session(app, session_id)? {
-        return Err(format!(
-            "This agent's browser runs on {}, and a phone is shown only the browsers of this Workstation's own agents.",
-            link.host
-        ));
+    match crate::remote::route_for_session(app, session_id)? {
+        Route::Local => watch_local_for_device(app, session_id, watcher),
+        Route::Remote(link) => watch_host_for_device(app, link, session_id, watcher),
     }
+}
+
+fn lease_answer(frame: Option<BrowserFrame>) -> DeviceBrowserWatch {
+    DeviceBrowserWatch { frame, lease_ms: DEVICE_LEASE.as_millis() as u64 }
+}
+
+/// A session on this machine: the stream is a connection of its own to
+/// the daemon here, dialled before answering -- a local connect takes no
+/// time worth keeping a Device's other commands waiting for.
+fn watch_local_for_device(app: &AppHandle, session_id: &str, watcher: &str) -> Result<DeviceBrowserWatch, String> {
     let watches = app.state::<BrowserWatches>();
     let (start, held) = watches.0.lock().unwrap().watch_device(session_id, watcher, Instant::now());
     if let Start::Dial(id) = start {
         let compat = current_compat(&app.state::<DaemonCompatState>());
-        let dialled = dial(session_id, &compat, BrowserViewSize::Phone, DEVICE_FPS).and_then(|stream| {
-            let reader = stream.try_clone()?;
-            Ok((stream, reader))
-        });
-        match dialled {
-            Ok((stream, reader)) => match watches.0.lock().unwrap().device_dialed(session_id, id, stream) {
-                Ok(()) => {
-                    let (reading, session) = (app.clone(), session_id.to_string());
-                    std::thread::Builder::new()
-                        .name("browser-view-device".into())
-                        .spawn(move || {
-                            let watches = reading.state::<BrowserWatches>();
-                            let offer = |frame: &BrowserFrame| {
-                                let payload = serde_json::to_value(frame).unwrap_or(serde_json::Value::Null);
-                                crate::forwarding::offer(&reading, DEVICE_FRAME_EVENT, payload);
-                            };
-                            if let Some(gone_id) = read_device_watch(&watches, &session, id, reader, &offer) {
-                                gone(&reading, &gone_id);
-                            }
-                        })
-                        .map_err(|e| e.to_string())?;
-                    let (keeping, session) = (app.clone(), session_id.to_string());
-                    std::thread::Builder::new()
-                        .name("browser-view-lease".into())
-                        .spawn(move || keep_device_watch(&keeping.state::<BrowserWatches>(), &session, id))
-                        .map_err(|e| e.to_string())?;
-                }
-                // Let go of while it dialled.
-                Err(stream) => {
-                    let _ = stream.shutdown(Shutdown::Both);
-                }
-            },
-            Err(e) => {
-                watches.0.lock().unwrap().device_dial_failed(session_id, id);
-                return Err(e.to_string());
-            }
+        let started = dial(session_id, &compat, BrowserViewSize::Phone, DEVICE_FPS)
+            .map_err(|e| e.to_string())
+            .and_then(|stream| start_device_stream(app, session_id, id, stream, None));
+        if let Err(e) = started {
+            watches.0.lock().unwrap().device_dial_failed(session_id, id);
+            return Err(e);
         }
     }
-    Ok(DeviceBrowserWatch { frame: held, lease_ms: DEVICE_LEASE.as_millis() as u64 })
+    Ok(lease_answer(held))
+}
+
+/// An ssh session: the stream is a connection of its own to the HOST's
+/// daemon, one more ssh process (see the module's note). Dialled on a
+/// thread of its own, so the answer does not wait on ssh: until the dial
+/// is up the view hears nothing, and once it failed every watch is told
+/// why -- and dials again.
+fn watch_host_for_device(
+    app: &AppHandle,
+    link: std::sync::Arc<RemoteLink>,
+    session_id: &str,
+    watcher: &str,
+) -> Result<DeviceBrowserWatch, String> {
+    // Refused here, before anything is held or dialled: the host's own
+    // version is the one that counts, never this machine's.
+    if let Err(gated) = protocol::gate_request(&phone_watch(session_id), link.compat.daemon_version) {
+        return Err(format!(
+            "Needs gavin-daemon v{} on {}; the daemon there is v{}. Update it on the host and reconnect.",
+            gated.needed, link.host, gated.daemon
+        ));
+    }
+    let watches = app.state::<BrowserWatches>();
+    let (start, held, problem) = {
+        let mut registry = watches.0.lock().unwrap();
+        let (start, held) = registry.watch_device(session_id, watcher, Instant::now());
+        (start, held, registry.device_problem(session_id))
+    };
+    if let Start::Dial(id) = start {
+        let (dialing, session) = (app.clone(), session_id.to_string());
+        let spawned = std::thread::Builder::new().name("browser-view-device-dial".into()).spawn(move || {
+            let started = dial_host(&link, &session)
+                .map_err(|e| e.to_string())
+                .and_then(|(stream, process)| start_device_stream(&dialing, &session, id, stream, Some(process)));
+            if let Err(e) = started {
+                let problem = format!("Could not reach {} for this view: {e}", link.host);
+                dialing.state::<BrowserWatches>().0.lock().unwrap().device_dial_refused(&session, id, problem);
+            }
+        });
+        if let Err(e) = spawned {
+            watches.0.lock().unwrap().device_dial_failed(session_id, id);
+            return Err(e.to_string());
+        }
+    }
+    match problem {
+        Some(problem) => Err(problem),
+        None => Ok(lease_answer(held)),
+    }
+}
+
+/// A connection of the stream's own to a host's daemon, its watch sent.
+fn dial_host(link: &RemoteLink, session_id: &str) -> anyhow::Result<(Stream, BridgeProcess)> {
+    let (stream, process) = link.own_connection(ConnectionKind::Command)?;
+    Ok((send_watch(stream, &phone_watch(session_id))?, process))
+}
+
+/// Hands a dialled Device stream to the registry, then reads it and keeps
+/// its leases on threads of their own. A host's ssh process goes with the
+/// reading. A stream let go of while it dialled is closed here.
+fn start_device_stream(
+    app: &AppHandle,
+    session_id: &str,
+    id: u64,
+    stream: Stream,
+    process: Option<BridgeProcess>,
+) -> Result<(), String> {
+    let watches = app.state::<BrowserWatches>();
+    let reader = stream.try_clone().map_err(|e| e.to_string())?;
+    if let Err(stream) = watches.0.lock().unwrap().device_dialed(session_id, id, stream) {
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    }
+    let (reading, session) = (app.clone(), session_id.to_string());
+    std::thread::Builder::new()
+        .name("browser-view-device".into())
+        .spawn(move || {
+            let watches = reading.state::<BrowserWatches>();
+            let offer = |frame: &BrowserFrame| {
+                let payload = serde_json::to_value(frame).unwrap_or(serde_json::Value::Null);
+                crate::forwarding::offer(&reading, DEVICE_FRAME_EVENT, payload);
+            };
+            let gone_id = read_device_watch(&watches, &session, id, reader, &offer);
+            drop(process);
+            if let Some(gone_id) = gone_id {
+                gone(&reading, &gone_id);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (keeping, session) = (app.clone(), session_id.to_string());
+    std::thread::Builder::new()
+        .name("browser-view-lease".into())
+        .spawn(move || keep_device_watch(&keeping.state::<BrowserWatches>(), &session, id))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// `watcher`'s view left the screen. Closes the stream when it held the
@@ -1060,6 +1186,54 @@ mod tests {
     }
 
     #[test]
+    fn a_hosts_dial_that_failed_is_told_to_every_watch_until_one_succeeds() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let Start::Dial(first) = registry.watch_device("s1", "phone", now).0 else { panic!("no dial") };
+        // Answered at once, before the dial is anywhere: nothing to say yet.
+        assert_eq!(registry.device_problem("s1"), None);
+        registry.device_dial_refused("s1", first, "ssh: no route to host".to_string());
+        assert_eq!(registry.device_problem("s1").as_deref(), Some("ssh: no route to host"));
+
+        // The next watch dials again and is still told why the last failed.
+        let Start::Dial(second) = registry.watch_device("s1", "phone", now).0 else { panic!("no redial") };
+        assert_eq!(registry.device_problem("s1").as_deref(), Some("ssh: no route to host"));
+        // One dial at a time, however many watches arrive meanwhile.
+        assert_eq!(registry.watch_device("s1", "phone", now).0, Start::Nothing);
+
+        let (stream, _far) = Stream::pair().unwrap();
+        assert!(registry.device_dialed("s1", second, stream).is_ok());
+        assert_eq!(registry.device_problem("s1"), None);
+    }
+
+    #[test]
+    fn a_view_back_after_every_lease_ran_out_is_not_told_an_old_failure() {
+        let mut registry = Registry::default();
+        let then = ago(DEVICE_LEASE + Duration::from_secs(1));
+        let Start::Dial(id) = registry.watch_device("s1", "phone", then).0 else { panic!("no dial") };
+        registry.device_dial_refused("s1", id, "old".to_string());
+        assert!(matches!(registry.watch_device("s1", "phone", Instant::now()).0, Start::Dial(_)));
+        assert_eq!(registry.device_problem("s1"), None);
+    }
+
+    #[test]
+    fn a_hosts_failed_dial_keeps_the_views_leases_and_a_late_one_changes_nothing() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        let Start::Dial(first) = registry.watch_device("s1", "phone", now).0 else { panic!("no dial") };
+        registry.device_dial_refused("s1", first, "first".to_string());
+        let Start::Dial(second) = registry.watch_device("s1", "phone", now).0 else { panic!("no redial") };
+        let (stream, _far) = Stream::pair().unwrap();
+        assert!(registry.device_dialed("s1", second, stream).is_ok());
+        // The first dial's failure, landing after the second is up.
+        registry.device_dial_refused("s1", first, "late".to_string());
+        assert_eq!(registry.device_problem("s1"), None);
+        // Still the view's lease that holds it: letting go closes it.
+        assert!(registry.unwatch_device("s1", "phone").is_some());
+        assert!(registry.devices.is_empty());
+    }
+
+    #[test]
     fn the_session_ending_closes_its_device_stream() {
         let mut registry = Registry::default();
         let now = Instant::now();
@@ -1172,5 +1346,251 @@ mod tests {
 
         write_pane_open(dir.path(), None).unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().playwright_pane_open, None);
+    }
+
+    // -- a host's stream, through a real bridge -----------------------------
+
+    /// The `gavin-daemon` this workspace built, beside this test binary.
+    fn built_daemon() -> Option<std::path::PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let daemon = exe.parent()?.parent()?.join(format!("gavin-daemon{}", std::env::consts::EXE_SUFFIX));
+        daemon.is_file().then_some(daemon)
+    }
+
+    /// Where this machine's Playwright headless shell is, if one is whole.
+    fn installed_browsers() -> Option<std::path::PathBuf> {
+        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let home = std::path::PathBuf::from(std::env::var_os(home_var)?);
+        let dir = protocol::playwright::browsers_dir(protocol::HostOs::current(), &home, |k| std::env::var(k).ok());
+        let complete: Vec<String> = std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().join(protocol::playwright::INSTALLATION_COMPLETE).is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        protocol::playwright::pick_revision(complete.iter().map(String::as_str))?;
+        Some(dir)
+    }
+
+    /// The width and height a JPEG says it is, from its base64.
+    fn jpeg_size(base64: &str) -> Option<(u16, u16)> {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bytes = Vec::new();
+        let (mut acc, mut bits) = (0u32, 0u32);
+        for c in base64.bytes().take(16 * 1024).take_while(|c| *c != b'=') {
+            acc = ((acc << 6) | ALPHABET.iter().position(|a| *a == c)? as u32) & 0xFFFF;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                bytes.push((acc >> bits) as u8);
+            }
+        }
+        let mut at = 2;
+        while at + 9 < bytes.len() {
+            if bytes[at] != 0xFF {
+                return None;
+            }
+            let length = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+            if matches!(bytes[at + 1], 0xC0..=0xC3) {
+                let height = u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]);
+                let width = u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]);
+                return Some((width, height));
+            }
+            at += 2 + length;
+        }
+        None
+    }
+
+    /// One request on a presented command connection, read to its reply.
+    fn ask(stream: &mut Stream, request: &Request) -> Response {
+        write_message(&mut *stream, request).unwrap();
+        let mut reader = BufReader::with_capacity(1, &mut *stream);
+        read_message(&mut reader).unwrap().expect("a reply from the host's daemon")
+    }
+
+    /// One CDP command through the host daemon's proxy, the way the
+    /// Playwright MCP drives the browser, read until its reply.
+    fn cdp_call(
+        ws: &mut tungstenite::WebSocket<std::net::TcpStream>,
+        id: u64,
+        method: &str,
+        params: serde_json::Value,
+        session: Option<&str>,
+    ) -> serde_json::Value {
+        let mut message = serde_json::json!({ "id": id, "method": method, "params": params });
+        if let Some(session) = session {
+            message["sessionId"] = session.into();
+        }
+        ws.send(tungstenite::Message::Text(message.to_string().into())).unwrap();
+        loop {
+            let tungstenite::Message::Text(text) = ws.read().expect("a CDP reply") else { continue };
+            let reply: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+            if reply["id"].as_u64() == Some(id) {
+                assert!(reply.get("error").is_none(), "{method}: {reply}");
+                return reply["result"].clone();
+            }
+        }
+    }
+
+    /// A Device's stream of an ssh session's browser, end to end: a host
+    /// daemon behind `gavin-daemon bridge` (what ssh runs on a host), a
+    /// real headless shell there, and the desk's own half -- the bridge
+    /// presented as the app, the phone's watch sent on it, the registry
+    /// and the reader that offers each frame. The frames are the phone's
+    /// size, a lease let go ends the reading (and with it the ssh
+    /// process), and the session's end crosses the phone's own bridge.
+    #[test]
+    fn a_hosts_browser_reaches_a_device_at_the_phones_size_over_a_bridge_of_its_own() {
+        let required = std::env::var_os("GAVIN_REQUIRE_PLAYWRIGHT").is_some();
+        let (Some(daemon), Some(browsers)) = (built_daemon(), installed_browsers()) else {
+            assert!(!required, "GAVIN_REQUIRE_PLAYWRIGHT is set, and there is no built gavin-daemon or no headless shell");
+            eprintln!("SKIPPED: needs target/debug/gavin-daemon (cargo build -p gavin-daemon) and a Playwright headless shell");
+            return;
+        };
+        let temp_root = if cfg!(windows) { std::env::temp_dir() } else { std::path::PathBuf::from("/tmp") };
+        let home = tempfile::Builder::new().prefix("gavin-bv-host-").tempdir_in(&temp_root).unwrap();
+        let fake = Some(home.path().as_os_str().to_os_string());
+        let state_dir =
+            protocol::resolve_app_support_dir(fake.clone(), None, fake.clone(), fake, protocol::HostOs::current())
+                .unwrap();
+        // The daemon the first bridge starts outlives it, as on a host;
+        // this stops it at the end.
+        struct Stop(std::path::PathBuf);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                if let Ok(mut stream) = Stream::connect(&self.0) {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let _ = write_message(&mut stream, &Request::Shutdown);
+                    let mut reader = BufReader::new(stream);
+                    let _ = read_message::<_, Response>(&mut reader);
+                }
+            }
+        }
+        let _stop = Stop(state_dir.join(protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current())));
+        let bridge = || {
+            let mut command = crate::program::command(&daemon);
+            command
+                .arg("bridge")
+                .env("HOME", home.path())
+                .env("LOCALAPPDATA", home.path())
+                .env("USERPROFILE", home.path())
+                .env_remove("XDG_DATA_HOME")
+                .env("PLAYWRIGHT_BROWSERS_PATH", &browsers);
+            command
+        };
+        let speaking = DaemonCompat {
+            daemon_version: protocol::PROTOCOL_VERSION,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: false,
+        };
+
+        // The host: a session there, and the endpoint its agent's MCP dials.
+        let (commands, _commands_process) =
+            crate::remote::own_connection_from(bridge(), &speaking, ConnectionKind::Command).unwrap();
+        let commands = Mutex::new(commands);
+        let host = crate::session::verify_daemon_protocol(&commands).unwrap();
+        if host.daemon_version < protocol::min_version_for(&phone_watch("")) {
+            assert!(!required, "the built gavin-daemon is v{}", host.daemon_version);
+            eprintln!("SKIPPED: target/debug/gavin-daemon is v{}; rebuild it", host.daemon_version);
+            return;
+        }
+        let mut commands = commands.into_inner().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().to_string_lossy().into_owned();
+        let session_id = match ask(
+            &mut commands,
+            &Request::CreateSession {
+                workspace_path: root.clone(),
+                cwd: root,
+                command: None,
+                profile_id: None,
+                api_family: None,
+                without_headroom: true,
+            },
+        ) {
+            Response::SessionCreated { id, .. } => id,
+            other => panic!("CreateSession on the host: {other:?}"),
+        };
+        let endpoint = match ask(&mut commands, &Request::PlaywrightEndpoint { session_id: session_id.clone() }) {
+            Response::PlaywrightEndpoint { endpoint, .. } => endpoint,
+            other => panic!("PlaywrightEndpoint on the host: {other:?}"),
+        };
+
+        // The desk's half, as `watch_host_for_device` and
+        // `start_device_stream` make it, with the bridge for ssh.
+        let watches = std::sync::Arc::new(BrowserWatches::default());
+        let read_on = |id: u64, process: BridgeProcess, reader: Stream| {
+            let (offered, frames) = std::sync::mpsc::channel::<BrowserFrame>();
+            let (watches, session) = (watches.clone(), session_id.clone());
+            let reading = std::thread::spawn(move || {
+                let offer = move |frame: &BrowserFrame| {
+                    let _ = offered.send(frame.clone());
+                };
+                let gone = read_device_watch(&watches, &session, id, reader, &offer);
+                drop(process);
+                gone
+            });
+            (frames, reading)
+        };
+        let dial = |watcher: &str| {
+            let Start::Dial(id) = watches.0.lock().unwrap().watch_device(&session_id, watcher, Instant::now()).0 else {
+                panic!("the first watch dials")
+            };
+            let (stream, process) = crate::remote::own_connection_from(bridge(), &host, ConnectionKind::Command).unwrap();
+            let stream = send_watch(stream, &phone_watch(&session_id)).unwrap();
+            let reader = stream.try_clone().unwrap();
+            assert!(watches.0.lock().unwrap().device_dialed(&session_id, id, stream).is_ok());
+            read_on(id, process, reader)
+        };
+        let (frames, reading) = dial("phone");
+
+        // The agent's first call launches the browser on the host, and it
+        // opens a page.
+        let authority = endpoint.strip_prefix("ws://").unwrap().split('/').next().unwrap().to_string();
+        let tcp = std::net::TcpStream::connect(&authority).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let (mut cdp, _) = tungstenite::client::client(endpoint.as_str(), tcp).expect("the proxy's handshake");
+        let targets = cdp_call(&mut cdp, 1, "Target.getTargets", serde_json::json!({}), None);
+        let page = targets["targetInfos"].as_array().unwrap().iter().find(|t| t["type"] == "page").unwrap()["targetId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let attached = cdp_call(&mut cdp, 2, "Target.attachToTarget", serde_json::json!({ "targetId": page, "flatten": true }), None);
+        let cdp_session = attached["sessionId"].as_str().unwrap().to_string();
+        let url = "data:text/html,<body style='background:%23264'><h1 style='color:white'>on a host, seen on the phone</h1></body>";
+        cdp_call(&mut cdp, 3, "Page.navigate", serde_json::json!({ "url": url }), Some(&cdp_session));
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let frame = frames
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("no frame of the host's page was offered within 20s");
+            assert_eq!(frame.session_id, session_id);
+            if !frame.url.starts_with("data:text/html") {
+                continue;
+            }
+            assert_eq!(jpeg_size(&frame.data), Some((640, 400)), "the phone's size, not the desk's");
+            break;
+        }
+
+        // The view lets go: the connection closes, and the reading ends.
+        let closing = watches.0.lock().unwrap().unwatch_device(&session_id, "phone").expect("the stream to close");
+        let _ = closing.shutdown(Shutdown::Both);
+        let (ended, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(reading.join().unwrap());
+        });
+        assert_eq!(done.recv_timeout(Duration::from_secs(10)).expect("the reading ended"), None);
+
+        // A view again, and then the session ends on the host: its end
+        // crosses the phone's own bridge, for the desk to tell everyone.
+        let (_frames, reading) = dial("phone-again");
+        drop(cdp);
+        assert!(matches!(ask(&mut commands, &Request::KillSession { id: session_id.clone() }), Response::Ok));
+        let (ended, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(reading.join().unwrap());
+        });
+        assert_eq!(done.recv_timeout(Duration::from_secs(15)).expect("the reading ended"), Some(session_id.clone()));
     }
 }

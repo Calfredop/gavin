@@ -1209,7 +1209,21 @@ fn a_real_agent_browsers_phone_frame_reaches_the_device() {
         assert!(data.len() < 64 * 1024, "a phone frame of {} bytes", data.len());
         break;
     }
+
+    // The browser ends with its session, not with the daemon: a daemon
+    // shut down under a live session leaves its headless shell running.
     drop(cdp);
+    assert!(matches!(workstation.command.request(&Request::KillSession { id: session_id.clone() }), Response::Ok));
+    loop {
+        match watch.next() {
+            Response::BrowserGone { session_id: gone } => {
+                assert_eq!(gone, session_id);
+                break;
+            }
+            Response::BrowserFrame { .. } => continue,
+            other => panic!("unexpected on the watch: {other:?}"),
+        }
+    }
 }
 
 // -- presence (companion-16) --------------------------------------------

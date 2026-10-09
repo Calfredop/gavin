@@ -305,14 +305,17 @@ describe("a browser the phone cannot show", () => {
     pages: [{ id: "p1", name: "Agents", layout: { type: "leaf", tabs: ["s-lab"], activeTabIndex: 0 } }],
   } as Workspace;
 
-  it("is an ssh session's, whose host's link carries the desk's frames alone", () => {
-    expect(phoneBrowserBlocked([onHost], null, "s-lab")).toMatch(/runs on lab-box/);
-    expect(phoneBrowserBlocked([onHost], null, "s-elsewhere")).toBeNull();
-  });
-
-  it("is one an older daemon cannot screencast", () => {
+  it("is one an older daemon here cannot screencast", () => {
     const older = { daemonVersion: 64, appVersion: 65, compatible: true } as never;
     expect(phoneBrowserBlocked([], older, "s-x")).toMatch(/Needs daemon v65/);
+  });
+
+  it("is not decided here for an ssh session: its host's daemon is the desk's to ask", () => {
+    // The local daemon's version says nothing about the host's, and the
+    // phone knows neither the host's version nor its link.
+    const older = { daemonVersion: 64, appVersion: 65, compatible: true } as never;
+    expect(phoneBrowserBlocked([onHost], older, "s-lab")).toBeNull();
+    expect(phoneBrowserBlocked([onHost], null, "s-lab")).toBeNull();
   });
 
   it("still has its button, and the view says why", () => {

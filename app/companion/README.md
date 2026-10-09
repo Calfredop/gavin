@@ -332,9 +332,16 @@ phone's own ports (`state/browser.ts`), never on the desk's instance:
   and keeps only the frames of what it watches. `browser-changed` and
   `browser-gone` light and put out the globe, and `list_browsers` reads
   back the running browsers at connect and after a gap.
-- **Not an ssh session's.** Its frames ride its host's one streaming
-  connection, where a phone-size stream would arrive indistinguishable
-  from the desk's; the view says so rather than wait.
+- **An ssh session's too.** Its browser runs on the host, and the desk's
+  own view of it rides the host's one streaming connection, where a
+  phone-size stream would be indistinguishable from the desk's and could
+  not be let go. So the desk opens the phone's on a connection of its own
+  to the host -- one more ssh process, only while a lease holds -- and
+  answers the watch at once rather than keep the phone's other commands
+  waiting on ssh; the first frame arrives like the rest. Whether the host
+  can do it (its daemon's version, the link being up) is the desk's to
+  say, since the phone knows neither: a refusal comes back as the watch's
+  answer and the view shows it, asking again while it stays up.
 
 The Demo Workstation's field-notes agent ("offline sync") has a browser
 from the start, turning a page each step of the activity loop (three
