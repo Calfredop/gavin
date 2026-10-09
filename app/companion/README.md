@@ -501,6 +501,21 @@ switching an agent, which moves files and re-runs setup; and picking a folder.
 A write that fails is said on the screen (`saveSetting`), not in the desk's
 whole-window overlay.
 
+**Appearance** is the one setting a phone keeps for itself
+(`state/appearance.ts`). The Workstation's theme is the desk's, and a phone in
+Light under a desk on Dark used to get a white hub and a dark UI it could only
+make light by changing the desk. So the phone chooses, per Workstation, in its
+own storage beside the view (`gavin.companion.appearance.<workstation id>`):
+**Desk** (the default: the desk's theme, with System as this phone's own Light
+and Dark, `remote/window.ts`), **Phone** (this phone's Light and Dark, whatever
+the desk says), **Light** or **Dark**. Choosing writes nothing to the
+Workstation: the bundle hands it to the desktop's theme store as a `local`
+preference that wins over the stored one and is never saved
+(`themeState.setLocal`), and that store stamps `data-theme` and tells xterm
+(`applyTerminalTheme`) both. The desk's own theme control is still on the
+screen, under it and named as the desk's: pressing it changes the desk, and a
+phone not set to Desk keeps drawing its own choice.
+
 Every app-wide setter on the host announces `app-settings-synced`, and every
 desk window and every Device re-reads its settings on another writer's change
 (`loadAppSettings`). A Device's writes are announced under the origin

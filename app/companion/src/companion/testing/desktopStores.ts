@@ -20,6 +20,7 @@ import {
   terminalFontSizeDefault,
 } from "$lib/core/layoutState";
 import { __resetForTesting as resetOrchestration } from "$lib/orchestration/orchestrationState";
+import { themeState } from "$lib/ui/themeState.svelte";
 
 export function resetDesktopStores(): void {
   resetTurnVerdict();
@@ -36,6 +37,8 @@ export function resetDesktopStores(): void {
   requireReviewDefault.set(null);
   gitTrackingDefault.set(null);
   launchConfigStore.set(DEFAULT_LAUNCH);
+  // A phone's own appearance is the next Workstation's to read again.
+  themeState.local = null;
   layoutState.set({
     status: "connecting",
     errorMessage: "",

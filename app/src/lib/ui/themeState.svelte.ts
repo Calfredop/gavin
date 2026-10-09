@@ -12,9 +12,18 @@ function toStored(pref: ThemePref): string | null {
 class ThemeStore {
   pref = $state<ThemePref>("system");
   effective = $state<EffectiveTheme>("dark");
+  /// A preference this screen holds over the stored one, never written
+  /// back: a Companion's own appearance for the Workstation it shows. Null
+  /// draws the stored preference. The desk never sets it.
+  local = $state<ThemePref | null>(null);
+
+  /// The preference the screen is drawn in.
+  get governing(): ThemePref {
+    return this.local ?? this.pref;
+  }
 
   #apply(system: EffectiveTheme | null): void {
-    this.effective = resolveTheme(this.pref, system);
+    this.effective = resolveTheme(this.governing, system);
     // bootstrap() is unit-tested in a node environment with no DOM, and
     // the resolved theme is still worth recording there -- only the stamp
     // needs a document.
@@ -48,7 +57,7 @@ class ThemeStore {
       await getCurrentWindow().onThemeChanged(({ payload }) => {
         // Only meaningful while following the system: an explicit
         // preference must not be overridden by the OS schedule.
-        if (this.pref === "system") {
+        if (this.governing === "system") {
           this.#apply(payload === "light" ? "light" : "dark");
         }
       });
@@ -66,6 +75,13 @@ class ThemeStore {
     } catch {
       return;
     }
+    this.#apply(await this.#systemTheme());
+  }
+
+  /// Draws this screen in `pref` whatever the stored preference says, or
+  /// in the stored one again for null. Writes nothing.
+  async setLocal(pref: ThemePref | null): Promise<void> {
+    this.local = pref;
     this.#apply(await this.#systemTheme());
   }
 

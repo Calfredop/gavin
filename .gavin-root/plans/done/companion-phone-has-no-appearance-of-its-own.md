@@ -2,7 +2,7 @@
 order: 35840
 kind: task
 title: Companion: the phone has no appearance of its own; the Workstation's UI takes the desk's theme and the hub takes the phone's
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---
@@ -24,9 +24,18 @@ Found by `companion-iphone-smoke-tests.md` (E5) on a physical iPhone 16 Pro, wit
 **To do.** Get the owner's choice (a Decision is filed on this card). B is the small one: a Device-side preference read by the bundle's theme init, one new control in the phone's settings, and the existing desk theme control moved out of the phone's way.
 
 **Acceptance.**
-- [ ] The chosen behaviour is documented in `app/companion/README.md`
-- [ ] With the phone in Light and the desk on Dark the result is the one the owner chose, with no write to the desk's theme unless the owner presses the desk's control
-- [ ] The terminal (xterm reads colours from JS options, `applyTerminalTheme`) follows the same theme
-- [ ] Human test: toggle the phone Light and Dark from Control Center with a Workstation open
-- [ ] Decision: What appearance should an open Workstation's UI use on the phone?
+- [x] The chosen behaviour is documented in `app/companion/README.md`
+- [x] With the phone in Light and the desk on Dark the result is the one the owner chose, with no write to the desk's theme unless the owner presses the desk's control
+- [x] The terminal (xterm reads colours from JS options, `applyTerminalTheme`) follows the same theme
+- [x] Decision: What appearance should an open Workstation's UI use on the phone?
   Options: A) A) The Workstation's theme (as today); document it and say the phone's theme control changes the desk too B) B) A per-Device choice (follow the Workstation, follow this phone, light, dark) that never writes the desk's theme C) C) Always follow the phone's appearance
+  Answer (2026-10-09): B) A per-Device choice (follow the Workstation, follow this phone, light, dark) that never writes the desk's theme
+
+**Built (B).**
+- `app/companion/src/companion/state/appearance.ts`: the choice (`workstation` default, `phone`, `light`, `dark`) under `gavin.companion.appearance.<workstation id>` in the bundle's own storage, mapped to a theme preference (`phone` = the bundle's `system`, which `remote/window.ts` already answers with the phone's appearance).
+- `app/src/lib/ui/themeState.svelte.ts`: a `local` preference that wins over the stored one and is never written (`setLocal`); the desk never sets it. `#apply` still stamps `data-theme` and calls `applyTerminalTheme`, so the terminal follows the same theme.
+- `workstation.ts`: reads the choice at connect, before the desk's theme is asked for; `setAppearance` keeps it on the Device and writes nothing to the Workstation.
+- `PhoneAppSettings.svelte` → Appearance: **On this phone** (Desk | Phone | Light | Dark) first, then the desk's control relabelled **The desk's theme**, with a hint that it changes the desk.
+- Tests: `state/appearance.test.ts`, `seam/appearance.test.ts` (desk Dark + phone Light draws light when chosen, terminal included; Control Center turns follow on Phone; no `set_*` crosses the wire; the desk's control still writes the desk). companion:test 851/851, npm test green, both checks 0 errors, companion:build ok.
+
+- [ ] Human test: On the iPhone with the desk on Dark, open a Workstation, then Settings → Appearance → On this phone: Desk shows it dark; Phone follows Light and Dark as you toggle them in Control Center (screen and an open terminal both); Light and Dark hold whatever Control Center says; the desk's own window never changes theme while you do this

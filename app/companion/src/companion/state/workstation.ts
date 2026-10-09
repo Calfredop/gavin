@@ -35,6 +35,13 @@ import { applyInitTracking, nameForRoot } from "$lib/workspace/workspaceOpen";
 import { adoptSettingsRecord, type WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
+import {
+  DEFAULT_APPEARANCE,
+  loadAppearance,
+  localThemePref,
+  saveAppearance,
+  type Appearance,
+} from "$companion/state/appearance";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
 import { browserSessionEnded, reassertBrowserViews, startBrowserViews } from "$companion/state/browser";
 import { connectionChanged, onReconnect, resetReachability } from "$companion/state/reachability";
@@ -89,14 +96,29 @@ const landingStore = writable<Landing | null>(null);
 /// card. In memory only, like a landing.
 const returnedFromStore = writable<string | null>(null);
 
+/// The phone's own appearance for this Workstation (`appearance.ts`).
+const appearanceStore = writable<Appearance>(DEFAULT_APPEARANCE);
+
 export const connection: Readable<Connection> = { subscribe: connectionStore.subscribe };
 export const view: Readable<ViewState> = { subscribe: viewStore.subscribe };
 export const landing: Readable<Landing | null> = { subscribe: landingStore.subscribe };
 export const returnedFrom: Readable<string | null> = { subscribe: returnedFromStore.subscribe };
+export const appearance: Readable<Appearance> = { subscribe: appearanceStore.subscribe };
 
 /// Writes a view down on the Device. Null until a Workstation is
 /// connected, since a view belongs to one.
 let remember: ((next: ViewState) => void) | null = null;
+/// The same for the phone's appearance.
+let rememberAppearance: ((next: Appearance) => void) | null = null;
+
+/// Draws this Workstation's UI in `next` on this phone, and keeps the
+/// choice on the Device. Never a write to the Workstation: its theme is
+/// the desk's, changed only by the desk's own control.
+export function setAppearance(next: Appearance): void {
+  appearanceStore.set(next);
+  rememberAppearance?.(next);
+  void themeState.setLocal(localThemePref(next));
+}
 
 /// The one door every change of view goes through.
 function show(next: ViewState): void {
@@ -441,6 +463,7 @@ export async function connectWorkstation(
   const disconnect = (): void => {
     for (const stop of stops.splice(0)) stop();
     remember = null;
+    rememberAppearance = null;
     resetSessions();
     resetTurns();
     settingsShown = false;
@@ -529,6 +552,15 @@ export async function connectWorkstation(
 
     const data = await backend.getWorkspacesState();
     const workstationId = capabilities.workstation.id;
+    // The phone's own appearance before anything is drawn: a choice that
+    // is not the Workstation's needs nothing from it, so it lands at once
+    // instead of after the desk's theme has been asked for.
+    const chosen = loadAppearance(storage, workstationId);
+    appearanceStore.set(chosen);
+    const local = localThemePref(chosen);
+    if (local) void themeState.setLocal(local);
+    else themeState.local = null;
+    rememberAppearance = (next) => saveAppearance(storage, workstationId, next);
     // Restored BEFORE the workspaces land, and only then made the way
     // views are remembered: restoring must not count as a change.
     viewStore.set(

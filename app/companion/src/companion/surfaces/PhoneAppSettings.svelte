@@ -5,7 +5,7 @@
   // alone (phoneSettings.ts says which, and why). Every write goes
   // through `saveSetting`, which says on this screen when one failed.
   import { onMount } from "svelte";
-  import { Monitor, Moon, Sun } from "@lucide/svelte";
+  import { Laptop, Monitor, Moon, Smartphone, Sun } from "@lucide/svelte";
   import {
     agentDefaultsStore,
     agentModelDefaultsStore,
@@ -61,7 +61,15 @@
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import type { ThemePref } from "$lib/ui/theme";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import { dismissSaveProblem, loadSettings, saveProblem, saveSetting } from "$companion/state/workstation";
+  import type { Appearance } from "$companion/state/appearance";
+  import {
+    appearance,
+    dismissSaveProblem,
+    loadSettings,
+    saveProblem,
+    saveSetting,
+    setAppearance,
+  } from "$companion/state/workstation";
   import PhoneAgentPrimary from "$companion/surfaces/PhoneAgentPrimary.svelte";
   import PhoneModelPicker from "$companion/surfaces/PhoneModelPicker.svelte";
   import PhoneSetting from "$companion/surfaces/PhoneSetting.svelte";
@@ -76,6 +84,14 @@
     { pref: "system", label: "System", icon: Monitor },
     { pref: "light", label: "Light", icon: Sun },
     { pref: "dark", label: "Dark", icon: Moon },
+  ];
+
+  /// This phone's own choice, kept on the phone (`appearance.ts`).
+  const APPEARANCES: { value: Appearance; label: string; icon: typeof Sun }[] = [
+    { value: "workstation", label: "Desk", icon: Laptop },
+    { value: "phone", label: "Phone", icon: Smartphone },
+    { value: "light", label: "Light", icon: Sun },
+    { value: "dark", label: "Dark", icon: Moon },
   ];
 
   /// Built-ins ∪ app-wide customs (the Rust table alone has no named customs).
@@ -166,8 +182,30 @@
   {/if}
 
   <PhoneSettingsGroup title="Appearance">
-    <PhoneSetting label="Theme" hint="The Workstation's own theme: the desk and every Device draw it.">
-      <div class="segments" role="group" aria-label="Theme">
+    <PhoneSetting
+      label="On this phone"
+      hint="Desk draws this Workstation in the desk's theme; Phone follows this phone's Light and Dark. Kept on this phone: the desk does not change."
+    >
+      <div class="segments" role="group" aria-label="On this phone">
+        {#each APPEARANCES as option (option.value)}
+          <button
+            type="button"
+            class="segment"
+            class:on={$appearance === option.value}
+            aria-pressed={$appearance === option.value}
+            onclick={() => setAppearance(option.value)}
+          >
+            <option.icon size={16} />
+            <span>{option.label}</span>
+          </button>
+        {/each}
+      </div>
+    </PhoneSetting>
+    <PhoneSetting
+      label="The desk's theme"
+      hint="Changes the desk itself. A phone set to Desk draws it too, with System as that phone's own Light and Dark."
+    >
+      <div class="segments" role="group" aria-label="The desk's theme">
         {#each THEMES as theme (theme.pref)}
           <button
             type="button"
