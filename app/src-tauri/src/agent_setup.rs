@@ -1481,12 +1481,17 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_args: None,
         prompt_injection: true,
         untrusted_osc133: true,
-        // `-p='<prompt>'`, ATTACHED: the separated `-p -- '<prompt>'`
-        // form does not work (verified live 2026-10-05, 2.1.1). Headless
-        // runs land in kimi's `auto` permission policy by default -- no
-        // approvals, static deny rules apply -- so a hidden commit needs
-        // no grant flag (and `--yolo` conflicts with `-p`).
-        headless_args: "-p=",
+        // `--prompt='<prompt>'`, ATTACHED and LONG: the separated
+        // `-p -- '<prompt>'` form does not work (verified live
+        // 2026-10-05, 2.1.1), and the short `-p=` hands kimi the value
+        // `=<prompt>` -- every headless prompt arrived one stray `=`
+        // long. The long form's `=` is a separator, so the prompt lands
+        // verbatim, one starting with `-` included (wire.jsonl
+        // `turn.prompt`, 2.1.1, 2026-10-10). Headless runs land in
+        // kimi's `auto` permission policy by default -- no approvals,
+        // static deny rules apply -- so a hidden commit needs no grant
+        // flag (and `--yolo` conflicts with `-p`).
+        headless_args: "--prompt=",
         // `error: failed to run prompt: <reason>` observed live 4x
         // (2.1.1); the rest are kimi's own i18n failure strings.
         failure_patterns: &[
@@ -4126,7 +4131,7 @@ mod tests {
     /// A headless row must be promptable at all: the caller builds
     /// either `<command> <headless_args> '<prompt>'` (args end in ` --`)
     /// or `<command> <headless_args>'<prompt>'` (args end in `=`, the
-    /// attach form gemini's `--prompt=` and kimi's `-p=` need). And a
+    /// attach form gemini's and kimi's `--prompt=` need). And a
     /// positional form must end in `--`, or a flag ahead of the prompt
     /// eats it -- claude's allow-list flag is variadic, and opencode's
     /// yargs reads a leading `-` as a flag.
@@ -4145,8 +4150,8 @@ mod tests {
             // kimi-code is the deliberate exception: its VISIBLE run has
             // no prompt argv (K3 -- the prompt is written into the PTY
             // once kimi's MCP handshake says the TUI is up), while its
-            // headless `-p=` carries one. Every other headless row must
-            // also be launchable with a prompt.
+            // headless `--prompt=` carries one. Every other headless row
+            // must also be launchable with a prompt.
             if p.id != "kimi-code" {
                 assert!(p.prompt_args.is_some(), "{} runs headless but takes no prompt", p.id);
             }
@@ -4156,6 +4161,17 @@ mod tests {
                 "{} headless argv must end in ` --` (positional) or `=` (attached)",
                 p.id
             );
+            // The attach `=` separates only on a LONG option: a short
+            // `-p=` hands the CLI the value `=<prompt>`, which is how
+            // every headless kimi prompt once arrived one `=` long.
+            if args.ends_with('=') {
+                let flag = args.rsplit(' ').next().unwrap_or(args);
+                assert!(
+                    flag.starts_with("--") && flag.len() > "--=".len(),
+                    "{}: attached flag `{flag}` must be long -- a short one keeps the `=`",
+                    p.id
+                );
+            }
         }
     }
 

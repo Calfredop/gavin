@@ -1689,7 +1689,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const conversationId = conversationIdForLaunch(launchAgent);
   // An injection launch (K3) is the board Run's: the CLI has no prompt
   // argv, so it starts bare and the prompt goes to the daemon's queue
-  // after the spawn. Not the profile's headless `-p=` form, which a rail
+  // after the spawn. Not the profile's headless `--prompt=` form, which a rail
   // step was once going to take: print mode forces kimi's `auto`
   // permission policy (never ask) where the human chose to be asked, and
   // the process exits when it answers -- taking the tab, and the rail's
