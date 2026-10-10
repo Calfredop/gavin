@@ -1,3 +1,4 @@
+use crate::changes_only::ChangesOnly;
 use crate::session::{WorkspacesData, WorkspacesState};
 use notify_debouncer_mini::Debouncer;
 use serde::Serialize;
@@ -390,7 +391,7 @@ pub fn home_dir() -> Result<String, String> {
 /// live updates down with it. Matches `GitWatchers`, which is refcounted
 /// for the same reason. The entry -- and with it the watcher thread and
 /// the OS watch -- is dropped when the last holder unwatches.
-pub struct FileWatchers(pub Mutex<HashMap<String, (Debouncer<notify::RecommendedWatcher>, usize)>>);
+pub struct FileWatchers(pub Mutex<HashMap<String, (Debouncer<ChangesOnly>, usize)>>);
 
 impl Default for FileWatchers {
     fn default() -> Self {
@@ -411,7 +412,7 @@ impl Default for FileWatchers {
 fn spawn_file_watcher<F>(
     path: &str,
     on_change: F,
-) -> anyhow::Result<Debouncer<notify::RecommendedWatcher>>
+) -> anyhow::Result<Debouncer<ChangesOnly>>
 where
     F: Fn(String) + Send + 'static,
 {
@@ -426,7 +427,7 @@ where
         .to_os_string();
     let reported_path = path.to_string();
 
-    let mut debouncer = notify_debouncer_mini::new_debouncer(
+    let mut debouncer = crate::changes_only::new_debouncer(
         FILE_WATCH_DEBOUNCE,
         move |res: notify_debouncer_mini::DebounceEventResult| {
             let Ok(events) = res else { return };
@@ -1593,6 +1594,30 @@ mod tests {
         std::fs::write(&sibling, "unrelated").unwrap();
 
         assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).is_err());
+        drop(watcher);
+    }
+
+    /// The viewer re-reads the file on every `file-changed`, and inotify
+    /// reports that open as an event on the file: before `ChangesOnly`
+    /// each reload armed the next. Fails on Linux without the wrapper;
+    /// elsewhere reads were never reported.
+    #[test]
+    fn reading_the_watched_file_does_not_fire_the_callback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watched.txt");
+        std::fs::write(&path, "before").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+        let watcher = spawn_file_watcher(path.to_string_lossy().as_ref(), move |changed| {
+            let _ = tx.send(changed);
+        })
+        .unwrap();
+
+        std::fs::read_to_string(&path).unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(), "a read fired the callback");
+
+        std::fs::write(&path, "after").unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "a write must still fire it");
         drop(watcher);
     }
 

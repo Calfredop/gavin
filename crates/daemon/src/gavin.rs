@@ -2695,7 +2695,7 @@ pub struct GavinWatcher {
     /// `inner` is held for the whole of a scan, and the card move that
     /// reads this must not wait one out.
     card_index: Mutex<Option<Arc<CardIndex>>>,
-    debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<crate::changes_only::ChangesOnly>>>,
     on_scan: Option<ScanHook>,
 }
 
@@ -2743,7 +2743,7 @@ impl GavinWatcher {
         // the window; a change landing between arming and the initial
         // scan just triggers a rescan that change-gating dedupes.
         let weak: Weak<GavinWatcher> = Arc::downgrade(&watcher);
-        let debounce_result = notify_debouncer_mini::new_debouncer(
+        let debounce_result = crate::changes_only::new_debouncer(
             RESCAN_DEBOUNCE,
             move |res: notify_debouncer_mini::DebounceEventResult| {
                 // After teardown (last strong Arc dropped), upgrade()
@@ -5546,6 +5546,46 @@ mod tests {
         .unwrap();
         let after_drop: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(after_drop.is_err(), "a dropped watcher still emitted");
+    }
+
+    /// inotify reports a card being opened as an event in a watched
+    /// folder, so before `ChangesOnly` every card read -- an agent's, or
+    /// the rescan's own -- woke this watcher, and each rescan armed the
+    /// next: one every MIN_RESCAN_INTERVAL, measured, for as long as the
+    /// workspace was open. Fails on Linux without the wrapper; elsewhere
+    /// reads were never reported.
+    #[test]
+    fn reading_a_card_does_not_rescan() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let card = dir.path().join(GAVIN_ROOT_DIR).join("plans").join("read-me.md");
+        std::fs::write(&card, "---\nstatus: To Do\n---\n").unwrap();
+        let scans = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&scans);
+        let hook: ScanHook = Box::new(move |_, _| {
+            counter.fetch_add(1, SeqCst);
+            None
+        });
+        let (_ours, theirs) = Stream::pair().unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::new(Mutex::new(theirs)), Some(hook));
+
+        // Long enough for the initial scan's own reads to have woken it.
+        std::thread::sleep(Duration::from_secs(1));
+        scans.store(0, SeqCst);
+        std::fs::read_to_string(&card).unwrap();
+        // The woken rescan sleeps out the floor before it scans.
+        std::thread::sleep(MIN_RESCAN_INTERVAL + RESCAN_DEBOUNCE * 2 + Duration::from_millis(500));
+        assert_eq!(scans.load(SeqCst), 0, "a read rescanned the tree");
+
+        std::fs::write(&card, "---\nstatus: Done\n---\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while scans.load(SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(scans.load(SeqCst) > 0, "a write must still rescan");
     }
 
     // --- watch set + relevance (fs-sync) ---------------------------------

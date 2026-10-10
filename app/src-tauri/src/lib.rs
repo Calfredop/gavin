@@ -4,6 +4,7 @@ mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
 mod browser_view;
+mod changes_only;
 mod command_lane;
 mod commands;
 mod companion_bundle;

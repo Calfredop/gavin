@@ -280,7 +280,7 @@ struct RepoPoller {
     /// setting it up failed -- watch failure degrades to "no filesystem
     /// trigger for this repo root," not a hard error, since the
     /// OSC-133-idle hook and the backstop timer still work either way).
-    debouncer: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
+    debouncer: Mutex<Option<Debouncer<crate::changes_only::ChangesOnly>>>,
 }
 
 struct RepoPollerInner {
@@ -1258,13 +1258,13 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     // `Arc<RepoPoller>` -> back to `poller.debouncer`) that would keep
     // `RepoPoller`'s strong count above zero forever, so `Drop` (the only
     // thing that sends the `Debouncer`'s internal `Shutdown` signal) would
-    // never run, leaking its background thread, its `RecommendedWatcher`,
+    // never run, leaking its background thread, its OS watcher,
     // and every OS-level watch it holds for the daemon's entire remaining
     // lifetime -- an orphaned watch that keeps firing `git status` forever
     // for a repo no session cares about anymore, exactly the cmux #2722
     // `.git/index.lock` contention bug this whole design exists to avoid.
     let poller_for_callback = Arc::downgrade(poller);
-    let debounce_result = notify_debouncer_mini::new_debouncer(
+    let debounce_result = crate::changes_only::new_debouncer(
         GIT_STATUS_DEBOUNCE,
         move |res: notify_debouncer_mini::DebounceEventResult| {
             let Ok(events) = res else { return };
@@ -18313,6 +18313,35 @@ mod tests {
             poller.inner.lock().unwrap().last_checked.is_some(),
             "the check must still have actually run after the wait"
         );
+    }
+
+    /// The poller's own `git status` opens `.git/index`, and inotify
+    /// reports that open as an event in the watched `.git` folder: before
+    /// `ChangesOnly` each check armed the next, one every
+    /// MIN_RECHECK_INTERVAL for as long as a session sat in the repo.
+    /// Fails on Linux without the wrapper; elsewhere reads were never
+    /// reported.
+    #[test]
+    fn the_pollers_own_git_status_does_not_recheck_the_repo() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_root = repo_dir.path().to_str().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let poller = bare_poller();
+        setup_filesystem_watch(&manager, repo_root, &poller);
+
+        assert!(crate::git_status::run_git_status(repo_root).is_some());
+        std::thread::sleep(GIT_STATUS_DEBOUNCE * 2 + Duration::from_millis(500));
+        assert!(poller.inner.lock().unwrap().last_checked.is_none(), "a read-only git status rechecked the repo");
+
+        std::fs::write(repo_dir.path().join("new.txt"), "x").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while poller.inner.lock().unwrap().last_checked.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(poller.inner.lock().unwrap().last_checked.is_some(), "a new file must still recheck");
     }
 
     #[test]
