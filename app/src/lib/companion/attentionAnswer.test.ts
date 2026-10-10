@@ -136,6 +136,43 @@ describe("buildAttentionAnswer", () => {
       target: { kind: "card", path: "/ws/.gavin-root/plans/ship.md" },
     });
   });
+
+  it("names every item's workspace when the caller supplies the names", () => {
+    const answer = buildAttentionAnswer({
+      inbox: [row({ sessionId: "s1", reason: "asking" })],
+      humanTests: [
+        { workspaceId: "ws-2", cardPath: "/b/.gavin-root/plans/a.md", lineIndex: 3, text: "look" },
+      ],
+      interrupted: [{ workspaceId: "ws-1", sessionId: "s9" }],
+      stoppedRails: [
+        { workspaceId: "ws-2", railId: "r1", name: "Ship it", target: { kind: "session", id: "s4" } },
+      ],
+      workspaceNames: { "ws-1": "Gavin", "ws-2": " Billing " },
+    });
+    expect(answer.items.map((item) => [item.workspace, item.workspaceName])).toEqual([
+      ["ws-1", "Gavin"],
+      ["ws-2", "Billing"],
+      ["ws-1", "Gavin"],
+      ["ws-2", "Billing"],
+    ]);
+  });
+
+  it("leaves the name off an item whose workspace has none, as an older desk did", () => {
+    const named = buildAttentionAnswer({
+      inbox: [],
+      interrupted: [
+        { workspaceId: "", sessionId: "s8" },
+        { workspaceId: "ws-3", sessionId: "s9" },
+      ],
+      workspaceNames: { "ws-1": "Gavin", "ws-3": "  " },
+    });
+    const unnamed = buildAttentionAnswer({
+      inbox: [row({ sessionId: "s1", reason: "asking" })],
+    });
+    for (const item of [...named.items, ...unnamed.items]) {
+      expect("workspaceName" in item).toBe(false);
+    }
+  });
 });
 
 describe("humanTestsOnPlan", () => {

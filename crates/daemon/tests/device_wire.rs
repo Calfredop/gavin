@@ -1714,6 +1714,7 @@ fn the_attention_request_returns_the_items_the_stand_in_reports() {
     let items = vec![protocol::AttentionItem {
         id: "waiting:s1".into(),
         workspace: "ws-1".into(),
+        workspace_name: None,
         kind: protocol::AttentionKind::Waiting,
         text: "agent is asking".into(),
         target: protocol::AttentionTarget::Session { id: "s1".into() },
@@ -1818,6 +1819,7 @@ fn a_desk_whose_forwarding_connection_dropped_and_came_back_is_ready_again() {
     let items = vec![protocol::AttentionItem {
         id: "waiting:s1".into(),
         workspace: "ws-1".into(),
+        workspace_name: Some("Gavin".into()),
         kind: protocol::AttentionKind::Waiting,
         text: "agent is asking".into(),
         target: protocol::AttentionTarget::Session { id: "s1".into() },

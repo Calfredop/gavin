@@ -663,6 +663,7 @@ mod tests {
         AttentionItem {
             id: id.into(),
             workspace: "ws-1".into(),
+            workspace_name: None,
             kind: protocol::AttentionKind::Waiting,
             text: "agent is asking".into(),
             target: protocol::AttentionTarget::Session { id: "s1".into() },

@@ -76,6 +76,11 @@ pub struct AttentionItem {
     pub id: String,
     /// Workspace id the item belongs to.
     pub workspace: String,
+    /// That workspace's name, which the phone heads its inbox's workspaces
+    /// by. Absent from an older desk's answer, which the phone draws with
+    /// no workspace headings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     pub kind: AttentionKind,
     /// Short text for the combined inbox row.
     pub text: String,
@@ -105,6 +110,35 @@ mod tests {
             item.target,
             AttentionTarget::Session { id: "s1".into() }
         );
+    }
+
+    #[test]
+    fn a_workspace_name_crosses_when_present_and_is_absent_when_not() {
+        // The phone heads its inbox's workspaces by name; an id is no
+        // heading. An older desk sends none, and its answer still parses.
+        let mut item = AttentionItem {
+            id: "a1".into(),
+            workspace: "w1".into(),
+            workspace_name: Some("Gavin".into()),
+            kind: AttentionKind::Waiting,
+            text: "needs you".into(),
+            target: AttentionTarget::Session { id: "s1".into() },
+        };
+        let named = serde_json::to_value(&item).unwrap();
+        assert_eq!(named["workspaceName"], serde_json::json!("Gavin"));
+        assert_eq!(serde_json::from_value::<AttentionItem>(named).unwrap(), item);
+
+        item.workspace_name = None;
+        let unnamed = serde_json::to_value(&item).unwrap();
+        assert!(unnamed.get("workspaceName").is_none(), "{unnamed}");
+        let older = serde_json::json!({
+            "id": "a1",
+            "workspace": "w1",
+            "kind": "waiting",
+            "text": "needs you",
+            "target": { "kind": "session", "id": "s1" },
+        });
+        assert_eq!(serde_json::from_value::<AttentionItem>(older).unwrap(), item);
     }
 
     #[test]

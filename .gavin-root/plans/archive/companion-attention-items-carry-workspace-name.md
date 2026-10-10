@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion: send each attention item's workspace name, so the phone's inbox can head its workspaces
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---
@@ -17,5 +17,7 @@ The shell half is done: `connection/attention.ts` reads an optional `workspaceNa
 **Why it is its own card.** It crosses `crates/protocol`, the daemon and the Tauri host: a save there relaunches the owner's dev app, and it only reaches a phone after the daemon and the app are rebuilt. That is the owner's to schedule.
 
 **Acceptance.**
-- [ ] `cargo test -p protocol` and the desktop suite cover the field both ways (present, absent)
-- [ ] With a rebuilt daemon and app, the phone's full inbox heads each workspace by its name
+- [x] `cargo test -p protocol` and the desktop suite cover the field both ways (present, absent)
+- [ ] Human test: after rebuilding and restarting the daemon and the desktop app, open the phone's full inbox with items waiting in two or more workspaces — each workspace's group is headed by its name, not its id
+
+**Done (2026-10-10).** `protocol::AttentionItem.workspace_name` (optional, `workspaceName` on the wire, skipped when absent); `buildAttentionAnswer` stamps it from `workspaceNames` (blank or unknown names are left off), and `attentionPublisher` passes `state.workspaces` names. Covered by `a_workspace_name_crosses_when_present_and_is_absent_when_not` (protocol), two `attentionAnswer.test.ts` cases, and `device_wire`'s attention test, which now carries a named item through a real daemon to the test Device. No protocol bump.
