@@ -137,6 +137,15 @@ agent to clean them up.
 
 ### Gavin Companion — the board in your pocket
 
+<p align="center">
+  <img src="docs/images/companion-workspaces.png" width="23%" alt="Gavin Companion — a Workstation's workspaces, each with its running and waiting sessions and its card counts per column">
+  <img src="docs/images/companion-board.png" width="23%" alt="Gavin Companion — a workspace's board on the phone: In Progress cards, one agent working and one waiting for you">
+  <img src="docs/images/companion-terminal.png" width="23%" alt="Gavin Companion — an agent's live terminal on the phone, with Esc, Ctrl-C and a reply field">
+  <img src="docs/images/companion-decisions.png" width="23%" alt="Gavin Companion — a decision an agent is waiting on, answered from the phone">
+  <br>
+  <sub>Screenshots of the Companion on its built-in Demo Workstation — the projects and agent output are invented.</sub>
+</p>
+
 A store app for **iOS and Android** that pairs with your Workstation by
 QR code and then reaches it from anywhere:
 
