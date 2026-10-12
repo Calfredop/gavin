@@ -109,6 +109,7 @@
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
+  import { promptRouteNote } from "$lib/cards/cardRun";
   import { nowStore, pauseFor } from "$lib/agents/agentPauseState";
   import { askAgainToArm } from "$lib/agents/agentFallbackState";
   import { fallbackThresholdFor, sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
@@ -516,6 +517,9 @@
   /// Named customs (app-wide or local) get MCP path/format boxes: stock
   /// profiles' layout is verified in the Rust table.
   const isCustom = $derived(isCustomProfileId(agent.profileId));
+  /// How a custom's card prompt reaches it: on the MCP handshake once a
+  /// config file is named, refused until then. Null for a built-in.
+  const promptRoute = $derived(promptRouteNote(agent));
   const mcpFormat = $derived(rootContext?.agent?.mcpFormat ?? $mcpFormatsStore[0]?.id ?? "");
 
   // --- model ------------------------------------------------------------
@@ -1329,6 +1333,9 @@
           <p class="hint">
             Name the file {profileLabel} reads MCP config from, and gavin can write itself into it.
           </p>
+        {/if}
+        {#if promptRoute}
+          <p class="hint">{promptRoute}</p>
         {/if}
 
         <div class="sp-row">

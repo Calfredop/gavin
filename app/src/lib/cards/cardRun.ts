@@ -6,6 +6,7 @@
 // take effect — omitted, the DEFAULT_* constant is what every existing
 // unit test already asserts.
 
+import { isCustomProfileId } from "$lib/agents/agentsHub";
 import { attachmentPromptBlock } from "$lib/cards/attachments";
 import { slugStatus } from "$lib/core/planBoard";
 import { cardIsOutside } from "$lib/git/worktreeCards";
@@ -400,11 +401,48 @@ export function unresumableConversationReason(
 // it having already found out it is blocked -- buildRunCommand handed
 // back null, or the surface is deciding whether to offer the action at
 // all -- and needs the words, not a second verdict.
-export function noPromptReason(agentLabel: string): string {
+//
+// A named custom (`profileId`) gets its own sentence, because its refusal
+// has a way out a built-in's does not: name the MCP config file gavin
+// writes its server into, and the prompt arrives once the agent connects
+// it (`resolveAgentConfig`'s promptInjection). Cursor's row has a layout
+// of its own and still takes no prompt, so that advice would be false
+// there. Omitted, the built-in sentence -- which is what every caller
+// without an agent in hand said before customs could be injected.
+export function noPromptReason(agentLabel: string, profileId = ""): string {
+  if (isCustomProfileId(profileId)) {
+    return (
+      `${agentLabel} takes no prompt on its command line, and with no MCP config file named ` +
+      `for it nothing tells gavin when it is ready to be typed into, so gavin cannot start a ` +
+      `card with it. Name its MCP config file in Settings — the card's prompt then arrives ` +
+      `once it connects gavin's MCP server — or pick a different agent.`
+    );
+  }
   return (
     `${agentLabel} takes no prompt on its command line, so gavin cannot start a card ` +
     `with it. Pick a different agent in Settings.`
   );
+}
+
+/// How a named custom's card prompt reaches it, for the place the human
+/// configures that agent: the injection route once an MCP config file is
+/// named, the refusal (and its way out) until then. Null for a built-in,
+/// whose row already decided and whose settings have nothing to change
+/// about it.
+export function promptRouteNote(agent: {
+  label: string;
+  profileId: string;
+  promptArgs: string | null;
+  promptInjection?: boolean;
+}): string | null {
+  if (!isCustomProfileId(agent.profileId) || agent.promptArgs !== null) return null;
+  if (usesPromptInjection(agent)) {
+    return (
+      `Cards launch ${agent.label} bare, and gavin types the card's prompt in once it ` +
+      `connects gavin's MCP server.`
+    );
+  }
+  return noPromptReason(agent.label, agent.profileId);
 }
 
 /// Whether a visible run launches this agent BARE and hands it the
@@ -430,9 +468,10 @@ export function usesPromptInjection(agent: {
 export function agentPromptBlocker(
   promptArgs: string | null,
   agentLabel: string,
-  promptInjection = false
+  promptInjection = false,
+  profileId = ""
 ): string | null {
-  return promptArgs === null && !promptInjection ? noPromptReason(agentLabel) : null;
+  return promptArgs === null && !promptInjection ? noPromptReason(agentLabel, profileId) : null;
 }
 
 /// Legacy one-liner kept for back-compat tests. The Git tab's

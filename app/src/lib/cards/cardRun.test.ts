@@ -18,6 +18,7 @@ import {
   noPromptReason,
   agentPromptBlocker,
   usesPromptInjection,
+  promptRouteNote,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -390,6 +391,42 @@ describe("agentPromptBlocker", () => {
   it("is null for a prompt-injection profile, and still the reason for a plain no-prompt one", () => {
     expect(agentPromptBlocker(null, "Kimi Code", true)).toBeNull();
     expect(agentPromptBlocker(null, "Cursor", false)).toBe(noPromptReason("Cursor"));
+  });
+});
+
+describe("noPromptReason for a named custom", () => {
+  // A custom's refusal has a way out a built-in's does not: name the MCP
+  // file gavin writes its server into, and the prompt arrives on the
+  // handshake. Cursor's sentence must not grow that advice -- its row
+  // has a layout of its own and still takes no prompt.
+  it("points a custom at its MCP config file, and leaves a built-in's sentence alone", () => {
+    const custom = noPromptReason("My Agent", "my-agent");
+    expect(custom).toContain("My Agent");
+    expect(custom).toContain("MCP config");
+    expect(custom).toContain("Settings");
+    expect(noPromptReason("Cursor", "cursor")).toBe(noPromptReason("Cursor"));
+    expect(noPromptReason("Cursor", "cursor")).not.toContain("MCP config");
+  });
+
+  it("reaches the blocker too", () => {
+    expect(agentPromptBlocker(null, "My Agent", false, "my-agent")).toBe(noPromptReason("My Agent", "my-agent"));
+    expect(agentPromptBlocker(null, "My Agent", true, "my-agent")).toBeNull();
+  });
+});
+
+describe("promptRouteNote", () => {
+  // The two custom answers, said where the human configures the agent:
+  // blocked until a file is named, then delivered on the handshake.
+  it("tells a custom how its card prompt arrives, or why none can", () => {
+    const injected = promptRouteNote({ label: "My Agent", profileId: "my-agent", promptArgs: null, promptInjection: true });
+    expect(injected).toContain("connects gavin's MCP server");
+    const blocked = promptRouteNote({ label: "My Agent", profileId: "my-agent", promptArgs: null, promptInjection: false });
+    expect(blocked).toBe(noPromptReason("My Agent", "my-agent"));
+  });
+
+  it("says nothing for a built-in, whose row already decided", () => {
+    expect(promptRouteNote({ label: "Kimi Code", profileId: "kimi-code", promptArgs: null, promptInjection: true })).toBeNull();
+    expect(promptRouteNote({ label: "Claude Code", profileId: "claude-code", promptArgs: "", promptInjection: false })).toBeNull();
   });
 });
 
