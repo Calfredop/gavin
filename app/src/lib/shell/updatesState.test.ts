@@ -49,6 +49,7 @@ const ENDPOINT = "https://example.test/latest.json";
 function settings(over: Partial<UpdateSettings> = {}): UpdateSettings {
   return {
     currentVersion: "0.1.0",
+    buildNumber: null,
     endpoint: ENDPOINT,
     defaultEndpoint: ENDPOINT,
     overridden: false,

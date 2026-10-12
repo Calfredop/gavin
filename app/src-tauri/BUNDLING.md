@@ -4,8 +4,11 @@
 cd app && npm run bundle
 ```
 
-That is `tauri build --config src-tauri/tauri.bundle.conf.json -- --locked`,
-and the extra config file is the whole point of this note.
+That is `node src-tauri/bundle.mjs`, which runs
+`tauri build --config src-tauri/tauri.bundle.conf.json -- --locked` with the
+build number stamped in (see "Version and build number" below), and the
+extra config file is the whole point of this note. Flags after
+`npm run bundle --` go to Tauri, and anything after a second `--` to cargo.
 
 This file is about how the bundle is *assembled*. Signing, notarization,
 key custody and the gate that stops an unsigned build reaching anyone are
@@ -74,6 +77,27 @@ shell version of this script was therefore a Windows bundle that failed
 before it started. Node is already a hard requirement: the same command
 line runs `npm run build` after it.
 
+## Version and build number
+
+A bundle carries two numbers, and `bundle.mjs` is what keeps them apart:
+
+- The **version** is `version` in `tauri.conf.json`: the semver a human
+  bumps on purpose, the one a release tag must agree with and the one the
+  updater compares.
+- The **build number** is `git rev-list --count HEAD` of the tree being
+  built. The same commit always gets the same number on any machine, and the
+  number only grows along `main`, so two installs of one version still say
+  which is newer. `GAVIN_BUILD_NUMBER` overrides it (a positive whole
+  number); a shallow clone is refused, since its count is only the depth it
+  was fetched at.
+
+The build number becomes `CFBundleVersion` on macOS (Finder reads
+"0.1.0 (1234)"), and on every platform it is compiled into the app, where
+Settings > Updates prints it after the version. A dev build has none and
+prints the version alone. It does not reach the Windows file version: Tauri
+derives that from `version`, and the only way in is a `version` of
+`X.Y.Z+N` — which the updater and the tag check would then read too.
+
 ## Targets
 
 `bundle.targets` is `"all"`: `.app` + `.dmg` on macOS, and `.deb`,
@@ -111,7 +135,7 @@ leaves the folder behind without a word (its `RMDir` is not `/r`), its
 "Delete the application data" checkbox misses the databases, and the
 arrangement is one `/r` away from deleting the human's boards. The hooks
 move the default to `%LOCALAPPDATA%\Programs\Gavin` -- the per-user
-counterpart of Program Files, and where `scripts/start-stable-win.ps1`
+counterpart of Program Files, and where `scripts/start-release-win.ps1`
 already looks first -- make the directory page refuse the state
 directory outright, and redirect a silent install (`/S`, or `/D=`) that
 names it. An install that finds the previous one registered in the

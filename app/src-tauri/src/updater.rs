@@ -141,6 +141,10 @@ pub struct UpdateSettings {
     /// `bundle.version`, which is what a release tag has to agree with
     /// (`preflight` in `.github/workflows/release.yml`).
     pub current_version: String,
+    /// Which build of that version this is: the commit count
+    /// `bundle.mjs` stamped in as `GAVIN_BUILD_NUMBER`. None for a build
+    /// that did not go through it -- `tauri dev`, a bare `cargo build`.
+    pub build_number: Option<String>,
     /// The endpoint this install would actually poll, or empty when
     /// there is none -- in which case nothing polls anything.
     pub endpoint: String,
@@ -175,6 +179,7 @@ pub fn update_settings(app_handle: AppHandle, enabled: State<UpdaterEnabled>) ->
     let overridden = read_endpoint_override(&app_handle);
     UpdateSettings {
         current_version: app_handle.package_info().version.to_string(),
+        build_number: option_env!("GAVIN_BUILD_NUMBER").map(str::to_string),
         endpoint: overridden.clone().unwrap_or_else(|| default_endpoint.clone()),
         default_endpoint,
         overridden: overridden.is_some(),

@@ -17,6 +17,7 @@ const ENDPOINT = "https://github.com/Calfredop/gavin/releases/latest/download/la
 function settings(over: Partial<UpdateSettings> = {}): UpdateSettings {
   return {
     currentVersion: "0.1.0",
+    buildNumber: null,
     endpoint: ENDPOINT,
     defaultEndpoint: ENDPOINT,
     overridden: false,
@@ -75,6 +76,10 @@ describe("updateBlockedReason", () => {
 describe("the lines the panel prints", () => {
   it("does not claim a check that has not happened", () => {
     expect(upToDateLine(settings(), null)).toBe("gavin 0.1.0.");
+  });
+
+  it("names the build after the version when the bundle stamped one", () => {
+    expect(upToDateLine(settings({ buildNumber: "1234" }), null)).toBe("gavin 0.1.0 (1234).");
   });
 
   it("dates a check that has", () => {

@@ -29,6 +29,9 @@ import type { ManagedSession } from "$lib/sessions/sessionsManager";
 /// Mirrors `UpdateSettings` in `updater.rs`.
 export interface UpdateSettings {
   currentVersion: string;
+  /// Which build of that version, or null for one `bundle.mjs` did not
+  /// stamp (a dev build).
+  buildNumber: string | null;
   /// The endpoint this install polls. Empty means nothing polls.
   endpoint: string;
   /// What the build shipped with, so "reset" has something to reset to.
@@ -67,10 +70,16 @@ export function updateBlockedReason(settings: UpdateSettings): string | null {
   return null;
 }
 
+/// This install's version, with its build number when it has one:
+/// "0.1.0 (1234)", the way macOS writes a version and a build.
+export function installedVersion(settings: UpdateSettings): string {
+  return settings.buildNumber ? `${settings.currentVersion} (${settings.buildNumber})` : settings.currentVersion;
+}
+
 /// What the panel says when there is nothing to install: the version,
 /// and whether anything has actually been asked yet.
 export function upToDateLine(settings: UpdateSettings, checkedAt: Date | null): string {
-  const version = `gavin ${settings.currentVersion}`;
+  const version = `gavin ${installedVersion(settings)}`;
   if (!checkedAt) return `${version}.`;
   return `${version} — up to date as of ${checkedAt.toLocaleTimeString()}.`;
 }

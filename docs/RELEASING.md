@@ -57,6 +57,16 @@ same guarantee.
 `bundle.version` in `tauri.conf.json`, so a downloaded artefact can always
 be traced back to a commit.
 
+### Version and build number
+
+The tag names the version; the build number is the commit count of the
+tagged commit, stamped in by `app/src-tauri/bundle.mjs`, which every build
+job runs instead of a bare `tauri build`
+([`BUNDLING.md`](../app/src-tauri/BUNDLING.md#version-and-build-number)).
+That is why those jobs check out with `fetch-depth: 0`: on a shallow clone
+the count is the fetch depth, and the script refuses it rather than ship
+build 1.
+
 ### The Companion bundle, staged before the app
 
 `beforeBuildCommand` also runs `stage-companion.mjs --release`: it builds

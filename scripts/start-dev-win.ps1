@@ -153,7 +153,7 @@ finally { Pop-Location }
 # The DEV pipe specifically. A debug build binds daemon-dev.sock, which
 # `pipe_name_for_path` tags `gavin-daemon-dev-sock`; a release install binds
 # daemon.sock and is tagged `gavin-daemon-sock`. Matching the release tag here
-# would see the STABLE daemon, decide one is already listening, and start the
+# would see the RELEASE daemon, decide one is already listening, and start the
 # dev app with no dev daemon at all -- and since the release tag is a prefix of
 # the dev one, it has to be the specific pattern rather than the general one.
 $listening = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -like '*gavin-daemon-dev-sock*' })

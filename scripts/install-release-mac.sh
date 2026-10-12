@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build and install the release Gavin on this Mac, out of reach of the dev tree.
 #
-# The macOS counterpart of start-stable-win.ps1, on the same recipe
+# The macOS counterpart of start-release-win.ps1, on the same recipe
 # (.gavin-root/plans/archive/chore-stable-release-install-on-windows.md): a
 # release build, cut from a detached worktree that no agent types in, copied
 # into /Applications. Nothing the installed app runs points back at this
@@ -14,17 +14,21 @@
 # Why each piece:
 #
 # - A worktree, not this checkout. The shared tree carries every session's
-#   half-finished edits and often does not compile; a stable build is cut
+#   half-finished edits and often does not compile; a release build is cut
 #   from a commit (`main`'s tip unless --ref says otherwise).
 # - Outside this checkout's folder by default (~/Library/Caches). The
 #   worktree holds its own target/ -- several GB of release artefacts -- and
 #   a sibling folder would sit in whatever syncs this one.
 # - Its own target/, forced. A CARGO_TARGET_DIR inherited from the caller
-#   would put the stable build's objects back in a tree the dev build writes.
+#   would put the release build's objects back in a tree the dev build writes.
 # - Ad-hoc signed (APPLE_SIGNING_IDENTITY=-), then checked with
 #   verify-macos-bundle.sh --allow-adhoc: the bundle is sealed with its two
 #   sidecars, hardened, and granted no entitlement, the same as a release
 #   minus the Developer ID. See docs/RELEASING.md.
+# - Through `npm run bundle`'s script (app/src-tauri/bundle.mjs), so the
+#   install carries the same version and build number a bundle built any
+#   other way would: CFBundleShortVersionString is `version` in
+#   tauri.conf.json, CFBundleVersion the commit count of what was built.
 # - `--bundles app`: the .dmg step drives Finder and is only for handing
 #   the build to someone else.
 # - Swapped in by rename. A running Gavin and its daemon keep the files they
@@ -34,10 +38,10 @@
 #
 # POSIX sh for the reason start-dev-mac.sh gives.
 #
-# Usage: scripts/install-stable-mac.sh [options]
+# Usage: scripts/install-release-mac.sh [options]
 #   --ref REV        commit to build (default: main)
 #   --worktree DIR   where the build worktree lives
-#                    (default: ~/Library/Caches/gavin-stable)
+#                    (default: ~/Library/Caches/gavin-release)
 #   --dest DIR       where Gavin.app goes (default: /Applications)
 #   --skip-build     install the worktree's last build as it is
 #   --open           launch Gavin afterwards if it is not already running
@@ -47,7 +51,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 REF=main
-WORKTREE="$HOME/Library/Caches/gavin-stable"
+DEFAULT_WORKTREE="$HOME/Library/Caches/gavin-release"
+WORKTREE=$DEFAULT_WORKTREE
 DEST=/Applications
 SKIP_BUILD=0
 OPEN=0
@@ -68,7 +73,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ "$(uname -s)" = "Darwin" ] || die "macOS only. On Windows use scripts/start-stable-win.ps1."
+[ "$(uname -s)" = "Darwin" ] || die "macOS only. On Windows use scripts/start-release-win.ps1."
 
 # A relative --worktree or --dest would resolve against wherever the caller
 # stood, and the worktree's own commands below run from other directories.
@@ -78,6 +83,24 @@ case "$DEST" in /*) ;; *) DEST="$PWD/$DEST" ;; esac
 case "$WORKTREE/" in
   "$ROOT"/*) die "--worktree must be outside this checkout ($ROOT), or the dev tree's tooling can reach it." ;;
 esac
+
+# Only ever a worktree of THIS repository: what this script does to one
+# would otherwise move some other repo's HEAD.
+ours_common=$(cd "$ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+is_our_worktree() {
+  [ -e "$1/.git" ] &&
+    [ "$(cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P)" = "$ours_common" ]
+}
+
+# This script was install-stable-mac.sh, and its worktree gavin-stable. One
+# cut under the old name is moved rather than abandoned: it holds a release
+# target/ and node_modules that are minutes of build to replace, and left
+# where it is it would stay registered against this repository for nothing.
+LEGACY_WORKTREE="$HOME/Library/Caches/gavin-stable"
+if [ "$WORKTREE" = "$DEFAULT_WORKTREE" ] && [ ! -e "$WORKTREE" ] && is_our_worktree "$LEGACY_WORKTREE"; then
+  say "moving the build worktree from $LEGACY_WORKTREE to $WORKTREE"
+  git -C "$ROOT" worktree move "$LEGACY_WORKTREE" "$WORKTREE"
+fi
 
 BUILT="$WORKTREE/target/release/bundle/macos/Gavin.app"
 INSTALLED="$DEST/Gavin.app"
@@ -108,12 +131,8 @@ else
     die "$REF is not a commit in $ROOT."
 
   if [ -e "$WORKTREE/.git" ]; then
-    # Only ever a worktree of THIS repository: the checkout below would
-    # otherwise move some other repo's HEAD.
-    common=$(cd "$WORKTREE" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
-    ours=$(cd "$ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
-    [ "$common" = "$ours" ] ||
-      die "$WORKTREE is a checkout of another repository ($common). Pass --worktree."
+    is_our_worktree "$WORKTREE" ||
+      die "$WORKTREE is a checkout of another repository. Pass --worktree."
 
     # It is a build cache. Local edits there mean someone used it for
     # something else; never carry them into a build or throw them away.
@@ -144,7 +163,7 @@ else
   # `npm ci` wipes and refills node_modules, which is minutes of nothing when
   # the lockfile has not moved since the last build. The stamp records which
   # lockfile the tree was installed from.
-  stamp="$APP_DIR/node_modules/.install-stable-lock"
+  stamp="$APP_DIR/node_modules/.install-release-lock"
   if [ -f "$stamp" ] && cmp -s "$stamp" "$APP_DIR/package-lock.json"; then
     say "frontend dependencies match the lockfile"
   else
@@ -153,16 +172,15 @@ else
     cp "$APP_DIR/package-lock.json" "$stamp"
   fi
 
-  # `npm run bundle` with two flags it does not carry: an ad-hoc identity and
-  # the .app target alone. Called directly rather than through npm because
-  # `npm run bundle -- <flag>` lands the flag after the script's own
-  # `-- --locked`, i.e. on cargo instead of tauri.
+  # `npm run bundle` with an ad-hoc identity and the .app target alone.
+  # GAVIN_BUILD_NUMBER is cleared so the number is the worktree's own commit
+  # count, never one leaked in from the caller's environment.
   say "building the release bundle (a fresh worktree compiles everything: expect several minutes)"
   (
     cd "$APP_DIR"
+    unset GAVIN_BUILD_NUMBER
     CARGO_TARGET_DIR="$WORKTREE/target" APPLE_SIGNING_IDENTITY=- \
-      ./node_modules/.bin/tauri build \
-        --config src-tauri/tauri.bundle.conf.json --bundles app -- --locked
+      node src-tauri/bundle.mjs --bundles app
   )
 fi
 
@@ -197,6 +215,8 @@ fi
 mv "$staging" "$INSTALLED"
 rm -rf "$previous"
 
+plist="$INSTALLED/Contents/Info.plist"
+note "Gavin $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist") (build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist"))"
 if [ "$SKIP_BUILD" = 0 ]; then
   note "built from $(git -C "$WORKTREE" log -1 --format='%h %s' HEAD)"
 fi

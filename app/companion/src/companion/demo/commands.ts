@@ -228,6 +228,7 @@ const TABLES: Record<string, DemoCommand> = {
   }),
   update_settings: (): Answer<"updateSettings"> => ({
     currentVersion: "0.0.0-demo",
+    buildNumber: null,
     endpoint: "",
     defaultEndpoint: "",
     overridden: false,
