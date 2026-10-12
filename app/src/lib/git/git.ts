@@ -82,6 +82,30 @@ export interface DiscardReport {
   failed: [string, string][];
 }
 
+/// The changed-file list and the counts between two refs
+/// (`app/src-tauri/src/git/compare.rs`). `mergeBase` is the commit the
+/// three-dot diff ran from; null in two-dot mode, and null when the refs
+/// share no history -- where the three-dot question fell back to the
+/// two-dot answer.
+export interface CompareSummary {
+  files: FileEntry[];
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  /// Commits on target that base does not have.
+  commitsAhead: number;
+  /// Commits on base that target does not have.
+  commitsBehind: number;
+  mergeBase: string | null;
+}
+
+/// One option in a Compare ref picker. The value is handed to git
+/// untouched: a branch name, `origin/name`, a sha, or HEAD.
+export interface CompareRefOption {
+  value: string;
+  label: string;
+}
+
 export interface Author {
   name: string;
   email: string;
@@ -139,7 +163,7 @@ export interface RefsSnapshot {
   headBranch: string | null;
 }
 
-export type NavSelection = "changes" | "commits" | { stash: number };
+export type NavSelection = "changes" | "commits" | "compare" | { stash: number };
 export type InProgressKind = "merge" | "rebase" | "cherry-pick" | "revert";
 
 // ---- SP4: history ----------------------------------------------------------
@@ -320,6 +344,39 @@ export function validateBranchName(name: string): string | null {
 export function branchResolvable(refs: RefsSnapshot, name: string): boolean {
   if (refs.branches.some((b) => b.name === name)) return true;
   return refs.remotes.some((r) => r.branches.includes(name));
+}
+
+// ---- Compare ---------------------------------------------------------------
+
+/// The Compare ref picker's options, grouped the way the picker draws
+/// them: the current checkout, the local branches, the remote-tracking
+/// branches (compared exactly as the last fetch left them -- nobody
+/// fetches for this), and each worktree's checked-out ref. A worktree's
+/// value is its branch, or its head sha when detached: the branch is the
+/// ref a human means, and a detached checkout has only the sha.
+export function compareRefOptions(refs: RefsSnapshot): {
+  head: CompareRefOption[];
+  branches: CompareRefOption[];
+  remotes: CompareRefOption[];
+  worktrees: CompareRefOption[];
+} {
+  const head: CompareRefOption[] = [{ value: "HEAD", label: "Current checkout (HEAD)" }];
+  const branches = refs.branches.map((b) => ({ value: b.name, label: b.name }));
+  const remotes = refs.remotes.flatMap((r) => r.branches.map((b) => ({ value: `${r.name}/${b}`, label: `${r.name}/${b}` })));
+  const worktrees = refs.worktrees
+    .filter((w) => w.branch !== null || w.head !== "")
+    .map((w) => ({
+      value: w.branch ?? w.head,
+      label: `${splitPath(w.path.replace(/\/+$/, "")).name} · ${w.branch ?? `${w.head.slice(0, 7)} (detached)`}`,
+    }));
+  return { head, branches, remotes, worktrees };
+}
+
+/// The pair the Compare view opens with: the repository's main branch
+/// when it has one, against the current checkout.
+export function defaultCompareRefs(refs: RefsSnapshot | null): { base: string; target: string } {
+  const main = refs?.branches.find((b) => b.name === "main" || b.name === "master");
+  return { base: main?.name ?? "HEAD", target: "HEAD" };
 }
 
 // ---- Conflict resolution ---------------------------------------------------

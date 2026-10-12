@@ -260,6 +260,8 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("git_run_changes", RemoteAllowance::Allowed),
     ("git_diff_since", RemoteAllowance::Allowed),
     ("git_discard_run", RemoteAllowance::Allowed),
+    ("git_compare", RemoteAllowance::Allowed),
+    ("git_compare_diff", RemoteAllowance::Allowed),
     ("git_stage_files", RemoteAllowance::Allowed),
     ("git_unstage_files", RemoteAllowance::Allowed),
     ("git_stage_all", RemoteAllowance::Allowed),

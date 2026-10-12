@@ -20,6 +20,8 @@
   import GitConflictView from "$lib/git/GitConflictView.svelte";
   import GitGraph from "$lib/git/GitGraph.svelte";
   import GitCommitDetail from "$lib/git/GitCommitDetail.svelte";
+  import GitCompare from "$lib/git/GitCompare.svelte";
+  import GitCompareDiff from "$lib/git/GitCompareDiff.svelte";
   import GitIgnoreEditor from "$lib/git/GitIgnoreEditor.svelte";
   import type { IgnoreKind } from "$lib/git/gitIgnore";
   import { sshTabBlocked, sshSyncBlocked } from "$lib/workspace/sshWorkspace";
@@ -180,6 +182,10 @@
         <div class="pane"><GitGraph {workspaceId} /></div>
         <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
         <div class="pane"><GitCommitDetail {workspaceId} /></div>
+      {:else if view.navSelection === "compare"}
+        <div class="pane"><GitCompare {workspaceId} /></div>
+        <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
+        <div class="pane"><GitCompareDiff {workspaceId} /></div>
       {:else}
         <div class="pane"><GitChanges {workspaceId} onOpenIgnoreEditor={(k) => (ignoreEditorKind = k)} /></div>
         <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>

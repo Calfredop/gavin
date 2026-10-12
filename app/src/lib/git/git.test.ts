@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, WORKTREES_DIR, worktreesAnchor, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "$lib/git/git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, WORKTREES_DIR, worktreesAnchor, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, compareRefOptions, defaultCompareRefs, type RepoInfo, type RefsSnapshot } from "$lib/git/git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -180,5 +180,51 @@ describe("branchResolvable", () => {
 
   it("answers false for a repo with no refs at all", () => {
     expect(branchResolvable(refs([]), "main")).toBe(false);
+  });
+});
+
+describe("compareRefOptions", () => {
+  const snapshot: RefsSnapshot = {
+    branches: [
+      { name: "main", current: true, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s" },
+      { name: "feat/x", current: false, upstream: null, ahead: 0, behind: 0, sha: "b", subject: "s" },
+    ],
+    remotes: [{ name: "origin", url: "u", branches: ["main", "feat/layout/deep"] }],
+    stashes: [],
+    worktrees: [
+      { path: "/r", head: "aaa0000", branch: "main", isMain: true, locked: false, prunable: false },
+      { path: "/r/.gavin-worktrees/detached", head: "bbb1111ccc", branch: null, isMain: false, locked: false, prunable: false },
+    ],
+    headBranch: "main",
+  };
+
+  it("groups the checkout, branches, remotes and worktrees", () => {
+    const groups = compareRefOptions(snapshot);
+    expect(groups.head).toEqual([{ value: "HEAD", label: "Current checkout (HEAD)" }]);
+    expect(groups.branches.map((o) => o.value)).toEqual(["main", "feat/x"]);
+    // The remote prefix stays ON the value: that is the rev git resolves.
+    expect(groups.remotes.map((o) => o.value)).toEqual(["origin/main", "origin/feat/layout/deep"]);
+  });
+
+  it("values a worktree by its branch, or by its head sha when detached", () => {
+    const groups = compareRefOptions(snapshot);
+    expect(groups.worktrees[0].value).toBe("main");
+    expect(groups.worktrees[1].value).toBe("bbb1111ccc");
+    expect(groups.worktrees[1].label).toContain("detached");
+  });
+});
+
+describe("defaultCompareRefs", () => {
+  it("opens on the main branch against HEAD, and on HEAD without one", () => {
+    const refs: RefsSnapshot = {
+      branches: [{ name: "main", current: false, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s" }],
+      remotes: [],
+      stashes: [],
+      worktrees: [],
+      headBranch: null,
+    };
+    expect(defaultCompareRefs(refs)).toEqual({ base: "main", target: "HEAD" });
+    expect(defaultCompareRefs({ ...refs, branches: [] })).toEqual({ base: "HEAD", target: "HEAD" });
+    expect(defaultCompareRefs(null)).toEqual({ base: "HEAD", target: "HEAD" });
   });
 });

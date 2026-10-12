@@ -406,6 +406,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   git_head_sha: ["ordinary"],
   git_run_changes: ["ordinary"],
   git_diff_since: ["ordinary"],
+  git_compare: ["ordinary"],
+  git_compare_diff: ["ordinary"],
   git_stage_files: ["ordinary"],
   git_unstage_files: ["ordinary"],
   git_stage_all: ["ordinary"],

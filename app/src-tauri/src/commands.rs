@@ -199,6 +199,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "git_run_changes",
     "git_diff_since",
     "git_discard_run",
+    "git_compare",
+    "git_compare_diff",
     "git_stage_files",
     "git_unstage_files",
     "git_stage_all",
