@@ -62,6 +62,7 @@
     facetsEqual,
     filterBoardByFacets,
     filterCards,
+    filedCardPasses,
     pruneFacets,
   } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
@@ -241,16 +242,23 @@
     // Nothing to file a card into until the board has loaded; the
     // error line below only renders once it has.
     if (!board) return;
-    // A card composed under a lens would be filed onto a board the human
-    // cannot see -- the archive toggle, and equally a facet the new card
-    // will not match (its context, its kind, its labels — a card is born
-    // with none — and a card is born on no rail at all). Every lens comes
-    // off with the composer. Stamping the active labels onto the card
-    // instead was rejected: a filter is not a tag.
+    // A card composed over the archive would be filed onto a board the
+    // human cannot see, so the archive toggle comes off with the
+    // composer. The facets do NOT: clearing them here cost the human
+    // their filter just for opening the composer, or for cancelling it.
+    // They are weighed once a card is actually filed (cardFiled).
     closeArchive();
-    resetTabFacets(workspaceId, "kanban");
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
     if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
+  }
+
+  // A facet the new card will not match -- its context, its kind, its
+  // labels (a card is born with none), the rail it rode or did not --
+  // would file it straight out of sight, so then, and only then, the
+  // facets come off. Stamping the active labels onto the card instead
+  // was rejected: a filter is not a tag.
+  function cardFiled(card: CardView, railId: string | null): void {
+    if (!filedCardPasses(card, railId, facets, rails)) resetTabFacets(workspaceId, "kanban");
   }
 
   // ⌘N, routed here by composeRequest.ts. A second press while the
@@ -736,6 +744,7 @@
       {merged}
       onRunCard={handleRun}
       onDevelopCard={handleDevelop}
+      onFiled={cardFiled}
       onClose={() => (composeStatus = null)}
     />
   {/if}

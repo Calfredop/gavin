@@ -98,6 +98,11 @@
     /// jump (cardRunActions.ts) -- and a board that offers one may not
     /// offer the other.
     onDevelopCard?: ((card: CardView) => void | Promise<void>) | null;
+    /// Told about every card filed, with the rail it actually landed on
+    /// (null when it rides none, or sending it there failed), so the
+    /// board can lift a filter that would hide it -- then, and not when
+    /// the composer merely opens.
+    onFiled?: ((card: CardView, railId: string | null) => void) | null;
     onClose: () => void;
   }
   let {
@@ -110,6 +115,7 @@
     scoped = null,
     onRunCard = null,
     onDevelopCard = null,
+    onFiled = null,
     onClose,
   }: Props = $props();
 
@@ -357,9 +363,10 @@
         rails.map((r) => r.id)
       );
       const railError = rail ? await sendCardToRailAction(workspaceId, rail, path) : null;
+      const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
+      const view = composedCardView(args, path, contextFolder, ctxName, attachments);
+      onFiled?.(view, railError ? null : rail);
       if (action) {
-        const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
-        const view = composedCardView(args, path, contextFolder, ctxName, attachments);
         void (action === "run" ? onRunCard?.(view) : onDevelopCard?.(view));
       }
       added += 1;

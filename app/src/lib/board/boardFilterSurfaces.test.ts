@@ -55,9 +55,23 @@ describe("facet filter surfaces", () => {
     // hide it; the rejected fix was writing the filter onto the card
     // (every new card "getting" whatever tag was filtered). Both surfaces
     // that create cards clear the lens instead.
-    expect(source("KanbanBoard.svelte")).toContain('resetTabFacets(workspaceId, "kanban")');
+    expect(source("KanbanBoard.svelte")).toContain(
+      'if (!filedCardPasses(card, railId, facets, rails)) resetTabFacets(workspaceId, "kanban");'
+    );
     expect(source("KanbanBoard.svelte")).toContain("Stamping the active labels onto the card");
+    expect(source("KanbanBoard.svelte")).toContain("onFiled={cardFiled}");
+    expect(source("CardComposeModal.svelte")).toContain("onFiled?.(view, railError ? null : rail);");
     expect(source("PlanExplorerHubView.svelte")).toContain('resetTabFacets(workspaceId, "plans")');
     expect(source("CardComposeModal.svelte")).toContain("labels: [],");
+  });
+
+  it("leaves the facets alone when the composer merely opens", () => {
+    // Clearing them on open cost the human their filter for a glance at
+    // the composer, or a cancelled one. Only a filed card the facets
+    // would hide lifts them.
+    const board = source("KanbanBoard.svelte");
+    const open = board.slice(board.indexOf("function openComposer("), board.indexOf("function cardFiled("));
+    expect(open).toContain("closeArchive();");
+    expect(open).not.toContain("resetTabFacets");
   });
 });
