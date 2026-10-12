@@ -2709,7 +2709,7 @@ fn grant_kimi_launch_trust(
 ///   daemon scans for, so a tab that needs the human read as `working`
 ///   (or as `idle`, one unraised badge away) -- the exact complaint the
 ///   hooks fix. Each rule runs `gavin-attention`, a script gavin also
-///   writes into the kimi home, which writes a bare BEL to `/dev/tty`;
+///   writes into the kimi home, which writes a bare BEL to kimi's PTY;
 ///   the daemon's status scanner maps a bare BEL to
 ///   `waiting_for_input`, so the tab, the sidebar dot and the attention
 ///   inbox light the moment kimi waits. The events are observation-only
@@ -2726,7 +2726,10 @@ fn ensure_kimi_launch_config(fs: &dyn WorkspaceFiles, home: &Path) {
     let kimi_home_dir = kimi_home(fs, home);
     let config = kimi_home_dir.join("config.toml");
     let script = kimi_home_dir.join(GAVIN_HOOK_SCRIPT_FILE);
-    if !fs.is_file(&script) {
+    // Rewritten whenever it differs, not only when absent: the file is
+    // gavin's (its header says so), and an install from before the
+    // detached-hook fix holds a script that rings nothing.
+    if fs.read_to_string(&script).ok().flatten().as_deref() != Some(GAVIN_HOOK_SCRIPT) {
         let _ = fs.write_private(&script, GAVIN_HOOK_SCRIPT.as_bytes());
     }
     let text = fs.read_to_string(&config).ok().flatten().unwrap_or_default();
@@ -2821,21 +2824,38 @@ const GAVIN_ATTENTION_HOOKS: &[(&str, &str)] = &[
     ("TaskStarted", "question"),
 ];
 
-/// What the hook script does, in four lines: drink the event JSON kimi
-/// pipes in (so a large payload can never fill the pipe and stall the
-/// hook), ring the terminal bell, succeed. `/dev/tty` is the session's
-/// own PTY -- hooks run in kimi's session even in their own process
-/// group -- and the daemon's status scanner turns a bare BEL into
-/// `waiting_for_input` for exactly this session. When no terminal is
-/// attached the write fails silently: missing the bell never blocks
-/// the turn.
+/// What the hook script does: drink the event JSON kimi pipes in (so a
+/// large payload can never fill the pipe and stall the hook), ring the
+/// bell on the session's own PTY, succeed.
+///
+/// Finding that PTY is most of it. kimi 2.1.1 runs a hook DETACHED from
+/// the controlling terminal -- measured 2026-10-12: the hook's `ps` TTY
+/// is `??` while kimi's own is `ttys038`, and opening `/dev/tty` fails
+/// "Device not configured". So the script walks its ancestors with `ps`
+/// and writes the bell to the first real terminal it finds, which is
+/// kimi's -- the PTY the daemon reads, and the daemon's status scanner
+/// turns a bare BEL there into `waiting_for_input` for exactly this
+/// session. `/dev/tty` is tried first, for a kimi that keeps hooks on
+/// the terminal. Every failure is silent: missing the bell never blocks
+/// the turn. POSIX `sh` and `ps -o tty=,ppid=` only (`??` on macOS, `?`
+/// on Linux for no terminal); Windows spawns hooks its own way and this
+/// script does not run there.
 const GAVIN_HOOK_SCRIPT: &str = "\
 #!/bin/sh
 # gavin-managed: rings the terminal bell so gavin's daemon marks this
-# session waiting_for_input. Do not edit -- config.toml merges on this
-# file's name.
+# session waiting_for_input. Do not edit -- gavin rewrites this file,
+# and config.toml merges on its name.
 cat >/dev/null 2>&1
-printf '\\a' > /dev/tty 2>/dev/null
+{ printf '\\a' > /dev/tty; } 2>/dev/null && exit 0
+pid=$$
+while [ -n \"$pid\" ] && [ \"$pid\" -gt 1 ] 2>/dev/null; do
+  set -- $(ps -o tty= -o ppid= -p \"$pid\" 2>/dev/null)
+  case \"$1\" in
+    ''|'?'|'??'|-) ;;
+    *) { printf '\\a' > \"/dev/$1\"; } 2>/dev/null && exit 0 ;;
+  esac
+  pid=$2
+done
 exit 0
 ";
 
@@ -5909,6 +5929,86 @@ mod tests {
         assert!(config.contains("gavin-attention"), "{config}");
         assert!(files.contains_key(Path::new("/opt/kimi/gavin-attention")), "the script follows too");
         assert!(!files.contains_key(Path::new("/home/ada/.kimi-code/config.toml")));
+    }
+
+    /// The script is gavin's, so a stale copy -- the one from before the
+    /// detached-hook fix, which rang `/dev/tty` and nothing else -- is
+    /// replaced on the next launch, and a current one is left as it is.
+    #[test]
+    fn a_stale_hook_script_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let script = home.join(".kimi-code").join(GAVIN_HOOK_SCRIPT_FILE);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "#!/bin/sh\ncat >/dev/null 2>&1\nprintf '\\a' > /dev/tty 2>/dev/null\nexit 0\n").unwrap();
+        let fs = HomedFiles { home: home.clone() };
+
+        ensure_kimi_launch_config(&fs, &home);
+
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), GAVIN_HOOK_SCRIPT);
+    }
+
+    /// The hook chain's first link against the way kimi 2.1.1 actually
+    /// runs a hook: a "kimi" whose controlling terminal is a real PTY
+    /// starts the script in a session of its own (perl's `setsid`, the
+    /// one portable way to detach from `sh`), with every stdio stream on
+    /// `/dev/null` -- so the only way a BEL can reach the PTY is the
+    /// script finding it. The pre-fix script, `printf '\a' > /dev/tty`,
+    /// leaves the PTY silent here.
+    #[cfg(unix)]
+    #[test]
+    fn the_hook_script_rings_kimis_pty_from_a_detached_hook() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join(GAVIN_HOOK_SCRIPT_FILE);
+        std::fs::write(&script, GAVIN_HOOK_SCRIPT).unwrap();
+        let (mut master, mut slave) = (-1, -1);
+        let opened = unsafe {
+            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
+        let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+        let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+        // Read as it arrives, until the last slave fd closes: what a
+        // closed PTY still holds is not something every OS hands back.
+        let reader = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = master.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
+            seen
+        });
+
+        let mut kimi = crate::program::command("sh");
+        kimi.arg("-c")
+            .arg(r#"perl -MPOSIX -e 'POSIX::setsid() or die; exec @ARGV' sh "$0" </dev/null >/dev/null 2>&1"#)
+            .arg(&script)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
+        unsafe {
+            kimi.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let status = kimi.status().unwrap();
+        // The Command keeps its copies of the slave until it is dropped.
+        drop(kimi);
+        drop(slave);
+        let seen = reader.join().unwrap();
+
+        assert!(status.success(), "the hook exits 0: {status:?}");
+        assert!(seen.contains(&0x07), "no BEL reached the PTY: {:?}", String::from_utf8_lossy(&seen));
     }
 
     /// ssh: kimi's home is the host's, which nothing here can reach, so no
