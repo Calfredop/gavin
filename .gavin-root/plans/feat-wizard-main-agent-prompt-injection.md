@@ -1,4 +1,5 @@
 ---
+order: 12288
 kind: task
 title: [feat] setup wizard can start kimi (and other prompt-injection profiles) on the PRD
 status: In Progress

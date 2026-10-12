@@ -1,4 +1,5 @@
 ---
+order: 11776
 kind: task
 title: [bug] kimi runs in gavin worktrees still stop at the trust screen (or drop the gavin MCP server)
 status: In Progress
