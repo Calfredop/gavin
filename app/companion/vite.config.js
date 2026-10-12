@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import { buildTarget } from "../vite-build-target.js";
 
 // No package.json beside this file, on purpose. Everything here resolves
 // from `app/node_modules` by walking up, so the bundle is built with the
@@ -9,6 +10,8 @@ import { sveltekit } from "@sveltejs/kit/vite";
 // which is how it learns that `@lucide/svelte` ships uncompiled components.
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
+  // The desktop's terminal, so the desktop's target: see the file.
+  build: { target: buildTarget },
   test: {
     // `check-install.mjs` beside this file as well: it runs before every
     // build, and is a node script, outside what svelte-check reads.

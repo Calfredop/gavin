@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import { svelteStyleCache } from "./vite-svelte-style-cache.js";
 import { devCspMirror } from "./vite-dev-csp.js";
+import { buildTarget } from "./vite-build-target.js";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -12,13 +13,17 @@ export default defineConfig(async () => ({
   // and the guard half has to reach it last -- see the file for what a
   // cold CSS cache does to the app.
   plugins: [svelteStyleCache(), sveltekit(), devCspMirror()],
+  // See the file: Vite's default target breaks xterm in a release build.
+  build: { target: buildTarget },
   test: {
     // `src-tauri` as well as `src`, non-recursively. The two build scripts
     // beside tauri.conf.json are shipping code -- stage-sidecars.mjs runs in
     // the release workflow and dev-sidecars.mjs in every dev start -- and
     // they had no test home, so the platform rules they encode were asserted
     // nowhere. Not recursive on purpose: `src-tauri/target` is a cargo tree.
-    include: ["src/**/*.{test,spec}.ts", "src-tauri/*.{test,spec}.mjs"],
+    // And this folder's own, for the vite-*.js modules beside this file
+    // whose tests need Node (vite-build-target.test.mjs).
+    include: ["src/**/*.{test,spec}.ts", "src-tauri/*.{test,spec}.mjs", "*.{test,spec}.mjs"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
