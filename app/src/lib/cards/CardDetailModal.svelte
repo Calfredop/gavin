@@ -69,6 +69,7 @@
     revealDevelopingCard,
   } from "$lib/cards/cardRunActions";
   import { developingRunIn } from "$lib/cards/developingCards";
+  import { finishDeveloping } from "$lib/cards/developingCardsState";
   import { isViewTab } from "$lib/panes/tabIdentity";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
@@ -1025,6 +1026,8 @@
         return;
       case "develop-jump":
         return handleJumpToDevelop();
+      case "develop-finish":
+        return finishDeveloping(workspaceId, card.id);
     }
   }
 
@@ -1413,7 +1416,9 @@
               An agent is developing this card — rewriting its body, and possibly its
               kind and its nested tasks. Until it finishes, nothing else may run this
               card: a second agent would be executing a prompt that is about to be
-              replaced, and writing its status into a file being rewritten.
+              replaced, and writing its status into a file being rewritten. The card
+              frees itself once the agent has written it and gone quiet; Finish
+              developing frees it now.
             </p>
           </div>
         {:else if runBlocked}

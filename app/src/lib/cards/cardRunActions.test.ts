@@ -1059,7 +1059,7 @@ describe("a card being developed", () => {
 
     expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
 
-    expect(setDevelopingCards).toHaveBeenCalledWith("ws-1", [{ path: PATH, sessionId: "s-9" }]);
+    expect(setDevelopingCards).toHaveBeenCalledWith("ws-1", [{ path: PATH, sessionId: "s-9", baselineModifiedAt: null }]);
     // The record is the lock. Written after the jump, a window closed
     // mid-jump would leave an agent rewriting a card nothing knows about.
     expect(vi.mocked(setDevelopingCards).mock.invocationCallOrder[0]).toBeLessThan(
@@ -1075,7 +1075,7 @@ describe("a card being developed", () => {
 
     expect(setDevelopingCards).toHaveBeenCalledWith("ws-1", [
       { path: "/ws/.gavin-root/plans/other.md", sessionId: "s-old" },
-      { path: PATH, sessionId: "s-9" },
+      { path: PATH, sessionId: "s-9", baselineModifiedAt: null },
     ]);
   });
 

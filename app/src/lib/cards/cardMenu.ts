@@ -17,8 +17,8 @@ import {
   resumeCard,
   revealDevelopingCard,
 } from "$lib/cards/cardRunActions";
-import { developingRunOn } from "$lib/cards/developingCardsState";
-import { DEVELOPING_MENU_LABEL } from "$lib/cards/developingCards";
+import { developingRunOn, finishDeveloping } from "$lib/cards/developingCardsState";
+import { DEVELOPING_MENU_LABEL, FINISH_DEVELOPING_LABEL } from "$lib/cards/developingCards";
 import { requestCardReview } from "$lib/review/codeReviewActions";
 import { requestCardCriticalReview } from "$lib/review/criticalReviewActions";
 import { developAvailable } from "$lib/cards/cardRun";
@@ -95,10 +95,15 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       // Ahead of every other case, and replacing all of them: an agent is
       // rewriting this card's file right now, so the prompt behind every
       // run entry here is about to stop being true (developingCards.ts).
-      // One entry, and it goes where the answer is.
+      // The jump goes where the answer is; Finish is the way out of a run
+      // that will never write the card (developingCards.ts).
       entries.push({
         label: DEVELOPING_MENU_LABEL,
         onPick: () => void revealDevelopingCard(workspaceId, card.id),
+      });
+      entries.push({
+        label: FINISH_DEVELOPING_LABEL,
+        onPick: () => void finishDeveloping(workspaceId, card.id),
       });
     } else if (run) {
       entries.push({

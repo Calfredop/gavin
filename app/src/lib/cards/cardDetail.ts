@@ -71,7 +71,8 @@ export type CardActionId =
   | "run"
   | "develop"
   | "best-of-n"
-  | "develop-jump";
+  | "develop-jump"
+  | "develop-finish";
 
 export interface CardBarAction {
   id: CardActionId;
@@ -229,7 +230,14 @@ export function cardSessionBar(situation: CardSituation): CardSessionBar | null 
         headline: "Being developed — an agent is rewriting this card",
         tone: "accent",
         wantsHuman: false,
-        actions: [{ id: "develop-jump", label: "Jump to the develop session", enabled: true }],
+        // Finish beside the jump: the run frees the card by itself once
+        // the agent has written it and gone quiet, but a run that never
+        // writes -- an interview walked away from, an agent told to leave
+        // the card alone -- would hold it until its tab closed.
+        actions: [
+          { id: "develop-jump", label: "Jump to the develop session", enabled: true },
+          { id: "develop-finish", label: "Finish developing", enabled: true },
+        ],
       };
 
     case "best-of-n":

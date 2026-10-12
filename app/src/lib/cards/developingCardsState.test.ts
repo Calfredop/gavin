@@ -37,12 +37,21 @@ vi.mock("$lib/core/layoutState", () => {
 
 vi.mock("$lib/core/workspace", () => ({ sessionLiveness: vi.fn(() => "live") }));
 
+// The trees are where the card's mtime comes from: stamped on the record
+// at launch, compared against on every pass.
+vi.mock("$lib/core/gavinState", async () => {
+  const { writable } = await import("svelte/store");
+  return { gavinTrees: writable<Record<string, unknown>>({}) };
+});
+
 const { layoutState, setDevelopingCards } = await import("$lib/core/layoutState");
+const { gavinTrees } = await import("$lib/core/gavinState");
 const { sessionLiveness } = await import("$lib/core/workspace");
 const {
   developingBlocker,
   developingCardsIn,
   developingRunOn,
+  finishDeveloping,
   recordDevelopingCard,
   startDevelopingCardsWatch,
   __resetForTesting,
@@ -59,6 +68,16 @@ function seed(workspaceId: string, records: { path: string; sessionId: string }[
   }));
 }
 
+/// The workspace's tree holding the card at this mtime; omit the mtime
+/// for a tree that has not got the card at all.
+function cardAt(workspaceId: string, modifiedAt?: number): void {
+  const plans = modifiedAt === undefined ? [] : [{ path: PATH, modifiedAt }];
+  gavinTrees.update((m) => ({
+    ...m,
+    [workspaceId]: { rootPath: "/ws", rootMissing: false, contexts: [{ folderPath: "/ws", plans }] } as never,
+  }));
+}
+
 function status(map: Record<string, string>): void {
   layoutState.update((s) => ({ ...s, sessionStatusById: map as never }));
 }
@@ -72,6 +91,7 @@ beforeEach(() => {
     workspaces: s.workspaces.map((w) => ({ ...w, developingCards: undefined })),
     sessionStatusById: {},
   }));
+  gavinTrees.set({});
 });
 
 describe("recording a run", () => {
@@ -81,15 +101,22 @@ describe("recording a run", () => {
     await recordDevelopingCard("ws-1", { path: PATH, sessionId: "s-3" });
 
     expect(developingCardsIn("ws-1")).toEqual([
-      { path: "/ws/.gavin-root/plans/b.md", sessionId: "s-2" },
-      { path: PATH, sessionId: "s-3" },
+      { path: "/ws/.gavin-root/plans/b.md", sessionId: "s-2", baselineModifiedAt: null },
+      { path: PATH, sessionId: "s-3", baselineModifiedAt: null },
     ]);
+  });
+
+  it("stamps the card's mtime from the tree, which is what the sweep compares against", async () => {
+    cardAt("ws-1", 1_000);
+    await recordDevelopingCard("ws-1", { path: PATH, sessionId: "s-1" });
+
+    expect(developingRunOn("ws-1", PATH)).toEqual({ path: PATH, sessionId: "s-1", baselineModifiedAt: 1_000 });
   });
 
   it("is one workspace's business", async () => {
     await recordDevelopingCard("ws-1", { path: PATH, sessionId: "s-1" });
 
-    expect(developingRunOn("ws-1", PATH)).toEqual({ path: PATH, sessionId: "s-1" });
+    expect(developingRunOn("ws-1", PATH)).toMatchObject({ path: PATH, sessionId: "s-1" });
     expect(developingRunOn("ws-2", PATH)).toBeNull();
     expect(developingBlocker("ws-2", PATH)).toBeNull();
     expect(developingBlocker("ws-1", PATH)).toContain("developing this card");
@@ -116,6 +143,33 @@ describe("the sweep", () => {
     startDevelopingCardsWatch();
 
     await vi.waitFor(() => expect(developingRunOn("ws-1", PATH)).toBeNull());
+  });
+
+  // The reported bug: the agent asks its first question in prose, the
+  // daemon reads the quiet as idle, and the badge was gone seconds in.
+  it("holds a stamped run through an idle interview, and frees it once the card is rewritten", async () => {
+    cardAt("ws-1", 1_000);
+    seed("ws-1", [{ path: PATH, sessionId: "s-dev", baselineModifiedAt: 1_000 } as never]);
+    status({ "s-dev": "idle" });
+
+    startDevelopingCardsWatch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(developingRunOn("ws-1", PATH)).not.toBeNull();
+
+    // The write arrives as a tree push while the agent is already quiet:
+    // the tree subscription alone has to be enough to free it.
+    cardAt("ws-1", 1_042);
+    await vi.waitFor(() => expect(developingRunOn("ws-1", PATH)).toBeNull());
+  });
+
+  it("holds a stamped run while the tree has not loaded yet", async () => {
+    seed("ws-1", [{ path: PATH, sessionId: "s-dev", baselineModifiedAt: 1_000 } as never]);
+    status({ "s-dev": "idle" });
+
+    startDevelopingCardsWatch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(developingRunOn("ws-1", PATH)).not.toBeNull();
   });
 
   // The two states a develop run spends its life in. Freeing the card in
@@ -170,5 +224,26 @@ describe("the sweep", () => {
 
     expect(setDevelopingCards).not.toHaveBeenCalled();
     expect(developingRunOn("ws-1", PATH)).not.toBeNull();
+  });
+});
+
+describe("finishing by hand", () => {
+  it("drops that card's record and leaves every other run alone", async () => {
+    seed("ws-1", [
+      { path: PATH, sessionId: "s-dev" },
+      { path: "/ws/.gavin-root/plans/b.md", sessionId: "s-other" },
+    ]);
+
+    await finishDeveloping("ws-1", PATH);
+
+    expect(developingCardsIn("ws-1")).toEqual([
+      { path: "/ws/.gavin-root/plans/b.md", sessionId: "s-other" },
+    ]);
+  });
+
+  it("writes nothing when nothing is developing the card", async () => {
+    await finishDeveloping("ws-1", PATH);
+
+    expect(setDevelopingCards).not.toHaveBeenCalled();
   });
 });

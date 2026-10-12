@@ -19,6 +19,8 @@
 
 import type { SessionStatus } from "$lib/core/notifications";
 import type { DevelopingCardRecord, SessionLiveness, WorkspacesData } from "$lib/core/workspace";
+import type { GavinTree } from "$lib/core/gavin";
+import { cardViewForPath } from "$lib/core/planBoard";
 
 /// The run developing this card, or null. Path equality, the same key
 /// `cardSessionFor` matches on. A develop run writes no status of its
@@ -49,6 +51,45 @@ export function developingRunIn(
   );
 }
 
+/// The card's mtime as the tree reports it right now, written into the
+/// record when the run starts so the sweep can tell the agent's write
+/// from the interview before it. Null when the tree has not got the card
+/// or the daemon sent no mtime -- the record then falls back to the
+/// older rule (developRunOver).
+export function developBaseline(tree: GavinTree | undefined, path: string): number | null {
+  return cardViewForPath(tree, path)?.modifiedAt ?? null;
+}
+
+/// HAS THE AGENT WRITTEN THE CARD YET? The develop skill writes nothing
+/// until the human has said yes to the whole proposal, so a card file
+/// still at its launch mtime means the run is still in its interview,
+/// however quiet the agent has gone in the meantime.
+///
+///  - No baseline (a record an older build wrote, or a card the tree did
+///    not have at launch) answers true: nothing to compare against, so
+///    the sweep keeps the rule it had before the baseline existed.
+///  - No tree yet (the app is still loading it) answers false. Not known
+///    is not written.
+///  - The card gone from a loaded tree answers true: it was filed,
+///    archived or renamed, and there is no file left at this path to
+///    protect.
+///
+/// The human's own edits count too -- a drag that rewrites `order:`
+/// bumps the mtime the same way. That frees the card at the agent's next
+/// quiet moment, which is the old behaviour and not a lost write: the
+/// interview has not written anything yet for a second run to collide
+/// with.
+export function developWriteSeen(
+  record: DevelopingCardRecord,
+  tree: GavinTree | undefined
+): boolean {
+  if (record.baselineModifiedAt == null) return true;
+  if (!tree) return false;
+  const card = cardViewForPath(tree, record.path);
+  if (!card) return true;
+  return card.modifiedAt != null && card.modifiedAt > record.baselineModifiedAt;
+}
+
 /// IS THE RUN OVER? Deliberately the same three signals as an
 /// orchestration agent's (orchestrationAgent.ts owns the long version of
 /// this reasoning), because it is the same kind of run: a one-shot request
@@ -58,24 +99,32 @@ export function developingRunIn(
 ///  - `gone` -- the session left the layout, so the run left with it.
 ///  - `interrupted` -- a daemon restart killed the agent and put a bare
 ///    shell back wearing its id.
-///  - `idle` -- the agent stopped talking, which for a one-shot request is
-///    the finish line.
+///  - `idle` AFTER the card was written (developWriteSeen) -- the agent
+///    wrote the plan and stopped talking, which is the finish line.
 ///
-/// An ABSENT status is NOT idle. The daemon registers a new session idle
-/// and only pushes on a change, so "nothing reported yet" arrives as
-/// `undefined`; reading that as idle would free the card in the very tick
-/// its develop run launched, and the lock would never hold at all.
+/// Idle on its own is not enough, and that is the common case rather
+/// than an edge: the develop agent's FIRST move is to interview the
+/// human, and a question asked in prose leaves it idle -- the daemon
+/// reads two quiet seconds as idle, not as waiting. Freeing the card
+/// there unlocked it for the entire length of the conversation that
+/// decides what it says, which is what the badge used to do: it showed
+/// for the few seconds the agent spent reading, then vanished.
 ///
-/// `waiting_for_input` is not idle either, and here that is the common
-/// case rather than an edge: the develop agent's FIRST move is to
-/// interview the human. Freeing the card there would unlock it for the
-/// entire length of the conversation that decides what it says.
+/// An ABSENT status is NOT idle either. The daemon registers a new
+/// session idle and only pushes on a change, so "nothing reported yet"
+/// arrives as `undefined`; reading that as idle would free the card in
+/// the very tick its develop run launched.
+///
+/// A run that never writes -- the human walked away from the interview,
+/// or told the agent to leave the card alone -- holds until its tab is
+/// closed or the human presses Finish developing (finishDeveloping).
 export function developRunOver(
   liveness: SessionLiveness,
-  status: SessionStatus | undefined
+  status: SessionStatus | undefined,
+  written: boolean
 ): boolean {
   if (liveness !== "live") return true;
-  return status === "idle";
+  return written && status === "idle";
 }
 
 /// Why nothing may be launched on this card, phrased for the surface that
@@ -96,3 +145,9 @@ export const DEVELOPING_STALL = "the card is being developed";
 /// develop agents on one card is the worst version of the conflict this
 /// module exists for -- both of them rewrite the whole file.
 export const DEVELOPING_MENU_LABEL = "Developing — jump to its tab";
+
+/// The way out of a lock the sweep cannot see the end of: an agent that
+/// was told to leave the card alone, an interview abandoned half way, a
+/// card the human finished by hand. Frees the card and leaves the
+/// agent's tab alone -- closing a session is the human's own act.
+export const FINISH_DEVELOPING_LABEL = "Finish developing — free this card";

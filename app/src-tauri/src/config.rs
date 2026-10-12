@@ -223,6 +223,15 @@ pub struct DevelopingCardRecord {
     /// Absolute path of the card file being developed.
     pub path: String,
     pub session_id: String,
+    /// The card's mtime (unix seconds) when the run started. The
+    /// interview leaves the agent idle with nothing written, so the
+    /// frontend frees the card on idle only once the card is newer than
+    /// this (developingCards.ts's developWriteSeen). Absent on a record
+    /// an older build wrote, which keeps the older idle-ends-it rule --
+    /// and dropping it here would quietly restore that rule on every
+    /// reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_modified_at: Option<i64>,
 }
 
 /// How the desktop reaches a workspace that lives on another machine
@@ -278,8 +287,9 @@ pub struct Workspace {
     pub orchestration_agent: Option<OrchestrationAgentRecord>,
     /// The cards this workspace is DEVELOPING right now, one record per
     /// in-flight run. Cleared by the frontend the moment a run's session
-    /// is gone, interrupted or idle -- see developingCards.ts, which owns
-    /// the rule, and shares it with the orchestration agent slot.
+    /// is gone or interrupted, or idle after rewriting the card, and by
+    /// the human's Finish developing -- see developingCards.ts, which
+    /// owns the rule.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub developing_cards: Vec<DevelopingCardRecord>,
     /// D41 migration only: the pre-settings `agentCommand`, which now
@@ -3346,6 +3356,7 @@ mod tests {
         ws.developing_cards = vec![DevelopingCardRecord {
             path: "/repo/.gavin-root/plans/thin-card.md".to_string(),
             session_id: "session-4".to_string(),
+            baseline_modified_at: Some(1_760_000_000),
         }];
         let config = AppConfig {
             workspaces: vec![ws],
@@ -3374,6 +3385,17 @@ mod tests {
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// A record an older build wrote has no baseline, and has to load as
+    /// one without it rather than failing the whole config.
+    #[test]
+    fn developing_card_without_baseline_still_loads() {
+        let record: DevelopingCardRecord =
+            serde_json::from_str(r#"{"path":"/c.md","sessionId":"s-1"}"#).unwrap();
+        assert_eq!(record.baseline_modified_at, None);
+        let json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("baselineModifiedAt").is_none());
     }
 
     /// The empty list is the normal state and serializes away entirely,

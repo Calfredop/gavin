@@ -142,9 +142,9 @@ describe("cardSessionBar", () => {
     ).toEqual([]);
   });
 
-  it("replaces every launch with one jump while the card is being developed", () => {
+  it("replaces every launch with a jump and a way out while the card is being developed", () => {
     const bar = cardSessionBar({ kind: "developing" })!;
-    expect(bar.actions.map((a) => a.id)).toEqual(["develop-jump"]);
+    expect(bar.actions.map((a) => a.id)).toEqual(["develop-jump", "develop-finish"]);
     expect(bar.wantsHuman).toBe(false);
   });
 

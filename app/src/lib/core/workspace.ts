@@ -81,6 +81,13 @@ export interface DevelopingCardRecord {
   /// Absolute path of the card file, the same key `cardSessions` uses.
   path: string;
   sessionId: string;
+  /// The card's mtime (unix seconds) when the run started. The interview
+  /// leaves the agent idle without writing anything, so idle alone cannot
+  /// end the run; an idle agent AND a card newer than this can
+  /// (developingCards.ts's developWriteSeen). Absent on a record an older
+  /// build wrote, and null when the tree had no mtime for the card --
+  /// both keep the older rule, where idle ends it.
+  baselineModifiedAt?: number | null;
 }
 
 export interface OrchestrationAgentRecord {
