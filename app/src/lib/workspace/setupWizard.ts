@@ -5,6 +5,7 @@ import {
   headroomStepSettled,
   type HeadroomReading,
 } from "$lib/agents/headroomSetup";
+import { usesPromptInjection } from "$lib/cards/cardRun";
 import { memoryStepDone, memoryStepSettled, type MemoryReading } from "$lib/cards/memoryIndex";
 import type { PlaywrightMark, PlaywrightReading } from "$lib/agents/playwrightSetup";
 
@@ -291,17 +292,18 @@ export function applyPrdSections(body: string, sections: PrdSections): string {
   return out;
 }
 
-/// The agent-driven option is offered only where the positional-prompt
-/// convention is verified (spec §7.2); elsewhere the step says so rather
-/// than risking a launch with garbage in the agent's argv.
+/// The agent-driven option is offered only where the agent can be handed
+/// its prompt (spec §7.2): a verified prompt argv, or PTY injection once
+/// its MCP server connects (K3). Elsewhere the step says so rather than
+/// risking a launch with garbage in the agent's argv.
 export function agentFlowAvailable(
-  profile: { promptArgs: string | null } | undefined
+  agent: { promptArgs: string | null; promptInjection?: boolean } | undefined
 ): boolean {
   // `promptArgs` is a PREFIX, and "" is the bare positional -- a working
   // profile, not an absent one. Only null means the agent takes no
-  // prompt, so this compares rather than coerces: `Boolean("")` would
-  // hide the flow from claude-code, codex and gemini alike.
-  return profile !== undefined && profile.promptArgs !== null;
+  // prompt ARGV, so this compares rather than coerces: `Boolean("")`
+  // would hide the flow from claude-code, codex and gemini alike.
+  return agent !== undefined && (agent.promptArgs !== null || usesPromptInjection(agent));
 }
 
 /// Whether the PRD still carries a placeholder for the three section

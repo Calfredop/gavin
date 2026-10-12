@@ -7,6 +7,7 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     promptExtrasFor,
+    resolvedAgents,
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
@@ -45,7 +46,11 @@
       $agentDefaultsStore.defaultAgent
     )
   );
-  const profile = $derived($agentProfilesStore.find((p) => p.id === agentCfg.profileId));
+  // The agent startMainAgentWithPrompt would launch, named customs merged
+  // in: the gate has to ask the same resolver the launch does, or a
+  // custom with an MCP file (an injection launch) is hidden for want of a
+  // row in the built-in table.
+  const launchAgent = $derived($resolvedAgents(workspaceId));
 
   const prdBlocked = $derived(featureBlockedReason($daemonCompat, "prdPath"));
   // A document that still has placeholders is the scaffold, and the three
@@ -56,7 +61,7 @@
   // Never offered over a document somebody already wrote: the flow
   // interviews the owner and writes the PRD, which is the opposite of
   // what pointing at an existing one asked for.
-  const canAsk = $derived(agentFlowAvailable(profile) && !ws?.mainSessionId && !authored);
+  const canAsk = $derived(agentFlowAvailable(launchAgent) && !ws?.mainSessionId && !authored);
 
   let vision = $state("");
   let focus = $state("");
@@ -199,8 +204,8 @@
   {/if}
   <button type="button" disabled={busy} onclick={() => void saveMine()}>Continue →</button>
 </div>
-{#if profile && !agentFlowAvailable(profile) && !authored}
-  <p class="hint">“Ask the agent” isn’t available for {profile.label} yet.</p>
+{#if !agentFlowAvailable(launchAgent) && !authored}
+  <p class="hint">“Ask the agent” isn’t available for {launchAgent.label} yet.</p>
 {/if}
 
 <style>

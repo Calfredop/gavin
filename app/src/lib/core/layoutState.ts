@@ -21,7 +21,7 @@ import type {
   RemovedWorkspace,
 } from "$lib/core/workspace";
 import { sessionLabel } from "$lib/core/paths";
-import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/cardRun";
+import { buildRunCommand, mintConversationId, noPromptReason, usesPromptInjection } from "$lib/cards/cardRun";
 import { workspaceIdForSession } from "$lib/core/workspace";
 import {
   maybeNotifyStatusChange,
@@ -2729,12 +2729,18 @@ export async function startMainAgentWithPrompt(
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
   const agent = resolvedAgentFor(workspaceId);
-  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  // An injection profile (K3: kimi-code, a custom with an MCP file named)
+  // starts bare, the way a card run starts it, and its prompt goes to the
+  // daemon's queue after the spawn.
+  const inject = usesPromptInjection(agent);
+  const command = inject
+    ? agent.launchCommand
+    : buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
   // The wizard gates this button on agentFlowAvailable, so reaching here
   // means the profile changed under an open wizard. Say why rather than
   // launching a CLI that takes no prompt at all.
   if (command === null) {
-    setError(noPromptReason(agent.label));
+    setError(noPromptReason(agent.label, agent.profileId));
     return;
   }
   let sessionId: string;
@@ -2748,6 +2754,17 @@ export async function startMainAgentWithPrompt(
   } catch (e) {
     setError(String(e));
     return;
+  }
+  if (inject) {
+    // Queued before anything else is awaited, so a fast MCP handshake can
+    // never find the queue empty. A failure still records the session
+    // below: the agent is running in the workspace either way, and an
+    // unrecorded one is a main agent the Home panel cannot show or stop.
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      setError(`Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`);
+    }
   }
   void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   const workspaces = state.workspaces.map((w) =>

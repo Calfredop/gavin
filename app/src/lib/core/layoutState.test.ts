@@ -135,6 +135,8 @@ vi.mock("$lib/core/backend", () => ({
   // Resolved by default: the follow-up queue's read-back, which bootstrap
   // calls best-effort for the same reason as the two above.
   listQueuedInputs: vi.fn().mockResolvedValue([]),
+  // An injection launch (K3) queues its prompt after the spawn.
+  queueInput: vi.fn().mockResolvedValue([]),
   // Resolved by default: pruneBoardTabs calls .catch() on this.
   setBoardTabs: vi.fn().mockResolvedValue(undefined),
   // The three fetches a reclaim fires against the restored id. Empty but
@@ -4178,7 +4180,7 @@ function agentProfile(id: string, failurePatterns: string[]) {
 /// resolution. The gate has its own describe block below.
 function seedAgentConfig(
   workspaceId: string,
-  agent: { profile: string | null; file: string | null; command: string | null },
+  agent: { profile: string | null; file: string | null; command: string | null; mcpFile?: string | null },
   approved = true
 ): void {
   gavinTrees.update((t) => ({
@@ -4909,6 +4911,86 @@ describe("main agent session", () => {
     );
 
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
+  });
+
+  // The wizard's PRD flow on an agent that takes no prompt argv but has
+  // it typed in once its MCP server connects (K3): launched bare, the way
+  // a card run launches it, with the prompt queued for the daemon.
+  describe("startMainAgentWithPrompt on an injection profile", () => {
+    const kimi = {
+      ...agentProfile("kimi-code", []),
+      label: "Kimi Code",
+      command: "kimi",
+      promptArgs: null,
+      promptInjection: true,
+    };
+
+    beforeEach(() => {
+      vi.mocked(backend.createSession).mockReset();
+      vi.mocked(backend.queueInput).mockReset().mockResolvedValue([]);
+      setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    });
+
+    afterEach(() => {
+      agentProfilesStore.set([]);
+      agentDefaultsStore.set(EMPTY_AGENT_DEFAULTS);
+    });
+
+    it("launches kimi-code bare, queues the prompt and records the session", async () => {
+      agentProfilesStore.set([kimi]);
+      seedAgentConfig("ws-1", { profile: "kimi-code", file: null, command: null });
+      vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+
+      await startMainAgentWithPrompt("ws-1", "Use the gavin-write-prd skill.");
+
+      expect(vi.mocked(backend.createSession).mock.calls[0].slice(0, 3)).toEqual(["/tmp/ws", "kimi", "/tmp/ws"]);
+      expect(backend.queueInput).toHaveBeenCalledWith("agent-1", "Use the gavin-write-prd skill.");
+      expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
+    });
+
+    it("launches a custom profile bare once the workspace names its MCP file", async () => {
+      agentDefaultsStore.set({
+        ...EMPTY_AGENT_DEFAULTS,
+        customProfiles: [{ id: "custom-agent", label: "Custom", command: "myagent", modelFlag: "", resumeArgs: "" }],
+      });
+      seedAgentConfig("ws-1", {
+        profile: "custom-agent",
+        file: null,
+        command: null,
+        mcpFile: ".myagent/mcp.json",
+      });
+      vi.mocked(backend.createSession).mockResolvedValue("agent-2");
+
+      await startMainAgentWithPrompt("ws-1", "Write the PRD.");
+
+      expect(vi.mocked(backend.createSession).mock.calls[0][1]).toBe("myagent");
+      expect(backend.queueInput).toHaveBeenCalledWith("agent-2", "Write the PRD.");
+      expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-2");
+    });
+
+    it("still records the session when the prompt cannot be queued, and says so", async () => {
+      agentProfilesStore.set([kimi]);
+      seedAgentConfig("ws-1", { profile: "kimi-code", file: null, command: null });
+      vi.mocked(backend.createSession).mockResolvedValue("agent-3");
+      vi.mocked(backend.queueInput).mockRejectedValue(new Error("daemon gone"));
+
+      await startMainAgentWithPrompt("ws-1", "Write the PRD.");
+
+      expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-3");
+      expect(get(layoutState).errorMessage).toContain("daemon gone");
+    });
+
+    it("refuses a profile with neither a prompt argv nor injection", async () => {
+      agentProfilesStore.set([{ ...agentProfile("cursor", []), label: "Cursor", command: "cursor-agent", promptArgs: null }]);
+      seedAgentConfig("ws-1", { profile: "cursor", file: null, command: null });
+
+      await startMainAgentWithPrompt("ws-1", "Write the PRD.");
+
+      expect(backend.createSession).not.toHaveBeenCalled();
+      expect(backend.queueInput).not.toHaveBeenCalled();
+      expect(get(layoutState).errorMessage).toContain("Cursor takes no prompt");
+      expect(get(layoutState).workspaces[0].mainSessionId).toBeUndefined();
+    });
   });
 
   it("startMainAgentWithPrompt refuses when an agent is already running", async () => {
