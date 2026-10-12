@@ -807,6 +807,48 @@ fn strip_tui_decoration(line: &str) -> String {
     }
 }
 
+/// The key-hint rows an agent paints under a dialog that is waiting on
+/// the human, as `(opening, also)` pairs: a visible row that, trimmed,
+/// STARTS with the opening and also contains the second part is that
+/// dialog's footer.
+///
+/// Kimi Code's two, measured in a pty against kimi 2.1.1 on 2026-10-12:
+///
+/// - the AskUserQuestion picker, `↑↓ select  1-3 / ↵ choose  ←/→/tab
+///   switch  esc cancel` -- which fires no hook event at all, so the
+///   screen is the only place it shows;
+/// - the approval dialog ("Run this command?"), `↑/↓ select · 1/2/3/4
+///   choose · ↵ confirm`, which also rings `gavin-attention` through
+///   its PermissionRequest hook -- this is the floor under that bell.
+///
+/// Held here rather than supplied per session like `failure_patterns`,
+/// which is a deliberate difference. A false failure is a verdict --
+/// rails pause, auto-resume relaunches -- so failure text is only ever
+/// the profile's own, verified. A false match here is a badge on a tab
+/// that went quiet, and anchoring it at the row's START keeps it to a
+/// TUI's own chrome: a source listing or a diff that quotes these
+/// strings starts its row with something else.
+const ASKING_ON_SCREEN: &[(&str, &str)] = &[("↑↓ select", "choose"), ("↑/↓ select", "choose")];
+
+/// Whether this session's RENDERED screen is showing a dialog that waits
+/// on the human (`ASKING_ON_SCREEN`). The screen model for the same
+/// reason as `failure_on_screen`: the footer is painted in fragments
+/// between cursor moves, and is one contiguous row only here.
+fn asking_on_screen(manager: &Arc<SessionManager>, id: &str) -> bool {
+    let Some(screen) = manager.screens.lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    let contents = screen.lock().unwrap().contents();
+    screen_is_asking(&contents)
+}
+
+fn screen_is_asking(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        let row = line.trim_start();
+        ASKING_ON_SCREEN.iter().any(|(opening, also)| row.starts_with(opening) && row.contains(also))
+    })
+}
+
 /// The opening of the one failure reason gavin writes ITSELF rather than
 /// quoting from an agent's screen.
 ///
@@ -1005,6 +1047,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         let quiet_since = inner.last_activity;
         drop(inner);
         let verdict = failure_verdict(&manager, &id);
+        // Not a failure, but maybe not a finished turn either: an agent
+        // that went quiet under its own question or approval dialog is
+        // waiting on the human, and calling that `idle` lets a rail
+        // advance past a question nobody answered. Read here, with
+        // `inner` still dropped, for the same lock-order reason.
+        let asking = verdict.is_none() && asking_on_screen(&manager, &id);
 
         // Re-taken, and re-validated: anything could have happened while
         // the screen was being read. New output means this verdict
@@ -1023,6 +1071,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         // reordered relative to a concurrent pump-thread decision.
         match verdict {
             Some(reason) => persist_and_emit_failure(&manager, &id, &reason),
+            // Exactly the bare BEL's state: renewed output -- the human
+            // answering -- is what ends it, never more quiet.
+            None if asking => {
+                inner.waiting_for_input = true;
+                persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
+            }
             None => persist_and_emit_status(&manager, &id, SessionStatus::Idle),
         }
     });
@@ -15197,6 +15251,45 @@ mod tests {
         .unwrap();
 
         await_status(&mut reader, &id, "idle");
+    }
+
+    /// The footer rows of kimi 2.1.1's two dialogs, verbatim from a pty
+    /// capture rendered through the same vt100 model (2026-10-12), with
+    /// the rows around them. Kimi's idle prompt and a source line that
+    /// quotes the footer are the negatives: the match is anchored at the
+    /// row's start.
+    #[test]
+    fn kimis_question_and_approval_footers_read_as_asking() {
+        let picker = " question\n\n  Colour    Submit \n\n ? Which colour do you prefer?\n\n  → [1] Red\n    [2] Blue\n    [3] Other\n\n  ↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel\n";
+        let approval = "  ▶ Run this command?\n\n  Dangerous: recursive delete\n\n  ▶ 1. Approve once\n    2. Approve for this session\n    3. Reject\n    4. Reject with feedback\n\n  ↑/↓ select · 1/2/3/4 choose · ↵ confirm\n";
+        let prompt = "● Done — the command ran and exited successfully.\n╭──────╮\n│ >    │\n╰──────╯\nAsk When Needed  K3 thinking: high\n";
+        let quoted = "  812 | const ASKING_ON_SCREEN: &[(&str, &str)] = &[(\"↑↓ select\", \"choose\")];\n";
+        assert!(screen_is_asking(picker), "the AskUserQuestion picker");
+        assert!(screen_is_asking(approval), "the approval dialog");
+        assert!(!screen_is_asking(prompt), "kimi at its prompt");
+        assert!(!screen_is_asking(quoted), "a listing that quotes the footer");
+    }
+
+    /// End to end through the quiet timer: a session that goes quiet
+    /// with a dialog footer on screen reads `waiting_for_input`, not
+    /// `idle`. Octal escapes, so the typed command line -- which the
+    /// shell echoes -- never carries the footer itself.
+    #[test]
+    fn a_quiet_session_under_a_dialog_footer_waits_for_input_not_idle() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+
+        write_message(
+            &mut stream,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '  \\342\\206\\221/\\342\\206\\223 select \\302\\267 1/2/3/4 choose \\302\\267 \\342\\206\\265 confirm\\n'\n"
+                    .to_string(),
+            },
+        )
+        .unwrap();
+
+        await_status(&mut reader, &id, "waiting_for_input");
     }
 
     #[test]

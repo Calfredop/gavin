@@ -67,5 +67,29 @@ All five fixes are in the code on main. Fixes 1–3 were in commits made before 
   - `startMainAgentWithPrompt`: no error reaches a user. The wizard hides the agent-written PRD option for kimi (`agentFlowAvailable` is false when `promptArgs` is null) and says why. feat-custom-profile-prompt-injection.md records that the wizard's main-agent start takes no injection, kimi included. This is a gap in what the wizard offers, not a bug.
   - Double prompt on retry, and "DistrustOsc133 refused by an older daemon": no change. The first still needs a reproduction; the second is moot on a daemon built after b5405820.
 - [ ] Human test: Kimi card launch end-to-end (dev app + dev daemon on the current tree, workspace agent = Kimi Code, Headroom compression on): from a card in a context folder BELOW the workspace root, click Run. Expect: kimi does NOT stop at "Trust this folder?"; the card prompt arrives by itself; no `OAuthUnauthorizedError` / "re-login required" even when the launch is more than 15 min after the last `kimi login`; the TUI footer reads "Ask When Needed" (not manual).
-- [ ] Human test: Kimi tab status (same setup): give a kimi session a task that runs a few tools and then asks you a question or an approval. Expect: the tab reads Working while it runs, then raises the waiting-for-input badge when kimi asks (it must not stay on Working). After you answer and the turn ends, the tab goes idle within a few seconds.
 - [x] Follow-ups filed and handed to their own sessions (2026-10-12): bug-kimi-worktree-launch-trust.md (worktree grant per decision A, plus launches the app's create_session does not cover), bug-run-retry-delivers-prompt-twice.md, feat-wizard-main-agent-prompt-injection.md.
+- [ ] Human test: Kimi tab status (same setup): give a kimi session a task that runs a few tools and then asks you a question or an approval. Expect: the tab reads Working while it runs, then raises the waiting-for-input badge when kimi asks (it must not stay on Working). After you answer and the turn ends, the tab goes idle within a few seconds.
+
+## pty-driven verification, 2026-10-12 (agent session, kimi 2.1.1, real HOME, scratch dir target/tmp/kimi-e2e-ctx)
+
+Drove kimi itself in an expect pty to cover the kimi-side halves of the two human tests (the card-click and the rendered badge stay human — no MCP seam runs a card, injects input, or reads a badge).
+
+Verified GOOD:
+
+- Trust screen reproduces in an untrusted subfolder of the trusted workspace root ("Trust this folder?", lists the gavin MCP target) — a trusted parent does not cover a child.
+- A gavin-shaped record (`~/.kimi-code/workspace-trust/wd_kimi-e2e-ctx_2517bb44af7c`, `{"root":…,"trustedAt":…}`, no trailing newline — kimi's own records have none either) lifts the gate: next launch goes straight to the prompt. Fix 2's record shape is right.
+- Footer reads "Ask When Needed" (fix 3 live). kimi's own records confirmed byte-shape.
+- Credentials dir holds ~66 session-tagged slots with fresh mtimes (today) — fix 1's provisioning is actively writing; the >15-min-after-login case still needs the human's card run.
+- kimi's hook machinery works: a diagnostic tracer hook fired TurnStarted and PermissionRequest with full payloads.
+
+Found BROKEN — fix 5 does not work against real kimi 2.1.1 (filed as bug-kimi-attention-hook-detached.md):
+
+- The foreground AskUserQuestion picker fires NO hook event at all (traced two sessions; only TurnStarted fired). Per kimi's hooks doc, TaskStarted covers BACKGROUND tasks only — so the `TaskStarted(question)` rule never matches the picker that symptom 5 was about.
+- PermissionRequest DOES fire on an approval dialog ("Run this command? Dangerous: recursive delete"), but kimi spawns hooks DETACHED from the controlling terminal (hook process TTY=??, parent kimi has ttys038), so gavin-attention's `printf '\a' > /dev/tty` fails with "Device not configured", swallowed by `2>/dev/null`, exit 0. Zero bare BELs in the pty stream with the approval dialog open (baseline and phase logs scanned with an OSC-aware BEL classifier; OSC-terminated BELs are hyperlink/progress framing).
+- Fix direction verified: writing BEL to `/dev/<tty>` resolved by walking ancestors with `ps -o tty=` reaches the pty stream even from a tty-less process (proved against a live expect pty).
+
+Test 2 (tab status) would FAIL today on both paths — do not run it until bug-kimi-attention-hook-detached.md lands; re-file it then.
+
+Landed 2026-10-12 (bug-kimi-attention-hook-detached.md). `gavin-attention` now finds kimi's PTY through its ancestors, and the rebuilt app rewrites the old script on the next kimi launch. The daemon now reads a quiet screen that shows kimi's picker or approval footer as waiting_for_input. That half needs a daemon rebuild and restart before Test 2 is run. Test 2 is re-armed below. Test 1 (card launch E2E) is unaffected by the hook bug and still waits on the human.
+
+Automation notes for future pty driving of kimi: Enter must be sent as kitty `ESC[13u` (plain `\r` never submits; kimi enables the kitty keyboard protocol); shift+tab toggles plan mode, not permission mode; yolo auto-approves a plain in-cwd `rm` but asks for `rm -rf`; kimi emitted NO OSC 133 markers under expect's TERM (the 133 poisoning in fix 4 is terminal-dependent — xterm.js in gavin emits/accepts them).
