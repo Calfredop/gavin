@@ -20,6 +20,13 @@ use serde::{Deserialize, Serialize};
 /// compares an app's `Hello` version with this before it writes the push.
 pub const SESSION_OWNERS_MIN_VERSION: u32 = 68;
 
+/// The first version that takes `ForwardedInput` and pushes
+/// `SessionDeskInput`: input the desk sent into a session a Device owns.
+/// The daemon compares an app's `Hello` version with this before it
+/// writes the push -- and before it reads that connection's bare input as
+/// the desk's, since an older host sends a Device's input bare too.
+pub const DESK_INPUT_NOTICE_MIN_VERSION: u32 = 70;
+
 /// How long a session stays its Device's after the Device's last
 /// connection closes -- the phone locked, went to the background, or lost
 /// the network -- before it goes back to the desk. Long enough for a

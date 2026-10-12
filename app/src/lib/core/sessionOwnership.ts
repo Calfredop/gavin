@@ -71,6 +71,21 @@ export type OwnerRefusal =
 /// Who owns what: only the sessions a Device owns, by session id.
 export type Owners = Record<string, SessionOwner>;
 
+/// The desk sent input into a session a Device owns (v70,
+/// `session-desk-input`): a rail's prompt, a follow-up delivered, a card
+/// handed to an agent. `owner` is that Device's id, `at` epoch seconds.
+export interface DeskInput {
+  sessionId: string;
+  owner: string;
+  at: number;
+}
+
+/// What the owner's terminal says when one arrives.
+export const DESK_INPUT_TEXT = "The desk sent a line into this session.";
+
+/// The lines waiting to be dismissed, by session id: when each arrived.
+export type DeskInputs = Record<string, number>;
+
 /// Who is looking. `null` is the desk; a string is that Device. `undefined`
 /// is a Device that has not yet learned its own id, which locks nothing:
 /// better a lock missed for a moment than the Device locked out of its own
@@ -208,6 +223,25 @@ export function ownedCountByDevice(owners: Owners): Record<string, number> {
 export function ownsText(count: number | undefined): string | null {
   if (!count) return null;
   return `owns ${count} session${count === 1 ? "" : "s"}`;
+}
+
+/// A `session-desk-input` heard: kept when it is about a session `viewer`
+/// owns -- the line is news only to the Device that did not type it. The
+/// desk hears every one too, and keeps none.
+export function withDeskInput(inputs: DeskInputs, input: DeskInput, viewer: Viewer): DeskInputs {
+  if (typeof viewer !== "string" || input.owner !== viewer) return inputs;
+  return { ...inputs, [input.sessionId]: input.at };
+}
+
+/// The lines still worth showing once ownership has moved: only those of
+/// sessions `viewer` still owns. A session handed on, taken over or ended
+/// takes its line with it.
+export function deskInputsStillOwned(inputs: DeskInputs, owners: Owners, viewer: Viewer): DeskInputs {
+  const out: DeskInputs = {};
+  for (const [sessionId, at] of Object.entries(inputs)) {
+    if (ownsSession(owners, sessionId, viewer)) out[sessionId] = at;
+  }
+  return out;
 }
 
 /// When a lock's second line next changes on its own, epoch ms, or null

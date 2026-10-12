@@ -61,10 +61,35 @@ pub const FORWARDED_ORIGIN: &str = "companion";
 /// Who made a write, for the `*-synced` events every window adopts from:
 /// the window's label, or `FORWARDED_ORIGIN` for a Device's call.
 pub fn origin<R: Runtime>(window: &tauri::Window<R>, request: &tauri::ipc::Request<'_>) -> String {
-    if request.headers().contains_key(FORWARDED_HEADER) {
+    if is_forwarded(request) {
         FORWARDED_ORIGIN.to_string()
     } else {
         window.label().to_string()
+    }
+}
+
+/// Whether this call is a Device's, forwarded through `dispatch`.
+pub fn is_forwarded(request: &tauri::ipc::Request<'_>) -> bool {
+    request.headers().contains_key(FORWARDED_HEADER)
+}
+
+/// The input request a command sends: marked as a Device's (v70,
+/// `ForwardedInput`) when the call was forwarded and the daemon can read
+/// the mark, else as it is.
+///
+/// The mark is how the daemon tells the Device's own input from the
+/// desk's, which arrives on the same connection -- a rail's prompt, a
+/// follow-up delivered -- and which it tells the session's owner about.
+/// An older daemon would refuse the wrapper, and has no owner to tell.
+pub fn input_request(req: Request, forwarded: bool, daemon_version: u32) -> Request {
+    let marked = Request::ForwardedInput { request: Box::new(req) };
+    if forwarded && protocol::min_version_for(&marked) <= daemon_version {
+        marked
+    } else {
+        match marked {
+            Request::ForwardedInput { request } => *request,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -466,6 +491,20 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+
+    /// A Device's input is marked for a daemon that reads the mark; the
+    /// desk's own, and anything sent to an older daemon, goes bare.
+    #[test]
+    fn only_a_devices_input_is_marked_and_only_for_a_daemon_that_reads_it() {
+        let input = || Request::QueueInput { id: "s".into(), text: "go".into() };
+        let bare = |req: &Request| matches!(req, Request::QueueInput { .. });
+        assert!(matches!(
+            input_request(input(), true, PROTOCOL_VERSION),
+            Request::ForwardedInput { request } if bare(&request)
+        ));
+        assert!(bare(&input_request(input(), false, PROTOCOL_VERSION)));
+        assert!(bare(&input_request(input(), true, protocol::DESK_INPUT_NOTICE_MIN_VERSION - 1)));
+    }
 
     /// A command the mock app registers — both the webview invoke path
     /// and `dispatch` must reach it.

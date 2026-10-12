@@ -42,7 +42,8 @@ pub use attention::{
 pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 pub use session_owner::{
-    LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, SESSION_OWNERS_MIN_VERSION,
+    LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, DESK_INPUT_NOTICE_MIN_VERSION,
+    SESSION_OWNERS_MIN_VERSION,
 };
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -70,6 +71,22 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v70 marks the input the desk host writes for a Device
+/// (`companion-owner-overlay-says-when-the-desk-injected-input`). A
+/// Device's forwarded `write_input`, `queue_input` or `send_queued_input`
+/// reaches the daemon again as the host's own request, on the connection
+/// the desk's rails and follow-up queue share; the host now wraps it in
+/// `ForwardedInput`, a new TYPE gated by `min_version_for`, so the daemon
+/// can tell the Device's input from the desk's. Input the desk sends into
+/// a session a Device owns is pushed to that Device's desk as
+/// `SessionDeskInput`, to an app whose `Hello` speaks 70
+/// (`DESK_INPUT_NOTICE_MIN_VERSION`) -- and is only noticed on a
+/// connection whose `Hello` speaks 70, since an older host sends its
+/// forwarded writes bare. No request widened, so `MIN_COMPATIBLE_VERSION`
+/// stands; the Companion's notice owes
+/// `FEATURE_MIN_VERSION.deskInputNotice` for the copy against an older
+/// daemon, which never says.
 ///
 /// v69 is the direct listener (ADR 0009, `companion-direct-listener`): a
 /// Device reaches its Workstation over the same network or tailnet with
@@ -858,7 +875,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 69;
+pub const PROTOCOL_VERSION: u32 = 70;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1974,6 +1991,22 @@ pub enum Request {
     /// Device that connected, after the pushes went by.
     ListSessionOwners,
 
+    /// A `WriteInput`, `QueueInput` or `SendQueuedInput` the desk host
+    /// makes because a Device asked it to (v70): a forwarded `write_input`,
+    /// `queue_input` or `send_queued_input`. The daemon unwraps it and
+    /// serves `request` exactly as it would bare -- same answer, same
+    /// intercepts -- knowing only that the input was the Device's.
+    ///
+    /// That is what lets it tell a session's owner when the DESK put a
+    /// line into it (`Response::SessionDeskInput`): the Device's own input
+    /// reaches the daemon a second time as the host's write, on the
+    /// connection the desk's rails and follow-up queue use, and would
+    /// otherwise read as the desk's. Only an `app` connection may send it,
+    /// and it carries nothing else: anything but those three is refused.
+    ForwardedInput {
+        request: Box<Request>,
+    },
+
     /// A Device asks the daemon to invoke a desktop Tauri command (v54).
     ///
     /// The daemon checks `command` against the Remote role table
@@ -2566,6 +2599,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         // nothing. FEATURE_MIN_VERSION.sessionOwnership is what makes the
         // surfaces say so rather than draw a lock that is not there.
         Request::SetSessionOwner { .. } | Request::ListSessionOwners => 68,
+        // The desk host marking the input it writes for a Device (v70). A
+        // new TYPE rather than a field on the three input requests: an
+        // older daemon would drop a field and read every forwarded write
+        // as the desk's; this arm keeps the wrapper off its wire, and the
+        // host sends the request bare instead. The Companion's notice
+        // owes FEATURE_MIN_VERSION.deskInputNotice for its copy.
+        Request::ForwardedInput { .. } => 70,
 
         // Forwarding gated desktop commands (v54). Five new TYPES: three
         // a Device sends, two the desktop's forwarding connection sends.
@@ -3335,6 +3375,14 @@ pub enum Response {
     /// `SESSION_OWNERS_MIN_VERSION` or more; the desk offers it on to the
     /// Devices that listen (`session-owner-changed`).
     SessionOwnerChanged { ownership: SessionOwnership },
+    /// Push (v70): the desk sent input into a session a Device owns -- a
+    /// rail's prompt, a follow-up delivered, a card handed over -- so the
+    /// owner can say a line arrived that it did not type. `owner` is that
+    /// Device's id, `at` epoch seconds. Sent only to an `app` connection
+    /// that reads pushes and whose `Hello` speaks
+    /// `DESK_INPUT_NOTICE_MIN_VERSION`; the desk offers it on to the
+    /// Devices that listen (`session-desk-input`).
+    SessionDeskInput { session_id: String, owner: String, at: i64 },
     /// Push to every live `app` connection (v61): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -7913,7 +7961,10 @@ mod tests {
         // push -- the direct listener (ADR 0009). Two new TYPES;
         // `Devices.direct_access_enabled` widens a reply, behind
         // FEATURE_MIN_VERSION.directAccess.
-        assert_eq!(PROTOCOL_VERSION, 69);
+        // v70: ForwardedInput and the SessionDeskInput push -- the desk
+        // host marking a Device's input, so its owner hears of the
+        // desk's. One new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 70);
     }
 
     #[test]
@@ -8435,6 +8486,10 @@ mod tests {
             // v68: session ownership.
             Request::SetSessionOwner { id: "s".into(), to: Some("d1".into()), expect: None, force: false },
             Request::ListSessionOwners,
+            // v70: the desk host's write for a Device.
+            Request::ForwardedInput {
+                request: Box::new(Request::WriteInput { id: "s".into(), data: "d".into() }),
+            },
             // v54: forwarding gated desktop commands.
             Request::InvokeDesktop {
                 command: "get_board".into(),
@@ -8641,6 +8696,8 @@ mod tests {
         expected.insert(68, 2);
         // SetDirectAccess, GetDirectState -- the direct listener.
         expected.insert(69, 2);
+        // ForwardedInput -- the desk host marking a Device's input.
+        expected.insert(70, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

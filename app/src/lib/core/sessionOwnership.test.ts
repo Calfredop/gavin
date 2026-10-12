@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  DESK_INPUT_TEXT,
   OWNER_REFUSED_PREFIX,
   agoText,
+  deskInputsStillOwned,
+  withDeskInput,
   busyQuestion,
   handOverTargets,
   lockDetail,
@@ -166,5 +169,29 @@ describe("the lock's clock", () => {
 
   it("words an age", () => {
     expect([agoText(2), agoText(42), agoText(185), agoText(7300)]).toEqual(["just now", "42s ago", "3m ago", "2h ago"]);
+  });
+});
+
+describe("the desk's input into a session a Device owns (v70)", () => {
+  const heard = { sessionId: "s1", owner: "iphone", at: NOW_S };
+
+  it("is kept by the owner, to say a line arrived it did not type", () => {
+    expect(withDeskInput({}, heard, "iphone")).toEqual({ s1: NOW_S });
+    expect(DESK_INPUT_TEXT).toBe("The desk sent a line into this session.");
+  });
+
+  it("is nothing to another Device, to the desk, or to a Device not yet told who it is", () => {
+    for (const viewer of ["ipad", null, undefined]) expect(withDeskInput({}, heard, viewer)).toEqual({});
+  });
+
+  it("a later line replaces the earlier one: one line per session", () => {
+    const twice = withDeskInput(withDeskInput({}, heard, "iphone"), { ...heard, at: NOW_S + 9 }, "iphone");
+    expect(twice).toEqual({ s1: NOW_S + 9 });
+  });
+
+  it("goes with the session when it is handed on, taken over or ended", () => {
+    const inputs = { s1: NOW_S, s2: NOW_S };
+    expect(deskInputsStillOwned(inputs, { s1: iphone, s2: ipad }, "iphone")).toEqual({ s1: NOW_S });
+    expect(deskInputsStillOwned(inputs, {}, "iphone")).toEqual({});
   });
 });
