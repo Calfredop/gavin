@@ -157,8 +157,8 @@ QR code and then reaches it from anywhere:
   can self-host ([`docs/self-hosting-relay.md`](docs/self-hosting-relay.md)).
 
 The sidebar's **Devices** panel shows each paired phone, where it is
-connected from and what it started. See
-[`docs/companion-mobile.md`](docs/companion-mobile.md) to build it.
+connected from and what it started. To install it, see
+[Gavin Companion](#gavin-companion-ios-and-android) under Install.
 
 ### And underneath
 
@@ -240,6 +240,40 @@ powershell -ExecutionPolicy Bypass -File scripts\start-release-win.ps1
 ```
 
 (`-SkipBuild` launches the installed app as is; `-DryRun` only checks.)
+
+### Gavin Companion (iOS and Android)
+
+The Companion is not in the App Store or Play yet, so it builds from
+source too. Install a **debug** build: until a publisher key is pinned, a
+store-shaped (`--release`) build opens only the Demo Workstation.
+
+You need the wasm target (`rustup target add wasm32-unknown-unknown`),
+plus Xcode for iOS or Android Studio with JDK 21 for Android. Then, once
+per checkout:
+
+```bash
+cd app && npm ci && cd companion-shell && npm ci
+```
+
+From `app/companion-shell`:
+
+```bash
+scripts/compile.sh ios --install <simulator-udid>          # iOS Simulator
+scripts/compile.sh android --install <emulator-serial>     # Android emulator
+DEVELOPMENT_TEAM=<TEAM_ID> scripts/device-drive.sh ios-device <udid>   # a real iPhone over USB
+scripts/compile.sh android --out /tmp/gavin-android        # an APK to `adb install` on a phone
+```
+
+A real iPhone needs a paid Apple Developer team, because the app carries
+the Push Notifications capability.
+
+**To pair**, open Settings → **Remote access** on the desktop and turn it
+on. Then either turn on **Direct connection**, for a phone on the same
+network or tailnet with no Relay, or enter a Relay URL and its admission
+token. In the sidebar's **Devices** panel, press **Pair a device**, scan
+the QR code from the Companion, and confirm the pairing at the desk.
+Builds for the stores, signing and push setup are in
+[`docs/companion-mobile.md`](docs/companion-mobile.md).
 
 Signed and notarized builds for macOS, Windows and Linux come from the
 tagged release workflow — see [`docs/RELEASING.md`](docs/RELEASING.md).
