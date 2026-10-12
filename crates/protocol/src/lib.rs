@@ -17,6 +17,11 @@ compile_error!(
 #[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod transport;
 
+// The daemon's singleton lock: where it is, who holds it, whether that
+// process is still running. Reads the filesystem and the process table.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
+pub mod daemon_lock;
+
 // The Device wire's two contracts. Neither has an operating-system part,
 // so both are here whether or not the `os` feature is: the Companion core
 // depends on them from `wasm32-unknown-unknown`.

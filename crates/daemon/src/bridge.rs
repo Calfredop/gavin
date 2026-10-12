@@ -105,15 +105,32 @@ fn connect(endpoint: &Endpoint) -> anyhow::Result<Stream> {
 /// network home directory is the case this exists for.
 const SPAWN_GRACE: Duration = Duration::from_secs(10);
 
+/// Spawns only while no live daemon holds this build's singleton lock
+/// (`protocol::daemon_lock`). A holder that is not answering yet is
+/// either starting -- and will bind -- or dying after a restart's
+/// Shutdown, with its listener closed but its lock not yet released; a
+/// daemon spawned into either finds the lock held and leaves, which used
+/// to cost the bridge its whole grace. So it waits the holder out, and
+/// spawns once nobody holds it.
 fn connect_or_spawn(endpoint: &Endpoint) -> anyhow::Result<Stream> {
     if let Ok(stream) = Stream::connect(endpoint) {
         return Ok(stream);
     }
-    spawn_daemon()?;
+    let lock = protocol::daemon_lock::lock_path_beside(endpoint.path());
+    let mut spawned = false;
     let deadline = Instant::now() + SPAWN_GRACE;
     loop {
         if let Ok(stream) = Stream::connect(endpoint) {
             return Ok(stream);
+        }
+        if !spawned
+            && !matches!(
+                protocol::daemon_lock::lock_holder(&lock),
+                protocol::daemon_lock::LockHolder::Alive(_)
+            )
+        {
+            spawn_daemon()?;
+            spawned = true;
         }
         if Instant::now() >= deadline {
             anyhow::bail!(

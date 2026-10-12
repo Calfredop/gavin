@@ -283,7 +283,11 @@ mod imp {
             let path = endpoint.path();
             // A socket file left by a daemon that was killed rather than
             // stopped. The caller has already established that nothing
-            // answers on it (`is_listening`), so it is debris.
+            // answers on it (`is_listening`), so it is debris. Safe to
+            // remove because the daemon only gets here holding its build's
+            // singleton lock (`daemon_lock`): two daemons starting at once
+            // used to unlink each other's freshly bound socket here, and
+            // now the second never reaches this line.
             if path.exists() {
                 let _ = std::fs::remove_file(path);
             }

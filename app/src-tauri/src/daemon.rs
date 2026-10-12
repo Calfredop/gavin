@@ -257,6 +257,13 @@ const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
 /// The socket file a killed daemon leaves behind is removed by the next
 /// one when it binds (see `run_server`); the Windows pipe has no such
 /// debris.
+///
+/// **Returns once the old pid has exited**, not merely once its socket
+/// stops answering. A daemon holds its build's singleton lock
+/// (`protocol::daemon_lock`) until its process is gone, and the
+/// listener closes before that -- so a caller that spawned the moment
+/// the socket went quiet started a daemon that found the lock still
+/// held and left, and then reconnected to the one dying.
 pub fn stop_running_daemon(socket_path: &Path) -> anyhow::Result<()> {
     let Ok(stream) = Stream::connect(socket_path) else {
         return Ok(());
@@ -266,13 +273,32 @@ pub fn stop_running_daemon(socket_path: &Path) -> anyhow::Result<()> {
     // owner left to name.
     let owner = stream.server_pid();
     if ask_daemon_to_stop(stream).is_ok() && wait_until_gone(socket_path) {
+        if let Some(pid) = owner {
+            wait_until_exited(pid);
+        }
         return Ok(());
     }
     if let Some(pid) = owner {
         kill_daemon_process(pid)?;
         wait_until_gone(socket_path);
+        wait_until_exited(pid);
     }
     Ok(())
+}
+
+/// How long a stopped daemon gets to finish exiting once its socket has
+/// gone quiet. Its teardown is the kernel's, not its own work, so this is
+/// a bound on a wedged exit rather than a wait anyone expects to use.
+const DAEMON_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// Waits for `pid` to have exited -- a zombie counts, since an exited
+/// daemon has closed its lock whether or not this app has reaped it.
+/// Never for this process: in a test that stands a fake listener in for
+/// the daemon, the owner is the test runner (see `kill_daemon_process`).
+fn wait_until_exited(pid: u32) {
+    if pid != std::process::id() {
+        protocol::daemon_lock::wait_for_exit(pid, DAEMON_EXIT_WAIT);
+    }
 }
 
 /// One `Request::Shutdown`, with the reply read back.

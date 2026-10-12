@@ -27,6 +27,7 @@ mod remote;
 mod screen;
 mod server;
 mod shell;
+mod singleton;
 mod status;
 #[cfg(test)]
 mod testing;
@@ -116,6 +117,13 @@ fn serve() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
+
+    // First, before any store is opened: a second daemon of this build
+    // must leave without bumping the registry generation, recovering the
+    // first one's sessions, sweeping its browsers, resuming Headroom or
+    // minting a token over the one the app holds (`singleton.rs`). The
+    // error is the one line the log gets, and the exit is non-zero.
+    let _singleton = singleton::acquire(&protocol::daemon_lock::daemon_lock_path()?)?;
 
     // `Registry::open` secures its own file; kanban and orchestration
     // don't carry that logic themselves, so it's asserted here instead --
