@@ -1,8 +1,8 @@
 ---
-order: 14336
+order: 2048
 kind: plan
 title: [feat] Replace Superpowers with Matt Pocock's skills
-status: In Progress
+status: Done
 ---
 Replace the Superpowers agent tooling with Matt Pocock's skills set
 (https://github.com/mattpocock/skills — "Skills for Real Engineers", the

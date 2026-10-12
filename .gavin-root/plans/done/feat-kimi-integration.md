@@ -1,6 +1,7 @@
 ---
+order: 5120
 title: [feat] kimi integration
-status: In Progress
+status: Done
 ---
 Add Kimi Code CLI (`kimi`) as Gavin's sixth stock agent profile with full parity to claude-code. Designed in a grilling session (2026-10-05); facts verified against kimi 2.1.1 on this machine plus the official docs (moonshotai.github.io/kimi-code, www.kimi.com/code/docs/en/).
 
