@@ -289,6 +289,25 @@ describe("resolveAgentConfig", () => {
     });
   });
 
+  it("ignores another built-in's command left behind by a profile switch", () => {
+    // arcadiaRN: `profile = "claude-code"` beside codex's bare binary
+    // launched codex under a Claude Code label, card override or not.
+    const r = resolveAgentConfig({ profile: "claude-code", file: null, command: "codex" }, PROFILES, {});
+    expect(r.command).toBe("claude");
+    expect(r.launchCommand).toBe("claude");
+  });
+
+  it("keeps a deliberate command that only resembles another built-in's", () => {
+    for (const command of ["codex --x", "/opt/bin/codex-wrapper", "claude --verbose"]) {
+      expect(resolveAgentConfig({ profile: "claude-code", file: null, command }, PROFILES, {}).command).toBe(command);
+    }
+  });
+
+  it("keeps a custom's command even when it names a built-in's binary", () => {
+    const r = resolveAgentConfig({ profile: "custom-agent", file: null, command: "claude" }, PROFILES, {});
+    expect(r.command).toBe("claude");
+  });
+
   it("falls back to the profile's defaults for absent keys", () => {
     const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
     expect(r.file).toBe("AGENTS.md");

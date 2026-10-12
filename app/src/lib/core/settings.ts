@@ -471,6 +471,31 @@ export interface ResolvedAgent {
   resumeArgs: string;
 }
 
+/// Whether a workspace's explicit `[agent] command` is another built-in
+/// agent's binary, verbatim, left behind by a profile switch that wrote
+/// only `profile`. `profile = "claude-code"` beside `command = "agent"`
+/// launched Cursor under a Claude Code label -- on every route, and on a
+/// card whose own `agent:` named Claude Code too, since a same-profile
+/// override keeps the workspace's command (`agentConfigWithAttribution`).
+/// Re-running the agent wizard on the same profile left it alone, so
+/// nothing the human could pick in the app undid it.
+///
+/// Only an exact match on a DIFFERENT built-in's command counts: a wrapper
+/// script, an absolute path, or the profile's own binary with arguments
+/// is a deliberate choice and still wins. Customs are not consulted --
+/// their commands are the human's own words, and one may well name the
+/// same binary a built-in does on purpose.
+export function isLeftoverCommand(
+  command: string,
+  effective: AgentProfileInfo | undefined,
+  profiles: readonly AgentProfileInfo[]
+): boolean {
+  if (!effective || effective.custom) return false;
+  const own = effective.command.trim();
+  if (!own || command.trim() === own) return false;
+  return profiles.some((p) => !p.custom && p.id !== effective.id && p.command.trim() === command.trim());
+}
+
 /// The last-resort agent: the profile a workspace resolves to when it has
 /// no configured profile AND the app-wide default agent (`AgentDefaults.
 /// defaultAgent`) is empty or names nothing installed.
@@ -516,8 +541,9 @@ export function resolveAgentConfig(
   const fallback = profiles.find((p) => p.id === defaultId) ?? profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
   const profileId = effective?.id ?? defaultId;
+  const explicitCommand = nonEmpty(config?.command);
   const command =
-    nonEmpty(config?.command) ??
+    (explicitCommand && !isLeftoverCommand(explicitCommand, effective, profiles) ? explicitCommand : null) ??
     nonEmpty(effective?.command) ??
     nonEmpty(fallback?.command) ??
     "claude";
