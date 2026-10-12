@@ -730,7 +730,7 @@
   }
   .run {
     background: var(--accent);
-    color: var(--text-inverted);
+    color: var(--on-accent);
   }
   .save:disabled,
   .run:disabled {

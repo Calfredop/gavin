@@ -53,6 +53,8 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "git_log", "`git log`, every refresh while History shows"],
   ["git/commands.rs", "git_commit_detail", "`git show` + `git diff-tree`"],
   ["git/runchanges.rs", "git_diff_since", "`git diff` against a run's baseline"],
+  ["git/compare.rs", "git_compare", "several `git` processes, every refresh while Compare shows"],
+  ["git/compare.rs", "git_compare_diff", "`git diff` between two refs"],
   // The Git tab's actions. Each is its own git plus the refresh after it,
   // 0.7-1.3 s a click with no hooks at all; the ones that run hooks, sign
   // or check files out through a filter wait on whatever those do -- a

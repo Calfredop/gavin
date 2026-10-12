@@ -686,6 +686,16 @@ export const FEATURE_MIN_VERSION = {
   // Devices panel reads to say so under the list, and which the Companion's
   // terminal reads for its lock bar and its Hand over button.
   sessionOwnership: 68,
+  // The owner told when the desk sent input into its session (v70): the
+  // desk host marks a Device's own input with the new `ForwardedInput` TYPE,
+  // and the daemon pushes `SessionDeskInput` for the rest. An older daemon
+  // says nothing, so a phone holding a session would read the silence as
+  // "every line here is mine" -- which that daemon cannot back.
+  //
+  // Consumer: `sessionOwnershipState.ts`'s `deskInputBlocked`, which the
+  // Companion's terminal reads in its Hand over sheet, the one place a
+  // Device holding a session looks at what holding it means.
+  deskInputNotice: 70,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

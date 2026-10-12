@@ -38,6 +38,7 @@ import type {
   Area,
   CommitDetail,
   CommitInfo,
+  CompareSummary,
   ConflictInfo,
   FileDiff,
   FileEntry,
@@ -48,7 +49,7 @@ import type {
   ResetMode,
   StatusResult,
 } from "$lib/git/git";
-import { LOG_PAGE_SIZE } from "$lib/git/git";
+import { LOG_PAGE_SIZE, defaultCompareRefs } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
 import { mayForceRemoval } from "$lib/git/worktreeSweep";
 import { IGNORE_KIND_LABEL, type IgnoreKind } from "$lib/git/gitIgnore";
@@ -101,6 +102,21 @@ export interface GitViewState {
   detailFile: string | null;
   detailDiff: FileDiff | null;
   detailToken: number;
+  // ---- compare ----
+  /// The Compare view: the two refs, the diff mode, the summary the list
+  /// pane draws, and the selected file's diff. `base`/`target` are plain
+  /// revs -- a branch, `origin/name`, a sha, HEAD -- resolved by git.
+  compare: {
+    base: string | null;
+    target: string | null;
+    threeDot: boolean;
+    summary: CompareSummary | null;
+    loading: boolean;
+    selectedPath: string | null;
+    diff: FileDiff | null;
+    diffLoading: boolean;
+  };
+  compareToken: number;
   // ---- conflicts ----
   /// Loaded instead of `diff` when the selected row is a `U` entry.
   conflict: ConflictInfo | null;
@@ -169,6 +185,8 @@ export function initialState(cwd: string): GitViewState {
     detailFile: null,
     detailDiff: null,
     detailToken: 0,
+    compare: { base: null, target: null, threeDot: true, summary: null, loading: false, selectedPath: null, diff: null, diffLoading: false },
+    compareToken: 0,
     conflict: null,
     conflictToken: 0,
     mergeTool: null,
@@ -390,6 +408,7 @@ async function refreshPass(workspaceId: string, release: () => void): Promise<vo
       if (!stale) {
         await loadDiff(workspaceId);
         if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
+        if (current(workspaceId)?.navSelection === "compare") await refreshCompare(workspaceId);
       }
     } catch (e) {
       const text = errorText(e);
@@ -1528,6 +1547,104 @@ export function resetTo(workspaceId: string, sha: string, mode: ResetMode): Prom
 
 export async function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
   return (await runAction(workspaceId, `Continue ${kind}`, (cwd, opId) => backend.gitContinueInProgress(cwd, kind, opId))).ok;
+}
+
+// ---- Compare ---------------------------------------------------------------
+
+/// Sidebar → Compare: swaps the middle/diff columns for the two-ref file
+/// list and the selected file's diff, loading the first summary. The ref
+/// pair is seeded once per view -- a pair the human picked survives
+/// leaving and coming back, the way the log keeps its selected commit.
+export async function selectCompare(workspaceId: string): Promise<void> {
+  update(workspaceId, (st) => {
+    const seeded = st.compare.base !== null && st.compare.target !== null;
+    const defaults = seeded ? {} : defaultCompareRefs(st.refs);
+    return { ...st, navSelection: "compare", stashFiles: null, compare: { ...st.compare, ...defaults } };
+  });
+  await refreshCompare(workspaceId);
+}
+
+export function setCompareBase(workspaceId: string, base: string): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, compare: { ...st.compare, base } }));
+  return refreshCompare(workspaceId);
+}
+
+export function setCompareTarget(workspaceId: string, target: string): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, compare: { ...st.compare, target } }));
+  return refreshCompare(workspaceId);
+}
+
+/// The swap button: base and target trade places, and the ahead/behind
+/// counts trade with them -- git answers that, not the view.
+export function swapCompareRefs(workspaceId: string): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, compare: { ...st.compare, base: st.compare.target, target: st.compare.base } }));
+  return refreshCompare(workspaceId);
+}
+
+export function setCompareMode(workspaceId: string, threeDot: boolean): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, compare: { ...st.compare, threeDot } }));
+  return refreshCompare(workspaceId);
+}
+
+/// Re-asks the summary for the current pair. A read, like `loadLog`:
+/// called from the refresh pass when the Compare view is open, so a
+/// `git-changed` event re-diffs the pair -- and never through `run()`,
+/// since comparing mutates nothing.
+export async function refreshCompare(workspaceId: string): Promise<void> {
+  const s = current(workspaceId);
+  if (!s || !s.compare.base || !s.compare.target) return;
+  const token = s.compareToken + 1;
+  update(workspaceId, (st) => ({ ...st, compareToken: token, compare: { ...st.compare, loading: true } }));
+  try {
+    const summary = await backend.gitCompare(s.cwd, s.compare.base, s.compare.target, s.compare.threeDot);
+    update(workspaceId, (st) => {
+      if (st.compareToken !== token) return st;
+      // The selection follows the same rule as the log's: it stays while
+      // its file is still in the list, and goes with its file otherwise.
+      const stillThere = st.compare.selectedPath !== null && summary.files.some((f) => f.path === st.compare.selectedPath);
+      return {
+        ...st,
+        compare: {
+          ...st.compare,
+          summary,
+          loading: false,
+          selectedPath: stillThere ? st.compare.selectedPath : null,
+          diff: stillThere ? st.compare.diff : null,
+          diffLoading: stillThere ? st.compare.diffLoading : false,
+        },
+      };
+    });
+    const path = current(workspaceId)?.compare.selectedPath;
+    if (path) await loadCompareDiff(workspaceId, path);
+  } catch (e) {
+    update(workspaceId, (st) =>
+      st.compareToken === token ? { ...st, compare: { ...st.compare, loading: false }, error: `Compare failed: ${errorText(e)}` } : st
+    );
+  }
+}
+
+export async function selectCompareFile(workspaceId: string, path: string): Promise<void> {
+  const s = current(workspaceId);
+  if (!s) return;
+  const token = s.compareToken + 1;
+  update(workspaceId, (st) => ({ ...st, compareToken: token, compare: { ...st.compare, selectedPath: path, diff: null, diffLoading: true } }));
+  await loadCompareDiff(workspaceId, path);
+}
+
+async function loadCompareDiff(workspaceId: string, path: string): Promise<void> {
+  const s = current(workspaceId);
+  if (!s || !s.compare.base || !s.compare.target) return;
+  const entry = s.compare.summary?.files.find((f) => f.path === path);
+  const token = s.compareToken;
+  update(workspaceId, (st) => (st.compareToken === token ? { ...st, compare: { ...st.compare, diffLoading: true } } : st));
+  try {
+    const diff = await backend.gitCompareDiff(s.cwd, s.compare.base, s.compare.target, path, entry?.oldPath ?? null, s.compare.threeDot);
+    update(workspaceId, (st) => (st.compareToken === token ? { ...st, compare: { ...st.compare, diff, diffLoading: false } } : st));
+  } catch (e) {
+    update(workspaceId, (st) =>
+      st.compareToken === token ? { ...st, compare: { ...st.compare, diff: null, diffLoading: false }, error: `Diff failed: ${errorText(e)}` } : st
+    );
+  }
 }
 
 // ---- SP3: worktrees --------------------------------------------------------

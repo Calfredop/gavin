@@ -309,10 +309,10 @@
     list-style: none;
     margin: 0 0 18px;
     padding: 0 0 12px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border);
     font-family: monospace;
     font-size: 0.8em;
-    color: #777;
+    color: var(--text-subtle);
   }
   .steps li {
     display: flex;
@@ -320,10 +320,10 @@
     gap: 6px;
   }
   .steps li.current {
-    color: #eee;
+    color: var(--text);
   }
   .steps li.done {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .n {
     display: inline-flex;

@@ -96,6 +96,12 @@ export interface AgentProfileInfo {
   /// True when this row came from `Workspace.customProfiles` (ids are
   /// prefixed `local:`). Absent/false for built-ins and app-wide customs.
   local?: boolean;
+  /// True when this row is a named custom (app-wide or `local:`), not a
+  /// row of agent_setup.rs's table. The one thing a custom's prompt route
+  /// turns on: it has no verified argv, so its card prompt can only
+  /// arrive by injection, and only once the workspace names the MCP file
+  /// gavin writes its own server into (`resolveAgentConfig`).
+  custom?: boolean;
 }
 
 /// Merge built-ins ∪ app-wide customs ∪ workspace locals. Locals are
@@ -138,6 +144,7 @@ function customProfileToInfo(custom: CustomProfile, local: boolean): AgentProfil
     sessionIdDiscovery: "",
     resumeArgs: custom.resumeArgs ?? "",
     usageProbe: null,
+    custom: true,
     ...(local ? { local: true } : {}),
   };
 }
@@ -585,7 +592,14 @@ export function resolveAgentConfig(
     // denying that claude takes a prompt would block every card run in
     // the app with a sentence naming an agent nobody chose.
     promptArgs: effective ? effective.promptArgs : "",
-    promptInjection: effective?.promptInjection ?? false,
+    // A built-in says for itself (kimi-code's row). A named custom has
+    // no verified prompt argv, but once the workspace names a usable MCP
+    // file -- the one gavin writes its own server into -- its agent
+    // connecting gavin-mcp is the handshake the daemon's K3 hold waits
+    // for, so a visible run can launch it bare and type the card in. No
+    // file means nothing ever connects, and the refusal stands.
+    promptInjection:
+      (effective?.promptInjection ?? false) || (effective?.custom === true && customMcpFile !== null),
     untrustedOsc133: effective?.untrustedOsc133 ?? false,
   };
 }

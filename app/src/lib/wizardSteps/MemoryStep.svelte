@@ -79,11 +79,11 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -91,11 +91,11 @@
     display: flex;
     align-items: baseline;
     gap: 10px;
-    background: #2a2a2a;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px 12px;
-    color: #ccc;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -104,14 +104,14 @@
     font-weight: bold;
   }
   .tone-on {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .tone-warn {
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .tone-off,
   .tone-unknown {
-    color: #888;
+    color: var(--text-subtle);
   }
   .line {
     min-width: 0;
@@ -123,9 +123,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -137,6 +137,6 @@
   }
   .actions button.ghost {
     background: none;
-    color: #888;
+    color: var(--text-subtle);
   }
 </style>

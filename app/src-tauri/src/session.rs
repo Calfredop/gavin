@@ -5527,6 +5527,17 @@ pub(crate) fn attach_and_relay(
                 Response::SessionOwnerChanged { ownership } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "session-owner-changed", ownership);
                 }
+                // The desk sent input into a session a Device owns (v70):
+                // offered on to the Devices, whose owner says a line
+                // arrived that it did not type. Only sent to an app that
+                // speaks 70.
+                Response::SessionDeskInput { session_id, owner, at } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "session-desk-input",
+                        serde_json::json!({ "sessionId": session_id, "owner": owner, "at": at }),
+                    );
+                }
                 // The dial's state changed (v61). The payload is the state
                 // itself, so the section redraws without asking again.
                 Response::RelayStateChanged { state } => {
@@ -5813,12 +5824,19 @@ pub fn write_input(
     session_id: String,
     data: String,
     app_handle: AppHandle,
+    request: tauri::ipc::Request<'_>,
     state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let forwarded = crate::forwarding::is_forwarded(&request);
     with_writer(route, &state, &compat, |writer, compat| {
-        send_request(writer, &Request::WriteInput { id: session_id, data }, compat)
+        let req = crate::forwarding::input_request(
+            Request::WriteInput { id: session_id, data },
+            forwarded,
+            compat.daemon_version,
+        );
+        send_request(writer, &req, compat)
     })
     .map_err(|e| e.to_string())
 }
@@ -5850,13 +5868,30 @@ fn queued_inputs(resp: anyhow::Result<Response>) -> Result<Vec<protocol::QueuedI
 #[tauri::command]
 pub async fn queue_input(
     app_handle: AppHandle,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
     session_id: String,
     text: String,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
     let route = crate::remote::route_for_session(&app_handle, &session_id)?;
-    queued_inputs_request(lanes_for(route, &state, &compat), Request::QueueInput { id: session_id, text }).await
+    queued_device_input(
+        lanes_for(route, &state, &compat),
+        Request::QueueInput { id: session_id, text },
+        crate::forwarding::is_forwarded(&request),
+    )
+    .await
+}
+
+/// A follow-up-queue write that may be a Device's, forwarded: marked as
+/// such for a daemon that reads the mark (`forwarding::input_request`).
+async fn queued_device_input(
+    lanes: DaemonLanes,
+    req: Request,
+    forwarded: bool,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    let req = crate::forwarding::input_request(req, forwarded, lanes.compat().daemon_version);
+    queued_inputs_request(lanes, req).await
 }
 
 /// Every session's pending follow-ups, on every daemon the app is
@@ -5910,15 +5945,17 @@ pub async fn set_queued_inputs(
 #[tauri::command]
 pub async fn send_queued_input(
     app_handle: AppHandle,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
     session_id: String,
     queued_id: String,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
     let route = crate::remote::route_for_session(&app_handle, &session_id)?;
-    queued_inputs_request(
+    queued_device_input(
         lanes_for(route, &state, &compat),
         Request::SendQueuedInput { id: session_id, queued_id },
+        crate::forwarding::is_forwarded(&request),
     )
     .await
 }

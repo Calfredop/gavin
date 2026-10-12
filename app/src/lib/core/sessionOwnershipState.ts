@@ -20,13 +20,17 @@ import { daemonCompat } from "$lib/core/layoutState";
 import { setInputGate } from "$lib/terminal/terminalRegistry";
 import {
   busyQuestion,
+  deskInputsStillOwned,
   lockFor,
   ownerRefusalFrom,
   ownersChangeAt,
   ownersFromList,
   refusalText,
   takeLabel,
+  withDeskInput,
   withOwnership,
+  type DeskInput,
+  type DeskInputs,
   type LiveDevice,
   type OwnerRefusal,
   type Owners,
@@ -42,17 +46,32 @@ const viewer = writable<Viewer>(undefined);
 /// The clock a lock's "typed 12s ago" is read against. Moved by a push,
 /// and on `ownersChangeAt`'s schedule while any session is owned.
 const clock = writable(Date.now());
+/// The desk's lines into sessions this window's Device owns, until
+/// dismissed (v70).
+const deskInputs = writable<DeskInputs>({});
 
 export const sessionOwners: Readable<Owners> = { subscribe: owners.subscribe };
 export const liveDevices: Readable<LiveDevice[]> = { subscribe: devices.subscribe };
 export const ownershipViewer: Readable<Viewer> = { subscribe: viewer.subscribe };
 export const ownerClock: Readable<number> = { subscribe: clock.subscribe };
+export const deskInputBySessionId: Readable<DeskInputs> = { subscribe: deskInputs.subscribe };
 
 /// Why this Workstation locks nothing, or null: a daemon older than v68.
 /// A function of the verdict rather than a store over it, so a suite that
 /// mocks part of `layoutState` can still import this module.
 export function ownershipBlocked(compat: DaemonCompat | null): string | null {
   return featureBlockedReason(compat, "sessionOwnership");
+}
+
+/// Why this Workstation never says when the desk sent a line into a
+/// session this Device holds, or null: a daemon older than v70.
+export function deskInputBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "deskInputNotice");
+}
+
+/// Puts away the desk's line into `sessionId`.
+export function dismissDeskInput(sessionId: string): void {
+  deskInputs.update(({ [sessionId]: _gone, ...rest }) => rest);
 }
 
 /// The owner each locked session is locked by, for this window.
@@ -81,6 +100,7 @@ function scheduleClock(): void {
 
 function apply(ownership: SessionOwnership): void {
   owners.update((all) => withOwnership(all, ownership));
+  deskInputs.update((inputs) => deskInputsStillOwned(inputs, get(owners), get(viewer)));
   scheduleClock();
 }
 
@@ -98,6 +118,7 @@ export async function refreshSessionOwners(): Promise<void> {
     owners.set(ownersFromList(list.owners));
     devices.set(list.devices);
     viewer.set(list.you ?? null);
+    deskInputs.update((inputs) => deskInputsStillOwned(inputs, get(owners), get(viewer)));
     scheduleClock();
   } catch {
     // Not knowing who owns a session is not a reason to lock it.
@@ -195,6 +216,9 @@ export function watchSessionOwners(): () => void {
   const releaseGate = setInputGate((sessionId) => lockOf(sessionId) === null);
   const stop: Promise<UnlistenFn>[] = [
     listen<SessionOwnership>("session-owner-changed", (event) => apply(event.payload)),
+    listen<DeskInput>("session-desk-input", (event) =>
+      deskInputs.update((inputs) => withDeskInput(inputs, event.payload, get(viewer)))
+    ),
     // Who a session can be handed to changes with who is connected.
     listen<string>("device-connected", () => void refreshSessionOwners()),
     listen<string>("device-disconnected", () => void refreshSessionOwners()),
@@ -217,6 +241,7 @@ function forget(): void {
   owners.set({});
   devices.set([]);
   viewer.set(undefined);
+  deskInputs.set({});
   if (clockTimer !== null) clearTimeout(clockTimer);
   clockTimer = null;
 }

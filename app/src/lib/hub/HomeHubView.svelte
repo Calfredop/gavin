@@ -516,18 +516,18 @@
     gap: 3px;
     align-items: flex-start;
     text-align: left;
-    background: #1a1a1a;
-    border: 1px solid #3a4a3a;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-success);
     border-radius: 8px;
     padding: 8px 10px;
-    color: #ccc;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
     cursor: pointer;
     flex: 0 0 auto;
   }
   .setup-card span {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .home {
     display: flex;

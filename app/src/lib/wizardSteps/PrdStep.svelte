@@ -7,6 +7,7 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     promptExtrasFor,
+    resolvedAgents,
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
@@ -45,7 +46,11 @@
       $agentDefaultsStore.defaultAgent
     )
   );
-  const profile = $derived($agentProfilesStore.find((p) => p.id === agentCfg.profileId));
+  // The agent startMainAgentWithPrompt would launch, named customs merged
+  // in: the gate has to ask the same resolver the launch does, or a
+  // custom with an MCP file (an injection launch) is hidden for want of a
+  // row in the built-in table.
+  const launchAgent = $derived($resolvedAgents(workspaceId));
 
   const prdBlocked = $derived(featureBlockedReason($daemonCompat, "prdPath"));
   // A document that still has placeholders is the scaffold, and the three
@@ -56,7 +61,7 @@
   // Never offered over a document somebody already wrote: the flow
   // interviews the owner and writes the PRD, which is the opposite of
   // what pointing at an existing one asked for.
-  const canAsk = $derived(agentFlowAvailable(profile) && !ws?.mainSessionId && !authored);
+  const canAsk = $derived(agentFlowAvailable(launchAgent) && !ws?.mainSessionId && !authored);
 
   let vision = $state("");
   let focus = $state("");
@@ -199,8 +204,8 @@
   {/if}
   <button type="button" disabled={busy} onclick={() => void saveMine()}>Continue →</button>
 </div>
-{#if profile && !agentFlowAvailable(profile) && !authored}
-  <p class="hint">“Ask the agent” isn’t available for {profile.label} yet.</p>
+{#if !agentFlowAvailable(launchAgent) && !authored}
+  <p class="hint">“Ask the agent” isn’t available for {launchAgent.label} yet.</p>
 {/if}
 
 <style>
@@ -208,11 +213,11 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 14px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -229,7 +234,7 @@
   .file .label {
     width: 80px;
     flex: 0 0 auto;
-    color: #999;
+    color: var(--text-subtle);
   }
   .path {
     flex: 1;
@@ -241,13 +246,13 @@
        informative end. The &lrm; bookends keep the slashes inside the
        LTR run so a leading one doesn't detach and park on the right. */
     direction: rtl;
-    color: #eee;
+    color: var(--text);
   }
   .pick {
-    background: #2f2f2f;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
@@ -259,7 +264,7 @@
   }
   .note {
     margin: 0 0 12px 90px;
-    color: #8bc98b;
+    color: var(--success-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -268,7 +273,7 @@
     margin-bottom: 10px;
     font-family: monospace;
     font-size: 0.8em;
-    color: #999;
+    color: var(--text-subtle);
   }
   .field span {
     display: block;
@@ -277,17 +282,17 @@
   .field textarea {
     width: 100%;
     box-sizing: border-box;
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 5px 8px;
     resize: vertical;
   }
   .warn {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -298,9 +303,9 @@
     margin-top: 16px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

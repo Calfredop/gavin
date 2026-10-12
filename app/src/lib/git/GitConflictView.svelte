@@ -460,22 +460,18 @@
     margin-right: 6px;
     vertical-align: middle;
   }
-  /* The one place a component reaches tier 1 on purpose. --text-inverted
-     is white, which is the right foreground on --accent and --danger but
-     only 2.2:1 on amber -- and amber is light in BOTH themes, so this
-     badge's foreground is a constant dark rather than a theme-flipped
-     one. The vocabulary has no per-family on-fill foreground; noted as an
-     open item rather than inventing a family of four for one badge. */
   .editor :global(.cm-conflict-num) {
     background: var(--warning);
-    color: var(--grey-0);
+    color: var(--on-warning);
     border-radius: 8px;
     padding: 0 6px;
     font-size: 0.75em;
     font-weight: 700;
   }
+  /* A ring, not a lighter amber: light amber is dark enough to take
+     white, so a lighter step under the same ink would drop it to 2:1. */
   .editor :global(.cm-conflict-badge.active .cm-conflict-num) {
-    background: var(--amber-4);
+    box-shadow: 0 0 0 1.5px var(--text);
   }
   .editor :global(.cm-conflict-act) {
     background: var(--surface-accent);

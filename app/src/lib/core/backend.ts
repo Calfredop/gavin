@@ -23,7 +23,7 @@ import type {
   HumanItemKind,
   HumanItemOutcome,
 } from "$lib/core/gavin";
-import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
+import type { ApplyMode, CommitDetail, CompareSummary, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
 import type { ToolRun } from "$lib/workspace/workspaceTools";
@@ -1666,6 +1666,33 @@ export function gitDiscardRun(
   untracked: string[]
 ): Promise<DiscardReport> {
   return invoke("git_discard_run", { cwd, baseSha, untracked });
+}
+
+/// The changed-file list and the counts between two refs -- the Compare
+/// view's summary. Three-dot diffs from the merge-base (falling back to
+/// the base itself when the refs share no history); two-dot is the plain
+/// tree difference. Refs go to git untouched: a remote-tracking branch
+/// compares against whatever the last fetch left.
+export function gitCompare(
+  cwd: string,
+  baseRef: string,
+  targetRef: string,
+  threeDot: boolean
+): Promise<CompareSummary> {
+  return invoke("git_compare", { cwd, baseRef, targetRef, threeDot });
+}
+
+/// One file's diff between the same endpoints `gitCompare` listed it
+/// under. `oldPath` is the rename's old name, as for `gitDiff`.
+export function gitCompareDiff(
+  cwd: string,
+  baseRef: string,
+  targetRef: string,
+  path: string,
+  oldPath: string | null,
+  threeDot: boolean
+): Promise<FileDiff> {
+  return invoke("git_compare_diff", { cwd, baseRef, targetRef, path, oldPath, threeDot });
 }
 
 export function gitStageFiles(cwd: string, paths: string[]): Promise<void> {

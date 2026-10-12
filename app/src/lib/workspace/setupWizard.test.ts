@@ -697,6 +697,20 @@ describe("agentFlowAvailable", () => {
     expect(agentFlowAvailable(undefined)).toBe(false);
   });
 
+  // K3: no prompt argv, but the prompt is typed in once the agent's MCP
+  // server connects -- kimi-code's row, or a custom whose workspace names
+  // its MCP file (resolveAgentConfig sets the flag for both).
+  it("is true for an injection profile: kimi-code or a custom with an MCP file", () => {
+    expect(agentFlowAvailable({ promptArgs: null, promptInjection: true })).toBe(true);
+  });
+
+  // Cursor's null, or a custom with no MCP file named: nothing would ever
+  // deliver the prompt, so the step keeps hiding the option.
+  it("stays false for a profile with neither a prompt argv nor injection", () => {
+    expect(agentFlowAvailable({ promptArgs: null, promptInjection: false })).toBe(false);
+    expect(agentFlowAvailable({ promptArgs: null })).toBe(false);
+  });
+
   // The regression this guards: `promptArgs` is a PREFIX, and the bare
   // positional's prefix is the empty string. A truthiness check would
   // hide "Ask the agent" from claude-code, codex and gemini alike --

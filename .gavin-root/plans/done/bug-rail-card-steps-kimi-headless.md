@@ -1,6 +1,7 @@
 ---
+order: 3072
 title: [bug] rail card steps refuse kimi-code: launcher never consults headless_args
-status: In Progress
+status: Done
 priority: high
 attachments: app/src/lib/cards/cardRun.ts, app/src-tauri/src/agent_setup.rs, .gavin-root/plans/bug-kimi-launch-integrations.md
 complexity: complex

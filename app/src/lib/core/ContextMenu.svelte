@@ -203,7 +203,7 @@
     color: var(--text);
   }
   .item-switch.active {
-    color: var(--danger);
+    color: var(--danger-text);
     background: var(--surface-selected);
   }
   .item-switch:disabled {

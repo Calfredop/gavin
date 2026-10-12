@@ -2908,6 +2908,24 @@ impl SessionManager {
         self.session_owners.lock().unwrap().desk_input(session_id, crate::remote::epoch_seconds());
     }
 
+    /// Input the desk sent into `session_id` (v70) -- a rail's prompt, a
+    /// follow-up, a card handed to an agent: told to the Device that owns
+    /// the session, if one does, so a line it did not type does not
+    /// arrive unexplained. The desk offers it on (`session-desk-input`).
+    fn note_desk_injection(&self, session_id: &str) {
+        let owner = self.session_owners.lock().unwrap().owner_of(session_id).map(str::to_string);
+        if let Some(owner) = owner {
+            self.push_to_apps_speaking(
+                protocol::DESK_INPUT_NOTICE_MIN_VERSION,
+                &Response::SessionDeskInput {
+                    session_id: session_id.to_string(),
+                    owner,
+                    at: crate::remote::epoch_seconds(),
+                },
+            );
+        }
+    }
+
     /// `SetSessionOwner`, from a Device or (`None`) the desk.
     fn set_session_owner(
         &self,
@@ -3952,6 +3970,9 @@ impl SessionManager {
         let watcher = self
             .find_watcher_by_root(root_path)
             .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        // The one kimi launch the app's `create_session` never sees, so
+        // its folder-trust grant is made here, by the same rule.
+        crate::kimi_trust::prepare_spawn(root_path, cwd, command);
         // Nobody's word for what this is, so the command line speaks for
         // itself: compressed when its first token is an agent gavin has
         // a recipe for, exactly like a launch from the app.
@@ -6307,6 +6328,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.delete_group_template(&id).map(|_| Response::Ok)
         }
         Request::Hello { .. } => unreachable!("Hello is intercepted in handle_connection"),
+        Request::ForwardedInput { .. } => {
+            unreachable!("ForwardedInput is unwrapped in handle_connection")
+        }
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
         Request::Snapshot { .. } => {
             unreachable!("Snapshot is intercepted in handle_connection")
@@ -7088,6 +7112,8 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // desk or on a Device; an agent has no Device to take it as.
         | Request::SetSessionOwner { .. }
         | Request::ListSessionOwners
+        // The desk host's write for a Device; an agent is neither.
+        | Request::ForwardedInput { .. }
         | Request::ResizeSession { .. }
         | Request::KillSession { .. }
         | Request::Attach { .. }
@@ -7722,6 +7748,8 @@ fn serve_connection(
     let fixed_by_transport = initial_identity.device_id.is_some();
     let mut identity = initial_identity;
     let mut hello_seen = false;
+    // The version this connection's `Hello` said it speaks; 0 without one.
+    let mut speaks = 0;
 
     // An `app` connection is registered the moment its `Hello` proves the
     // daemon token, and deregistered by this guard however the loop
@@ -7791,6 +7819,7 @@ fn serve_connection(
             }
             let (id, ack) = manager.resolve_hello(auth, nonce);
             identity = id;
+            speaks = *protocol_version;
             // Only a connection that can READ a push is registered for
             // them: a command connection takes the next message as the
             // reply to its request, so a push written to it mid-request
@@ -7970,6 +7999,30 @@ fn serve_connection(
             continue;
         }
 
+        // The desk host's write for a Device (v70): served as the bare
+        // request below, knowing the input was the Device's. Only the
+        // desk's host makes one, and only of input.
+        let (req, for_device) = match req {
+            Request::ForwardedInput { request } => match *request {
+                inner @ (Request::WriteInput { .. } | Request::QueueInput { .. } | Request::SendQueuedInput { .. })
+                    if identity.role == Role::App =>
+                {
+                    (inner, true)
+                }
+                _ => {
+                    write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::Error {
+                            message: "gavin-daemon: ForwardedInput carries a Device's input from the desk's app, and nothing else"
+                                .to_string(),
+                        },
+                    )?;
+                    continue;
+                }
+            },
+            req => (req, false),
+        };
+
         // The desk typing into a session (v68): what a Device that would
         // take a session nobody owns is asked about first. Only keystrokes
         // -- a queued follow-up is a rail or a card as often as a person --
@@ -7977,12 +8030,25 @@ fn serve_connection(
         // tracking the mouse, every pointer move over its tab is a write,
         // and a phone would be told the desk is typing while nobody is.
         // A Device's connection cannot send this request at all
-        // (`remote_allows`), so every one is the desk's.
-        if let Request::WriteInput { id, data } = &req {
-            if !is_focus_report(data.as_bytes()) && !is_mouse_report(data.as_bytes()) {
-                manager.note_desk_input(id);
+        // (`remote_allows`), so every one is the desk's -- its human's,
+        // its rails', or (`for_device`) a Device's, forwarded.
+        //
+        // And the desk's input into a session a Device owns is told to
+        // that Device once it has been served (v70). Only on a connection
+        // that speaks 70: an older host sends a Device's own forwarded
+        // input bare, and the owner would be told of every line it typed.
+        let typed = match &req {
+            Request::WriteInput { id, data } if !for_device => {
+                let keystroke = !is_focus_report(data.as_bytes()) && !is_mouse_report(data.as_bytes());
+                if keystroke {
+                    manager.note_desk_input(id);
+                }
+                keystroke.then(|| id.clone())
             }
-        }
+            Request::QueueInput { id, .. } | Request::SendQueuedInput { id, .. } if !for_device => Some(id.clone()),
+            _ => None,
+        };
+        let desk_input = typed.filter(|_| speaks >= protocol::DESK_INPUT_NOTICE_MIN_VERSION);
 
         if let Request::Attach { id } = req {
             manager.attach(&id, Arc::clone(&writer));
@@ -8137,6 +8203,9 @@ fn serve_connection(
 
         let response = handle_request(&manager, req);
         write_message(&mut *writer.lock().unwrap(), &response)?;
+        if let Some(session_id) = desk_input.filter(|_| !matches!(response, Response::Error { .. })) {
+            manager.note_desk_injection(&session_id);
+        }
     }
     Ok(())
 }

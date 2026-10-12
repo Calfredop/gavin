@@ -21,23 +21,35 @@ import { companionSources } from "$companion/testing/companionSources";
 import {
   contrastRatio,
   drawnComponents,
+  inklessFills,
+  isOnFillRole,
   isTextRole,
   themeColours,
   untextedColours,
   type Theme,
 } from "$companion/testing/textColours";
+import { allSources } from "$lib/sources";
 import phoneCss from "$companion/surfaces/phone.css?raw";
 import themeCss from "$lib/ui/theme.css?raw";
 
 /// WCAG 2 AA, text under 18px (14px bold).
 const AA_TEXT = 4.5;
 
-/// Text roles drawn on something other than a surface, with what holds
-/// them instead.
-const OFF_SURFACE: Record<string, string> = {
-  "--text-inverted":
-    "white on a coloured fill (an accent or danger button, a badge), never on a surface: theme-text-on-fills-and-literal-colours-contrast.md",
-};
+/// The coloured fills text is drawn on: a filled button, a badge, a
+/// checkbox tick. Each takes its own ink, `--on-<fill>`.
+const FILLS = ["--accent", "--success", "--warning", "--danger"];
+
+/// Inks under 4.5:1 on their fill today, each waiting on the owner's
+/// choice between darker fills under white and a dark ink on the fills as
+/// they are (the Decision on theme-text-on-fills-and-literal-colours-
+/// contrast.md). Whichever lands clears these, and the test below fails
+/// until the entry goes with it.
+const PENDING_FILL_DECISION = [
+  "dark: --on-accent on --accent",
+  "dark: --on-success on --success",
+  "dark: --on-danger on --danger",
+  "light: --on-accent on --accent",
+];
 
 const THEMES: Theme[] = ["dark", "light"];
 const COLOURS = themeColours(themeCss);
@@ -72,7 +84,7 @@ describe("theme.css's text roles", () => {
     const low: string[] = [];
     for (const theme of THEMES) {
       const surfaces = rolesOf(theme, (n) => n.startsWith("--surface-"));
-      for (const text of rolesOf(theme, (n) => isTextRole(n) && !(n in OFF_SURFACE))) {
+      for (const text of rolesOf(theme, isTextRole)) {
         for (const surface of surfaces) {
           const ratio = contrastRatio(COLOURS[theme][text], COLOURS[theme][surface]);
           if (ratio < AA_TEXT) low.push(`${theme}: ${text} on ${surface} is ${ratio.toFixed(2)}:1`);
@@ -82,10 +94,30 @@ describe("theme.css's text roles", () => {
     expect(low).toEqual([]);
   });
 
-  it("leave out only the roles named above, each of which theme.css still defines", () => {
+});
+
+describe("theme.css's inks on the coloured fills", () => {
+  const pairs = (theme: Theme) =>
+    FILLS.map((fill) => {
+      const ink = `--on-${fill.slice(2)}`;
+      return { name: `${theme}: ${ink} on ${fill}`, ratio: contrastRatio(COLOURS[theme][ink], COLOURS[theme][fill]) };
+    });
+
+  it("are one per fill, in both themes, and nothing else is named as an ink", () => {
     for (const theme of THEMES) {
-      for (const name of Object.keys(OFF_SURFACE)) expect(COLOURS[theme][name], `${theme} ${name}`).toBeDefined();
+      expect(rolesOf(theme, isOnFillRole), theme).toEqual(FILLS.map((f) => `--on-${f.slice(2)}`).sort());
+      for (const fill of FILLS) expect(COLOURS[theme][fill], `${theme} ${fill}`).toBeDefined();
     }
+  });
+
+  it("clear 4.5:1 on their fill", () => {
+    const low = THEMES.flatMap(pairs).filter((p) => p.ratio < AA_TEXT && !PENDING_FILL_DECISION.includes(p.name));
+    expect(low.map((p) => `${p.name} is ${p.ratio.toFixed(2)}:1`)).toEqual([]);
+  });
+
+  it("leave pending only pairs that still fall short", () => {
+    const passing = THEMES.flatMap(pairs).filter((p) => p.ratio >= AA_TEXT).map((p) => p.name);
+    expect(PENDING_FILL_DECISION.filter((name) => passing.includes(name))).toEqual([]);
   });
 });
 
@@ -97,6 +129,7 @@ describe("the phone's text", () => {
       expect.arrayContaining(["$lib/git/GitFileRow.svelte", "$lib/board/BoardCard.svelte"])
     );
     expect(untextedColours(drawn)).toEqual([]);
+    expect(inklessFills(drawn, FILLS)).toEqual([]);
   });
 
   it("is caught when a colour comes from a fill or a literal", () => {
@@ -110,5 +143,50 @@ describe("the phone's text", () => {
     expect(untextedColours(style(".a { --tone: var(--accent); } .b { color: var(--tone, var(--text)); }"))).toHaveLength(1);
     // Not a text colour, so not this guard's.
     expect(untextedColours(style(".a { background-color: #888; border-color: var(--accent); }"))).toEqual([]);
+    expect(untextedColours(style(".a { background: var(--accent); color: var(--on-accent); }"))).toEqual([]);
+  });
+
+  it("is caught when it sits on a fill in anything but that fill's ink", () => {
+    const style = (css: string) => ({ "X.svelte": `<div></div>\n<style>${css}</style>` });
+    expect(inklessFills(style(".a { background: var(--accent); color: var(--on-accent); }"), FILLS)).toEqual([]);
+    expect(inklessFills(style(".a { background: var(--accent); color: var(--text); }"), FILLS)).toEqual(["X.svelte: .a"]);
+    expect(inklessFills(style(".a { background-color: var(--warning); color: var(--on-accent); }"), FILLS)).toHaveLength(1);
+    // A fill with no text colour of its own: a bar, an LED.
+    expect(inklessFills(style(".a { background: var(--success); }"), FILLS)).toEqual([]);
+    // A tint is a surface, not a fill.
+    expect(inklessFills(style(".a { background: var(--surface-accent); color: var(--accent-text); }"), FILLS)).toEqual([]);
+  });
+});
+
+/// Text the desktop paints outside the text roles on purpose, with why.
+/// Each entry is a `file: color: value` the sweep below would otherwise
+/// report.
+const PLATFORM_COLOURS: Record<string, string> = {
+  "WindowControls.svelte: color: rgba(0, 0, 0, 0.5)":
+    "the glyphs on macOS's traffic lights, drawn as the platform draws them on its own fixed fills",
+  "WindowControls.svelte: color: #fff":
+    "Windows' close button, white on its own fixed red (#e81123), 4.63:1 -- measured below",
+};
+
+describe("the desktop's text", () => {
+  // The Companion suite is the one that can read theme.css as text, so
+  // the desktop's half of the rule is held here too: every component
+  // under $lib, not only the ones a phone draws.
+  const desktop = Object.fromEntries(Object.entries(allSources()).filter(([path]) => path.endsWith(".svelte")));
+
+  it("is painted in text roles, in every $lib component", () => {
+    // A sweep over nothing passes.
+    expect(Object.keys(desktop).length).toBeGreaterThan(100);
+    const found = untextedColours(desktop);
+    expect(found.filter((line) => !(line in PLATFORM_COLOURS))).toEqual([]);
+  });
+
+  it("sits on a coloured fill only in that fill's ink, in every $lib component", () => {
+    expect(inklessFills(desktop, FILLS)).toEqual([]);
+  });
+
+  it("leaves out only the platform colours named above, each still drawn", () => {
+    expect(untextedColours(desktop)).toEqual(expect.arrayContaining(Object.keys(PLATFORM_COLOURS)));
+    expect(contrastRatio("#fff", "#e81123")).toBeGreaterThan(AA_TEXT);
   });
 });

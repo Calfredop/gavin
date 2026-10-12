@@ -836,7 +836,7 @@ pub enum FolderTrust {
     /// this folder is not trusted; skipped N project-level MCP server`.
     /// The record is `<kimi home>/workspace-trust/<wd_key>` holding
     /// `{"root": <physical path>, "trustedAt": <ms>}`, with
-    /// `wd_key = wd_<slug>_<sha256(root)[:12]>` (`kimi_workdir_key`).
+    /// `wd_key = wd_<slug>_<sha256(root)[:12]>` (`kimi_trust::workdir_key`).
     ///
     /// Read out of the kimi 2.1.1 binary (`workdir-slug.ts`,
     /// `trustRecord.ts`) and then proven against it in a scratch
@@ -2432,117 +2432,34 @@ fn isolate_refusal(layout: &ResolvedMcp) -> String {
 // user's own agent state. Everything that keeps that from being a blank
 // cheque lives in `grant_folder_trust`.
 
-/// What `grant_folder_trust` came to, for the integration report.
-#[derive(Debug, PartialEq, Eq)]
-enum TrustGrant {
-    /// A record was written at this path.
-    Written(PathBuf),
-    /// The folder already has one -- the human's own answer to the CLI's
-    /// prompt, or an earlier run's. Left exactly as it was.
-    Present,
-    /// Not granted, and why, in words the wizard can show as they are.
-    Withheld(String),
-}
+/// What `grant_folder_trust` came to, for the integration report. The
+/// key, the record and the launch rule live in `protocol::kimi_trust`,
+/// which the daemon reads too (an agent's `gavin_spawn_session` never
+/// passes through this host), so they are held in one place.
+use protocol::kimi_trust::Grant as TrustGrant;
 
-/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\host\share` becomes
-/// `\\host\share`: the spelling `std::fs::canonicalize` gives on Windows,
-/// which no process's own cwd ever has -- and the cwd is what kimi keys
-/// its records on.
-fn without_verbatim_prefix(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else {
-        path.to_string()
+/// `protocol::kimi_trust`'s view of a `WorkspaceFiles`.
+struct TrustDisk<'a>(&'a dyn WorkspaceFiles);
+
+impl protocol::kimi_trust::TrustFiles for TrustDisk<'_> {
+    fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
+        self.0.canonical_dir(path)
+    }
+    fn is_file(&self, path: &Path) -> bool {
+        self.0.is_file(path)
+    }
+    fn read_to_string(&self, path: &Path) -> anyhow::Result<Option<String>> {
+        self.0.read_to_string(path)
+    }
+    fn write_private(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+        self.0.write_private(path, contents)
     }
 }
 
-/// kimi's `canonicalWorkspaceRoot` for a path that is already absolute and
-/// physical: backslashes to `/`, trailing `/` dropped, and a drive or UNC
-/// shaped path lowercased (Windows paths compare case-insensitively).
-fn kimi_canonical_root(path: &str) -> String {
-    let slashed = path.replace('\\', "/");
-    let bytes = slashed.as_bytes();
-    let win_shaped = slashed.starts_with("//")
-        || (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/');
-    let trimmed = slashed.trim_end_matches('/');
-    let key = if win_shaped { trimmed.to_lowercase() } else { trimmed.to_string() };
-    if key.is_empty() {
-        slashed
-    } else {
-        key
-    }
-}
-
-/// The directory-name part of a kimi workdir key: kimi's
-/// `slugifyWorkDirName`. Lowercased, every run outside `[a-z0-9._-]`
-/// collapsed to one `-`, `-` trimmed from both ends, cut to 40, trimmed
-/// again, and `workspace` when nothing usable is left.
-fn kimi_slug(name: &str) -> String {
-    let mut slug = String::new();
-    let mut in_run = false;
-    for c in name.to_lowercase().chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') {
-            slug.push(c);
-            in_run = false;
-        } else if !in_run {
-            slug.push('-');
-            in_run = true;
-        }
-    }
-    let slug: String = slug.trim_matches('-').chars().take(40).collect();
-    let slug = slug.trim_matches('-');
-    if matches!(slug, "" | "." | "..") {
-        "workspace".to_string()
-    } else {
-        slug.to_string()
-    }
-}
-
-/// kimi's `encodeWorkDirKey`: `wd_<slug of the last segment>_<first 12 hex
-/// of sha256 of the whole normalised path>`. The hash covers the whole
-/// path, so a repository and each of its worktrees are different
-/// workspaces -- which is also why a trusted parent does not cover a
-/// child (proved against kimi 2.1.1, 2026-10-06).
-///
-/// Read out of the kimi binary and checked against every key kimi itself
-/// wrote on the machine it was verified on (see the test); a rule this
-/// exact is not something to re-derive from two samples.
-fn kimi_workdir_key(path: &str) -> String {
-    let slashed = path.replace('\\', "/");
-    let normalized = slashed.trim_end_matches('/');
-    let last = normalized.rsplit('/').next().unwrap_or(normalized);
-    // `hash_token_hex` is named for the tokens it was written for and is
-    // plain SHA-256 of the string's UTF-8 bytes, which is all this needs.
-    let hash = protocol::hash_token_hex(normalized);
-    format!("wd_{}_{}", kimi_slug(last), &hash[..12])
-}
-
-/// The trust key for a workspace root: canonical first (kimi's
-/// `trustKey`), then the workdir key of THAT.
-fn kimi_trust_key(root: &str) -> String {
-    kimi_workdir_key(&kimi_canonical_root(root))
-}
-
-/// The record's bytes, in kimi's own compact shape.
-fn kimi_trust_record(root: &str, trusted_at_ms: u128) -> String {
-    serde_json::json!({ "root": root, "trustedAt": trusted_at_ms as u64 }).to_string()
-}
-
-/// kimi's home: `KIMI_CODE_HOME` when it names an absolute directory
-/// (documented, and what the scratch setups in the spike use), else
-/// `~/.kimi-code`. A relative value is ignored rather than guessed at --
-/// kimi would resolve it against a cwd gavin does not know.
-fn kimi_home_from(home: &Path, override_dir: Option<std::ffi::OsString>) -> PathBuf {
-    match override_dir.map(PathBuf::from) {
-        Some(dir) if dir.is_absolute() => dir,
-        _ => home.join(".kimi-code"),
-    }
-}
-
+/// kimi's home on the disk `fs` is: `KIMI_CODE_HOME` of that machine,
+/// else `~/.kimi-code` (`kimi_trust::home_from`).
 fn kimi_home(fs: &dyn WorkspaceFiles, home: &Path) -> PathBuf {
-    kimi_home_from(home, fs.env_var("KIMI_CODE_HOME"))
+    protocol::kimi_trust::home_from(home, fs.env_var("KIMI_CODE_HOME"))
 }
 
 fn unix_millis() -> u128 {
@@ -2626,16 +2543,9 @@ fn try_grant_folder_trust(
         }
     }
 
-    // kimi keys on its own cwd, which is the PHYSICAL path.
-    let physical = without_verbatim_prefix(
-        &fs.canonical_dir(root).unwrap_or_else(|| root.to_path_buf()).to_string_lossy(),
-    );
-    let record = kimi_home(fs, &home).join("workspace-trust").join(kimi_trust_key(&physical));
-    if fs.is_file(&record) {
-        return Ok(TrustGrant::Present);
-    }
-    fs.write_private(&record, kimi_trust_record(&physical, unix_millis()).as_bytes())?;
-    Ok(TrustGrant::Written(record))
+    // kimi keys on its own cwd, which is the PHYSICAL path; never over
+    // an existing record.
+    protocol::kimi_trust::write_record(&TrustDisk(fs), &kimi_home(fs, &home), root, unix_millis())
 }
 
 // --- Kimi's fullscreen TUI ---------------------------------------------
@@ -2741,47 +2651,18 @@ fn set_kimi_fullscreen(fs: &dyn WorkspaceFiles) -> TuiModeGrant {
     }
 }
 
-/// What kimi's folder-trust launch grant needs from the MCP config files,
-/// read through whatever `WorkspaceFiles` the caller runs on.
-fn mcp_server_count(fs: &dyn WorkspaceFiles, file: &Path) -> Option<usize> {
-    let text = fs.read_to_string(file).ok()??;
-    if text.trim().is_empty() {
-        return Some(0);
-    }
-    let doc = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-    Some(doc.get("mcpServers").and_then(|servers| servers.as_object()).map_or(0, |servers| servers.len()))
-}
-
 /// Grants kimi's per-folder trust record for a session LAUNCH about to
-/// run in `cwd`, when `cwd` sits strictly inside a gavin workspace whose
-/// project MCP configuration the integration already vetted.
+/// run in `cwd`: a context folder below the workspace root, or a gavin
+/// worktree under `.gavin-worktrees` (decision A, feat-kimi-integration),
+/// neither of which the root's record covers. The rule -- strictly
+/// inside the root, no MCP file declared at a level in between except a
+/// worktree's own root, that worktree's files and the root's saying only
+/// what gavin writes, never over an existing record -- is
+/// `protocol::kimi_trust::launch_grant`, which documents why each part
+/// is there.
 ///
-/// Why launches need their own grant: kimi keys the record on the
-/// process's exact cwd, a trusted PARENT does not cover a child (proved
-/// against 2.1.1, 2026-10-06), and cards launch in context folders
-/// below the workspace root. Such a launch used to stop at the trust
-/// screen -- before any MCP server (gavin's included) started, so the
-/// daemon's queued card prompt, pasted into a screen that was not the
-/// chat input, was lost and the run "never started"
-/// (bug-kimi-launch-folder-trust).
-///
-/// What keeps this from being a blank cheque, given the record starts
-/// every project MCP target kimi discovers from `cwd` upward:
-///
-/// - `cwd` must be STRICTLY INSIDE the workspace root. The root's own
-///   record is the integration's grant (or the human's own answer at
-///   kimi's prompt), and this function never revisits that decision.
-/// - No `.mcp.json` or `.kimi-code/mcp.json` may sit in any directory
-///   from `cwd` up to (excluding) the root: a file there declares
-///   servers the integration's disclosure never showed the human.
-/// - The root's own files must still say what the integration vetted:
-///   `.kimi-code/mcp.json` declaring nothing, and `.mcp.json` (when
-///   present) declaring no server beyond the one gavin's merge writer
-///   manages (`McpLayout::server_key`) and the Playwright step's entry,
-///   exactly as gavin writes it (`own_command` plus `playwright`). A
-///   later-added foreign server turns the grant off, not on.
-/// - `try_grant_folder_trust` never overwrites an existing record: the
-///   human's own answer at kimi's prompt stands.
+/// Only on a disk with a home to write to (`agent_home`): an ssh
+/// workspace's record belongs on the host, out of reach from here.
 ///
 /// `None` means "no grant", by shape or by policy -- not an error: kimi
 /// asks once at its trust screen, exactly as it did before this
@@ -2796,50 +2677,14 @@ fn grant_kimi_launch_trust(
     workspace_root: &Path,
     own_command: Option<&str>,
 ) -> Option<TrustGrant> {
-    let physical_cwd = fs.canonical_dir(cwd)?;
-    let physical_root = fs.canonical_dir(workspace_root)?;
-    if physical_cwd == physical_root || !physical_cwd.starts_with(&physical_root) {
-        return None;
-    }
-    // No MCP declaration between the launch folder and the root: kimi
-    // walks upward from the cwd, so a file at any level in between
-    // would hand servers this grant never disclosed a way to start.
-    let mut dir = physical_cwd.as_path();
-    while dir != physical_root {
-        if fs.is_file(&dir.join(".mcp.json")) || fs.is_file(&dir.join(".kimi-code").join("mcp.json")) {
-            return None;
-        }
-        dir = dir.parent()?;
-    }
-    // The root's own files still declare nothing the integration did
-    // not vet. Unreadable or invalid JSON withholds -- what the grant
-    // would start is then unknown, the same posture
-    // `try_grant_folder_trust` takes; an absent file declares nothing
-    // (a `None` freshness below reads as `usize::MAX`, never 0).
-    let own = physical_root.join(".kimi-code").join("mcp.json");
-    if fs.is_file(&own) && mcp_server_count(fs, &own).unwrap_or(usize::MAX) != 0 {
-        return None;
-    }
-    let shared = physical_root.join(".mcp.json");
-    if fs.is_file(&shared) {
-        match mcp_server_count(fs, &shared) {
-            Some(0) => {}
-            Some(_) => {
-                // Non-empty: every server must be gavin's own.
-                let gavins = |s: &ForeignMcpServer| {
-                    s.name == "gavin"
-                        || own_command.is_some_and(|c| crate::agent_playwright::is_gavins_entry(s, c))
-                };
-                if !mcp_servers_in(fs, &shared, McpFormat::JsonServers).ok()?.iter().all(gavins) {
-                    return None;
-                }
-            }
-            None => return None,
-        }
-    }
-    Some(
-        try_grant_folder_trust(fs, FolderTrust::KimiRecord, &physical_cwd)
-            .unwrap_or_else(|e| TrustGrant::Withheld(format!("could not write the trust record ({e})"))),
+    let home = fs.agent_home()?;
+    protocol::kimi_trust::launch_grant(
+        &TrustDisk(fs),
+        &kimi_home(fs, &home),
+        cwd,
+        workspace_root,
+        own_command,
+        unix_millis(),
     )
 }
 
@@ -2997,7 +2842,8 @@ exit 0
 /// Everything a kimi launch needs from the human's own kimi state,
 /// applied to this machine's disk before the session spawns: the
 /// folder-trust record for the launch cwd (a card's context folder
-/// below the root has none from the integration), and the config.toml
+/// below the root, or a rail's or Best-of-N's worktree under
+/// `.gavin-worktrees`, has none from the integration), and the config.toml
 /// entries a launched session should run with (permission default,
 /// attention hooks, the hook script). All no-ops on every launch after
 /// the first; a withheld trust grant leaves kimi asking at its screen,
@@ -5580,91 +5426,11 @@ mod tests {
     /// The path kimi sees as its cwd for `dir`: physical, and spelled the
     /// way a process's own cwd is.
     fn physical(dir: &Path) -> String {
-        without_verbatim_prefix(&std::fs::canonicalize(dir).unwrap().to_string_lossy())
+        protocol::kimi_trust::without_verbatim_prefix(&std::fs::canonicalize(dir).unwrap().to_string_lossy())
     }
 
     fn record_path(home: &Path, root: &str) -> PathBuf {
-        home.join(".kimi-code").join("workspace-trust").join(kimi_trust_key(root))
-    }
-
-    /// The first three rows are keys kimi 2.1.1 wrote itself, on the
-    /// machine it was verified on -- the reproduction that mattered is
-    /// that they come out byte for byte. (The same check also passed for
-    /// two more, longer-path entries, and for a key gavin computed that a
-    /// live `kimi -p` then honoured; those paths name a person and a
-    /// session, so they are not carried here.) The Windows rows come from
-    /// kimi's source (`workspaceRootKey`), not from a Windows run -- K16.
-    #[test]
-    fn kimi_trust_keys_match_the_ones_kimi_wrote() {
-        for (root, key) in [
-            ("/private/tmp", "wd_tmp_11fe14a563f7"),
-            ("/private/tmp/kimi-spike", "wd_kimi-spike_7f16626aeb0a"),
-            ("/private/tmp/kimi-spike2", "wd_kimi-spike2_d612afd43a8e"),
-            // A trailing separator is not part of the identity.
-            ("/private/tmp/kimi-spike/", "wd_kimi-spike_7f16626aeb0a"),
-            // A drive path is lowercased and slashed before it is hashed,
-            // and `std::fs::canonicalize`'s verbatim spelling is stripped.
-            (r"C:\Users\Ada\Repo\", "wd_repo_dbf5f7ee08cf"),
-            (r"\\?\C:\Users\Ada\Repo", "wd_repo_dbf5f7ee08cf"),
-            (r"\\?\UNC\Server\Share\Proj", "wd_proj_49ea924784e1"),
-        ] {
-            assert_eq!(kimi_trust_key(&without_verbatim_prefix(root)), key, "{root}");
-        }
-        // Trust does not inherit: a trusted parent left its child's warning
-        // standing when run against kimi 2.1.1 (2026-10-06). A worktree is
-        // its own workspace, so it gets its own key and needs its own record.
-        assert_ne!(
-            kimi_trust_key("/work/repo"),
-            kimi_trust_key("/work/repo/.gavin-worktrees/wt")
-        );
-    }
-
-    #[test]
-    fn kimi_slugs_follow_its_rule() {
-        let long = "x".repeat(60);
-        let dashed = format!("ab{}cd", "-".repeat(50));
-        let cut_on_a_dash = format!("{} b", "a".repeat(39));
-        for (name, slug) in [
-            ("My Project (v2)", "my-project-v2"),
-            ("UPPER_case.Name", "upper_case.name"),
-            ("a é b", "a-b"),
-            ("Çafé-ñ", "af"),
-            // Nothing usable left: kimi's own fallback.
-            ("..", "workspace"),
-            (".", "workspace"),
-            ("", "workspace"),
-            ("---", "workspace"),
-            ("é", "workspace"),
-            // Cut at 40, then trimmed again -- so a cut that lands on a
-            // dash does not leave one behind.
-            (long.as_str(), &"x".repeat(40)),
-            (dashed.as_str(), "ab"),
-            (cut_on_a_dash.as_str(), &"a".repeat(39)),
-        ] {
-            assert_eq!(kimi_slug(name), slug, "{name:?}");
-        }
-    }
-
-    /// Byte for byte what kimi 2.1.1 wrote for `/private/tmp/kimi-spike`.
-    #[test]
-    fn a_trust_record_has_kimis_own_shape() {
-        assert_eq!(
-            kimi_trust_record("/private/tmp/kimi-spike", 1791219481952),
-            r#"{"root":"/private/tmp/kimi-spike","trustedAt":1791219481952}"#
-        );
-    }
-
-    #[test]
-    fn kimi_home_takes_an_absolute_override_and_nothing_else() {
-        let home = Path::new("home").join("ada");
-        let default = home.join(".kimi-code");
-        let scratch = std::env::temp_dir().join("kimi-scratch");
-        assert_eq!(kimi_home_from(&home, None), default);
-        assert_eq!(kimi_home_from(&home, Some(scratch.clone().into_os_string())), scratch);
-        // Relative, or blank: kimi would resolve it against a cwd gavin
-        // does not know, so it is not guessed at.
-        assert_eq!(kimi_home_from(&home, Some("relative/kimi".into())), default);
-        assert_eq!(kimi_home_from(&home, Some("".into())), default);
+        protocol::kimi_trust::record_path(&home.join(".kimi-code"), root)
     }
 
     #[test]
@@ -5967,6 +5733,84 @@ mod tests {
         }
     }
 
+    /// Decision A (feat-kimi-integration, 2026-10-06): a rail or Best-of-N
+    /// run in a `.gavin-worktrees` checkout of a repo that commits gavin's
+    /// `.mcp.json` -- this repo does, so every worktree has one at its
+    /// root -- is granted. The worktree's own copy is vetted the way the
+    /// root's is rather than refused as a declaration in between, and a
+    /// branch whose copy adds a foreign server withholds.
+    #[test]
+    fn a_launch_in_a_gavin_worktree_vets_the_worktrees_own_mcp_file() {
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let foreign = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
+        for (label, worktree_body, granted) in [("gavin only", gavin_only, true), ("a foreign server", foreign, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
+            let worktree = dir.path().join(crate::git::commands::WORKTREES_DIR).join("feat-x");
+            std::fs::create_dir_all(&worktree).unwrap();
+            // A linked checkout: git writes `.git` as a file pointing home.
+            std::fs::write(worktree.join(".git"), "gitdir: /elsewhere/.git/worktrees/feat-x\n").unwrap();
+            std::fs::write(worktree.join(".mcp.json"), worktree_body).unwrap();
+            let fs = HomedFiles { home: home.path().to_path_buf() };
+
+            let grant = grant_kimi_launch_trust(&fs, &worktree, dir.path(), None);
+
+            assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
+            let want = if granted { vec![record_path(home.path(), &physical(&worktree))] } else { Vec::new() };
+            assert_eq!(trust_records(home.path()), want, "{label}");
+        }
+    }
+
+    /// The exception covers a worktree's own root and nothing else: a
+    /// plain subfolder with an `.mcp.json` between it and the root still
+    /// withholds, and so does a folder below the worktree's root with one.
+    #[test]
+    fn an_intermediate_mcp_file_withholds_in_and_out_of_a_worktree() {
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
+        let plain = dir.path().join("packages").join("app");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(dir.path().join("packages").join(".mcp.json"), gavin_only).unwrap();
+        let worktree = dir.path().join(crate::git::commands::WORKTREES_DIR).join("feat-x");
+        let below = worktree.join("src");
+        std::fs::create_dir_all(&below).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: /elsewhere/.git/worktrees/feat-x\n").unwrap();
+        std::fs::write(worktree.join(".mcp.json"), gavin_only).unwrap();
+        std::fs::write(below.join(".mcp.json"), gavin_only).unwrap();
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        assert_eq!(grant_kimi_launch_trust(&fs, &plain, dir.path(), None), None);
+        assert_eq!(grant_kimi_launch_trust(&fs, &below, dir.path(), None), None);
+        assert!(trust_records(home.path()).is_empty());
+    }
+
+    /// The folder the launch rule recognises a worktree by is the one
+    /// gavin cuts them into.
+    #[test]
+    fn the_trust_rule_knows_where_worktrees_land() {
+        assert_eq!(protocol::kimi_trust::WORKTREES_DIR, crate::git::commands::WORKTREES_DIR);
+    }
+
+    /// No home on the disk -- an ssh workspace's is the host's -- means no
+    /// grant at all, worktree or not: the record would land on the wrong
+    /// machine.
+    #[test]
+    fn a_launch_trust_needs_a_home_on_the_machine_kimi_runs_on() {
+        let root = PathBuf::from("/work/repo");
+        let worktree = root.join(".gavin-worktrees").join("feat-x");
+        let fs = MemoryFiles { dirs: vec![root.clone(), worktree.clone()], ..Default::default() };
+        let gavin_only = br#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        fs.write_bytes(&root.join(".mcp.json"), gavin_only).unwrap();
+        fs.write_bytes(&worktree.join(".mcp.json"), gavin_only).unwrap();
+        fs.write_bytes(&worktree.join(".git"), b"gitdir: /work/repo/.git/worktrees/feat-x\n").unwrap();
+
+        assert_eq!(grant_kimi_launch_trust(&fs, &worktree, &root, None), None);
+        assert_eq!(fs.files.lock().unwrap().len(), 3, "nothing written");
+    }
+
     /// `default_permission_mode` and the attention hooks are written
     /// only where the human has not chosen them: absent means gavin's
     /// defaults go in (the key ahead of the first table header, the
@@ -6108,7 +5952,7 @@ mod tests {
         run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
             .unwrap();
 
-        let want = home.join(".kimi-code").join("workspace-trust").join(kimi_trust_key("/work/repo"));
+        let want = home.join(".kimi-code").join("workspace-trust").join(protocol::kimi_trust::trust_key("/work/repo"));
         let files = fs.files.lock().unwrap();
         let body = String::from_utf8(files.get(&want).expect("record at kimi's path").clone()).unwrap();
         assert!(body.starts_with(r#"{"root":"/work/repo","trustedAt":"#), "{body}");
@@ -6134,7 +5978,7 @@ mod tests {
             .unwrap();
 
         let files = fs.files.lock().unwrap();
-        assert!(files.contains_key(&scratch.join("workspace-trust").join(kimi_trust_key("/work/repo"))));
+        assert!(files.contains_key(&scratch.join("workspace-trust").join(protocol::kimi_trust::trust_key("/work/repo"))));
         assert!(!files.keys().any(|p| p.starts_with("/home/ada")), "nothing under the default home");
     }
 

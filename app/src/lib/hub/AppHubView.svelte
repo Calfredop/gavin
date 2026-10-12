@@ -932,7 +932,7 @@
   /* Accented and set back from the name, so the mark reads as the
      prompt the app icon draws rather than as part of the word. */
   .mark {
-    color: var(--accent);
+    color: var(--accent-text);
     margin-right: 6px;
     opacity: 0.9;
   }
@@ -1451,7 +1451,7 @@
   }
   .sep {
     flex: 0 0 auto;
-    color: var(--border-strong);
+    color: var(--text-subtle);
   }
   /* Which rail carries this card, in the same Route glyph the board's
      own cards use for it. */

@@ -1705,7 +1705,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
         conversationId
       );
   if (command === null) {
-    await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label));
+    await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label, launchAgent.profileId));
     return false;
   }
   const baseSha = await baseShaForLaunch(cwd);

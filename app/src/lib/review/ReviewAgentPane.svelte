@@ -237,7 +237,7 @@
   }
   .live {
     font-size: 0.75em;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   /* The row's other switch, to the pixel: ReviewFilePane's diff/edit
      group. Two controls that answer the same shape of question at the

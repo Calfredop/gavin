@@ -220,7 +220,8 @@
     font-family: monospace;
   }
   .actions button.primary {
-    background: var(--accent, #3a3a3a);
+    background: var(--accent);
+    color: var(--on-accent);
   }
   .actions button:disabled {
     opacity: 0.4;

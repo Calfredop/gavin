@@ -51,11 +51,11 @@
     margin: 0 0 6px;
     font-size: 1em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .detail {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -66,12 +66,12 @@
     margin-bottom: 10px;
     font-family: monospace;
     font-size: 0.85em;
-    color: #ccc;
+    color: var(--text-muted);
   }
   .row > span:first-child {
     width: 70px;
     flex: 0 0 auto;
-    color: #999;
+    color: var(--text-subtle);
   }
   .actions {
     display: flex;
@@ -80,9 +80,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

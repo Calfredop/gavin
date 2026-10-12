@@ -486,7 +486,7 @@ export async function developCard(
   const command = usesPromptInjection(agent)
     ? agent.launchCommand
     : buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
-  if (command === null) return noPromptReason(agent.label);
+  if (command === null) return noPromptReason(agent.label, agent.profileId);
 
   let sessionId: string;
   try {
@@ -581,7 +581,7 @@ async function launchCard(
   const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
-  if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label);
+  if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label, agent.profileId);
 
   // Whether the conversation a resume would reopen exists at all. Asked
   // here, ahead of the launch wall, so the refusal reaches the surface
@@ -875,7 +875,7 @@ async function launchCard(
   // Cannot be null for an argv profile -- the gate above returned
   // already -- but the null is the whole point of buildRunCommand's
   // signature, so it is checked rather than asserted away.
-  if (command === null) return noPromptReason(agent.label);
+  if (command === null) return noPromptReason(agent.label, agent.profileId);
   // A review runs WHERE THE WORK IS: the run's launch directory, which
   // is a worktree of its own whenever a rail cut one. The card's context
   // folder would put the reviewer's agent in the repository the card

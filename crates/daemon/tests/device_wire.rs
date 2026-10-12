@@ -294,6 +294,22 @@ impl Desk {
         }
     }
 
+    /// The first `SessionDeskInput` (v70) to arrive within `within`, as
+    /// its session and owner, reading past everything else.
+    fn desk_input_within(&mut self, within: Duration) -> Option<(String, String)> {
+        self.stream.set_read_timeout(Some(within)).unwrap();
+        let heard = loop {
+            match read_message::<_, Response>(&mut self.reader) {
+                Ok(Some(Response::SessionDeskInput { session_id, owner, .. })) => break Some((session_id, owner)),
+                Ok(Some(Response::SessionOwnerChanged { ownership })) => self.owners.push_back(ownership),
+                Ok(Some(_)) => continue,
+                _ => break None,
+            }
+        };
+        self.stream.set_read_timeout(Some(SOON)).unwrap();
+        heard
+    }
+
     /// Whether anything arrives within `within`. For the pushes that
     /// must not be sent.
     fn hears_nothing_for(&mut self, within: Duration) -> bool {
@@ -1671,6 +1687,67 @@ fn an_app_older_than_the_bump_is_not_sent_the_owner_push() {
     assert!(!heard_one, "an app that speaks v67 was sent a v68 push");
 }
 
+/// Seam 1 (v70): input the desk sends into a session a Device owns -- a
+/// rail's prompt, queued -- is told to the desk, to hand on to that
+/// Device. The Device's own input reaches the daemon a second time as the
+/// host's write, marked as the Device's, and is not; nor is the bare write
+/// of a host older than the bump, which marks nothing.
+#[test]
+fn the_owner_hears_of_the_desks_input_and_not_of_its_own() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+    let home = workstation.home.path().to_string_lossy().to_string();
+    let id = match workstation.command.request(&Request::CreateSession {
+        workspace_path: home.clone(),
+        cwd: home,
+        command: None,
+        profile_id: None,
+        api_family: None,
+        without_headroom: false,
+    }) {
+        Response::SessionCreated { id, .. } => id,
+        other => panic!("CreateSession: {other:?}"),
+    };
+
+    // The phone types into the session, and so owns it.
+    invoked(&mut connection, "write_input", serde_json::json!({ "sessionId": id, "data": "ls" }));
+    workstation.push.ownership_of(&id, |o| o.owner.is_some());
+
+    // The phone's own input, as the desk host writes it for the phone.
+    let forwarded = |request: Request| Request::ForwardedInput { request: Box::new(request) };
+    let queued = workstation.command.request(&forwarded(Request::QueueInput {
+        id: id.clone(),
+        text: "from the phone".into(),
+    }));
+    assert!(matches!(queued, Response::QueuedInputs { .. }), "{queued:?}");
+    let typed = workstation.command.request(&forwarded(Request::WriteInput { id: id.clone(), data: "x".into() }));
+    assert!(matches!(typed, Response::Ok), "{typed:?}");
+    assert_eq!(workstation.push.desk_input_within(QUIET), None, "the phone's own input is not the desk's");
+
+    // A rail's prompt: the desk's, bare, on the desk's connection.
+    let queued = workstation.command.request(&Request::QueueInput { id: id.clone(), text: "carry on".into() });
+    assert!(matches!(queued, Response::QueuedInputs { .. }), "{queued:?}");
+    assert_eq!(workstation.push.desk_input_within(SOON), Some((id.clone(), paired.device_id.clone())));
+
+    // A host older than the bump sends the phone's input bare too, so its
+    // bare input is not read as the desk's.
+    let mut older =
+        Desk::connect_speaking(&workstation.endpoint(), &workstation.daemon_token, ConnectionKind::Command, 69);
+    let queued = older.request(&Request::QueueInput { id: id.clone(), text: "from an older desk".into() });
+    assert!(matches!(queued, Response::QueuedInputs { .. }), "{queued:?}");
+    assert_eq!(workstation.push.desk_input_within(QUIET), None);
+
+    // Only input rides the wrapper.
+    let wrapped = workstation.command.request(&forwarded(Request::KillSession { id: id.clone() }));
+    assert!(matches!(wrapped, Response::Error { .. }), "{wrapped:?}");
+}
+
 /// The owner going away is not the owner losing the session: it keeps it
 /// through the grace, and the desk is told when the grace runs out.
 #[test]
@@ -1714,7 +1791,7 @@ fn the_attention_request_returns_the_items_the_stand_in_reports() {
     let items = vec![protocol::AttentionItem {
         id: "waiting:s1".into(),
         workspace: "ws-1".into(),
-        workspace_name: None,
+        workspace_name: Some("Gavin".into()),
         kind: protocol::AttentionKind::Waiting,
         text: "agent is asking".into(),
         target: protocol::AttentionTarget::Session { id: "s1".into() },
@@ -1819,7 +1896,7 @@ fn a_desk_whose_forwarding_connection_dropped_and_came_back_is_ready_again() {
     let items = vec![protocol::AttentionItem {
         id: "waiting:s1".into(),
         workspace: "ws-1".into(),
-        workspace_name: Some("Gavin".into()),
+        workspace_name: None,
         kind: protocol::AttentionKind::Waiting,
         text: "agent is asking".into(),
         target: protocol::AttentionTarget::Session { id: "s1".into() },

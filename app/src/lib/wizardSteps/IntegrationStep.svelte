@@ -140,11 +140,11 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -159,18 +159,18 @@
     margin-bottom: 6px;
   }
   .ok {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   /* Amber, not green and not grey: the run succeeded, and something of
      the workspace's own was displaced doing it. */
   .replaced {
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .skip {
-    color: #888;
+    color: var(--text-subtle);
   }
   .warn {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -180,9 +180,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

@@ -1,12 +1,13 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, Cloud, Archive, Trash2, GitMerge, LogIn, History } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, GitCompareArrows, Cloud, Archive, Trash2, GitMerge, LogIn, History } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import {
     gitStore,
     selectChanges,
     selectCommits,
+    selectCompare,
     selectStash,
     checkout,
     createBranch,
@@ -121,6 +122,10 @@
   <button type="button" class="item top" class:active={nav === "commits"} onclick={() => selectCommits(workspaceId)}>
     <History size={13} />
     <span class="label">All Commits</span>
+  </button>
+  <button type="button" class="item top" class:active={nav === "compare"} onclick={() => selectCompare(workspaceId)}>
+    <GitCompareArrows size={13} />
+    <span class="label">Compare</span>
   </button>
 
   <div class="filter-bar">

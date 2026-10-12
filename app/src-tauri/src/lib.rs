@@ -324,6 +324,8 @@ pub fn run() {
             git::git_run_changes,
             git::git_diff_since,
             git::git_discard_run,
+            git::git_compare,
+            git::git_compare_diff,
             git::git_stage_files,
             git::git_unstage_files,
             git::git_stage_all,

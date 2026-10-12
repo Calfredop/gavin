@@ -107,7 +107,7 @@ fn commit_exists(root: &str, base: &str) -> Result<bool, String> {
 /// three clauses may be absent (a pure-deletion diff has no insertions
 /// clause at all), so each is read by its own suffix rather than by
 /// position.
-fn parse_shortstat(line: &str) -> (u32, u32) {
+pub(crate) fn parse_shortstat(line: &str) -> (u32, u32) {
     let mut added = 0;
     let mut removed = 0;
     for part in line.split(',') {

@@ -2094,6 +2094,29 @@ describe("executeActions", () => {
         "ws-1"
       );
     });
+
+    // A named custom with no MCP config file is refused too, but in the
+    // sentence that names its way out: the file whose handshake would
+    // carry the prompt in.
+    it("stalls a blocked custom with the sentence that points at its MCP config", async () => {
+      agentMock.mockReturnValue({
+        ...kimi, profileId: "my-agent", label: "My Agent", promptInjection: false,
+      } as never);
+
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+      expect(backend.setStepRun).toHaveBeenCalledWith(
+        "t1",
+        "stalled",
+        null,
+        noPromptReason("My Agent", "my-agent"),
+        null,
+        null,
+        null,
+        "ws-1"
+      );
+    });
   });
 
   /// A rail step is a card run like any other, so it records the same

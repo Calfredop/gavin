@@ -9,13 +9,23 @@
   // `sessionId` is fixed for the life of the component, as TerminalPane's
   // is: the page rebuilds this for another session.
   import { flushSync, onMount } from "svelte";
-  import { ArrowDownToLine, ArrowRightLeft, Globe, Keyboard, Lock, Power, Send, Type } from "@lucide/svelte";
+  import { ArrowDownToLine, ArrowRightLeft, Globe, Keyboard, Lock, Power, Send, Type, X } from "@lucide/svelte";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { askConfirm, showAlert } from "$lib/core/dialog";
   import { daemonCompat, layoutState } from "$lib/core/layoutState";
-  import { handOverTargets, lockDetail, lockTitle, ownsSession, takeLabel } from "$lib/core/sessionOwnership";
   import {
+    DESK_INPUT_TEXT,
+    handOverTargets,
+    lockDetail,
+    lockTitle,
+    ownsSession,
+    takeLabel,
+  } from "$lib/core/sessionOwnership";
+  import {
+    deskInputBlocked,
+    deskInputBySessionId,
+    dismissDeskInput,
     handOver,
     liveDevices,
     lockBySessionId,
@@ -103,6 +113,11 @@
   const mine = $derived(ownsSession($sessionOwners, sessionId, $ownershipViewer));
   const ownerGate = $derived(ownershipBlocked($daemonCompat));
   const targets = $derived(handOverTargets($liveDevices, $sessionOwners, sessionId, $ownershipViewer));
+  /// The desk sent a line into this session while this phone holds it
+  /// (v70): a rail's prompt, a follow-up -- said once, until dismissed, so
+  /// a line nobody here typed does not arrive unexplained.
+  const deskInput = $derived(mine && $deskInputBySessionId[sessionId] !== undefined);
+  const deskInputGate = $derived(deskInputBlocked($daemonCompat));
   let handingOver = $state(false);
   let taking = $state(false);
   /// What the last send or ownership change had to say: a refusal, or why
@@ -392,12 +407,21 @@
       {:else}
         <p class="sheet-empty">No other Device is connected.</p>
       {/each}
+      {#if deskInputGate}
+        <p class="sheet-empty">This Workstation does not say when the desk sends a line into a session you hold. {deskInputGate}</p>
+      {/if}
       <button type="button" class="sheet-choice cancel" use:press={{ onPress: () => (handingOver = false) }}>Cancel</button>
     </div>
   </div>
 {/if}
 
 <div class="dock">
+  {#if deskInput}
+    <div class="desk-input" role="status">
+      <span>{DESK_INPUT_TEXT}</span>
+      <IconButton icon={X} label="Dismiss" size={18} onclick={() => dismissDeskInput(sessionId)} />
+    </div>
+  {/if}
   {#if notice}
     <p class="notice" role="status">{notice}</p>
   {/if}
@@ -780,6 +804,14 @@
   }
   .notice {
     margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+  }
+  .desk-input {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     color: var(--text-muted);
     font-size: 0.8125rem;
   }

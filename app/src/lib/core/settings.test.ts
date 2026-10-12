@@ -674,6 +674,40 @@ describe("resolveAgentConfig", () => {
     expect(escaping.mcpConfigFile).toBe("");
   });
 
+  it("hands a named custom its card prompt by injection once a config file is named for it", () => {
+    // The file named is the one gavin writes its own MCP server into, so
+    // the agent connecting gavin-mcp is what the daemon's K3 hold waits
+    // for: launch bare, prompt typed in once the handshake says it's up.
+    const named = resolveAgentConfig(
+      { profile: "custom-agent", file: null, command: null, mcpFile: ".myagent/mcp.json" },
+      PROFILES,
+      {}
+    );
+    expect(named.promptArgs).toBeNull();
+    expect(named.promptInjection).toBe(true);
+
+    // No file, or one Rust would refuse: nothing connects gavin-mcp, so
+    // the refusal stands.
+    for (const mcpFile of [null, "  ", "../outside.json"]) {
+      const r = resolveAgentConfig({ profile: "custom-agent", file: null, command: null, mcpFile }, PROFILES, {});
+      expect(r.promptInjection).toBe(false);
+    }
+  });
+
+  it("leaves a built-in's prompt route to its own row, whatever mcpFile says", () => {
+    // Cursor's null is a refusal the table states; a stray workspace
+    // mcp_file must not turn it into an injection.
+    const cursor: AgentProfileInfo = {
+      ...BUILT_INS[1], id: "cursor", label: "Cursor", promptArgs: null, mcpSupported: false, mcpConfigFile: "",
+    };
+    const r = resolveAgentConfig(
+      { profile: "cursor", file: null, command: null, mcpFile: ".cursor/mcp.json" },
+      [...BUILT_INS, cursor],
+      {}
+    );
+    expect(r.promptInjection).toBe(false);
+  });
+
   it("never lets a config path override a profile's verified layout", () => {
     const r = resolveAgentConfig(
       { profile: "codex", file: null, command: null, mcpFile: ".somewhere/else.json" },

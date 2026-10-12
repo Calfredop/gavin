@@ -1,7 +1,7 @@
 ---
 kind: task
 title: A session's owner is told when the desk injected input into it
-status: To Do
+status: Done
 priority: low
 attachments: docs/superpowers/specs/2026-10-09-session-ownership.md,crates/daemon/src/ownership.rs,app/src-tauri/src/session.rs
 complexity: moderate
@@ -13,3 +13,5 @@ Rails, auto-resume, the follow-up queue's delivery, Best-of-N and `gavin_*` MCP 
 The daemon cannot tell those writes apart today. A Device's own forwarded `write_input`/`queue_input` reaches the daemon a second time as the desk host's `WriteInput`/`QueueInput`, on the same desk connection a rail's queue uses, and neither names a Device. Telling them apart needs the desk host to mark the writes it makes on a Device's behalf (`forwarding::origin` already knows, per call). That is a widened payload or a new request TYPE, so it carries the compat trap in CLAUDE.md: a `FEATURE_MIN_VERSION` entry and a consumer.
 
 Build: the daemon notes desk-injected input into a Device-owned session and pushes it (or folds it into `SessionOwnerChanged`). The Companion's terminal shows one dismissable line ("The desk sent a line into this session"). Seam 1 proves that a rail-style `QueueInput` on a desk connection produces the notice and a forwarded Device write does not.
+
+- [ ] Human test: After rebuilding + restarting the daemon (v70) and reinstalling the app: on a phone, type into a session so the phone owns it, then send a follow-up into that session from the desk — the phone's terminal shows "The desk sent a line into this session." above the dock, the X dismisses it, and the phone's own typing never shows it

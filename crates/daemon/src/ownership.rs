@@ -86,6 +86,12 @@ impl Owners {
         }
     }
 
+    /// The Device that owns `session_id`, if one does: who to tell when
+    /// the desk sends input into it.
+    pub fn owner_of(&self, session_id: &str) -> Option<&str> {
+        self.by_session.get(session_id).map(|r| r.owner.device_id.as_str())
+    }
+
     /// A Device's input into `session_id`.
     ///
     /// The owner passes. Any other Device is refused while a Device owns
@@ -385,6 +391,20 @@ mod tests {
         let (released, _) = o.set(Some("iphone"), "s1", None, Some("iphone"), false, everyone_live, 102).unwrap();
         assert_eq!(released.owner, None);
         assert!(o.device_input(device("ipad"), "s1", 103).unwrap().is_some(), "the desk never typed");
+    }
+
+    /// Who to tell when the desk sends a line in: the owner, through its
+    /// grace too, and nobody once the desk has it back.
+    #[test]
+    fn the_owner_is_who_hears_of_the_desks_input() {
+        let mut o = Owners::default();
+        assert_eq!(o.owner_of("s1"), None);
+        o.device_input(device("iphone"), "s1", 100).unwrap();
+        assert_eq!(o.owner_of("s1"), Some("iphone"));
+        o.device_away("iphone", 110);
+        assert_eq!(o.owner_of("s1"), Some("iphone"));
+        o.lapse(110 + OWNER_GRACE_SECS);
+        assert_eq!(o.owner_of("s1"), None);
     }
 
     #[test]

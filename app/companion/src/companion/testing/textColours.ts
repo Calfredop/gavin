@@ -66,6 +66,12 @@ export function isTextRole(name: string): boolean {
   return /^--text(-[a-z]+)?$/.test(name) || /^--[a-z]+-text$/.test(name);
 }
 
+/// The ink theme.css gives text on a coloured fill: `--on-accent` on
+/// `--accent`, and so on. Held against its fill rather than the surfaces.
+export function isOnFillRole(name: string): boolean {
+  return /^--on-[a-z]+$/.test(name);
+}
+
 /// A desktop component the bundle imports, by the path it imports it as.
 function libSource(lib: Record<string, string>, importPath: string): [string, string] | null {
   const path = importPath.replace(/^\$lib\//, "");
@@ -129,7 +135,7 @@ export function untextedColours(sources: Record<string, string>): string[] {
       // Anything left once every `var(--name` is taken out is a literal.
       if (v.replace(/var\(\s*--[\w-]+/g, "").replace(/[\s,()]/g, "") !== "") return false;
       return [...v.matchAll(/var\(\s*(--[\w-]+)/g)].every(([, name]) => {
-        if (isTextRole(name)) return true;
+        if (isTextRole(name) || isOnFillRole(name)) return true;
         const values = sets.get(name);
         if (!values || seen.has(name)) return false;
         return values.every((inner) => textual(inner, new Set([...seen, name])));
@@ -137,6 +143,25 @@ export function untextedColours(sources: Record<string, string>): string[] {
     };
     for (const [, value] of css.matchAll(/(?:^|[;{\s])color\s*:\s*([^;{}]+)/g)) {
       if (!textual(value, new Set())) found.push(`${file}: color: ${value.trim()}`);
+    }
+  }
+  return found;
+}
+
+/// Each rule that paints a coloured fill behind text it colours, and
+/// colours it with anything but that fill's ink, as `file: selector`:
+/// `background: var(--accent)` beside `color: var(--text)` is a text role
+/// held against the surfaces, which says nothing about the blue. A rule
+/// that paints the fill and leaves its colour to another rule is not
+/// seen here.
+export function inklessFills(sources: Record<string, string>, fills: string[]): string[] {
+  const found: string[] = [];
+  for (const [file, text] of Object.entries(sources)) {
+    for (const [, prelude, body] of cssOf(file, text).matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+      const fill = /(?:^|[;\s])background(?:-color)?\s*:\s*var\(\s*(--[\w-]+)\s*\)/.exec(body)?.[1];
+      if (!fill || !fills.includes(fill)) continue;
+      const colour = /(?:^|[;\s])color\s*:\s*([^;]+)/.exec(body)?.[1].trim();
+      if (colour !== undefined && colour !== `var(--on-${fill.slice(2)})`) found.push(`${file}: ${prelude.trim()}`);
     }
   }
   return found;

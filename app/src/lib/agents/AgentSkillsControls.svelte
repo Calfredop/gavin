@@ -159,7 +159,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    color: #ccc;
+    color: var(--text-muted);
   }
   .led {
     width: 8px;
@@ -170,30 +170,30 @@
   }
   /* A check that found it: filled. */
   .led.on {
-    background: #8bc98b;
+    background: var(--success);
   }
   /* The human's word: the same colour, hollow. Believed present, but not
      by gavin — and a hollow ring says so without needing a legend. */
   .led.claimed {
     background: transparent;
-    border: 1.5px solid #8bc98b;
+    border: 1.5px solid var(--success);
   }
   .led.off {
-    background: #555;
+    background: var(--text-subtle);
   }
   .led.unknown {
     background: transparent;
-    border: 1.5px solid #777;
+    border: 1.5px solid var(--text-subtle);
   }
   .command,
   .output {
     margin: 8px 0 0;
     padding: 8px 10px;
-    background: #1c1c1c;
-    border: 1px solid #333;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 0.9em;
-    color: #ccc;
+    color: var(--text-muted);
     white-space: pre-wrap;
     word-break: break-word;
     max-height: 180px;
@@ -204,12 +204,12 @@
   }
   .note {
     margin: 8px 0 0;
-    color: #888;
+    color: var(--text-subtle);
     font-size: 0.9em;
   }
   .warn {
     margin: 8px 0 0;
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .row {
     display: flex;
@@ -218,9 +218,9 @@
     margin-top: 10px;
   }
   .row button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -229,7 +229,7 @@
   }
   .row button.ghost {
     background: none;
-    color: #888;
+    color: var(--text-subtle);
     padding: 5px 0;
   }
   .row button:disabled {
@@ -239,7 +239,7 @@
   .link {
     background: none;
     border: none;
-    color: #7aa7d0;
+    color: var(--accent-text);
     padding: 0;
     font-family: monospace;
     font-size: 1em;
