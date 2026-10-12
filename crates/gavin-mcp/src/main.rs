@@ -25,6 +25,162 @@ fn endpoint_label(path: &Path) -> String {
     }
 }
 
+// ---------- riding out a refused connect ----------
+
+/// How long a refused or missing socket is retried before the connect
+/// gives up. Covers the app's restart window -- the old daemon gone, the
+/// new one not bound yet -- which used to fail every call that landed in
+/// it, and leave the session believing the daemon was gone for good.
+const CONNECT_BUDGET: Duration = Duration::from_secs(5);
+
+/// Connects, retrying only the two answers a restart window gives: the
+/// socket refused (the file is there, nobody is accepting) and the socket
+/// missing. Backs off from 100 ms to 1 s. Nothing has been written on a
+/// connection that never opened, so this is safe for every request,
+/// gated or not.
+fn connect_riding_out(path: &Path, budget: Duration) -> std::io::Result<Stream> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut pause = Duration::from_millis(100);
+    loop {
+        match Stream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) && std::time::Instant::now() + pause <= deadline =>
+            {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_secs(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Which of the three things a connect that still fails can mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectCause {
+    /// The socket file is there and whoever held the daemon lock has
+    /// exited, or nobody ever took it: debris from a daemon that died.
+    NoDaemon,
+    /// The socket file is there and the daemon that holds the lock is
+    /// still running: a full accept queue, or a hung daemon.
+    NotAccepting,
+    /// No socket file at all.
+    PathMissing,
+}
+
+impl ConnectCause {
+    fn label(self) -> &'static str {
+        match self {
+            ConnectCause::NoDaemon => "no daemon",
+            ConnectCause::NotAccepting => "daemon alive but not accepting",
+            ConnectCause::PathMissing => "socket path missing",
+        }
+    }
+}
+
+/// Picks the one cause. `path_present` is `None` where the endpoint is a
+/// Windows pipe and there is no file to look for; the lock decides alone.
+fn classify(path_present: Option<bool>, holder: protocol::daemon_lock::LockHolder) -> ConnectCause {
+    use protocol::daemon_lock::LockHolder;
+    if path_present == Some(false) {
+        return ConnectCause::PathMissing;
+    }
+    match holder {
+        LockHolder::Alive(_) => ConnectCause::NotAccepting,
+        LockHolder::Dead(_) | LockHolder::Nobody => ConnectCause::NoDaemon,
+    }
+}
+
+/// Everything a failed connect can find out without touching the daemon
+/// or its lock: the facts, then the cause they add up to, as one line.
+#[derive(Debug)]
+struct ConnectDiagnosis {
+    cause: ConnectCause,
+    socket: PathBuf,
+    socket_from_env: bool,
+    errno: Option<i32>,
+    path_present: Option<bool>,
+    lock: PathBuf,
+    holder: protocol::daemon_lock::LockHolder,
+}
+
+fn diagnose(socket: &Path, socket_from_env: bool, err: &std::io::Error) -> ConnectDiagnosis {
+    let path_present = if cfg!(windows) { None } else { Some(socket.exists()) };
+    let lock = protocol::daemon_lock::lock_path_beside(socket);
+    let holder = protocol::daemon_lock::lock_holder(&lock);
+    ConnectDiagnosis {
+        cause: classify(path_present, holder),
+        socket: socket.to_path_buf(),
+        socket_from_env,
+        errno: err.raw_os_error(),
+        path_present,
+        lock,
+        holder,
+    }
+}
+
+impl std::fmt::Display for ConnectDiagnosis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use protocol::daemon_lock::LockHolder;
+        let source = if self.socket_from_env { "GAVIN_SESSION_SOCKET" } else { "default" };
+        let errno = self.errno.map_or("none".to_string(), |n| n.to_string());
+        let present = match self.path_present {
+            Some(true) => "present",
+            Some(false) => "absent",
+            None => "a pipe",
+        };
+        let holder = match self.holder {
+            LockHolder::Nobody => "no pid".to_string(),
+            LockHolder::Alive(Some(pid)) => format!("pid {pid} alive"),
+            LockHolder::Alive(None) => "held, pid unreadable".to_string(),
+            LockHolder::Dead(pid) => format!("pid {pid} dead"),
+        };
+        write!(
+            f,
+            "cause: {} (socket {} from {source}, errno {errno}, path {present}; lock {}: {holder})",
+            self.cause.label(),
+            self.socket.display(),
+            self.lock.display(),
+        )
+    }
+}
+
+/// Appends one line to gavin-mcp's log, stamped with the time and the
+/// session it came from. Best effort: a log that cannot be written must
+/// not turn a connect failure into a different failure.
+fn append_log(path: &Path, message: &str) {
+    let session = std::env::var("GAVIN_SESSION_ID").unwrap_or_else(|_| "-".to_string());
+    let line = format!("{} session={session} {message}\n", utc_stamp(std::time::SystemTime::now()));
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, with no calendar crate: days since the epoch
+/// to a civil date is Howard Hinnant's `civil_from_days`.
+fn utc_stamp(at: std::time::SystemTime) -> String {
+    let secs = at.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
+}
+
 // ---------- daemon transport ----------
 
 pub trait DaemonTransport {
@@ -158,6 +314,14 @@ struct SocketTransport {
     /// once, at construction, rather than per connect: a process that has
     /// already replaced itself keeps the answer for its whole life.
     may_reexec: bool,
+    /// Whether `socket_path` came from `GAVIN_SESSION_SOCKET` rather than
+    /// this build's default -- one of the facts a failed connect names.
+    socket_from_env: bool,
+    /// How long a refused or missing socket is retried before the connect
+    /// gives up (`connect_riding_out`).
+    connect_budget: Duration,
+    /// Where a failed connect's diagnosis is appended, or nowhere.
+    log_path: Option<PathBuf>,
 }
 
 /// The endpoint the daemon that opened this tab told us to use.
@@ -186,7 +350,9 @@ impl SocketTransport {
         // Read ONLY here, never by `protocol::resolve_app_support_dir`, so
         // an app launched from a tab still picks its own state by its own
         // profile and nothing has to be stripped on the way out.
-        let socket_path = match resolve_socket_path(std::env::var_os("GAVIN_SESSION_SOCKET")) {
+        let injected = resolve_socket_path(std::env::var_os("GAVIN_SESSION_SOCKET"));
+        let socket_from_env = injected.is_some();
+        let socket_path = match injected {
             Some(injected) => Ok(injected),
             None => protocol::socket_path().map_err(|e| e.to_string()),
         };
@@ -196,6 +362,15 @@ impl SocketTransport {
             hello_workspace_root: None,
             reexec: None,
             may_reexec: may_reexec(std::env::var(REEXEC_MARKER_VAR).ok().as_deref()),
+            socket_from_env,
+            connect_budget: CONNECT_BUDGET,
+            log_path: protocol::app_support_dir().ok().map(|dir| {
+                dir.join(protocol::profile_file_name(
+                    "gavin-mcp",
+                    "log",
+                    protocol::BuildProfile::current(),
+                ))
+            }),
         }
     }
 
@@ -216,7 +391,23 @@ impl SocketTransport {
             // setting `GAVIN_MCP_REEXEC` would decide the `DaemonNewer`
             // arm for every test running beside it.
             may_reexec: true,
+            socket_from_env: false,
+            connect_budget: CONNECT_BUDGET,
+            // Never the real app-support directory from a test.
+            log_path: None,
         }
+    }
+
+    /// A connect that failed even after riding out the budget: the
+    /// diagnosis, appended to the log, and the error the agent sees.
+    fn connect_failed(&self, socket_path: &Path, where_: &str, e: std::io::Error) -> anyhow::Error {
+        let diagnosis = diagnose(socket_path, self.socket_from_env, &e);
+        let message =
+            format!("gavin daemon isn't running — open the gavin app ({where_}: {e}) — {diagnosis}");
+        if let Some(log) = &self.log_path {
+            append_log(log, &message);
+        }
+        anyhow::anyhow!(message)
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
@@ -234,9 +425,8 @@ impl SocketTransport {
             Err(why) => anyhow::bail!("{why}"),
         };
         let where_ = endpoint_label(&socket_path);
-        let stream = Stream::connect(&socket_path).map_err(|e| {
-            anyhow::anyhow!("gavin daemon isn't running — open the gavin app ({where_}: {e})")
-        })?;
+        let stream = connect_riding_out(&socket_path, self.connect_budget)
+            .map_err(|e| self.connect_failed(&socket_path, &where_, e))?;
         // Cap the probe read: a connected pipe whose peer never answers
         // used to block the MCP stdio loop forever, which Cursor reports
         // as "unable to list tools" even though tools/list itself never
@@ -335,9 +525,9 @@ impl SocketTransport {
         }
     }
 
-    fn request_once(&mut self, req: &Request) -> anyhow::Result<Response> {
+    fn request_once(&mut self, req: &Request) -> Result<Response, Failure> {
         if self.conn.is_none() {
-            self.connect()?;
+            self.connect().map_err(Failure::Final)?;
         }
         let conn = self.conn.as_mut().unwrap();
         // Gated HERE -- after connect, which is what learns the version,
@@ -345,11 +535,33 @@ impl SocketTransport {
         // than once in `request` so the reconnect below re-gates against
         // the daemon it actually lands on, which need not be the one the
         // first attempt talked to.
-        protocol::gate_request(req, conn.daemon_version)?;
-        write_message(conn.reader.get_mut(), req)?;
-        match read_message::<_, Response>(&mut conn.reader)? {
-            Some(resp) => Ok(resp),
-            None => anyhow::bail!("daemon closed the connection"),
+        protocol::gate_request(req, conn.daemon_version).map_err(|e| Failure::Final(e.into()))?;
+        write_message(conn.reader.get_mut(), req).map_err(|e| Failure::Unsent(e.into()))?;
+        match read_message::<_, Response>(&mut conn.reader) {
+            Ok(Some(resp)) => Ok(resp),
+            Ok(None) => Err(Failure::Final(anyhow::anyhow!("daemon closed the connection"))),
+            Err(e) => Err(Failure::Final(e.into())),
+        }
+    }
+}
+
+/// Why `request_once` failed, sorted by whether trying again is safe.
+enum Failure {
+    /// The write failed, so the daemon never read a whole request: the
+    /// connection was one a restarted daemon had already closed. A
+    /// second attempt cannot run anything twice.
+    Unsent(anyhow::Error),
+    /// Anything else. A connect that failed has already ridden out its
+    /// budget; a gated request never left and a retry would only bury
+    /// the message naming the version it needs; and a request that went
+    /// out and got no answer may already have run.
+    Final(anyhow::Error),
+}
+
+impl Failure {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Failure::Unsent(e) | Failure::Final(e) => e,
         }
     }
 }
@@ -358,15 +570,19 @@ impl DaemonTransport for SocketTransport {
     fn request(&mut self, req: &Request) -> anyhow::Result<Response> {
         match self.request_once(req) {
             Ok(resp) => Ok(resp),
-            // A gated request never reached the socket, so there is
-            // nothing for a reconnect to fix -- and retrying would throw
-            // away the one message that says which version is missing, in
-            // favour of whatever the second attempt happened to fail on.
-            Err(e) if e.is::<protocol::GatedRequest>() => Err(e),
-            Err(_) => {
-                // One reconnect per call: the daemon may have restarted.
+            Err(Failure::Unsent(_)) => {
+                // Once, on a fresh connection: the daemon may have
+                // restarted under the one this process was holding.
                 self.conn = None;
-                self.request_once(req)
+                self.request_once(req).map_err(Failure::into_error)
+            }
+            Err(Failure::Final(e)) => {
+                // A gated request leaves a good connection behind; any
+                // other failure leaves one nobody should write to again.
+                if !e.is::<protocol::GatedRequest>() {
+                    self.conn = None;
+                }
+                Err(e)
             }
         }
     }
@@ -2427,6 +2643,147 @@ mod tests {
         assert_eq!(replies.len(), 2, "the split request must arrive whole: {replies:?}");
         assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[1]["id"], 2);
+    }
+
+    // ---------- riding out a refused connect ----------
+
+    /// Above every platform's pid ceiling, so it names nothing.
+    const NO_SUCH_PID: u32 = i32::MAX as u32;
+
+    #[test]
+    fn a_failed_connect_names_one_cause_from_the_socket_and_the_lock() {
+        use protocol::daemon_lock::LockHolder;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon-dev.sock");
+        let lock = dir.path().join("daemon-dev.lock");
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+
+        // Socket path missing: nothing at the path at all.
+        let d = diagnose(&socket, true, &refused);
+        assert_eq!(d.lock, lock, "the lock is read beside the socket");
+        if cfg!(unix) {
+            assert_eq!(d.cause, ConnectCause::PathMissing);
+            assert!(d.to_string().contains("socket path missing"), "{d}");
+            assert!(d.to_string().contains("from GAVIN_SESSION_SOCKET"), "{d}");
+        }
+
+        // No daemon: the file outlived it, and so did its pid -- or the
+        // lock was never there (a daemon from before it existed).
+        std::fs::write(&socket, "").unwrap();
+        assert_eq!(diagnose(&socket, false, &refused).cause, ConnectCause::NoDaemon);
+        std::fs::write(&lock, format!("{NO_SUCH_PID}\n")).unwrap();
+        let d = diagnose(&socket, false, &refused);
+        assert_eq!(d.cause, ConnectCause::NoDaemon);
+        assert_eq!(d.holder, LockHolder::Dead(NO_SUCH_PID));
+        assert!(d.to_string().contains(&format!("pid {NO_SUCH_PID} dead")), "{d}");
+        assert!(d.to_string().contains("from default"), "{d}");
+
+        // Alive but not accepting: the holder is a running process.
+        std::fs::write(&lock, format!("{}\n", std::process::id())).unwrap();
+        let d = diagnose(&socket, false, &refused);
+        assert_eq!(d.cause, ConnectCause::NotAccepting);
+        assert!(d.to_string().contains("daemon alive but not accepting"), "{d}");
+    }
+
+    #[test]
+    fn the_cause_is_the_lock_alone_where_there_is_no_file_to_look_for() {
+        use protocol::daemon_lock::LockHolder;
+        assert_eq!(classify(None, LockHolder::Alive(None)), ConnectCause::NotAccepting);
+        assert_eq!(classify(None, LockHolder::Nobody), ConnectCause::NoDaemon);
+        assert_eq!(classify(Some(false), LockHolder::Alive(Some(1))), ConnectCause::PathMissing);
+    }
+
+    #[test]
+    fn a_connect_rides_out_a_daemon_that_binds_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late.sock");
+        let bind_at = path.clone();
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let listener = protocol::transport::Listener::bind(&bind_at).unwrap();
+            let _held = listener.accept().unwrap();
+        });
+        connect_riding_out(&path, CONNECT_BUDGET).expect("the restart window is ridden out");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_connect_with_no_budget_left_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        assert!(connect_riding_out(&dir.path().join("none.sock"), Duration::ZERO).is_err());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_request_that_went_out_unanswered_is_not_sent_again() {
+        // The daemon read it and closed the connection without a reply:
+        // it may have run, so a second copy must not follow it.
+        let (path, seen, _dir) = fake_daemon(PROTOCOL_VERSION, vec![]);
+        let mut t = SocketTransport::at(path);
+        assert!(is_error("gavin_get_tree", &mut t));
+        let scans =
+            seen.lock().unwrap().iter().filter(|r| matches!(r, Request::ScanGavinRoot { .. })).count();
+        assert_eq!(scans, 1, "{:?}", seen.lock().unwrap());
+    }
+
+    #[test]
+    fn a_connection_a_restarted_daemon_closed_is_replaced_without_failing_the_call() {
+        // Each connection answers the probe, the Hello and ONE request,
+        // then closes -- what a daemon restart between two tool calls
+        // looks like from here. The second call's write fails on the dead
+        // connection, so nothing ran, and it goes again on a fresh one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("restarting.sock");
+        let listener = protocol::transport::Listener::bind(&path).unwrap();
+        let served = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&served);
+        std::thread::spawn(move || {
+            while let Ok(mut stream) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
+                    let (resp, last) = match req {
+                        Request::GetProtocolVersion => {
+                            (Response::ProtocolVersion { version: PROTOCOL_VERSION }, false)
+                        }
+                        Request::Hello { .. } => (
+                            Response::HelloAck {
+                                role: "local".into(),
+                                daemon_version: PROTOCOL_VERSION,
+                                session_id: None,
+                                server_proof: None,
+                                workspace_root: None,
+                            },
+                            false,
+                        ),
+                        _ => {
+                            *counter.lock().unwrap() += 1;
+                            (Response::GavinTreeScanned { tree: two_card_tree() }, true)
+                        }
+                    };
+                    write_message(&mut stream, &resp).unwrap();
+                    if last {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut t = SocketTransport::at(path);
+        assert!(!is_error("gavin_get_tree", &mut t));
+        // Long enough for the server's close to land before the write.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!is_error("gavin_get_tree", &mut t), "the restart cost this call");
+        assert_eq!(*served.lock().unwrap(), 2, "each call ran exactly once");
+    }
+
+    #[test]
+    fn the_log_stamp_is_utc_iso_8601() {
+        let at = std::time::UNIX_EPOCH + Duration::from_secs(1_791_763_200 + 3_723);
+        assert_eq!(utc_stamp(at), "2026-10-12T01:02:03Z");
+        assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        // A leap day, which is where a hand-rolled calendar goes wrong.
+        assert_eq!(utc_stamp(std::time::UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29T00:00:00Z");
     }
 
     #[test]
