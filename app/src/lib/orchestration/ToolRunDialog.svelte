@@ -168,7 +168,7 @@
   .primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: var(--accent-fg, #fff);
+    color: var(--on-accent);
   }
   .primary:disabled {
     opacity: 0.6;

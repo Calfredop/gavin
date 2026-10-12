@@ -468,8 +468,12 @@
     flex: none;
   }
   /* The branch chip on a tip commit (GitGraphRow's .chip.local.head),
-     in the lane's colour: the one word that says which rail this is,
-     wearing the colour so the colour is never read on its own. */
+     ringed in the lane's colour: the one word that says which rail this
+     is, wearing the colour so the colour is never read on its own. The
+     ring carries the colour and the word stays in a text role: the lanes
+     are categorical, picked to differ from each other rather than to be
+     read, and at 11px several of them fall under 4.5:1 on a light
+     surface. */
   .rail-chip {
     border: 1px solid var(--rail-colour);
     border-radius: 8px;
@@ -477,7 +481,7 @@
     line-height: 1.4;
     font-size: 11px;
     font-weight: 700;
-    color: var(--rail-colour);
+    color: var(--text);
     max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;

@@ -124,11 +124,11 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -141,7 +141,7 @@
   }
   .warn {
     margin: 8px 0 0;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -150,17 +150,17 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    background: #2a2a2a;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px 12px;
-    color: #ccc;
+    color: var(--text-muted);
     font-family: monospace;
   }
   .row select {
-    background: #1e1e1e;
-    color: #eee;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-base);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 4px 6px;
     font-family: monospace;
@@ -172,9 +172,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

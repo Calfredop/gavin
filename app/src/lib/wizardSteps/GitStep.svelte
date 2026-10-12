@@ -162,22 +162,22 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
   .hint code {
-    color: #aaa;
+    color: var(--text-muted);
   }
   .hint.state {
     margin: 12px 0 0;
   }
   .warn {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -191,11 +191,11 @@
     flex-direction: column;
     gap: 4px;
     text-align: left;
-    background: #2a2a2a;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px 12px;
-    color: #ccc;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
   }
@@ -206,15 +206,15 @@
   /* The picked side is the one git is actually in right now, not a
      selection waiting to be saved -- so it is stated, not previewed. */
   .choice.picked {
-    border-color: #4a9eff;
-    color: #eee;
+    border-color: var(--accent);
+    color: var(--text);
   }
   .choice .title {
     font-size: 0.85em;
   }
   .choice .detail {
     font-size: 0.75em;
-    color: #888;
+    color: var(--text-subtle);
   }
   .actions {
     display: flex;
@@ -223,9 +223,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

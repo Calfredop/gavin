@@ -797,12 +797,12 @@
     cursor: pointer;
   }
   .critical:hover {
-    background: var(--surface-hover, rgba(255, 255, 255, 0.04));
+    background: var(--surface-hover);
   }
   .critical-error {
     flex: none;
     font-size: 0.78em;
-    color: var(--danger, #e57373);
+    color: var(--danger-text);
   }
   .run-summary {
     display: flex;

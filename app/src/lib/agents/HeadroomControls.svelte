@@ -139,7 +139,7 @@
   /* The size is the host's: Settings sets its own, the wizard its own. */
   .hr {
     font-family: monospace;
-    color: var(--text, #ddd);
+    color: var(--text);
   }
   .state {
     display: flex;
@@ -148,10 +148,10 @@
     gap: 8px;
   }
   .label {
-    color: var(--text, #eee);
+    color: var(--text);
   }
   .version {
-    color: var(--text-muted, #999);
+    color: var(--text-muted);
   }
   .led {
     width: 8px;
@@ -161,39 +161,39 @@
     align-self: center;
   }
   .led.on {
-    background: var(--success, #8bc98b);
+    background: var(--success);
   }
   .led.warn {
-    background: var(--warning, #e0b08a);
+    background: var(--warning);
   }
   .led.off {
-    background: var(--text-subtle, #555);
+    background: var(--text-subtle);
   }
   .led.unknown {
     background: transparent;
-    border: 1.5px solid var(--text-subtle, #777);
+    border: 1.5px solid var(--text-subtle);
   }
   .note,
   .process {
     margin: 6px 0 0;
-    color: var(--text-subtle, #888);
+    color: var(--text-subtle);
   }
   .process.running {
-    color: var(--success-text, #8bc98b);
+    color: var(--success-text);
   }
   .process.failed,
   .warn {
-    color: var(--warning-text, #e0b08a);
+    color: var(--warning-text);
   }
   .command,
   .output {
     margin: 8px 0 0;
     padding: 8px 10px;
-    background: var(--surface-sunken, #1c1c1c);
-    border: 1px solid var(--border, #333);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 0.9em;
-    color: var(--text, #ccc);
+    color: var(--text);
     white-space: pre-wrap;
     word-break: break-word;
     max-height: 180px;
@@ -207,9 +207,9 @@
     margin-top: 10px;
   }
   .row button:not(.link) {
-    background: var(--surface-base, #2a2a2a);
-    border: 1px solid var(--border, #3a3a3a);
-    color: var(--text, #eee);
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    color: var(--text);
     padding: 3px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -217,7 +217,7 @@
     font-size: 1em;
   }
   .row button.primary {
-    border-color: var(--accent, #7aa7d0);
+    border-color: var(--accent);
   }
   .row button:disabled {
     opacity: 0.5;
@@ -226,7 +226,7 @@
   .link {
     background: none;
     border: none;
-    color: var(--accent-text, #7aa7d0);
+    color: var(--accent-text);
     padding: 0;
     margin-top: 4px;
     font-family: monospace;

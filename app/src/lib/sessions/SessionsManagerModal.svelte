@@ -779,7 +779,7 @@
     color: var(--text);
   }
   .actions button.danger-icon:hover {
-    color: var(--danger);
+    color: var(--danger-text);
   }
   .note {
     margin: 4px 0 0;
@@ -788,7 +788,7 @@
   }
   .problem {
     margin: 0;
-    color: var(--danger);
+    color: var(--danger-text);
   }
   .hint {
     color: var(--text-subtle);
@@ -850,7 +850,7 @@
     cursor: default;
   }
   button.danger:not(:disabled):hover {
-    color: var(--danger);
+    color: var(--danger-text);
   }
   /* The gap says what the grouping says: everything left of it ends
      sessions in this list, this replaces the process holding them. */

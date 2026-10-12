@@ -200,7 +200,7 @@
     font-size: 0.85em;
   }
   .strip.error {
-    color: var(--danger);
+    color: var(--danger-text);
   }
   .rows {
     flex: 1;

@@ -1778,7 +1778,7 @@
     background: none;
     border: none;
     padding: 0;
-    color: var(--accent, #8ab4f8);
+    color: var(--accent-text);
     font: inherit;
     cursor: pointer;
     text-decoration: underline;
@@ -1791,17 +1791,17 @@
   .sp-row {
     margin-top: 14px;
     padding-top: 12px;
-    border-top: 1px solid var(--border-subtle, #333);
+    border-top: 1px solid var(--border);
   }
   .sp-title {
     display: block;
     margin-bottom: 8px;
-    color: var(--text-normal, #ddd);
+    color: var(--text);
   }
   .farewell {
     margin-bottom: 10px;
     padding: 8px 10px;
-    border: 1px solid var(--border-subtle, #333);
+    border: 1px solid var(--border);
     border-radius: 4px;
   }
   .farewell .hint {

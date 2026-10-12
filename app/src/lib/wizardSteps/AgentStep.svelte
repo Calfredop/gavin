@@ -377,11 +377,11 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -392,24 +392,24 @@
   }
   .found {
     margin: 0 0 12px;
-    color: #9aaa9a;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
   .found.empty {
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .check {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #ccc;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.85em;
   }
   .warn {
     margin: -4px 0 10px 90px;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -423,13 +423,13 @@
        informative end. The &lrm; bookends keep the slashes inside the
        LTR run so a leading one doesn't detach and park on the right. */
     direction: rtl;
-    color: #eee;
+    color: var(--text);
   }
   .pick {
-    background: #2f2f2f;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
@@ -446,7 +446,7 @@
     margin-bottom: 10px;
     font-family: monospace;
     font-size: 0.85em;
-    color: #ccc;
+    color: var(--text-muted);
   }
   .row.top {
     align-items: flex-start;
@@ -454,14 +454,14 @@
   .row > span:first-child {
     width: 80px;
     flex: 0 0 auto;
-    color: #999;
+    color: var(--text-subtle);
   }
   .row input,
   .row select {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
@@ -487,9 +487,9 @@
     margin-top: 18px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

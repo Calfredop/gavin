@@ -334,11 +334,11 @@
     margin: 0 0 4px;
     font-size: 1.05em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .hint {
     margin: 0 0 16px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -349,10 +349,10 @@
     list-style: none;
     margin: 0 0 18px;
     padding: 0 0 12px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border);
     font-family: monospace;
     font-size: 0.8em;
-    color: #777;
+    color: var(--text-subtle);
   }
   .steps li {
     display: flex;
@@ -360,10 +360,10 @@
     gap: 6px;
   }
   .steps li.current {
-    color: #eee;
+    color: var(--text);
   }
   .steps li.done {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .n {
     display: inline-flex;
@@ -382,7 +382,7 @@
     margin: 0 0 4px;
     font-size: 0.95em;
     font-family: monospace;
-    color: #eee;
+    color: var(--text);
   }
   .choices {
     border: none;
@@ -398,20 +398,20 @@
     align-items: flex-start;
     font-family: monospace;
     font-size: 0.85em;
-    color: #ccc;
+    color: var(--text-muted);
     cursor: pointer;
   }
   .choice strong {
-    color: #eee;
+    color: var(--text);
   }
   .rec {
     margin-left: 6px;
-    color: #8bc98b;
+    color: var(--success-text);
     font-style: normal;
     font-size: 0.9em;
   }
   .warn {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -426,9 +426,9 @@
     justify-content: flex-start;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -436,7 +436,7 @@
   }
   .actions button.ghost {
     background: transparent;
-    color: #888;
+    color: var(--text-subtle);
   }
   .actions button:disabled {
     opacity: 0.4;

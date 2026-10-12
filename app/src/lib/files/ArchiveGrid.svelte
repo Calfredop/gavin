@@ -184,11 +184,11 @@
     flex: none;
     border: 1px solid var(--border-strong);
     border-radius: 3px;
-    color: var(--accent-fg, #fff);
   }
   .tick.on {
     background: var(--accent);
     border-color: var(--accent);
+    color: var(--on-accent);
   }
   .stamp {
     display: flex;

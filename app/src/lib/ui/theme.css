@@ -107,11 +107,18 @@
   --text: var(--grey-12);
   --text-muted: var(--grey-10);
   --text-subtle: var(--grey-9);
-  /* Foreground on a COLOURED fill (accent/danger/warning badges), not the
-     inverse of --text. Those fills stay mid-to-dark in both themes, so
-     this is white in both -- inverting it here would put near-black on a
-     mid-red badge. */
-  --text-inverted: var(--grey-15);
+  /* Ink on a COLOURED fill (a filled button, a badge, a checkbox tick),
+     one per fill rather than one for all: the fills are not one
+     lightness. Dark amber takes white at 2.2:1 and near-black at 7.9:1,
+     light amber the other way round. Text on a fill is var(--on-<fill>),
+     never a --text-* role, which is held against the surfaces instead.
+     The pairs are computed in the Companion's seam/themeContrast.test.ts,
+     where white on the blue and on dark red and green waits on the
+     owner's call in theme-text-on-fills-and-literal-colours-contrast.md. */
+  --on-accent: var(--grey-15);
+  --on-success: var(--grey-15);
+  --on-warning: var(--grey-0);
+  --on-danger: var(--grey-15);
 
   --accent: var(--blue-3);
   --accent-hover: var(--blue-4);
@@ -167,7 +174,12 @@
   --text: var(--grey-0);
   --text-muted: var(--grey-5);
   --text-subtle: var(--grey-7);
-  --text-inverted: var(--grey-15);
+  /* Light amber is the one fill that turns dark here: white is 5.1:1 on
+     it, the near-black the dark theme puts on amber 3.4:1. */
+  --on-accent: var(--grey-15);
+  --on-success: var(--grey-15);
+  --on-warning: var(--grey-15);
+  --on-danger: var(--grey-15);
 
   /* Fills stay vivid; anything that renders as TEXT drops to blue-2,
      which clears 4.5:1 on every light surface where blue-3 does not
