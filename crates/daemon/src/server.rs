@@ -6501,6 +6501,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .memories_or_err()
             .and_then(|m| m.search(std::path::Path::new(&root_path), &query, &topics, limit))
             .map(|hits| Response::MemoryHits { hits }),
+        Request::SearchCards { root_path, query, limit } => manager
+            .memories_or_err()
+            .and_then(|m| m.search_cards(std::path::Path::new(&root_path), &query, limit))
+            .map(|hits| Response::CardHits { hits }),
         // Workspace files for a desktop on another machine (v39). Confined
         // to the root and its extra contexts inside `gavin`, so this
         // dispatch decides nothing about paths.
@@ -7090,6 +7094,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // tool's whole point. `EnsureMemoryIndex` stays out: it can start
         // a model download, which is the human's call at setup.
         | Request::SearchMemories { root_path, .. }
+        // Its own workspace's cards ranked by meaning: the same tree
+        // `ScanGavinRoot` hands it, in another order.
+        | Request::SearchCards { root_path, .. }
         | Request::GetBoardByRoot { root_path }
         | Request::GetOrchestrationByRoot { root_path }
         | Request::GetToolsByRoot { root_path }
@@ -9337,9 +9344,9 @@ mod tests {
         );
     }
 
-    /// An agent searches its own workspace's adopted memories and no
-    /// other's; building the index, which can start a model download, is
-    /// the human's.
+    /// An agent searches its own workspace's adopted memories and cards
+    /// and no other's; building the index, which can start a model
+    /// download, is the human's.
     #[test]
     fn an_agent_may_search_its_own_memories_and_build_none() {
         let ws = tempfile::tempdir().unwrap();
@@ -9354,6 +9361,9 @@ mod tests {
         };
         assert!(authorize(&agent, &search(root.clone()), false).is_ok());
         assert!(authorize(&agent, &search(other.path().to_string_lossy().to_string()), false).is_err());
+        let cards = |root_path: String| Request::SearchCards { root_path, query: "q".into(), limit: None };
+        assert!(authorize(&agent, &cards(root.clone()), false).is_ok());
+        assert!(authorize(&agent, &cards(other.path().to_string_lossy().to_string()), false).is_err());
         for req in [
             Request::GetMemoryIndex { root_path: root.clone() },
             Request::EnsureMemoryIndex { root_path: root.clone(), download: false },
@@ -9414,6 +9424,7 @@ mod tests {
             Request::GetMemoryIndex { root_path: "/x".into() },
             Request::EnsureMemoryIndex { root_path: "/x".into(), download: true },
             Request::SearchMemories { root_path: "/x".into(), query: "q".into(), topics: vec![], limit: None },
+            Request::SearchCards { root_path: "/x".into(), query: "q".into(), limit: None },
             Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::ListSessions,
             Request::SessionProcesses,

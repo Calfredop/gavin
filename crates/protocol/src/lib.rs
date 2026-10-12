@@ -82,6 +82,14 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v71 ranks a workspace's cards by meaning (`opts-gavin-get-tree-archived-
+/// cards.md`): `SearchCards`, gavin-mcp's `gavin_find_cards`, embeds every
+/// card's title and opening body into the same per-root index the adopted
+/// memories live in and scores them against a query. One new TYPE, so
+/// `min_version_for` is its whole wire gate; its only sender is gavin-mcp,
+/// which reads the gate's refusal as "match words instead", so no
+/// daemonCompat.ts entry is owed.
+///
 /// v70 marks the input the desk host writes for a Device
 /// (`companion-owner-overlay-says-when-the-desk-injected-input`). A
 /// Device's forwarded `write_input`, `queue_input` or `send_queued_input`
@@ -885,7 +893,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 70;
+pub const PROTOCOL_VERSION: u32 = 71;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1289,6 +1297,18 @@ pub enum Request {
         query: String,
         #[serde(default)]
         topics: Vec<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// The root's cards nearest `query` in meaning (v71), gavin-mcp's
+    /// `gavin_find_cards`. Every card of the tree `ScanGavinRoot` returns,
+    /// archived ones included, best first; `limit` caps the answer, and
+    /// without one it is every card. Embeds whatever card is new or edited
+    /// since the last search first; like `SearchMemories`, it refuses
+    /// rather than download a model the human has not fetched.
+    SearchCards {
+        root_path: String,
+        query: String,
         #[serde(default)]
         limit: Option<u32>,
     },
@@ -2511,6 +2531,9 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::GetMemoryIndex { .. }
         | Request::EnsureMemoryIndex { .. }
         | Request::SearchMemories { .. } => 60,
+        // Cards ranked by meaning (v71). A new TYPE, and gavin-mcp is
+        // its only sender: refused here, it matches words instead.
+        Request::SearchCards { .. } => 71,
 
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
@@ -3518,6 +3541,8 @@ pub enum Response {
     /// The answer to `SearchMemories` (v60), best first. Empty for a
     /// workspace with nothing adopted -- not an error.
     MemoryHits { hits: Vec<MemoryHit> },
+    /// The answer to `SearchCards` (v71), best first.
+    CardHits { hits: Vec<CardHit> },
     /// The answer to `HeadroomSavings` (v49), oldest first.
     HeadroomSavings { runs: Vec<RunSavings> },
     /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
@@ -3673,6 +3698,16 @@ pub struct MemoryHit {
     pub why: Option<String>,
     /// The instructions file it was adopted into, root-relative.
     pub source: String,
+    /// Cosine similarity to the query, -1..1.
+    pub score: f32,
+}
+
+/// One card a `SearchCards` returned (v71): the card's path exactly as
+/// the tree spells it, so the caller joins it back onto the scan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardHit {
+    pub path: String,
     /// Cosine similarity to the query, -1..1.
     pub score: f32,
 }
@@ -7974,7 +8009,9 @@ mod tests {
         // v70: ForwardedInput and the SessionDeskInput push -- the desk
         // host marking a Device's input, so its owner hears of the
         // desk's. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 70);
+        // v71: SearchCards + CardHits -- a workspace's cards ranked by
+        // meaning, for gavin-mcp's gavin_find_cards. One new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 71);
     }
 
     #[test]
@@ -8308,6 +8345,7 @@ mod tests {
             Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
             Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
             Request::ScanGavinRoot { root_path: "r".into() },
+            Request::SearchCards { root_path: "r".into(), query: "q".into(), limit: None },
             Request::ReadPrd { root_path: "r".into() },
             Request::ReadWorkspaceFile { root_path: "r".into(), path: "a.md".into() },
             Request::WriteWorkspaceFile { root_path: "r".into(), path: "a.md".into(), content: "c".into() },
@@ -8708,6 +8746,8 @@ mod tests {
         expected.insert(69, 2);
         // ForwardedInput -- the desk host marking a Device's input.
         expected.insert(70, 1);
+        // SearchCards -- a workspace's cards ranked by meaning.
+        expected.insert(71, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

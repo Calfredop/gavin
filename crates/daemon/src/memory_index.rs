@@ -21,12 +21,21 @@
 //! The grammar `parse_learned` reads is written down once, in
 //! memoryCard.ts's header, and held to it on both sides by
 //! `test-fixtures/learned-memories/cases.json`.
+//!
+//! The same index file holds a second table for the workspace's CARDS
+//! (v71, `gavin_find_cards`): each card's title and the opening of its
+//! body, keyed by a digest of exactly that text, so a card that only
+//! moved -- filed under done/, archived -- keeps its vector, and an edit
+//! is a removal plus an addition, like a memory's. A workspace has
+//! hundreds of cards rather than tens, which is still a brute-force
+//! cosine; the first search of one embeds them all, and every later one
+//! embeds only what changed.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use protocol::{MemoryHit, MemoryIndexStatus};
+use protocol::{CardHit, MemoryHit, MemoryIndexStatus};
 
 const MARKER_START: &str = "<!-- gavin:start -->";
 const MARKER_END: &str = "<!-- gavin:end -->";
@@ -53,6 +62,19 @@ const READY_MARKER: &str = "bge-small-en-v1.5-q.ready";
 
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 50;
+
+/// How much of a card's body is embedded beside its title. The opening
+/// is where a card says what it is about -- the rest is checklists and
+/// notes that dilute it. Measured on this repo's 624 cards with a release
+/// daemon: 1200 characters took 43 s to embed on the first search and
+/// ranked worse than 600, which took 22 s.
+const CARD_BODY_CHARS: usize = 600;
+
+/// Most hits one `search_cards` returns, so the answer stays well under
+/// `MAX_LINE_BYTES` even with long paths. gavin-mcp applies its other
+/// criteria to what comes back, so on a workspace past this many cards
+/// they narrow the best 2000 rather than every card.
+const MAX_CARD_HITS: usize = 2000;
 
 pub const NOT_DOWNLOADED: &str = "gavin's memory model isn't on this machine yet. Run the Memory step from gavin's Home tab (or the setup wizard) to download it -- once, for every workspace.";
 
@@ -86,6 +108,22 @@ impl LearnedMemory {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What a card is embedded as: its title, then the opening of its body.
+fn card_passage(title: &str, body: &str) -> String {
+    let body: String = body.trim().chars().take(CARD_BODY_CHARS).collect();
+    if body.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}\n\n{body}")
+    }
+}
+
+/// A card's row key: the text it was embedded from, not its path, which
+/// changes every time the card is filed.
+fn passage_id(passage: &str) -> String {
+    hex(ring::digest::digest(&ring::digest::SHA256, passage.as_bytes()).as_ref())
 }
 
 /// memoryCard.ts's `normalizeTopics`, character for character.
@@ -336,6 +374,10 @@ impl Memories {
                  id TEXT PRIMARY KEY,
                  fact TEXT NOT NULL,
                  vector BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS cards (
+                 id TEXT PRIMARY KEY,
+                 vector BLOB NOT NULL
              );",
         )?;
         // One IMMEDIATE transaction, so the check and the reset cannot
@@ -345,17 +387,24 @@ impl Memories {
         let tx = rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
         if index_model(&tx).as_deref() != Some(MODEL_ID) {
             tx.execute("DELETE FROM memories", [])?;
+            tx.execute("DELETE FROM cards", [])?;
             tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('model', ?1)", [MODEL_ID])?;
         }
         tx.commit()?;
         Ok(conn)
     }
 
-    /// The ids an index holds, without creating one for a root that has
-    /// never had any.
-    /// Writes nothing: an index from another model reads as empty, and
-    /// the next sync resets it.
+    /// The memory ids an index holds; see `ids_in`.
     fn indexed_ids(&self, root: &Path) -> HashSet<String> {
+        self.ids_in(root, "memories")
+    }
+
+    /// The ids `table` holds, without creating an index for a root that
+    /// has never had one.
+    /// Writes nothing: an index from another model reads as empty, and
+    /// the next sync resets it. So does an index a daemon from before the
+    /// table wrote -- the query fails and the next sync creates it.
+    fn ids_in(&self, root: &Path, table: &str) -> HashSet<String> {
         let path = self.index_path(root);
         if !path.exists() {
             return HashSet::new();
@@ -368,7 +417,7 @@ impl Memories {
         if index_model(&conn).as_deref() != Some(MODEL_ID) {
             return HashSet::new();
         }
-        let Ok(mut stmt) = conn.prepare("SELECT id FROM memories") else { return HashSet::new() };
+        let Ok(mut stmt) = conn.prepare(&format!("SELECT id FROM {table}")) else { return HashSet::new() };
         stmt.query_map([], |r| r.get::<_, String>(0))
             .map(|rows| rows.filter_map(Result::ok).collect())
             .unwrap_or_default()
@@ -504,13 +553,7 @@ impl Memories {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let q = format!("{QUERY_PREFIX}{query}");
-        let qv = normalized(
-            self.with_embedder(false, |e| e.embed(&[q]))?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("the memory model returned no vector"))?,
-        );
+        let qv = self.query_vector(query)?;
         let conn = self.open_index(root)?;
         let mut stmt = conn.prepare("SELECT vector FROM memories WHERE id = ?1")?;
         let mut hits = Vec::new();
@@ -530,6 +573,93 @@ impl Memories {
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(limit.map(|l| l as usize).unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT));
+        Ok(hits)
+    }
+
+    /// `query` as a unit vector, with BGE's retrieval instruction.
+    fn query_vector(&self, query: &str) -> anyhow::Result<Vec<f32>> {
+        let q = format!("{QUERY_PREFIX}{query}");
+        Ok(normalized(
+            self.with_embedder(false, |e| e.embed(&[q]))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("the memory model returned no vector"))?,
+        ))
+    }
+
+    /// Makes the cards table hold exactly `want` (id -> passage), the way
+    /// `sync_with` does for memories: drops what is no longer there,
+    /// embeds what is new, and embeds nothing when nothing is.
+    fn sync_cards(&self, root: &Path, want: &HashMap<String, String>) -> anyhow::Result<()> {
+        let have = self.ids_in(root, "cards");
+        let stale: Vec<&String> = have.iter().filter(|id| !want.contains_key(*id)).collect();
+        let missing: Vec<(&String, &String)> = want.iter().filter(|(id, _)| !have.contains(*id)).collect();
+        if stale.is_empty() && missing.is_empty() {
+            return Ok(());
+        }
+        let vectors = if missing.is_empty() {
+            Vec::new()
+        } else {
+            let passages: Vec<String> = missing.iter().map(|(_, p)| (*p).clone()).collect();
+            self.with_embedder(false, |e| e.embed(&passages))?
+        };
+        let mut conn = self.open_index(root)?;
+        let tx = conn.transaction()?;
+        for id in stale {
+            tx.execute("DELETE FROM cards WHERE id = ?1", [id])?;
+        }
+        for ((id, _), v) in missing.iter().zip(vectors) {
+            tx.execute(
+                "INSERT OR REPLACE INTO cards (id, vector) VALUES (?1, ?2)",
+                rusqlite::params![id, to_blob(&normalized(v))],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `root`'s cards nearest `query` in meaning, best first -- archived
+    /// ones included, every card when `limit` is None (up to
+    /// `MAX_CARD_HITS`). Brings the cards table up to the files first.
+    pub fn search_cards(&self, root: &Path, query: &str, limit: Option<u32>) -> anyhow::Result<Vec<CardHit>> {
+        let query = query.trim();
+        if query.is_empty() {
+            anyhow::bail!("the query is empty -- say what you are looking for");
+        }
+        // (path, id) per card, and id -> passage once per distinct text:
+        // two cards that say the same thing share a row.
+        let mut cards: Vec<(String, String)> = Vec::new();
+        let mut want: HashMap<String, String> = HashMap::new();
+        for (info, body) in crate::gavin::cards_with_bodies(root) {
+            let passage = card_passage(&info.title, &body);
+            let id = passage_id(&passage);
+            cards.push((info.path, id.clone()));
+            want.insert(id, passage);
+        }
+        if cards.is_empty() {
+            // No cards is an answer, and needs no model -- leftovers from
+            // cards since deleted go now, like an emptied `### Learned`.
+            self.sync_cards(root, &want)?;
+            return Ok(Vec::new());
+        }
+        if !self.model_present() {
+            anyhow::bail!(NOT_DOWNLOADED);
+        }
+        self.sync_cards(root, &want)?;
+        let qv = self.query_vector(query)?;
+        let conn = self.open_index(root)?;
+        let mut stmt = conn.prepare("SELECT vector FROM cards WHERE id = ?1")?;
+        let mut hits = Vec::new();
+        for (path, id) in cards {
+            let Ok(blob) = stmt.query_row([&id], |r| r.get::<_, Vec<u8>>(0)) else { continue };
+            let v = from_blob(&blob);
+            if v.len() != qv.len() {
+                continue;
+            }
+            hits.push(CardHit { path, score: v.iter().zip(&qv).map(|(a, b)| a * b).sum() });
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        hits.truncate(limit.map(|l| (l as usize).max(1)).unwrap_or(MAX_CARD_HITS).min(MAX_CARD_HITS));
         Ok(hits)
     }
 }
@@ -856,6 +986,93 @@ mod tests {
     fn an_empty_query_is_refused() {
         let f = fixture(true);
         assert!(f.memories.search(&f.root, "  ", &[], None).is_err());
+        assert!(f.memories.search_cards(&f.root, "  ", None).is_err());
+    }
+
+    // -- cards --------------------------------------------------------------
+
+    fn write_card(root: &Path, rel: &str, title: &str, body: &str) -> String {
+        let path = root.join(".gavin-root/plans").join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("---\ntitle: {title}\nkind: task\n---\n{body}\n")).unwrap();
+        protocol::wire_path(&path)
+    }
+
+    fn hit_paths(hits: &[CardHit]) -> Vec<&str> {
+        hits.iter().map(|h| h.path.as_str()).collect()
+    }
+
+    #[test]
+    fn cards_rank_by_title_and_body_archived_ones_included() {
+        let f = fixture(true);
+        let login = write_card(&f.root, "login.md", "Fix the login flow", "The redirect loops after OAuth.");
+        let drag = write_card(
+            &f.root,
+            "archive/drag.md",
+            "Kanban polish",
+            "Dragging cards between columns drops them.",
+        );
+        let hits = f.memories.search_cards(&f.root, "dragging cards between columns", None).unwrap();
+        assert_eq!(hit_paths(&hits), vec![drag.as_str(), login.as_str()], "every card, best first");
+        assert!(hits[0].score > hits[1].score);
+        let hits = f.memories.search_cards(&f.root, "login redirect", Some(1)).unwrap();
+        assert_eq!(hit_paths(&hits), vec![login.as_str()]);
+    }
+
+    #[test]
+    fn a_filed_card_keeps_its_vector_and_an_edit_embeds_only_that_card() {
+        let f = fixture(true);
+        let plans = f.root.join(".gavin-root/plans");
+        write_card(&f.root, "a.md", "Fix the login flow", "Redirect loops.");
+        write_card(&f.root, "b.md", "Kanban polish", "Dragging cards.");
+        f.memories.search_cards(&f.root, "login", None).unwrap();
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 2 + 1, "two cards and the query");
+
+        // Filed under done/: same text, new path.
+        std::fs::create_dir_all(plans.join("done")).unwrap();
+        std::fs::rename(plans.join("a.md"), plans.join("done/a.md")).unwrap();
+        let hits = f.memories.search_cards(&f.root, "login", None).unwrap();
+        assert!(hits[0].path.ends_with("/plans/done/a.md"), "{hits:?}");
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 3 + 1, "only the query");
+
+        write_card(&f.root, "b.md", "Kanban polish", "Dragging cards between columns.");
+        f.memories.search_cards(&f.root, "login", None).unwrap();
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 4 + 1 + 1, "the edited card and the query");
+        assert_eq!(f.memories.ids_in(&f.root, "cards").len(), 2, "the old text's row is gone");
+    }
+
+    #[test]
+    fn no_cards_needs_no_model_and_cards_need_one_never_a_download() {
+        let f = fixture(false);
+        assert!(f.memories.search_cards(&f.root, "anything", None).unwrap().is_empty());
+        write_card(&f.root, "a.md", "Fix the login flow", "");
+        let err = f.memories.search_cards(&f.root, "login", None).unwrap_err().to_string();
+        assert!(err.contains("Memory step"), "{err}");
+        assert_eq!(f.loads.load(Ordering::SeqCst), 0);
+    }
+
+    /// The cards table arrived after the index did. `CREATE TABLE IF NOT
+    /// EXISTS` does add a missing TABLE to an existing file -- it is a
+    /// missing COLUMN it cannot add -- and this holds that against a
+    /// file built by hand with the v60 schema.
+    #[test]
+    fn an_index_from_before_the_cards_table_gains_it() {
+        let f = fixture(true);
+        write_learned(&f.root, "CLAUDE.md", CORPUS);
+        std::fs::create_dir_all(f.memories.index_path(&f.root).parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(f.memories.index_path(&f.root)).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE memories (id TEXT PRIMARY KEY, fact TEXT NOT NULL, vector BLOB NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('model', '{MODEL_ID}');"
+        ))
+        .unwrap();
+        drop(conn);
+        assert!(f.memories.ids_in(&f.root, "cards").is_empty(), "no table reads as empty");
+        let login = write_card(&f.root, "a.md", "Fix the login flow", "");
+        let hits = f.memories.search_cards(&f.root, "login flow", None).unwrap();
+        assert_eq!(hit_paths(&hits), vec![login.as_str()]);
+        assert_eq!(f.memories.search(&f.root, "pkill the daemon", &[], None).unwrap()[0].fact, "Never pkill gavin-daemon.");
     }
 
     /// The real model, end to end: downloads the weights (network), so it
@@ -877,5 +1094,32 @@ mod tests {
         assert_eq!(hits[0].fact, "Never pkill gavin-daemon.", "{hits:?}");
         let hits = memories.search(&root, "windows carriage returns in files", &[], None).unwrap();
         assert_eq!(hits[0].fact, "Line endings are LF on disk on every OS.", "{hits:?}");
+    }
+
+    /// The real model on cards: a query that shares no word with the card
+    /// it means still finds it first, archived or not. Network, like the
+    /// test above -- `cargo test -p gavin-daemon -- --ignored real_bge`.
+    #[test]
+    #[ignore]
+    fn real_bge_finds_a_card_by_what_it_is_about() {
+        let dirs = tempfile::tempdir().unwrap();
+        let root = dirs.path().join("ws");
+        let tree = write_card(
+            &root,
+            "archive/tree-size.md",
+            "gavin_get_tree dumps the whole board",
+            "On a workspace with a long archive it ran to 457,000 characters and spilled to a file.",
+        );
+        let login = write_card(&root, "login.md", "Fix the login flow", "The OAuth redirect loops forever.");
+        write_card(&root, "drag.md", "Kanban drag bug", "Dropping a card on another column loses it.");
+        let model_dir = std::env::var_os("GAVIN_TEST_MODEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs.path().join("models"));
+        let memories = Memories::with_loader(dirs.path().join("memory-index"), model_dir, Box::new(load_bge));
+        memories.with_embedder(true, |_| Ok(())).unwrap();
+        let hits = memories.search_cards(&root, "the tool's answer is too large to read", None).unwrap();
+        assert_eq!(hits[0].path, tree, "{hits:?}");
+        let hits = memories.search_cards(&root, "signing in sends me round in circles", None).unwrap();
+        assert_eq!(hits[0].path, login, "{hits:?}");
     }
 }

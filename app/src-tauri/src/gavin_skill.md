@@ -194,8 +194,14 @@ you could not check in a browser rather than implying you did.
 
 ## Notes
 
-- `gavin_get_tree` is the canonical parse of every context and card (kinds,
-  statuses, parents, checklist counts, warnings) — trust it over your own
-  frontmatter parsing.
+- `gavin_get_tree` is the canonical parse of every context and every card on
+  the board (kinds, statuses, parents, checklist counts, warnings), one card
+  per line — trust it over your own frontmatter parsing. Archived cards are
+  left out of it and only counted.
+- `gavin_find_cards` searches the whole tree, archived cards included, by
+  what a card is about (`query`) and by `status`, `kind`, `parent` or
+  `label`. Reach for it when you want a few cards rather than the board:
+  whether work was already done or is already on a card, a card by name, or
+  the children of a plan (`parent: <plan file>`).
 - After `gavin_init_root` in a fresh repo, reconnect MCP so the tools pick up
   the new root.

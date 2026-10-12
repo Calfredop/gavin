@@ -23,7 +23,9 @@ order:
 2. **The PRD** (`gavin_read_prd`) — the card has to trace back to it. A
    card that does not is itself the first question.
 3. **The board** (`gavin_get_tree`) — the neighbouring cards. Work that
-   overlaps a card already on the board is a question, not a plan.
+   overlaps a card already on the board is a question, not a plan. Ask
+   `gavin_find_cards` with the card's intent as the `query` too: it reaches
+   the archive, where the same work may already have been done.
 4. **The code the card names.** A card that says "fix the login flow"
    has a login flow sitting in the repo. Read it.
 
@@ -270,10 +272,13 @@ In this order, because the `kind:` decides what the rest of it means:
   instruction, not as a note. Rate it in the same call — a child filed
   unrated and rated afterwards can be run in between, at the wrong
   agent.
-- **Then read it back.** `gavin_get_tree` is the canonical parse: the
-  card must come back the kind you meant, carrying the level you meant,
-  and every child `kind: task` with this card's file name as its
-  `parent`, no status, and its own level. Nothing here fails loudly — a
+- **Then read it back** from the canonical parse: `gavin_find_cards` with
+  this card's file name as `parent` lists its children, and `gavin_get_tree`
+  shows the card itself. The card must come back the kind you meant,
+  carrying the level you meant, and every child `kind: task` with this
+  card's file name as its `parent`, no status, and its own level — a child
+  missing from that list is a `parent:` that does not say what you meant.
+  Nothing here fails loudly — a
   typo'd `parent:`, a stray `status:`, a level the daemon could not read
   and a parent left as `kind: task` all produce a plan that looks right
   in the file and comes apart on the board. Fix what the tree shows

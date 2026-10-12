@@ -2183,6 +2183,32 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
     }
 }
 
+/// Every card `scan_root` finds under `root`, archived ones included,
+/// each with the body that follows its frontmatter -- what the card index
+/// embeds (`memory_index::Memories::search_cards`). A card too large for
+/// the scan to read, or one whose frontmatter never closes, comes back
+/// with an empty body: its title is all anything here knows of it.
+pub fn cards_with_bodies(root: &Path) -> Vec<(PlanFileInfo, String)> {
+    scan_root(root)
+        .contexts
+        .into_iter()
+        .flat_map(|ctx| ctx.plans)
+        .map(|info| {
+            let path = Path::new(&info.path);
+            let body = match std::fs::metadata(path) {
+                Ok(meta) if meta.len() <= MAX_SCANNED_FILE_BYTES => std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|content| {
+                        body_start(&content).map(|start| content.lines().skip(start).collect::<Vec<_>>().join("\n"))
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            (info, body)
+        })
+        .collect()
+}
+
 /// Lists every `.md` file under `dir`, refusing to follow a directory
 /// symlink whose canonical path leaves `boundary` (see `safe_to_descend`).
 fn list_md_files(dir: &Path, boundary: &Path) -> Vec<MdFileInfo> {

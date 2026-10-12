@@ -5,6 +5,7 @@ use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod cards;
 mod playwright;
 
 /// How long the version probe may sit in a read before the daemon is
@@ -658,7 +659,16 @@ const NOT_IN_WORKSPACE: &str =
 
 fn tool_definitions() -> Value {
     json!([
-        { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and every card still on its board — the canonical parse (kind, status, parent, checklist counts, complexity, warnings), one card per line, with fields that say nothing left off. Cards a human archived (plans/archive/) are left out and counted per context as archivedCards; gavin_find_cards searches them. To look up a few cards rather than read the whole board, use gavin_find_cards.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_find_cards", "description": "Find cards anywhere in this workspace, archived ones included, without reading the whole board. A query is ranked by meaning (title and the opening of the body), titles containing its words first, and the best `limit` come back; every other criterion you pass must also hold. The first search in a workspace embeds every card and can take a minute; later ones embed only what changed. Each card comes back on one line in gavin_get_tree's shape, plus archived: true on an archived card and a score when ranked by meaning. Use it to check whether work overlaps a card that exists or was already done, to look a card up by name, or to read back what you just wrote (parent: <plan file> lists a plan's children). Without a query it lists the matching cards newest first.", "inputSchema": { "type": "object", "properties": {
+            "query": { "type": "string", "description": "What the card is about, in your own words" },
+            "status": { "type": "string", "description": "Board column name, matched ignoring case and spacing. A nested task (no status of its own) matches its parent's" },
+            "kind": { "type": "string", "enum": ["note", "task", "plan"] },
+            "parent": { "type": "string", "description": "A plan's file name: the cards whose parent: names it" },
+            "label": { "type": "string", "description": "A label the card carries" },
+            "archived": { "type": "string", "enum": ["include", "exclude", "only"], "description": "Default include" },
+            "limit": { "type": "integer", "description": "Most cards returned; default 20, at most 200" }
+        } } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_search_memories", "description": "Search this workspace's ADOPTED memories — the durable facts the human has adopted into the instructions file's `### Learned` section — by meaning, not by words. Ask in your own phrasing (\"can I kill the daemon?\" finds \"Never pkill gavin-daemon.\"); narrow by topic when you know one. Returns the closest facts best first, with their topics, their Why and a similarity score; an empty answer means nothing adopted is about that. Proposing a NEW memory is a `kind: note` card labelled `memory`, not this tool.", "inputSchema": { "type": "object", "properties": {
             "query": { "type": "string", "description": "What you want to know, in any words." },
@@ -804,6 +814,11 @@ fn dispatch_tool(
         return start_rail(root, &require_arg(args, "rail")?, transport);
     }
 
+    // A scan and, with a query, a ranking -- the second allowed to fail.
+    if name == "gavin_find_cards" {
+        return find_cards(root, args, transport);
+    }
+
     // The tool library. `gavin_save_tool` is a read, a decision and a
     // write for the same reason; the other two are one request each and
     // sit here beside it so the three read as one endpoint.
@@ -938,7 +953,7 @@ fn dispatch_tool(
         claim_card(root, &card, current_session_id(), transport);
     }
     match resp {
-        Response::GavinTreeScanned { tree } => Ok(serde_json::to_string_pretty(&tree)?),
+        Response::GavinTreeScanned { tree } => Ok(cards::board(&tree)),
         Response::PrdContent { content } => Ok(content),
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
@@ -1220,6 +1235,32 @@ fn is_nested(plan: &protocol::PlanFileInfo, plans_in_context: &HashSet<&str>) ->
     }
 }
 
+/// `gavin_find_cards`. The scan is the answer; the daemon's card index
+/// only orders it. So a ranking the daemon cannot give -- it predates
+/// v71, the memory model was never downloaded, the index failed --
+/// falls back to matching words and says why, rather than failing a
+/// search the scan alone can answer.
+fn find_cards(root: &Path, args: &Value, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let criteria = cards::Criteria::from_args(args)?;
+    let root_str = root.to_string_lossy().to_string();
+    let tree = match transport.request(&Request::ScanGavinRoot { root_path: root_str.clone() })? {
+        Response::GavinTreeScanned { tree } => tree,
+        Response::Error { message } => return Err(anyhow::anyhow!(message)),
+        other => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    };
+    let ranking = criteria.query.clone().map(|query| {
+        match transport.request(&Request::SearchCards { root_path: root_str, query, limit: None }) {
+            Ok(Response::CardHits { hits }) => {
+                cards::Ranking::Meaning(hits.into_iter().map(|h| (h.path, h.score)).collect())
+            }
+            Ok(Response::Error { message }) => cards::Ranking::Words { why: message },
+            Ok(other) => cards::Ranking::Words { why: format!("unexpected response: {other:?}") },
+            Err(e) => cards::Ranking::Words { why: gated_tool_error("ranking by meaning", &e) },
+        }
+    });
+    Ok(cards::find(&tree, &criteria, ranking))
+}
+
 fn kind_str(kind: &protocol::CardKind) -> &'static str {
     match kind {
         protocol::CardKind::Note => "note",
@@ -1413,7 +1454,7 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
             ctx.plans.iter().filter(move |p| !is_nested(p, &plans_here))
         })
         .filter(|p| !matches!(p.kind, protocol::CardKind::Note))
-        .filter(|p| !p.path.contains("/plans/archive/"))
+        .filter(|p| !cards::is_archived(p))
         .filter(|p| !placed.contains(p.path.as_str()))
         .map(|p| {
             json!({
@@ -4252,6 +4293,85 @@ mod tests {
         )
         .unwrap();
         assert!(missing.contains("text"), "{missing}");
+    }
+
+    // ---------- gavin_get_tree / gavin_find_cards ----------
+
+    #[test]
+    fn get_tree_prints_the_board_without_the_archive() {
+        let mut t = mock(vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let text = call_with("gavin_get_tree", json!({}), &mut t);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["contexts"][0]["plans"].as_array().unwrap().len(), 2, "{text}");
+        assert_eq!(v["contexts"][0]["archivedCards"], 1);
+        assert!(!text.contains("filed.md"), "{text}");
+    }
+
+    fn found_titles(text: &str) -> Vec<String> {
+        let v: Value = serde_json::from_str(text).unwrap();
+        v["cards"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn find_cards_ranks_by_the_daemon_s_scores_when_it_has_them() {
+        let mut t = mock(vec![
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::CardHits {
+                hits: vec![
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/archive/filed.md".into(), score: 0.9 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/b.md".into(), score: 0.5 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/a.md".into(), score: 0.4 },
+                ],
+            },
+        ]);
+        let text = call_with("gavin_find_cards", json!({ "query": "put away", "limit": 2 }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Filed away", "Card B"], "{text}");
+        assert!(text.contains(r#""search": "meaning""#), "{text}");
+        match &t.requests[1] {
+            Request::SearchCards { root_path, query, limit } => {
+                assert_eq!(root_path, &Path::new("/ws").to_string_lossy().to_string());
+                assert_eq!(query, "put away");
+                assert_eq!(*limit, None, "every card, so the filters run over all of them");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_cards_matches_words_when_the_daemon_cannot_rank_and_says_why() {
+        let mut t = mock(vec![
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::Error { message: "gavin's memory model isn't on this machine yet.".into() },
+        ]);
+        let text = call_with("gavin_find_cards", json!({ "query": "card b" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card B"], "{text}");
+        assert!(text.contains(r#""search": "words""#), "{text}");
+        assert!(text.contains("memory model isn't on this machine"), "{text}");
+    }
+
+    /// Against a daemon from before v71 the ranking is never sent at all
+    /// -- an older daemon cannot parse it -- and the search still answers.
+    #[test]
+    fn find_cards_against_an_older_daemon_matches_words_and_names_the_restart() {
+        let needed =
+            protocol::min_version_for(&Request::SearchCards { root_path: "/ws".into(), query: "q".into(), limit: None });
+        let (path, seen, _dir) =
+            fake_daemon(needed - 1, vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let mut t = SocketTransport::at(path);
+        let text = call_with("gavin_find_cards", json!({ "query": "card a" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card A"], "{text}");
+        assert!(text.contains(&format!("v{needed}")), "{text}");
+        assert!(text.contains("restart the daemon"), "{text}");
+        assert!(!seen.lock().unwrap().iter().any(|r| matches!(r, Request::SearchCards { .. })));
+    }
+
+    #[test]
+    fn find_cards_without_a_query_asks_for_no_ranking() {
+        let mut t = mock(vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let text = call_with("gavin_find_cards", json!({ "archived": "only" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Filed away"], "{text}");
+        assert!(!text.contains("\"search\""), "{text}");
+        assert_eq!(t.requests.len(), 1, "{:?}", t.requests);
     }
 
     #[test]

@@ -33,7 +33,7 @@ Issues and specs for this repo live as gavin cards: markdown files with a YAML h
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the card file; `gavin_get_tree` resolves names to paths. Read its parent plan and the linked spec too, when they exist.
+Read the card file; `gavin_find_cards` resolves names to paths, archived cards included. Read its parent plan and the linked spec too, when they exist.
 
 ## Wayfinding operations
 
