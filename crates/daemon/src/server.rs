@@ -3970,6 +3970,9 @@ impl SessionManager {
         let watcher = self
             .find_watcher_by_root(root_path)
             .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        // The one kimi launch the app's `create_session` never sees, so
+        // its folder-trust grant is made here, by the same rule.
+        crate::kimi_trust::prepare_spawn(root_path, cwd, command);
         // Nobody's word for what this is, so the command line speaks for
         // itself: compressed when its first token is an agent gavin has
         // a recipe for, exactly like a launch from the app.

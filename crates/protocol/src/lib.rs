@@ -35,6 +35,11 @@ pub mod bin_dirs;
 // for the same reason.
 pub mod playwright;
 
+// kimi's per-folder trust record and the rule for granting one at a
+// launch, read by the app and the daemon alike. Pure: the disk is a
+// trait each caller implements.
+pub mod kimi_trust;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
     ATTENTION_API_VERSION,

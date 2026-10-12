@@ -342,6 +342,31 @@ over an existing record, and never for an ssh workspace, whose home is the host'
 The run reports the path it wrote. Kimi does not inherit trust to subdirectories,
 so worktrees are not covered by it.
 
+**Update 2026-10-12 — launches, worktrees included, get their own record.** Since
+kimi keys the record on the exact cwd, a launch in a context folder below the root
+or in a `.gavin-worktrees/<branch>` checkout is untrusted even when the root is
+trusted. The interactive TUI then stops at the trust screen and loses the queued
+prompt, and a headless run silently skips gavin's server. So every kimi launch
+writes its cwd a record, on the human's decision for worktrees (option A,
+2026-10-06). The rule is one function, `protocol::kimi_trust::launch_grant`, which
+the app calls for every launch through `create_session` and the daemon calls for an
+agent's `gavin_spawn_session` (the one launch the app never sees). It holds to the
+Integration grant's rules:
+
+- The cwd must be strictly inside the workspace root.
+- No `.mcp.json` or `.kimi-code/mcp.json` may sit at any level between the cwd and
+  the root. The one exception is a gavin worktree's own root. A worktree is its own
+  git work tree, so kimi reads its committed `.mcp.json`. That file is vetted by
+  the root's rule instead of being refused.
+- The root's files, and the worktree's, may declare nothing but gavin's own entries.
+  An unreadable file withholds.
+- It never writes over an existing record, follows `KIMI_CODE_HOME`, and writes
+  owner-only.
+- It never writes from the desk for an ssh workspace. The daemon writes only on its
+  own disk, which is the machine kimi runs on.
+
+A worktree whose branch adds a foreign server is withheld, and kimi asks.
+
 **Update 2026-10-08 — and kimi's `tui.toml`.** The same Integration step also
 sets `tui_mode = "fullscreen"` in `<kimi home>/tui.toml` (`set_kimi_fullscreen`),
 because kimi's inline TUI scrolls its prompt out of view inside gavin's terminals

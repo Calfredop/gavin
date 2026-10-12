@@ -9,6 +9,7 @@ mod git_watch;
 mod headroom;
 mod input;
 mod kanban;
+mod kimi_trust;
 mod memory_index;
 mod orchestration;
 mod osc;
