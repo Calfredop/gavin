@@ -1501,14 +1501,12 @@
         </div>
       {/if}
 
-      {#if card.kind === "task" && bodyHtml !== null}
+      <!-- One rendering for every kind: a task's body is its prompt, but
+           it is markdown the human wrote, so it reads the way a plan's
+           and a note's do rather than as raw source. -->
+      {#if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
         <div class="section">
-          <div class="section-title">Prompt</div>
-          <pre class="prompt">{stripFrontmatter(content ?? "").trim()}</pre>
-        </div>
-      {:else if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
-        <div class="section">
-          <div class="section-title">Body</div>
+          <div class="section-title">{card.kind === "task" ? "Prompt" : "Body"}</div>
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
           <div class="body-preview">{@html bodyHtml}</div>
         </div>
@@ -2364,19 +2362,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* No max-height on either: the panel scrolls once now, so a long
-     prompt costs a flick of the wheel instead of a scrollbar inside a
-     scrollbar. */
-  .prompt {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px;
-    font-size: 0.8em;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
-  }
+  /* No max-height: the panel scrolls once now, so a long prompt costs
+     a flick of the wheel instead of a scrollbar inside a scrollbar. */
   .body-preview {
     -webkit-user-select: text;
     user-select: text;
