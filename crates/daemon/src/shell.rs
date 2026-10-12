@@ -53,6 +53,31 @@ pub fn interactive_shell() -> PathBuf {
     PathBuf::from(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()))
 }
 
+/// The arguments `interactive_shell` is started with.
+///
+/// On macOS, `-l`: a login shell, which is what Terminal.app, iTerm2,
+/// Ghostty and VS Code all open, so it is what a mac user's dotfiles are
+/// written against. The login profile (`/etc/zprofile`'s `path_helper`,
+/// `~/.zprofile`'s `brew shellenv`) is where PATH gets Homebrew, and an
+/// rc file is free to assume it already has. A Finder-launched app hands
+/// the daemon launchd's bare `/usr/bin:/bin:/usr/sbin:/sbin`, so without
+/// `-l` the rc ran against that: `~/.zshrc`'s `source <(ng completion
+/// script)` printed "command not found: ng" into every new tab of the
+/// release app. A dev build hid it, because a daemon started from a
+/// terminal inherits a PATH that terminal's login shell already built.
+///
+/// Not on Linux: there the desktop session has already run the login
+/// profile and terminals open non-login shells by convention -- a login
+/// bash would read `~/.bash_profile` instead of `~/.bashrc`. `-l` is
+/// spelled the same in zsh, bash, fish, nushell, ksh and sh.
+pub fn interactive_shell_args() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["-l"]
+    } else {
+        &[]
+    }
+}
+
 /// Git for Windows' `sh.exe`, found from git's own idea of where it
 /// lives.
 ///

@@ -167,7 +167,11 @@ impl PtySession {
                 }
                 cmd
             }
-            None => CommandBuilder::new(crate::shell::interactive_shell().as_os_str()),
+            None => {
+                let mut cmd = CommandBuilder::new(crate::shell::interactive_shell().as_os_str());
+                cmd.args(crate::shell::interactive_shell_args());
+                cmd
+            }
         };
         cmd.cwd(cwd);
         // A daemon auto-spawned by the GUI (not launched from an interactive
@@ -724,6 +728,43 @@ mod tests {
         session.kill().unwrap();
         std::env::remove_var("TERM_PROGRAM");
         assert!(output.contains("TPMARK=[ghostty]"), "got: {output}");
+    }
+
+    /// A plain tab on macOS is a login shell, so the login profile runs
+    /// before the rc file. The bug this exists for: the release app,
+    /// started from Finder, opened every tab with `~/.zshrc:115: command
+    /// not found: ng`, because `ng` lives in `/opt/homebrew/bin` and only
+    /// `~/.zprofile` puts that on PATH. `ZDOTDIR` points zsh at a profile
+    /// of the test's own, so nothing here reads the real one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_plain_tab_on_macos_reads_the_login_profile() {
+        let _guard = lock_env();
+        let dotdir = tempfile::tempdir().unwrap();
+        std::fs::write(dotdir.path().join(".zprofile"), "export GAVIN_PROFILED=yes\n").unwrap();
+        let shell = std::env::var_os("SHELL");
+        let zdotdir = std::env::var_os("ZDOTDIR");
+        std::env::set_var("SHELL", "/bin/zsh");
+        std::env::set_var("ZDOTDIR", dotdir.path());
+
+        let spawned = PtySession::spawn("/tmp", None, "test-session", None);
+        match shell {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        match zdotdir {
+            Some(v) => std::env::set_var("ZDOTDIR", v),
+            None => std::env::remove_var("ZDOTDIR"),
+        }
+        let mut session = spawned.unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'LP%s=[%s]\\n' MARK \"$GAVIN_PROFILED\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "LPMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        assert!(output.contains("LPMARK=[yes]"), "got: {output}");
     }
 
     #[test]
