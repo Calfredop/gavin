@@ -158,9 +158,14 @@
       box-sizing: border-box;
     }
     .actions button {
-      width: 40px;
-      height: 32px;
+      width: 44px;
+      height: 44px;
       font-size: 1.1em;
+    }
+    /* The letter's own width, at whatever size the phone's text is. */
+    .badge {
+      width: auto;
+      min-width: 1.2em;
     }
   }
 </style>

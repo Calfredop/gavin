@@ -15,6 +15,14 @@ own svelte under the desktop's own lockfile. The two have to be one commit
 (ADR 0005), and a second dependency tree would be a second version of
 everything the desktop's components were compiled against.
 
+The lockfile is only half of that: what gets built is what is INSTALLED,
+and in a checkout shared by many sessions the two part when a commit bumps
+the lockfile and nobody reinstalls. `companion:build` and `companion:dev`
+therefore run `check-install.mjs` first, which refuses while any package in
+`app/node_modules` is not at the version `app/package-lock.json` pins
+(`npm install` in `app/` puts it right). Without it the xterm 6.1 bump that
+makes a swipe scroll the terminal on iOS shipped as 6.0.0 for eight days.
+
 `$lib` is the desktop's library (`kit.files.lib` → `../src/lib`), which is
 what lets every desktop module's `$lib/<folder>/<name>` import resolve
 unchanged. The bundle's own code is `$companion` → `src/companion`.
@@ -51,8 +59,9 @@ exactly one `result` with that id.
 
 | to the bundle | carries |
 |---|---|
-| `result` | `id`, `ok`, then `value` or `error` (+ `code: "unsupported"`) |
+| `result` | `id`, `ok`, then `value` or `error` (+ `code: "unsupported"` or `"unreachable"`) |
 | `event` | `listener`, `event`, `payload` |
+| `connection` | `state: "up"`, or `state: "down"` and `reason`: `unreachable`, `asleep` or `desktop-app-not-running` |
 
 Neither end throws on what it is handed. A type an end does not know is
 answered `unsupported` when it carries an id and dropped when it does not; an
@@ -60,6 +69,30 @@ unknown field is ignored. A bundle asks `capabilities` before using anything
 beyond the core set (`invoke`, `result`, `listen`, `event`, `unlisten`), and an
 end that cannot answer the question is taken to carry exactly that set — so a
 shell older than its bundle costs a button, never the page.
+
+`connection` is the one message nobody asked for, and so carries no id: the
+shell says it each time its connection to the Workstation goes down or comes
+back up (`visit/connectionState.ts`, from the hub's state in `hub/live.ts`),
+and never before the bundle has said something, since until then there is no
+way to reach it. A bundle assumes up until told otherwise. An older bundle
+drops it as a type it does not know; an older shell never sends it, and the
+bundle shows each failure as before. A call the shell could not carry -- no
+connection, one that dropped or went quiet, a desktop app the daemon could not
+ask -- is answered with `code: "unreachable"`, which is how the bundle tells
+an error about the outage from the Workstation's own.
+
+The bundle's side is `state/reachability.ts`. While down, the page says so in
+one line above the screen, and an error that only says the Workstation could
+not be reached is not repeated under it (`shownError`). On the way back up,
+every open surface re-runs its own load once, through the desktop's own
+in-flight guards (`onReconnect`: Git's `recoverGit`, the board's and a card's
+`recoverBoard`, `recoverRails`, the folder Files shows), clearing the
+reachability errors it showed first; `state/workstation.ts` reads the
+workspaces and the sessions' statuses again, since the pushes sent meanwhile
+reached nobody. A git failure or any other refusal of the Workstation's own
+stays. An open terminal is not repainted: leaving it and opening it again
+does that. `seam/reconnect.test.ts` drops and restores the Demo
+Workstation's connection (`reach`) with each surface open, and reads the wire.
 
 `landing` is optional and read only by a bundle that knows it: where the
 shell wants the bundle to land, when it opened it for an inbox item — the
@@ -223,7 +256,11 @@ terminals in the desk's tab order, with the desk's names and badges
 the desk does (`state/sessions.ts`: the same `resolvedAgentFor`, profile and
 failure patterns). Placing that session as a tab is the desk's
 (companion-16); until it does, the phone lists what it started under
-"Started from this phone". A session is ended from its terminal, behind the
+"Started from this phone". Every start names its workspace
+(`workspaceId`), which is the only thing a workspace with no folder can be
+placed by. A desk that has not placed one within `DESK_PLACES_WITHIN_MS`
+(`surfaces/sessionList.ts`) is out of the loop, and the group says so
+rather than promise a tab. A session is ended from its terminal, behind the
 desk's own confirm (`AppDialog` is mounted on the page).
 
 The terminal is the desk's `TerminalPane` over the desk's terminal registry,
@@ -262,6 +299,58 @@ of them; narrowing that is a protocol change of its own.
 `seam/typing.test.ts` drives the dock's own sends against the Demo
 Workstation, with a real xterm fed from the wire as the phone's screen
 (`testing/phoneScreen.ts`).
+
+### An agent's browser (playwright-companion-view)
+
+An agent with Playwright drives a headless browser of its own, and the
+desk shows it live beside the agent's tab. On the phone the same view is
+one tap away: a globe in the terminal's header, there while the agent's
+browser runs, puts the browser above the terminal -- beside it on its
+side -- and takes it away again (`surfaces/PhoneBrowser.svelte`, over
+`surfaces/phoneBrowser.ts`). It never opens on its own, whatever the
+desk's "when the pane opens" setting says: a view taking over a phone's
+screen mid-glance would be worse than a missed frame. Each terminal opens
+without it.
+
+The rules are the desk's `$lib/panes/browserView.ts` -- which browsers
+run, what a view on screen holds, when a stream is let go -- run on the
+phone's own ports (`state/browser.ts`), never on the desk's instance:
+
+- **The stream is the desk's to open.** The desk's own watch streams the
+  desk's size to a desk window and is refused to a Device. The phone asks
+  the desk for one at the phone's size and rate instead,
+  `watch_browser_for_device` (640x400, 2 a second, spec Q4), and the desk
+  offers each frame to the Devices as `browser-frame`.
+- **A lease.** Nothing tells the desk a phone has gone quiet, so the watch
+  lasts as long as the desk says (`leaseMs`, 30 s) and the phone renews it
+  at a third of that while the view is up. A view off the screen lets go
+  after the desk module's grace (`unwatch_browser_for_device`); a phone
+  that locked or walked away costs the daemon its screencast for half a
+  minute at most. A connection coming back asks again at once.
+- **Frames only while watching.** `browser-frame` carries every Device's
+  frames, so the page listens for it only while it watches something,
+  and keeps only the frames of what it watches. `browser-changed` and
+  `browser-gone` light and put out the globe, and `list_browsers` reads
+  back the running browsers at connect and after a gap.
+- **An ssh session's too.** Its browser runs on the host, and the desk's
+  own view of it rides the host's one streaming connection, where a
+  phone-size stream would be indistinguishable from the desk's and could
+  not be let go. So the desk opens the phone's on a connection of its own
+  to the host -- one more ssh process, only while a lease holds -- and
+  answers the watch at once rather than keep the phone's other commands
+  waiting on ssh; the first frame arrives like the rest. Whether the host
+  can do it (its daemon's version, the link being up) is the desk's to
+  say, since the phone knows neither: a refusal comes back as the watch's
+  answer and the view shows it, asking again while it stays up.
+
+The Demo Workstation's field-notes agent ("offline sync") has a browser
+from the start, turning a page each step of the activity loop (three
+pages of a notes app, drawn and rendered to phone-size JPEGs,
+`demo/browserFrames.ts`), and the desk's lease and first frame are played
+by `demo/browser.ts`. `seam/browserView.test.ts` drives the view against
+it and reads the wire; `crates/daemon/tests/device_wire.rs` has a frame
+the desk offers reach a listening Device through a real Relay -- one
+from a real headless shell where one is installed.
 
 ## The board and its cards (companion-27)
 
@@ -320,7 +409,11 @@ Edit opens one rail for changing: its name, a card added as a stage of its
 own or into a stage, a group's mode, a stage moved up or down or taken off,
 a step taken off, the rail deleted. Every write is the desk's own action
 from `orchestrationState.ts` (`state/rails.ts`), with the desk's confirms
-for a delete, a group and a reset.
+for a delete, a group and a reset. The editor's selects take the column and
+cut a long card title short rather than widening the page, and draw their
+own box, since WebKit sizes a native select to its font whatever
+`min-height` says; `surfaces/railEditorFit.test.ts` holds that, the 44px
+controls and the 16px name field.
 
 **Start arms; the desk runs.** `startRail` and `resumeRail` write the rail's
 run row and then ask for a pass of the scheduler, which in the bundle is
@@ -335,12 +428,23 @@ re-read (`rereadAfterOtherWindowWrote`), so the phone watches the desk run
 what it armed. A card added into the stage a rail is running is started the
 same way: by the desk.
 
+**Organize and Reorganize start an agent, not a rail.** Organize with agent
+sits beside New rail, and a rail's editor offers Reorganize with agent: each
+is the desk's own request (`requestOrganize`, `requestRailReorganize`), the
+same prompt and the same one run per workspace, recorded in the workspace's
+settings so a second press on either side shows the run instead of starting
+another (`agentPresses`, over `orchestrationAgent.ts`'s rules). What the desk
+does to its own tabs and queue is handed in as the phone's
+(`OrchestrationLaunchHost`): the card run's wall and placing
+(`DEVICE_LAUNCH_HOST`), and the run's terminal opened here. A press the desk
+would refuse says why rather than going dead, since a phone has no tooltip.
+
 ## What is here, and what is not
 
 The workspace list, with the Workstation's settings behind the gear in its
-header and **Add a workspace…** under it; and six surfaces for an open
+header and **Add a workspace…** under it; and eight surfaces for an open
 workspace, switched by the strip under the header (`SurfaceTabs`, which
-scrolls sideways where a phone is too narrow for all six, and counts the
+scrolls sideways where a phone is too narrow for all eight, and counts the
 agents waiting on the human on Sessions). The view remembers which, where
 Files was, and a settings screen left open, on the Device — never a
 half-finished add — and the next workspace opens on the surface last chosen.
@@ -348,6 +452,18 @@ half-finished add — and the next workspace opens on the surface last chosen.
 **Board**, its cards, **Rails** and **Sessions** with their terminals are
 above. An inbox item lands on its card, or on the terminal of the session it
 names.
+
+**Decisions** and **Review** (`PhoneItems.svelte` over `phoneItems.ts`): the
+cards owed a `Decision:` or a `Human test:`, each item answered in place with
+the desk's own row (`DecisionsItemRow`, `answerHumanItem`), and a card's name
+opening it over the list, which Back returns to. The lists are the desk's:
+Decisions is `decisionsList` with no sessions or rails handed in — a waiting
+agent is the Sessions surface's, a rail's gate the Rails surface's — and
+Review is `humanTestList` without the diff beside it. Each head carries the
+desk's **Clean stale decisions** / **Clean stale tests** (`requestCleanStale`,
+the same confirm and prompt), started as Organize is (`DEVICE_AGENT_HOST`):
+refused at a full machine rather than queued, the session the desk's to place,
+the run opened in the phone's terminal. A press it cannot make says why.
 
 **Git** (`PhoneGit*.svelte` over `phoneGit.ts`): the branch and where it
 stands, Fetch, Pull and Push, the op bar with its progress, the error and
@@ -360,6 +476,30 @@ section folds, diff layout and worktree choice are saved with
 `setGitViewPrefs`, which is the desk's layout — so the phone always reads the
 workspace's root checkout.
 
+**Commit via agent asks; the desk runs.** The desk's button runs the
+`builtin:commit` prompt in a hidden headless agent and writes the run down
+with `setGitViewPrefs` so a restart can adopt it — layout the phone never
+saves, and a launch wall whose queue only the desk's window drains. So the
+phone runs none of it: `state/agentCommit.ts` sends one
+`agent_commit_for_device`, the host tells the desk's windows
+(`agent-commit-requested`, `app/src-tauri/src/device_commit.rs`) and waits,
+and the window that runs the workspace — the one that would run its rails —
+runs its own `commitViaAgent` (`$lib/companion/deviceCommit.ts`) and answers
+with the session or why not. A refusal is said on the phone in the desk's
+words: the launch wall refuses there rather than queueing, and so does a
+desk tab on another checkout than the root the phone reads. The run the
+phone draws is the desk's record (`gitView.agentCommit`, which arrives with
+the workspaces), put into the phone's own Git view through `showAgentCommit`,
+so the desk's phase, elapsed time and blocker read it as their own and the
+commit box holds while the agent commits; a run started at the desk shows the
+same way. Its end is judged by the tree it left, read again. Show opens the
+hidden session in the phone's terminal (no page holds it, so the workspace's
+record does); Stop goes through the desk's own Stop, never a `kill_session`,
+which the desk's watch would read as a failure and might retry. The Demo
+Workstation plays the desk (`demo/agentCommit.ts`): a scripted agent that
+reads the changes on one tick and commits them all on the next.
+`seam/agentCommit.test.ts` drives it over the wire.
+
 **Files** (`PhoneFiles.svelte` over `phoneFiles.ts`): one folder at a time
 over the desktop's tree state (`fileTree.ts`), and a file opened in the
 desktop's own `FileEditor`, which reads, autosaves and watches as at the desk,
@@ -368,20 +508,37 @@ with `canOpenExternally={false}`. What the desk hands to another application
 trash yet.
 
 **Settings** (`PhoneWorkspaceSettings.svelte`), per workspace: its name,
-colour and folder; terminal size; auto commit and review; its agent's model
-and effort; complexity, pause, fallback, unattended recovery, notifications.
-Every write is ticket 04's `set_workspace_settings`, through the desktop's own
-setters — or, for the agent, its folder's config.toml, as the desk writes it —
-and never the layout (ADR 0006). **The Workstation's settings**
-(`PhoneAppSettings.svelte`): theme, terminal, cards, git tracking, each agent's
-default model and effort, the custom agent, complexity, fallback, pause, the
-memory wall. Both are the desk's stores, writers and option lists
-(`phoneSettings.ts` has what the phone decides differently); what the desk's
-two panels have beyond them is the desk's alone — Updates, the daemon, remote
-access, Devices, Headroom and TypeSafe; the sidebar and hub-tab rows, which
-are its layout; switching an agent, which moves files and re-runs setup; and
-picking a folder. A write that fails is said on the screen (`saveSetting`),
-not in the desk's whole-window overlay.
+colour and folder; terminal size; auto commit and review; one **Agents** hub
+(This agent | Customs | Complexity | Fallback | Pause) with the desk's tab
+shell and Customs editor — workspace locals are `local:` profiles; then
+unattended recovery and notifications. Every write is ticket 04's
+`set_workspace_settings`, through the desktop's own setters — or, for the
+agent, its folder's config.toml, as the desk writes it — and never the layout
+(ADR 0006). **The Workstation's settings** (`PhoneAppSettings.svelte`): theme,
+terminal, cards, git tracking, the same **Agents** hub (Defaults | Customs |
+Complexity | Fallback | Pause) over app-wide `customProfiles`, and the memory
+wall. Both are the desk's stores, writers and option lists (`phoneSettings.ts`
+has what the phone decides differently); what the desk's two panels have beyond
+them is the desk's alone — Updates, the daemon, remote access, Devices,
+Headroom and TypeSafe; the sidebar and hub-tab rows, which are its layout;
+switching an agent, which moves files and re-runs setup; and picking a folder.
+A write that fails is said on the screen (`saveSetting`), not in the desk's
+whole-window overlay.
+
+**Appearance** is the one setting a phone keeps for itself
+(`state/appearance.ts`). The Workstation's theme is the desk's, and a phone in
+Light under a desk on Dark used to get a white hub and a dark UI it could only
+make light by changing the desk. So the phone chooses, per Workstation, in its
+own storage beside the view (`gavin.companion.appearance.<workstation id>`):
+**Desk** (the default: the desk's theme, with System as this phone's own Light
+and Dark, `remote/window.ts`), **Phone** (this phone's Light and Dark, whatever
+the desk says), **Light** or **Dark**. Choosing writes nothing to the
+Workstation: the bundle hands it to the desktop's theme store as a `local`
+preference that wins over the stored one and is never saved
+(`themeState.setLocal`), and that store stamps `data-theme` and tells xterm
+(`applyTerminalTheme`) both. The desk's own theme control is still on the
+screen, under it and named as the desk's: pressing it changes the desk, and a
+phone not set to Desk keeps drawing its own choice.
 
 Every app-wide setter on the host announces `app-settings-synced`, and every
 desk window and every Device re-reads its settings on another writer's change
@@ -410,7 +567,63 @@ shows its actions without hover and at a fingertip's size, `GitCommitBox` and
 `GitDiffUnified` wraps long lines and `MarkdownToolbar` scrolls in one row.
 `ColourPicker`'s swatches and `FallbackChainEditor`'s controls are
 fingertip-sized, and `ComplexityTable` stacks each level's controls at a
-phone's width.
+phone's width. Those queries do match inside the bundle's webview; what was
+wrong on an iPhone was the number -- several grew to 32 or 40px -- and a
+fingertip here means 44px, Apple's floor.
+
+**44px and 11px.** `surfaces/phone.css` floors every kind of control the
+bundle draws -- button, select, summary, a link, a tab, a `role="button"`,
+every input but a tick box, a radio and a hidden one, every textarea but
+xterm's -- at 44px both ways, `!important` because a component's scoped
+size would otherwise win. A floor, not a size: what is bigger is untouched.
+A tick box or a radio keeps its own size inside the label that is its hit
+area, and a link inside running text stays the text's size (`min-height`
+does not reach an inline box). Every select draws its own box and chevron
+there, since WebKit sizes a native one to its font whatever `min-height`
+says; it still opens the system's picker. The same sheet sets the root to
+16px: the surfaces size their type in `rem` as if it were, and the bare
+`monospace` root made it 13px, so every caption drew at 13/16 of itself
+(`0.6875rem`, 11px, at 8.9). `seam/touchTargets.test.ts` holds the floor,
+that it reaches every control the bundle draws and nothing out-ranks it,
+the labels around the boxes, the elements that take a tap and why, the root,
+and no size under 11px in the bundle's own surfaces. A desktop component's
+`em` sizes compound through what holds it, past a stylesheet reader, so
+those were measured at 402px with a coarse pointer and set where they live
+(`BoardCard`'s step and attachment counts, `FallbackChainEditor`'s hint).
+
+Fields are the exception: no component sizes its own for the phone. iOS
+zooms the whole page into a text field under 16px the moment it takes focus,
+and leaves it zoomed after the keyboard goes, so `surfaces/phone.css` puts
+one floor under every `input` typed into, `textarea` and `select` the bundle
+draws: `max(16px, 1em) !important`. A component's own size cannot undercut
+it, and `rem` would not have: the desktop's root is the bare `monospace`,
+13px (16px in the bundle now, but a field written `0.8rem` would still
+undercut it). `seam/fieldFontSize.test.ts` holds the floor and that nothing shipped
+out-ranks it. CodeMirror's editor is no field to that rule (it is
+contenteditable, its gutter sized with it), so `CodeMirrorView` keeps its own.
+The viewport meta leaves pinch zoom alone: `maximum-scale=1` would stop the
+zoom too, at the cost of a reader's own zoom.
+
+**On its side.** The shell supports landscape on a phone, and every screen is
+meant to work that way. Turned sideways an iPhone 16 Pro is 874x402 with
+`env(safe-area-inset-*)` top 0, right 62, bottom 20, left 62: the Dynamic
+Island and the rounded corners live in those 62px bands. The page frame,
+`.companion` in `routes/+page.svelte`, pads by both side insets once, for
+every surface, and nothing inside it reads a side inset again (a surface
+that did would keep a second 62px clear). A layer fixed over the page spans
+the frame's padding -- `.companion`'s transform makes it their containing
+block -- so it pads itself: the New card sheet, and the desktop's `Modal`
+backdrop, which centres its panel inside the safe area (zero at a desk). The
+hub does the same on `.hub`, and its pairing sheet on itself. Below 500px of
+height in landscape, a phone on its side and never a tablet, the chrome
+folds: the workspace header sits beside the surface strip in one 49px row,
+Git's branch beside its sync buttons, and the board's tools beside its
+column strip. Measured at 874x402 against the Demo Workstation, the working
+area is Board 75% of the height, Rails 60%, Git 63%, Files 77%, a terminal
+61%, Sessions, Decisions, Review and Settings 88%. `seam/landscape.test.ts`
+holds the frame, that nothing inside reads a side inset, the fixed layers,
+and the one fold query against sideways phones, upright ones and tablets;
+the shell's `surfaces/landscape.test.ts` holds the hub's.
 
 The desktop's Git actions name every op with `crypto.randomUUID`, which a
 page has only in a secure context; `remote/randomUUID.ts` gives the page one

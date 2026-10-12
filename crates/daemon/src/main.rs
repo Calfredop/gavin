@@ -1,14 +1,20 @@
 mod bridge;
+mod browser;
+mod changes_only;
 mod connect;
+mod direct;
 mod gavin;
 mod git_status;
 mod git_watch;
 mod headroom;
 mod input;
 mod kanban;
+mod memory_index;
 mod orchestration;
 mod osc;
+mod ownership;
 mod pairing;
+mod presence;
 mod proc;
 mod program;
 mod pty;
@@ -134,11 +140,34 @@ fn serve() -> anyhow::Result<()> {
     let headroom = headroom::Headroom::open(&dir);
     headroom.resume();
     manager.set_headroom(headroom);
+    // Opens nothing yet: the model loads on the first search or the
+    // Memory setup step, and an index on the first root that has one.
+    manager.set_memories(memory_index::Memories::open(&dir));
+    // Stops any browser a crashed daemon of this build left running, and
+    // launches nothing: a session's browser starts when its agent's
+    // Playwright MCP first connects. Weak, so the announcer does not keep
+    // the manager alive from inside it.
+    let announcer = Arc::downgrade(&manager);
+    manager.set_browsers(browser::Browsers::open(
+        &dir,
+        Arc::new(move |change| {
+            if let Some(manager) = announcer.upgrade() {
+                manager.announce_browser(change);
+            }
+        }),
+    ));
     // After the trust store, which is what it reads. It dials the Relay
     // only while that store says remote access is on, and sleeps
     // otherwise -- so on a machine that never turned it on, this starts a
     // thread that opens no socket.
     remote::spawn(&manager);
+    // The direct listener (ADR 0009), on the same terms: it binds a port
+    // only while the store says remote access AND direct connection are
+    // on, and otherwise sleeps.
+    direct::spawn(&manager);
+    // Hands a pocketed phone's sessions back to the desk once its grace
+    // runs out (v68, `ownership.rs`).
+    server::spawn_owner_lapse(&manager);
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

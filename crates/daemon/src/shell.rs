@@ -129,8 +129,36 @@ pub fn path_with_posix_tools(shell: &Path) -> Option<std::ffi::OsString> {
     )
 }
 
-/// The pure half of the above: given where `sh.exe` was found and the
-/// PATH the daemon inherited, the PATH its children should get.
+/// The PATH an emitted command line runs under: `path_with_posix_tools`,
+/// then every well-known agent install directory that exists and is not
+/// already on it (`protocol::bin_dirs`). `None` when neither adds
+/// anything, and the shell inherits the daemon's PATH untouched.
+///
+/// `sh -c` reads no profile, and the daemon's own PATH is whatever its
+/// launcher had -- a Dock launch's bare system PATH, or a terminal's
+/// frozen at the moment the app started. Kimi Code's installer only
+/// adds `~/.kimi-code/bin` to the shell rc file, so a workspace whose
+/// default agent was Kimi failed with `/bin/sh: kimi: command not found`
+/// while `kimi` ran fine in the human's terminal. Resolved per spawn, so
+/// an agent installed while the daemon runs is found by its next session.
+pub fn command_path(shell: &Path) -> Option<std::ffi::OsString> {
+    let posix = path_with_posix_tools(shell);
+    let base = posix.clone().or_else(|| std::env::var_os("PATH"));
+    let home = home_dir();
+    let dirs = protocol::bin_dirs::well_known_bin_dirs(home.as_deref(), cfg!(windows));
+    protocol::bin_dirs::path_with_bin_dirs(base.as_deref(), &dirs, cfg!(windows), |p| p.is_dir()).or(posix)
+}
+
+/// This user's home: `USERPROFILE` on Windows, `HOME` elsewhere -- the
+/// same rule as `gavin.rs`'s.
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The pure half of `path_with_posix_tools`: given where `sh.exe` was
+/// found and the PATH the daemon inherited, the PATH its children should
+/// get.
 ///
 /// The candidates are in `/etc/profile`'s order, and `<git>/bin` is on
 /// the end for the one case `resolve_posix_shell` allows it -- a layout
@@ -178,13 +206,19 @@ pub fn posix_tools_path(
 ///
 /// `sh -c` finds a bare `.exe` on PATH -- MSYS's search handles that
 /// extension itself -- but it does not probe `PATHEXT`, so a command
-/// installed as `agent.cmd` (the shape every npm-global install and many
-/// other Windows CLI installers use) reports "command not found" even
-/// though the exact same name resolves fine from `cmd.exe`, PowerShell, or
-/// a bash prompt a human types into. Handing bash the literal `agent.cmd`
+/// installed as `agent.cmd` (Cursor Agent's shape, and any installer that
+/// ships only `.cmd`/`.ps1`) reports "command not found" even though the
+/// exact same name resolves fine from `cmd.exe`, PowerShell, or a bash
+/// prompt a human types into. Handing bash the literal `agent.cmd`
 /// sidesteps the gap: an exact existing filename, extension and all, is
 /// something bash's own PATH search does match, and MSYS's spawn already
 /// knows how to run a `.bat`/`.cmd` once it has one.
+///
+/// **npm's three-file layout is left alone.** An npm-global CLI ships
+/// `<name>` (extensionless `#!/bin/sh` shim), `<name>.cmd` and
+/// `<name>.ps1` side by side. Preferring the extensionless match lets
+/// `sh` exec the POSIX shim; rewriting to `.cmd` hands arguments to
+/// `cmd.exe`, which splits a bare `&` and runs the tail.
 ///
 /// **`.cmd` / `.bat` and multiline prompts.** Those shims forward args
 /// with `%*`, and `cmd.exe` truncates an argument at the first newline.
@@ -286,13 +320,22 @@ pub fn command_with_windows_shim(
     // should not have to special-case what NTFS would paper over.
     let exts: Vec<String> =
         pathext.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect();
+    // Extensionless before PATHEXT, per PATH directory: npm's three-file
+    // layout ships `<name>` beside `<name>.cmd`, and `sh` will exec the
+    // POSIX shim when left alone. Preferring `.cmd` hands the line to
+    // `cmd.exe`, which splits a bare `&` and runs the tail. Cursor Agent
+    // has no extensionless sibling, so it still falls through.
     let found = std::env::split_paths(path).find_map(|dir| {
+        if exists(&dir.join(word)) {
+            return Some((dir, String::new()));
+        }
         exts.iter().find_map(|ext| {
             let candidate = dir.join(format!("{word}{ext}"));
             exists(&candidate).then(|| (dir.clone(), ext.clone()))
         })
     });
     match found {
+        Some((_, ext)) if ext.is_empty() => command.to_string(),
         Some((dir, ext)) if matches!(ext.as_str(), ".cmd" | ".bat") => {
             if let Some((node, script)) = node_entry(&dir) {
                 let node = node.to_string_lossy().replace('\\', "/");
@@ -522,6 +565,22 @@ mod tests {
         assert_eq!(path, Some(std::ffi::OsString::from("C:/Program Files/Git/usr/bin")));
     }
 
+    /// The install directories are a rescue, never a policy: whatever the
+    /// command path adds goes after the PATH the daemon inherited.
+    #[test]
+    fn the_command_path_keeps_the_inherited_path_first() {
+        if cfg!(windows) {
+            return;
+        }
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        if let Some(path) = command_path(Path::new("/bin/sh")) {
+            assert!(
+                path.to_string_lossy().starts_with(&*inherited.to_string_lossy()),
+                "{path:?} does not start with {inherited:?}"
+            );
+        }
+    }
+
     /// Unix resolves `/bin/sh` and needs no help finding anything.
     #[test]
     fn on_unix_the_path_is_left_alone() {
@@ -633,6 +692,38 @@ mod tests {
         assert_eq!(
             shim("agent 'do the thing'", "/tools", ".COM;.EXE;.BAT;.CMD", &["/tools/agent.cmd"]),
             "agent.cmd 'do the thing'"
+        );
+    }
+
+    /// npm's three-file layout puts an extensionless POSIX shim beside
+    /// `.cmd`/`.ps1`. Preferring the extensionless match lets `sh` exec
+    /// that shim; rewriting to `.cmd` hands args to `cmd.exe`, which
+    /// splits on bare `&` and runs the tail.
+    #[test]
+    fn an_extensionless_shim_beside_a_cmd_is_left_alone() {
+        assert_eq!(
+            shim(
+                "codex --version 'x&whoami'",
+                "/npm",
+                ".COM;.EXE;.BAT;.CMD",
+                &["/npm/codex", "/npm/codex.cmd", "/npm/codex.ps1"]
+            ),
+            "codex --version 'x&whoami'"
+        );
+    }
+
+    /// Cursor Agent ships only `.cmd`/`.ps1` — no extensionless sibling —
+    /// so it must still fall through to PATHEXT and the bundled-node arm.
+    #[test]
+    fn a_cmd_only_shim_still_rewrites_when_no_extensionless_sibling() {
+        assert_eq!(
+            shim(
+                "cursor-agent --version",
+                "/cursor-agent",
+                ".COM;.EXE;.BAT;.CMD",
+                &["/cursor-agent/cursor-agent.cmd", "/cursor-agent/cursor-agent.ps1"]
+            ),
+            "cursor-agent.cmd --version"
         );
     }
 

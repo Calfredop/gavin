@@ -7,6 +7,9 @@
   import BoardPane from "$lib/board/BoardPane.svelte";
   import CardTabPane from "$lib/cards/CardTabPane.svelte";
   import FollowUpQueuePane from "$lib/agents/FollowUpQueuePane.svelte";
+  import BrowserPane from "$lib/panes/BrowserPane.svelte";
+  import { chipFor } from "$lib/panes/browserView";
+  import { browserBlocked, browserViews } from "$lib/panes/browserViewState";
   import {
     layoutState,
     daemonCompat,
@@ -39,6 +42,10 @@
   import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
+  import { deviceNameBySessionId, typingBySessionId } from "$lib/core/devicesState";
+  import { lockBySessionId } from "$lib/core/sessionOwnershipState";
+  import { lockTitle } from "$lib/core/sessionOwnership";
+  import { typingText } from "$lib/core/devicePresence";
   import { dirtyPaths } from "$lib/files/fileEditing";
   import { showAlert } from "$lib/core/dialog";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
@@ -52,6 +59,7 @@
     ListChecks,
     FileDiff,
     MessageSquarePlus,
+    Globe,
     Columns2,
     Rows2,
   } from "@lucide/svelte";
@@ -62,6 +70,8 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
+    deviceOwnsIndicator,
+    deviceTypingIndicator,
     gitIndicator,
     headroomIndicator,
     shellOrphanIndicator,
@@ -75,8 +85,10 @@
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import {
+    browserSessionFor,
     followUpsSessionFor,
     isViewTab as tabIsView,
+    renameSeed,
     renameable,
     tabLabel as labelForTab,
     tabTooltip as tooltipForTab,
@@ -152,6 +164,7 @@
     cwdBySessionId: $layoutState.cwdBySessionId,
     trees: $gavinTrees,
     orchestrations: $orchestrations,
+    deviceBySessionId: $deviceNameBySessionId,
   });
 
   function fileTabPath(tabId: string): string | null {
@@ -168,6 +181,18 @@
 
   function followUpsFor(tabId: string): string | null {
     return followUpsSessionFor(tabId, naming);
+  }
+
+  function browserFor(tabId: string): string | null {
+    return browserSessionFor(tabId, naming);
+  }
+
+  // The agent's browser (`browserView.ts`): a chip only while one runs,
+  // and never against a daemon that cannot show it.
+  const browserStore = browserViews.views;
+  function browserChip(sessionId: string): { tip: string } | null {
+    if (isViewTab(sessionId)) return null;
+    return chipFor($browserStore[sessionId], $browserBlocked(sessionId));
   }
 
   function isViewTab(tabId: string): boolean {
@@ -310,6 +335,18 @@
   // -- only the active page renders panes -- and its setting is the one
   // it has NOW: a switch turned off since the launch has asked for
   // exactly what the session is.
+  // The presence marker (companion-16): a Device is typing into this
+  // terminal right now. devicePresence.ts decides when; this only asks.
+  // A Device owning it (v68) is the same axis, and said only while nobody
+  // is typing: the typing marker is the more urgent of the two, and its
+  // owner is in the lock on the terminal either way.
+  function tabDeviceBadge(sessionId: string): Indicator | null {
+    const names = $typingBySessionId[sessionId];
+    if (names?.length) return deviceTypingIndicator(typingText(names));
+    const owner = $lockBySessionId[sessionId];
+    return owner ? deviceOwnsIndicator(lockTitle(owner)) : null;
+  }
+
   function tabHeadroomBadge(sessionId: string): Indicator | null {
     const compressedHere = resolveHeadroom(ownHeadroom(getActiveWorkspace($layoutState)), $headroomDefault);
     return headroomIndicator(headroomException($sessionCompressionById[sessionId], compressedHere));
@@ -337,7 +374,7 @@
     // exact.
     if (!renameable(sessionId, naming)) return;
     editingSessionId = sessionId;
-    editValue = tabLabel(sessionId);
+    editValue = renameSeed(sessionId, naming);
   }
 
   function commitEdit(): void {
@@ -628,6 +665,10 @@
             {@const headroom = tabHeadroomBadge(sessionId)}
             {#if headroom}<StatusBadge indicator={headroom} size={10} />{/if}
           {/if}
+          {#if tabDeviceBadge(sessionId)}
+            {@const typing = tabDeviceBadge(sessionId)}
+            {#if typing}<StatusBadge indicator={typing} size={10} />{/if}
+          {/if}
           <!-- `restored` still decides whether the badge is THERE, exactly
                as it always did: it is a note about the screen, and typing
                into the tab dismisses it (clearRestoredMarker). `interrupted`
@@ -737,6 +778,20 @@
             }}
           />
         {/if}
+        {#if browserChip(active)}
+          <!-- The agent's browser. Lit while one runs; opens the live
+               pane beside this tab, or brings it forward -- the way back
+               to a pane that was closed, which only hid it. -->
+          {@const chip = browserChip(active)}
+          <IconButton
+            icon={Globe}
+            label="Show this agent's browser"
+            tip={chip?.tip}
+            tone="accent"
+            size={14}
+            onclick={() => void browserViews.openFromChip(active)}
+          />
+        {/if}
         {#if !isViewTab(active)}
           <!-- The follow-up queue. Unlike the two chips above it this one
                is not conditional on there being something to show: it is
@@ -833,6 +888,12 @@
           bind:this={paneRefs[sessionId]}
           sessionId={followUpsFor(sessionId) ?? ""}
           tabId={sessionId}
+          visible={sessionId === active}
+        />
+      {:else if browserFor(sessionId)}
+        <BrowserPane
+          bind:this={paneRefs[sessionId]}
+          sessionId={browserFor(sessionId) ?? ""}
           visible={sessionId === active}
         />
       {:else if cardTab(sessionId)}

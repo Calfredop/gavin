@@ -2,7 +2,6 @@
 // them. They are module-level on purpose (they belong to the app, not to
 // a component), which in a suite means one test's Workstation is still
 // in them when the next one connects.
-import { agentPauseStore } from "$lib/agents/agentPauseState";
 import { DEFAULT_LAUNCH } from "$lib/agents/launchGate";
 import { launchConfigStore } from "$lib/agents/launchQueue";
 import { __resetForTesting as resetTurnVerdict } from "$lib/agents/turnVerdictDriver";
@@ -21,6 +20,7 @@ import {
   terminalFontSizeDefault,
 } from "$lib/core/layoutState";
 import { __resetForTesting as resetOrchestration } from "$lib/orchestration/orchestrationState";
+import { themeState } from "$lib/ui/themeState.svelte";
 
 export function resetDesktopStores(): void {
   resetTurnVerdict();
@@ -36,8 +36,9 @@ export function resetDesktopStores(): void {
   autoCommitDefault.set(null);
   requireReviewDefault.set(null);
   gitTrackingDefault.set(null);
-  agentPauseStore.set(null);
   launchConfigStore.set(DEFAULT_LAUNCH);
+  // A phone's own appearance is the next Workstation's to read again.
+  themeState.local = null;
   layoutState.set({
     status: "connecting",
     errorMessage: "",

@@ -67,7 +67,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [],
+    fallbackChains: {},
   }),
 }));
 
@@ -302,6 +302,13 @@ describe("persistence", () => {
     const held = JSON.stringify({ ...CARD, mode: "resume", automatic: true, withoutHeadroom: true, id: "q1", askedAtMs: 5 });
     expect(parseLaunchQueue(`[${held}]`)).toEqual([
       { ...CARD, mode: "resume", automatic: true, withoutHeadroom: true, id: "q1", askedAtMs: 5 },
+    ]);
+  });
+
+  it("keeps a held clean-stale run, and drops one without its prompt", () => {
+    const clean = { kind: "clean", workspaceId: "ws", label: "Clean stale tests", id: "q1", askedAtMs: 5 };
+    expect(parseLaunchQueue(JSON.stringify([{ ...clean, prompt: "p" }, { ...clean, id: "q2" }]))).toEqual([
+      { ...clean, prompt: "p" },
     ]);
   });
 

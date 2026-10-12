@@ -27,12 +27,19 @@
 //! | `pairing-start` | `qr`, `noisePrivateKey`, `hardwareKey`, `deviceName`, `entropy` | `send`, `dials`, `workstationKey` |
 //! | `pairing-receive` | `bytes` | `events` |
 //! | `pairing-prove` | `signature` | `events` |
-//! | `connect-start` | `workstationKey`, `relays`, `relayAdmission`, `noisePrivateKey`, `entropy` | `send`, `dials` |
+//! | `connect-start` | `workstationKey`, `relays`, `relayAdmission`, `direct`, `directPin`, `noisePrivateKey`, `entropy` | `send`, `dials` |
 //! | `connect-receive` | `bytes` | `events` |
 //! | `connect-prove` | `signature` | `events` |
 //! | `connect-send` | `message` | `bytes` |
 //! | `relay-reply` | `text` | `reply`, and for a refusal `reason` and `message` |
 //! | `bundle-open` | `archive`, `manifest`, `trustedKeys` | `hash`, `files` |
+//!
+//! A dial is `{ url, hello, pin }`: where to open a WebSocket, the text
+//! frame to open it with, and -- for a Workstation's direct listener (ADR
+//! 0009), which comes first -- the SHA-256 of the one certificate to
+//! trust there, as hex; `null` for a Relay. `direct` and `directPin` are
+//! what pairing kept of the listener, and absent from a record kept
+//! before v69, which then dials only its Relays.
 //!
 //! `bundle-open` (ADR 0005) is the one call that is not part of an
 //! exchange: it verifies a Companion bundle the shell fetched -- the
@@ -92,6 +99,10 @@ enum Call {
         workstation_key: String,
         relays: Vec<String>,
         relay_admission: Option<String>,
+        #[serde(default)]
+        direct: Vec<String>,
+        #[serde(default)]
+        direct_pin: Option<String>,
         noise_private_key: String,
         entropy: String,
     },
@@ -175,6 +186,8 @@ struct Kept {
     workstation_key: String,
     relays: Vec<String>,
     relay_admission: Option<String>,
+    direct: Vec<String>,
+    direct_pin: Option<String>,
     device_id: String,
     notification_key: String,
 }
@@ -185,6 +198,8 @@ impl From<&PairedWorkstation> for Kept {
             workstation_key: protocol::hex_encode(&paired.workstation_key),
             relays: paired.relays.clone(),
             relay_admission: paired.relay_admission.clone(),
+            direct: paired.direct.clone(),
+            direct_pin: paired.direct_pin.clone(),
             device_id: paired.device_id.clone(),
             notification_key: protocol::hex_encode(&paired.notification_key),
         }
@@ -296,6 +311,8 @@ fn answer(call: Call) -> Result<Value, Failure> {
             workstation_key,
             relays,
             relay_admission,
+            direct,
+            direct_pin,
             noise_private_key,
             entropy,
         } => {
@@ -304,7 +321,13 @@ fn answer(call: Call) -> Result<Value, Failure> {
             let keys = DeviceKeys::from_private(&bytes("noisePrivateKey", &noise_private_key)?)?;
             let entropy = Entropy::from_bytes(bytes("entropy", &entropy)?);
             let (client, first) = ConnectClient::start(&workstation_key, &keys, entropy)?;
-            let dials = connect_dials(&workstation_key, &relays, relay_admission.as_deref());
+            let dials = connect_dials(
+                &workstation_key,
+                &direct,
+                direct_pin.as_deref(),
+                &relays,
+                relay_admission.as_deref(),
+            );
             CONNECTION.with(|c| *c.borrow_mut() = Some(client));
             Ok(json!({
                 "send": protocol::hex_encode(&first),
@@ -376,7 +399,7 @@ fn refuse_a_second_exchange() -> Result<(), Failure> {
 fn dials_json(dials: &[RelayDial]) -> Vec<Value> {
     dials
         .iter()
-        .map(|dial| json!({ "url": dial.url, "hello": dial.hello.to_frame() }))
+        .map(|dial| json!({ "url": dial.url, "hello": dial.hello.to_frame(), "pin": dial.pin }))
         .collect()
 }
 

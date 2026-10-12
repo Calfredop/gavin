@@ -177,26 +177,30 @@
   }
 
   /* Tone sets two variables the rules above read, so every variant picks
-     up a tone without a variant x tone matrix of selectors. */
+     up a tone without a variant x tone matrix of selectors. A coloured
+     tone keeps its text role under the pointer and when active: the fill
+     shade it used to brighten to (#4a9eff on white, #e0524a on #1e1e1e)
+     reads under 4.5:1, and the variant's own background or border is
+     what says hover. */
   .tone-default {
     --tone-fg: var(--text-muted);
     --tone-fg-hover: var(--text);
   }
   .tone-accent {
     --tone-fg: var(--accent-text);
-    --tone-fg-hover: var(--accent);
+    --tone-fg-hover: var(--accent-text);
   }
   .tone-danger {
     --tone-fg: var(--danger-text);
-    --tone-fg-hover: var(--danger);
+    --tone-fg-hover: var(--danger-text);
   }
   .tone-success {
     --tone-fg: var(--success-text);
-    --tone-fg-hover: var(--success);
+    --tone-fg-hover: var(--success-text);
   }
   .tone-warning {
     --tone-fg: var(--warning-text);
-    --tone-fg-hover: var(--warning);
+    --tone-fg-hover: var(--warning-text);
   }
 
   .text {

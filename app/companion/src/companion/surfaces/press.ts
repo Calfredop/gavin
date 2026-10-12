@@ -96,3 +96,45 @@ export function press(node: HTMLElement, options: PressOptions): { update(next: 
     },
   };
 }
+
+/// Svelte action: `use:tap={onTap}`, for a surface that is also swiped --
+/// the terminal. xterm 6.1 claims every touch on its screen for scrolling
+/// and cancels the touchstart, and a touch screen sends no click after a
+/// cancelled touchstart, so a tap there is only ever seen as pointer
+/// events. Unlike `press` this takes nothing away: no default is
+/// prevented, so focus, selection and the surface's own gestures carry on.
+export function tap(node: HTMLElement, onTap: (e: PointerEvent) => void): { update(next: (e: PointerEvent) => void): void; destroy(): void } {
+  let current = onTap;
+  let start: { x: number; y: number } | null = null;
+
+  const down = (e: PointerEvent): void => {
+    start = e.button > 0 ? null : { x: e.clientX, y: e.clientY };
+  };
+  const move = (e: PointerEvent): void => {
+    if (start && drifted(start, { x: e.clientX, y: e.clientY })) start = null;
+  };
+  const up = (e: PointerEvent): void => {
+    if (!start) return;
+    start = null;
+    current(e);
+  };
+  const cancel = (): void => {
+    start = null;
+  };
+
+  node.addEventListener("pointerdown", down);
+  node.addEventListener("pointermove", move);
+  node.addEventListener("pointerup", up);
+  node.addEventListener("pointercancel", cancel);
+  return {
+    update(next) {
+      current = next;
+    },
+    destroy() {
+      node.removeEventListener("pointerdown", down);
+      node.removeEventListener("pointermove", move);
+      node.removeEventListener("pointerup", up);
+      node.removeEventListener("pointercancel", cancel);
+    },
+  };
+}

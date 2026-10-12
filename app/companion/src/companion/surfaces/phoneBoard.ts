@@ -5,10 +5,13 @@
 // word on a card; what this adds is only the shape a narrow screen needs
 // -- a flat list of columns, which one to open on, and each card's agent
 // as a badge rather than as a control.
+import { get } from "svelte/store";
 import type { Landing } from "$companion/channel/messages";
+import { isReachabilityError } from "$companion/state/reachability";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import type { Board, Label } from "$lib/board/kanban";
-import { cardSessionFor } from "$lib/board/kanbanState";
+import { cardSessionFor, dismissSaveError, refreshBoard, saveErrors } from "$lib/board/kanbanState";
+import { refreshGavinTree } from "$lib/core/gavinState";
 import type { GavinTree } from "$lib/core/gavin";
 import type { SessionStatus } from "$lib/core/notifications";
 import { mergePlanCards, slugStatus, type CardView } from "$lib/core/planBoard";
@@ -133,6 +136,21 @@ export function columnAt(keys: string[], scrollLeft: number, width: number): str
   return keys[index];
 }
 
+/// Where the column strip scrolls to so the shown column's tab is wholly
+/// in view: as little as that takes, and nowhere when it already is. A
+/// board's columns outgrow a phone's width at a readable size, so the
+/// strip scrolls, and a swipe to the last column must not leave its tab
+/// cut off at the edge. `tab.left` is from the start of the strip.
+export function stripScrollToShow(
+  tab: { left: number; width: number },
+  strip: { scrollLeft: number; width: number }
+): number {
+  if (tab.left < strip.scrollLeft) return tab.left;
+  const overhang = tab.left + tab.width - (strip.scrollLeft + strip.width);
+  if (overhang > 0) return Math.min(tab.left, strip.scrollLeft + overhang);
+  return strip.scrollLeft;
+}
+
 /// The card an inbox item lands on: the card the item names, or the card
 /// whose agent is the session it names. Null when the board is not here
 /// yet, or names neither -- then the workspace's board is the landing,
@@ -148,4 +166,14 @@ export function landingCard(board: Board | undefined, landing: Landing | null): 
 export function columnOf(columns: PhoneColumn[], cardId: string | null): string | null {
   if (cardId === null) return null;
   return columns.find((c) => c.cards.some((card) => card.id === cardId))?.key ?? null;
+}
+
+/// What the board does when the connection comes back: a save that
+/// failed only for want of a connection stops saying so, and the board
+/// and its cards are read again -- once each, through the desk's own
+/// coalesced reads. A board that never loaded loads, which takes its
+/// error with it.
+export function recoverBoard(workspaceId: string): Promise<void> {
+  if (isReachabilityError(get(saveErrors)[workspaceId])) dismissSaveError(workspaceId);
+  return Promise.all([refreshBoard(workspaceId), refreshGavinTree(workspaceId)]).then(() => {});
 }

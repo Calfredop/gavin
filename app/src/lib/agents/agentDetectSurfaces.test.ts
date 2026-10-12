@@ -31,8 +31,12 @@ describe("init wizard agent PATH sweep", () => {
 
   it("reconciles suggestions against app fallback settings", () => {
     const logic = source("agentDetect.ts");
-    expect(logic).toContain("appFallback");
+    expect(logic).toContain("appChains");
     expect(logic).toContain("commandAlreadySet");
     expect(logic).toContain("missingFromAppFallback");
+  });
+
+  it("points at Settings → Agents for named customs beyond this step", () => {
+    expect(source("AgentStep.svelte")).toContain("Settings → Agents");
   });
 });

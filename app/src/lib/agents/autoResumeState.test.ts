@@ -33,7 +33,7 @@ vi.mock("$lib/core/layoutState", async () => {
       customCommand: "",
       customModelFlag: "",
       complexity: {},
-      agentFallback: [] as string[],
+      fallbackChains: {},
     }),
     setSessionFailureHook: vi.fn((hook) => {
       captured.hook = hook;

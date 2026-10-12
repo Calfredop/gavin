@@ -10,19 +10,26 @@
 // existing conversation never walks: a Claude transcript cannot continue
 // on Codex.
 //
-// Inheritance matches `agent_pause`: a workspace's absent chain means
-// inherit the app-wide one; an empty array is an explicit "no fallback"
-// override. "Armed" is a set the workspace records after setup-only
-// Integration/Superpowers for that profile — the workspace's own active
-// profile is treated as armed by the init/switch wizard, not this list.
-// "Declined" is the set the human answered "Don't ask again" for: it is
-// never offered for arming in that workspace, so the chain walks past it.
+// Chains are per PRIMARY: the map is keyed by the launch's resolved
+// profile id, and a chain lists only fallbacks — the primary is never an
+// element of its own chain. Inheritance matches `agent_pause`, per key:
+// a workspace map with no key for the primary inherits the app-wide
+// chain for it; an empty array under the key is an explicit "no
+// fallback" override for that primary. "Armed" is a set the workspace
+// records after setup-only Integration/agent skills for that profile —
+// the workspace's own active profile is treated as armed by the
+// init/switch wizard, not this list. "Declined" is the set the human
+// answered "Don't ask again" for: it is never offered for arming in
+// that workspace, so the chain walks past it.
 
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import { usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";
+import type { FallbackChainsByPrimary } from "$lib/cards/complexity";
 
 /// Ordered profile ids. Empty means no fallback (pause-only).
 export type FallbackChain = string[];
+
+export type { FallbackChainsByPrimary };
 
 /// Drop blanks and duplicates, keep first-seen order.
 export function sanitizeChain(ids: readonly string[] | null | undefined): FallbackChain {
@@ -37,13 +44,64 @@ export function sanitizeChain(ids: readonly string[] | null | undefined): Fallba
   return out;
 }
 
-/// Workspace override if present (including empty), else the app chain.
-export function effectiveFallbackChain(
-  workspaceChain: FallbackChain | null | undefined,
-  appChain: FallbackChain | null | undefined
+/// The chain stored for one primary. Missing key is pause-only on the app
+/// map; on a workspace map, callers use `effectiveFallbackChain` instead.
+export function chainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
 ): FallbackChain {
-  if (workspaceChain != null) return sanitizeChain(workspaceChain);
-  return sanitizeChain(appChain);
+  const id = (primaryId ?? "").trim();
+  if (!id || map == null || !Object.prototype.hasOwnProperty.call(map, id)) return [];
+  return sanitizeChain(map[id]);
+}
+
+/// Workspace key if present (including an explicit empty chain), else the
+/// app chain for that primary. An empty workspace map inherits every
+/// primary — only a present key overrides.
+export function effectiveFallbackChain(
+  workspaceMap: FallbackChainsByPrimary | null | undefined,
+  appMap: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): FallbackChain {
+  const id = (primaryId ?? "").trim();
+  if (!id) return [];
+  if (workspaceMap != null && Object.prototype.hasOwnProperty.call(workspaceMap, id)) {
+    return sanitizeChain(workspaceMap[id]);
+  }
+  return chainForPrimary(appMap, id);
+}
+
+/// Whether this workspace overrides the app chain for `primaryId`.
+export function workspaceOwnsFallbackChain(
+  workspaceMap: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): boolean {
+  const id = (primaryId ?? "").trim();
+  return Boolean(id && workspaceMap && Object.prototype.hasOwnProperty.call(workspaceMap, id));
+}
+
+/// Copy of `map` with one primary's chain set.
+export function withFallbackChainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string,
+  chain: readonly string[] | null | undefined
+): FallbackChainsByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: FallbackChainsByPrimary = { ...(map ?? {}) };
+  if (!id) return next;
+  next[id] = sanitizeChain(chain);
+  return next;
+}
+
+/// Copy of `map` without `primaryId`, so that primary inherits again.
+export function withoutFallbackChainForPrimary(
+  map: FallbackChainsByPrimary | null | undefined,
+  primaryId: string
+): FallbackChainsByPrimary {
+  const id = (primaryId ?? "").trim();
+  const next: FallbackChainsByPrimary = { ...(map ?? {}) };
+  if (id) delete next[id];
+  return next;
 }
 
 /// Profile ids in `after` that were not in `before`. Used to open arming
@@ -117,6 +175,12 @@ export interface LaunchDecisionInput {
   limitPercent: number;
   fallbackThresholds?: FallbackThresholds | null;
   cyclePaused: boolean;
+  /// Whether a candidate the walk could hop to is inside its OWN pause
+  /// window. Cycles are per agent: hopping a spent primary onto an agent
+  /// whose schedule says "sit out now" would spend exactly what that
+  /// schedule is there to keep. Omitted, nothing is held by a cycle (the
+  /// primary's own is `cyclePaused`).
+  cyclePausedFor?: (profileId: string) => boolean;
   /// Reopening the same conversation. The chain does not apply.
   resume: boolean;
 }
@@ -153,6 +217,7 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
   for (const id of sanitizeChain([workspace, ...input.chain])) {
     if (id === primary) continue;
     if (spent(id)) continue;
+    if (input.cyclePausedFor?.(id)) continue;
     // The workspace's own agent is armed by init / agent-change, not by
     // the fallback-arming list. Asking to set it up again would block the
     // one hop this field exists to make.

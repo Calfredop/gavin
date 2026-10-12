@@ -42,7 +42,7 @@ describe("the acts a Demo Workstation's host performs", () => {
 
   it("are not carried at all by a host that can perform neither", async () => {
     const client = createChannelClient(loopback(createDemoWorkstation({ host: {} })));
-    expect((await client.capabilities()).messages).toEqual([...CORE_MESSAGES]);
+    expect((await client.capabilities()).messages).toEqual([...CORE_MESSAGES, "connection"]);
   });
 
   it("are refused when the host fails at one", async () => {

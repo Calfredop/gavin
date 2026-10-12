@@ -19,7 +19,8 @@
 /// strip stay templates over it.
 
 import {
-  complexityEntry,
+  complexityEntryFor,
+  advisorPhrase,
   effortPhrase,
   isAttributed,
   parseComplexity,
@@ -80,12 +81,11 @@ export function cardAgentOverride(
 /// own default".
 export function cardAgentEntry(
   card: CardAgentFields | null | undefined,
-  app: ComplexityTable,
-  workspace: ComplexityTable
+  table: ComplexityTable
 ): ComplexityAgent | null {
   return (
     cardAgentOverride(card) ??
-    complexityEntry(parseComplexity(card?.complexity), app, workspace)
+    complexityEntryFor(parseComplexity(card?.complexity), table)
   );
 }
 
@@ -99,7 +99,7 @@ function attributionPhrase(
   if (!entry) return null;
   const agent = entry.profile.trim() ? profileLabel(entry.profile.trim()) : null;
   const model = entry.model.trim();
-  const at = effortPhrase(entry);
+  const at = effortPhrase(entry) + advisorPhrase(entry);
   if (agent && model) return `${agent} on ${model}${at}`;
   if (agent) return `${agent}${at}`;
   if (model) return `this workspace's agent on ${model}${at}`;
@@ -125,12 +125,11 @@ function attributionPhrase(
 /// workspace's agent and there is nothing to explain.
 export function cardAgentSummary(
   card: CardAgentFields | null | undefined,
-  app: ComplexityTable,
-  workspace: ComplexityTable,
+  table: ComplexityTable,
   profileLabel: (id: string) => string
 ): string | null {
   const level = parseComplexity(card?.complexity);
-  const fromLevel = complexityEntry(level, app, workspace);
+  const fromLevel = complexityEntryFor(level, table);
   const override = cardAgentOverride(card);
   if (!override) {
     if (!level) return null;

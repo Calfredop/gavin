@@ -67,7 +67,11 @@ describe("the hub view", () => {
   it("re-resolves the selection against the list rather than trusting the stored path", () => {
     // The list moves under the selection whenever the query changes, the
     // archive toggle flips, or a card is filed elsewhere in the app.
-    expect(source(VIEW)).toContain("resolveReviewSelection(groups, railSubjects, prefs.selected)");
+    const text = source(VIEW);
+    expect(text).toContain("resolveReviewSelection(\n      groups,\n      railSubjects,\n      prefs.selected,");
+    // The cards owing human tests are in the list too, so a selection
+    // made there has to survive the resolver.
+    expect(text).toContain("testRows.map((row) => row.subject.cardPath)");
   });
 
   it("groups through reviewBoard.ts rather than clustering in the template", () => {

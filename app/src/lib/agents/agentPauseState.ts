@@ -20,11 +20,14 @@ import { derived, get, readable, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import {
   DEFAULT_CYCLE,
+  effectivePauseCycle,
+  pauseCycleForPrimary,
   type PauseCycle,
   type PauseVerdict,
   pauseVerdict,
   cyclePhase,
 } from "$lib/agents/agentPause";
+import { COMPLEXITY_LEVELS, effectiveComplexityTable, effectiveDefaultAgent } from "$lib/cards/complexity";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
   dropExpiredWindows,
@@ -41,7 +44,8 @@ import {
   type UsageHistory,
   type UsageProjection,
 } from "$lib/agents/usageProjection";
-import { layoutState, resolvedAgentFor, agentDefaultsStore } from "$lib/core/layoutState";
+import { layoutState, resolvedAgentFor, agentDefaultsStore, setAgentDefaults } from "$lib/core/layoutState";
+import type { Workspace } from "$lib/core/workspace";
 import { holdsAppDutiesNow, listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
 import {
   decideLaunch,
@@ -50,9 +54,15 @@ import {
   type FallbackDecision,
 } from "$lib/agents/agentFallback";
 
-/// The app-wide cycle, or null for no cycle at all -- the shipped
-/// default, so nothing pauses until somebody turns it on.
-export const agentPauseStore = writable<PauseCycle | null>(null);
+/// The app-wide cycles, keyed by primary profile id. A primary with no
+/// entry is never held -- the shipped default, so nothing pauses until
+/// somebody turns one on for it. Read off the agent defaults rather than
+/// stored apart: the cycles ride the same wholesale save as the other
+/// per-primary maps (`setAgentDefaults`).
+export const agentPauseStore: Readable<Record<string, PauseCycle>> = derived(
+  agentDefaultsStore,
+  ($defaults) => $defaults.pauseCycles ?? {}
+);
 
 /// The newest reading per profile id. Absent means "not asked yet",
 /// which is deliberately NOT the same as `unsupported`: a surface must be
@@ -97,52 +107,58 @@ let clockTimer: ReturnType<typeof setInterval> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
-// ---- Loading and saving -----------------------------------------------------
+// ---- Saving ------------------------------------------------------------
 
-/// Read once at bootstrap. Best-effort like the rest of the config reads:
-/// a failure means no cycle, which is the shipped default and stops
-/// nothing.
-export async function loadAgentPause(): Promise<void> {
-  try {
-    agentPauseStore.set(await backend.getAgentPause());
-  } catch {
-    agentPauseStore.set(null);
-  }
-}
-
-/// Saves the app-wide cycle, stamping an anchor only when there is not
-/// one already.
+/// Saves one primary's app-wide cycle, stamping an anchor only when
+/// there is not one already. `null` removes the key: that agent is never
+/// held.
 ///
 /// The anchor is the whole reason the cycle survives a restart, so it is
 /// minted ONCE -- when the cycle is first switched on -- and carried
 /// unchanged through every later edit. Re-stamping it on save would slide
 /// the pause forward every time somebody nudged a field, and a cycle that
 /// keeps sliding never actually fires.
-export async function saveAgentPause(cycle: PauseCycle | null): Promise<void> {
-  const stamped =
-    cycle && !cycle.anchorMs ? { ...cycle, anchorMs: Date.now() } : cycle;
-  agentPauseStore.set(stamped);
-  await backend.setAgentPause(stamped);
+export async function saveAgentPauseFor(
+  primaryId: string,
+  cycle: PauseCycle | null
+): Promise<void> {
+  const id = primaryId.trim();
+  if (!id) return;
+  const stamped = cycle && !cycle.anchorMs ? { ...cycle, anchorMs: Date.now() } : cycle;
+  const defaults = get(agentDefaultsStore);
+  const pauseCycles = { ...(defaults.pauseCycles ?? {}) };
+  if (stamped) pauseCycles[id] = stamped;
+  else delete pauseCycles[id];
+  await setAgentDefaults({ ...defaults, pauseCycles });
 }
 
-/// The cycle in force for a workspace: its own override, else the
-/// app-wide one, else nothing.
+/// The cycle in force for a primary in a workspace: its own override
+/// under that key, else the app-wide cycle for it, else nothing. The
+/// primary defaults to the workspace's resolved agent (the app default
+/// agent when there is no workspace), so a caller asking about "this
+/// workspace" need not resolve it first.
 ///
-/// A workspace's absent override means INHERIT, not off. Turning the
-/// cycle off for one workspace stores a cycle with `enabled: false`,
-/// which is why this cannot be a truthiness check.
-export function effectiveCycle(workspaceId: string | null): PauseCycle | null {
-  const appWide = get(agentPauseStore);
-  if (!workspaceId) return appWide;
+/// A workspace's absent key means INHERIT, not off. Turning the cycle
+/// off for one workspace stores a cycle with `enabled: false` under the
+/// key, which is why this cannot be a truthiness check.
+export function effectiveCycle(workspaceId: string | null, primaryId?: string): PauseCycle | null {
+  const id =
+    (primaryId ?? "").trim() ||
+    (workspaceId
+      ? resolvedAgentFor(workspaceId).profileId
+      : effectiveDefaultAgent(get(agentDefaultsStore)));
+  const appMap = get(agentDefaultsStore).pauseCycles;
+  if (!workspaceId) return pauseCycleForPrimary(appMap, id);
   const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
-  return workspace?.agentPause ?? appWide;
+  return effectivePauseCycle(workspace?.pauseCycles, appMap, id);
 }
 
-/// The cycle a surface should EDIT for a workspace: its override if it
-/// has one, else a copy of what it inherits, else the shipped default.
-/// Never null, because an editor needs fields to put on screen.
-export function editableCycle(workspaceId: string | null): PauseCycle {
-  return effectiveCycle(workspaceId) ?? { ...DEFAULT_CYCLE, anchorMs: 0 };
+/// The cycle a surface should EDIT for a primary in a workspace: its
+/// override if it has one, else a copy of what it inherits, else the
+/// shipped default. Never null, because an editor needs fields to put on
+/// screen.
+export function editableCycle(workspaceId: string | null, primaryId?: string): PauseCycle {
+  return effectiveCycle(workspaceId, primaryId) ?? { ...DEFAULT_CYCLE, anchorMs: 0 };
 }
 
 // ---- The probe ---------------------------------------------------------------
@@ -327,11 +343,39 @@ function recordSample(profileId: string, report: AgentUsageReport, persist: bool
 /// a call and a row that mean nothing.
 export function profilesInUse(): string[] {
   const ids = new Set<string>();
-  const appChain = get(agentDefaultsStore).agentFallback ?? [];
   for (const workspace of get(layoutState).workspaces) {
-    const agent = resolvedAgentFor(workspace.id);
-    if (agent.profileId) ids.add(agent.profileId);
-    for (const id of effectiveFallbackChain(workspace.agentFallback, appChain)) {
+    for (const id of profilesForWorkspace(workspace)) ids.add(id);
+  }
+  return [...ids];
+}
+
+/// Every agent a launch in this workspace can end up on: the one it runs,
+/// the ones its complexity table routes a rated card to, and every agent
+/// any fallback chain could walk to.
+function profilesForWorkspace(workspace: Workspace): string[] {
+  const ids = new Set<string>();
+  const defaults = get(agentDefaultsStore);
+  const appMap = defaults.fallbackChains ?? {};
+  const agent = resolvedAgentFor(workspace.id);
+  if (agent.profileId) ids.add(agent.profileId);
+  // Every agent a rated card can be routed to, by the table of the agent
+  // this workspace runs: a launch there is gated on THAT agent's usage
+  // and cycle, so its limits have to be read too.
+  const table = effectiveComplexityTable(
+    workspace.complexityTables,
+    defaults.complexityTables,
+    agent.profileId
+  );
+  for (const level of COMPLEXITY_LEVELS) {
+    const routed = table[level]?.profile?.trim();
+    if (routed) ids.add(routed);
+  }
+  // Every primary's effective chain: usage is polled for any agent a
+  // launch in this workspace could walk to, whichever primary the card
+  // resolves to.
+  const wsMap = workspace.fallbackChains ?? {};
+  for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
+    for (const id of effectiveFallbackChain(wsMap, appMap, primary)) {
       ids.add(id);
     }
   }
@@ -446,11 +490,30 @@ export const pausedWorkspaces: Readable<PausedWorkspace[]> = derived(
 /// `derived` re-emits on every input change regardless of value.
 export const pausedWorkspaceKey: Readable<string> = readable("", (set) => {
   let last: string | null = null;
-  return pausedWorkspaces.subscribe((paused) => {
-    const key = paused
-      .map((w) => w.id)
-      .sort()
-      .join(" ");
+  // The ids of the held workspaces, then (only when there are any) the
+  // agents inside their OWN pause window that a launch there could land
+  // on. A routed card launches on its own agent, gated on that agent's
+  // cycle, which the held-workspace set above cannot see (it reads the
+  // workspace's own agent) -- so without this a step skipped for a routed
+  // agent's pause would never be told the pause lifted.
+  const keyOf = derived(
+    [pausedWorkspaces, nowStore, layoutState, agentDefaultsStore],
+    ([paused, now, state]) => {
+      const held = paused
+        .map((w) => w.id)
+        .sort()
+        .join(" ");
+      const routed: string[] = [];
+      for (const workspace of state.workspaces) {
+        for (const id of profilesForWorkspace(workspace)) {
+          const own = effectiveCycle(workspace.id, id);
+          if (own && cyclePhase(own, now).paused) routed.push(`${workspace.id}:${id}`);
+        }
+      }
+      return routed.length === 0 ? held : `${held} | ${routed.sort().join(" ")}`;
+    }
+  );
+  return keyOf.subscribe((key) => {
     if (key === last) return;
     last = key;
     set(key);
@@ -468,12 +531,16 @@ export function launchDecision(
   resume: boolean,
   nowMs: number = get(nowStore)
 ): FallbackDecision {
-  const cycle = effectiveCycle(workspaceId);
+  // The cycle is the RESOLVED primary's, the same key the fallback chain
+  // below uses: a card whose complexity routes it to codex is held by
+  // codex's cycle, not by whatever the workspace's own agent keeps.
+  const cycle = effectiveCycle(workspaceId, resolvedProfileId ?? "");
   const cyclePaused = cycle ? cyclePhase(cycle, nowMs).paused : false;
   const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   const chain = effectiveFallbackChain(
-    workspace?.agentFallback,
-    get(agentDefaultsStore).agentFallback
+    workspace?.fallbackChains,
+    get(agentDefaultsStore).fallbackChains,
+    resolvedProfileId ?? ""
   );
   const workspaceProfile = resolvedAgentFor(workspaceId).profileId;
   const armed = new Set<string>([
@@ -494,6 +561,11 @@ export function launchDecision(
     limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
     fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,
     cyclePaused,
+    // Each hop candidate answers to its own cycle, in this workspace.
+    cyclePausedFor: (id) => {
+      const own = effectiveCycle(workspaceId, id);
+      return own ? cyclePhase(own, nowMs).paused : false;
+    },
     resume,
   });
 }
@@ -583,7 +655,6 @@ function gateReason(): string | null {
 export function startPauseClock(): () => void {
   stopPauseClock();
   clockTimer = setInterval(() => nowStore.set(Date.now()), CLOCK_TICK_MS);
-  void loadAgentPause();
   // Before the first poll, so the reading that lands has yesterday's
   // samples to continue rather than starting an epoch of its own.
   usageHistoryStore.set(loadUsageHistory());

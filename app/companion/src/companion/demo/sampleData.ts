@@ -12,7 +12,6 @@
 // no root at all. The cards are files (sampleCards.ts), and the trees
 // are what a scan of them reads; the two projects' other files and their
 // Git histories are sampleProjects.ts.
-import type { PauseCycle } from "$lib/agents/agentPause";
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { SessionBaseline } from "$lib/core/backend";
@@ -22,10 +21,13 @@ import type { GavinContext, GavinTree } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { scanPlans } from "$companion/demo/cardFiles";
+import { sampleBrowsers, type DemoBrowser } from "$companion/demo/browser";
 import type { DemoRepo } from "$companion/demo/repo";
 import { sampleCardFiles } from "$companion/demo/sampleCards";
 import { projectFiles, sampleRepos } from "$companion/demo/sampleProjects";
 import type { DemoTerminal } from "$companion/demo/sessions";
+import { sampleOwners } from "$companion/demo/owners";
+import type { SessionOwner } from "$lib/core/sessionOwnership";
 import { sampleTerminals } from "$companion/demo/transcripts";
 
 export const DEMO = {
@@ -50,10 +52,12 @@ export interface DemoSettings {
   requireReview: boolean | null;
   gitTracking: boolean | null;
   headroom: boolean | null;
+  /// When an agent's browser pane opens (`browserView.ts`): "auto",
+  /// "chip", or null for gavin's default.
+  playwrightPaneOpen: string | null;
   customResumeArgs: string | null;
   agentModels: Record<string, string>;
   agentDefaults: AgentDefaults;
-  agentPause: PauseCycle | null;
   launch: LaunchConfig | null;
 }
 
@@ -82,6 +86,11 @@ export interface DemoState {
   /// Every live session's terminal: what it has written, and what it
   /// does with what is typed into it (sessions.ts).
   terminals: Record<string, DemoTerminal>;
+  /// The agents' browsers that are running, by session (browser.ts).
+  browsers: Record<string, DemoBrowser>;
+  /// Which Device each session takes input from, by session: only the
+  /// sessions a Device owns (owners.ts).
+  owners: Record<string, SessionOwner>;
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
@@ -149,6 +158,16 @@ function workspaces(): Workspace[] {
       mainSessionId: "s-atlas-main",
       activePageId: "p-atlas-auth",
       lastActiveAt: 1_790_000_300_000,
+      /// A workspace-local custom the phone's Agents → Customs tab can edit.
+      customProfiles: [
+        {
+          id: "local:atlas-helper",
+          label: "Atlas helper",
+          command: "atlas-helper",
+          modelFlag: "--llm",
+          apiFamily: "anthropic",
+        },
+      ],
       pages: [
         {
           id: "p-atlas-auth",
@@ -346,17 +365,29 @@ export function sampleSettings(): DemoSettings {
     requireReview: null,
     gitTracking: null,
     headroom: null,
+    playwrightPaneOpen: null,
     customResumeArgs: null,
     agentModels: {},
     agentDefaults: {
-      customCommand: "",
-      customModelFlag: "",
-      complexity: {},
-      agentFallback: [],
+      defaultAgent: "claude-code",
+      customProfiles: [
+        {
+          id: "demo-cli",
+          label: "Demo CLI",
+          command: "demo-agent",
+          modelFlag: "--model",
+          effortFlag: "--effort",
+          apiFamily: "openai",
+        },
+      ],
+      complexityTables: {},
+      pauseCycles: {},
+      promptExtras: {},
+      extraCliArgs: {},
+      fallbackChains: {},
       fallbackThresholds: {},
       actionPromptOverrides: {},
     },
-    agentPause: null,
     launch: null,
   };
 }
@@ -411,6 +442,8 @@ export function sampleState(): DemoState {
     watches: { files: {}, git: {} },
     queuedInputs: [],
     terminals: sampleTerminals(DEMO.home),
+    browsers: sampleBrowsers(),
+    owners: sampleOwners(),
     launched: 0,
     settings: sampleSettings(),
   };

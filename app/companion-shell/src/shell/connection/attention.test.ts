@@ -31,6 +31,18 @@ describe("the attention answer", () => {
     });
   });
 
+  it("reads why the desktop app could not answer, and passes over a reason it has not heard of", () => {
+    for (const reason of ["not-connected", "connection-lost", "not-answering"] as const) {
+      expect(readAttention({ type: "Attention", state: "desktop-app-not-running", items: [], version: 1, reason })).toEqual({
+        state: "desktop-app-not-running",
+        reason,
+      });
+    }
+    expect(readAttention({ type: "Attention", state: "desktop-app-not-running", items: [], version: 1, reason: "asleep-at-the-wheel" })).toEqual({
+      state: "desktop-app-not-running",
+    });
+  });
+
   it("grows by optional fields: an unknown field is ignored, an unknown kind kept, an unknown target dropped", () => {
     const answer = readAttention({
       type: "Attention",
@@ -49,6 +61,21 @@ describe("the attention answer", () => {
         { id: "b", workspace: "w", kind: "other", text: "t", target: null },
       ],
     });
+  });
+
+  it("reads a workspace's name where the Workstation says it, and goes without one where it does not", () => {
+    const answer = readAttention({
+      type: "Attention",
+      state: "ready",
+      version: 1,
+      items: [
+        { id: "a", workspace: "w1", workspaceName: " Gavin ", kind: "waiting", text: "t", target: null },
+        { id: "b", workspace: "w2", workspaceName: "", kind: "waiting", text: "t", target: null },
+        { id: "c", workspace: "w3", workspaceName: 7, kind: "waiting", text: "t", target: null },
+      ],
+    });
+    expect(answer.state === "ready" && answer.items.map((item) => item.workspaceName)).toEqual(["Gavin", undefined, undefined]);
+    expect(answer.state === "ready" && "workspaceName" in answer.items[1]).toBe(false);
   });
 
   it("leaves out an item it cannot show, and keeps the rest", () => {

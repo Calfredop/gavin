@@ -34,6 +34,12 @@ pub struct DialOptions {
     /// for the daemon, which trusts what the machine trusts; the test
     /// Device names the certificate of the Relay its test just started.
     pub extra_roots: Vec<Vec<u8>>,
+    /// A daemon's direct listener, trusted by this pin and by nothing
+    /// else (`protocol::relay::certificate_pin`, ADR 0009). With a pin
+    /// set no root is consulted and no host name checked: the one
+    /// certificate whose hash it is, proving it holds the key, is the
+    /// whole of what is trusted.
+    pub pin: Option<String>,
 }
 
 impl Default for DialOptions {
@@ -42,6 +48,7 @@ impl Default for DialOptions {
             connect_timeout: Duration::from_secs(10),
             hello_timeout: Duration::from_secs(20),
             extra_roots: Vec::new(),
+            pin: None,
         }
     }
 }
@@ -82,10 +89,12 @@ impl std::fmt::Display for DialError {
 impl std::error::Error for DialError {}
 
 /// The socket under the WebSocket: plain to a Relay on this network, TLS
-/// to any other.
+/// to any other -- or, at a daemon's direct listener, the server's end
+/// of TLS to a Device (`direct::answer`).
 pub enum Transport {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Answering(Box<rustls::StreamOwned<rustls::ServerConnection, crate::direct::Paced>>),
 }
 
 impl Read for Transport {
@@ -93,6 +102,7 @@ impl Read for Transport {
         match self {
             Transport::Plain(s) => s.read(buf),
             Transport::Tls(s) => s.read(buf),
+            Transport::Answering(s) => s.read(buf),
         }
     }
 }
@@ -102,6 +112,7 @@ impl Write for Transport {
         match self {
             Transport::Plain(s) => s.write(buf),
             Transport::Tls(s) => s.write(buf),
+            Transport::Answering(s) => s.write(buf),
         }
     }
 
@@ -109,6 +120,7 @@ impl Write for Transport {
         match self {
             Transport::Plain(s) => s.flush(),
             Transport::Tls(s) => s.flush(),
+            Transport::Answering(s) => s.flush(),
         }
     }
 }
@@ -119,13 +131,17 @@ fn is_timeout(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
 
-fn ws_config() -> WebSocketConfig {
+pub(crate) fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_message_size(Some(MAX_STREAM_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_STREAM_MESSAGE_BYTES))
 }
 
-fn tls_config(extra_roots: &[Vec<u8>]) -> Result<Arc<rustls::ClientConfig>, DialError> {
+fn tls_config(options: &DialOptions) -> Result<Arc<rustls::ClientConfig>, DialError> {
+    if let Some(pin) = &options.pin {
+        return crate::direct::pinned_config(pin).map_err(DialError::Tls);
+    }
+    let extra_roots = &options.extra_roots;
     let mut roots = rustls::RootCertStore::empty();
     // The platform's store. A certificate in it that does not parse is
     // skipped rather than fatal -- one malformed entry in a keychain
@@ -181,6 +197,11 @@ pub fn dial(
     options: &DialOptions,
 ) -> Result<RelayConnection, DialError> {
     let url = RelayUrl::parse(url).map_err(DialError::Url)?;
+    // A pin is a certificate to check, and a plain leg has none: the
+    // pin would be quietly ignored rather than enforced.
+    if options.pin.is_some() && !url.secure {
+        return Err(DialError::Tls("a pinned certificate needs a wss:// address".into()));
+    }
     let socket = connect(&url, options.connect_timeout)?;
     let _ = socket.set_nodelay(true);
     // One deadline for everything up to the first reply. A socket timeout
@@ -194,7 +215,7 @@ pub fn dial(
     let transport = if url.secure {
         let name = ServerName::try_from(url.host.clone())
             .map_err(|e| DialError::Tls(format!("{:?} is not a host name: {e}", url.host)))?;
-        let session = rustls::ClientConnection::new(tls_config(&options.extra_roots)?, name)
+        let session = rustls::ClientConnection::new(tls_config(options)?, name)
             .map_err(|e| DialError::Tls(e.to_string()))?;
         Transport::Tls(Box::new(rustls::StreamOwned::new(session, socket)))
     } else {
@@ -292,14 +313,7 @@ impl RelayConnection {
 
     /// The pipe. Every frame from here on is the other end's.
     pub fn into_stream(self) -> RelayStream {
-        RelayStream {
-            ws: self.ws,
-            socket: self.socket,
-            read_timeout: None,
-            inbox: Vec::new(),
-            read: 0,
-            outbox: Vec::new(),
-        }
+        RelayStream::over(self.ws, self.socket)
     }
 
     /// Says goodbye and lets go. Best effort: a Relay that is already
@@ -346,6 +360,11 @@ enum Arrived {
 }
 
 impl RelayStream {
+    /// A stream over `ws`, whose socket `socket` is a second handle to.
+    pub(crate) fn over(ws: WebSocket<Transport>, socket: TcpStream) -> Self {
+        Self { ws, socket, read_timeout: None, inbox: Vec::new(), read: 0, outbox: Vec::new() }
+    }
+
     /// Bounds every read. A Device that walked out of range mid-handshake
     /// must not hold a thread for ever.
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {

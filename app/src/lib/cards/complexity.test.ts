@@ -3,7 +3,11 @@ import {
   agentConfigWithAttribution,
   COMPLEXITY_LABELS,
   COMPLEXITY_LEVELS,
-  complexityEntry,
+  complexityEntryFor,
+  complexityTableForPrimary,
+  effectiveComplexityTable,
+  sameComplexityTable,
+  withComplexityTableForPrimary,
   complexityLabel,
   complexitySummary,
   isAttributed,
@@ -58,37 +62,100 @@ describe("isAttributed", () => {
     // An effort alone is a whole row: the workspace's agent, harder.
     expect(isAttributed({ profile: "", model: "", effort: "max" })).toBe(true);
     expect(isAttributed({ profile: "", model: "", effort: " " })).toBe(false);
+    // So is an advisor alone: the workspace's agent, with opus to ask.
+    expect(isAttributed({ profile: "", model: "", advisor: "opus" })).toBe(true);
+    expect(isAttributed({ profile: "", model: "", advisor: " " })).toBe(false);
     expect(isAttributed(undefined)).toBe(false);
     expect(isAttributed(null)).toBe(false);
   });
 });
 
-describe("complexityEntry", () => {
-  const app: ComplexityTable = {
+describe("complexityEntryFor", () => {
+  const table: ComplexityTable = {
     trivial: { profile: "", model: "haiku" },
     intricate: { profile: "claude-code", model: "opus" },
   };
 
-  it("prefers the workspace's own row for that level", () => {
-    const workspace: ComplexityTable = { intricate: { profile: "codex", model: "" } };
-    expect(complexityEntry("intricate", app, workspace)).toEqual({ profile: "codex", model: "" });
+  it("reads the level's row from the one table it is given", () => {
+    expect(complexityEntryFor("intricate", table)).toEqual({ profile: "claude-code", model: "opus" });
+    expect(complexityEntryFor("trivial", table)).toEqual({ profile: "", model: "haiku" });
   });
 
-  // Per LEVEL, not per table: a workspace that only cares about its
-  // hardest cards must not lose the app's answer for the other four.
-  it("falls through per level, not wholesale", () => {
-    const workspace: ComplexityTable = { intricate: { profile: "codex", model: "" } };
-    expect(complexityEntry("trivial", app, workspace)).toEqual({ profile: "", model: "haiku" });
-  });
-
-  it("treats an empty workspace row as inherit rather than as an override", () => {
-    const workspace: ComplexityTable = { trivial: { profile: "", model: "" } };
-    expect(complexityEntry("trivial", app, workspace)).toEqual({ profile: "", model: "haiku" });
+  it("treats an empty row as nothing attributed", () => {
+    const empty: ComplexityTable = { trivial: { profile: "", model: "" } };
+    expect(complexityEntryFor("trivial", empty)).toBeNull();
   });
 
   it("answers null for a level nobody attributed, and for no level at all", () => {
-    expect(complexityEntry("moderate", app, {})).toBeNull();
-    expect(complexityEntry(null, app, {})).toBeNull();
+    expect(complexityEntryFor("moderate", table)).toBeNull();
+    expect(complexityEntryFor(null, table)).toBeNull();
+  });
+});
+
+describe("per-primary complexity tables", () => {
+  const claude: ComplexityTable = { intricate: { profile: "codex", model: "gpt-5.1" } };
+  const codex: ComplexityTable = { trivial: { profile: "", model: "mini" } };
+  const app = { "claude-code": claude, codex };
+
+  it("reads one primary's app-wide table, empty when it has none", () => {
+    expect(complexityTableForPrimary(app, "claude-code")).toBe(claude);
+    expect(complexityTableForPrimary(app, "gemini")).toEqual({});
+    expect(complexityTableForPrimary(app, "  ")).toEqual({});
+    expect(complexityTableForPrimary(null, "codex")).toEqual({});
+  });
+
+  /// A workspace map with the key is that primary's WHOLE table; a level
+  /// it leaves out runs the workspace's own agent, it does not fall
+  /// through to the app's row for that level.
+  it("lets a workspace's own table replace the app's whole, per primary", () => {
+    const own: ComplexityTable = { trivial: { profile: "", model: "nano" } };
+    const ws = { "claude-code": own };
+    expect(effectiveComplexityTable(ws, app, "claude-code")).toBe(own);
+    expect(effectiveComplexityTable(ws, app, "claude-code").intricate).toBeUndefined();
+    // Another primary has no key in the workspace map: it inherits.
+    expect(effectiveComplexityTable(ws, app, "codex")).toBe(codex);
+  });
+
+  it("reads an own-but-empty workspace table as 'no routing', not as inherit", () => {
+    expect(effectiveComplexityTable({ "claude-code": {} }, app, "claude-code")).toEqual({});
+  });
+
+  it("inherits when the workspace has no map at all", () => {
+    expect(effectiveComplexityTable(undefined, app, "codex")).toBe(codex);
+    expect(effectiveComplexityTable(null, null, "codex")).toEqual({});
+    expect(effectiveComplexityTable(undefined, app, "")).toEqual({});
+  });
+
+  it("sets and removes one primary's table without touching the others", () => {
+    const next = withComplexityTableForPrimary(app, "codex", { moderate: { profile: "", model: "m" } });
+    expect(next["claude-code"]).toBe(claude);
+    expect(next.codex).toEqual({ moderate: { profile: "", model: "m" } });
+    expect(withComplexityTableForPrimary(app, "codex", null).codex).toBeUndefined();
+    // The caller's map is never mutated.
+    expect(app.codex).toBe(codex);
+  });
+
+  /// App-wide, an empty table and an absent one are the same thing; in a
+  /// workspace the difference is the whole point, so `keepEmpty` keeps it.
+  it("drops an empty table app-wide but keeps it for a workspace", () => {
+    expect(withComplexityTableForPrimary(app, "codex", {}).codex).toBeUndefined();
+    expect(withComplexityTableForPrimary(app, "codex", {}, true).codex).toEqual({});
+    expect(withComplexityTableForPrimary(app, "codex", null, true).codex).toBeUndefined();
+  });
+
+  it("compares tables level by level, ignoring unattributed rows", () => {
+    expect(sameComplexityTable(claude, { ...claude })).toBe(true);
+    expect(sameComplexityTable(claude, {})).toBe(false);
+    expect(sameComplexityTable({}, { trivial: { profile: "", model: "" } })).toBe(true);
+    expect(
+      sameComplexityTable(claude, { intricate: { profile: "codex", model: "gpt-5.2" } })
+    ).toBe(false);
+    expect(
+      sameComplexityTable(
+        { complex: { profile: "", model: "sonnet" } },
+        { complex: { profile: "", model: "sonnet", advisor: "opus" } }
+      )
+    ).toBe(false);
   });
 });
 
@@ -149,6 +216,21 @@ describe("agentConfigWithAttribution", () => {
     expect(r?.model).toBeNull();
   });
 
+  it("lays a named advisor over the config, and adds nothing without one", () => {
+    expect(agentConfigWithAttribution(base, { profile: "", model: "", advisor: "opus" })).toEqual({
+      ...base,
+      model: "sonnet",
+      effort: null,
+      advisor: "opus",
+    });
+    expect(
+      agentConfigWithAttribution(base, { profile: "codex", model: "", advisor: " fable " })?.advisor
+    ).toBe("fable");
+    expect(agentConfigWithAttribution(base, { profile: "", model: "opus", advisor: "" })).not.toHaveProperty(
+      "advisor"
+    );
+  });
+
   it("reads an empty model as the profile's own default, not as a blank", () => {
     expect(agentConfigWithAttribution(base, { profile: "codex", model: "  " })?.model).toBeNull();
   });
@@ -176,6 +258,12 @@ describe("complexitySummary", () => {
     expect(complexitySummary("complex", { profile: "", model: "", effort: "high" }, label)).toBe(
       "Complex — runs this workspace's agent, at high effort."
     );
+  });
+
+  it("names the advisor after the effort", () => {
+    expect(
+      complexitySummary("intricate", { profile: "", model: "sonnet", effort: "high", advisor: "opus" }, label)
+    ).toBe("Intricate — runs this workspace's agent on sonnet, at high effort, advised by opus.");
   });
 
   it("says so when a level is rated but attributed to nothing", () => {
@@ -230,22 +318,20 @@ describe("realignComplexityTable", () => {
 });
 
 describe("recommendedComplexityAction", () => {
-  it("recommends remap when any row names the old profile", () => {
+  /// Tables are per agent, so "this workspace's agent" cannot go stale
+  /// across a switch, and a row naming the agent being left may be a
+  /// deliberate cross-agent route. Rewriting or dropping is the human's
+  /// choice, never the default.
+  it("recommends keeping, whatever the table says", () => {
+    expect(recommendedComplexityAction({}, "claude-code")).toBe("keep");
     expect(
-      recommendedComplexityAction(
-        { trivial: { profile: "claude-code", model: "" } },
-        "claude-code"
-      )
-    ).toBe("remap");
-  });
-
-  it("recommends clear when nothing names the old profile", () => {
-    expect(recommendedComplexityAction({}, "claude-code")).toBe("clear");
+      recommendedComplexityAction({ trivial: { profile: "claude-code", model: "" } }, "claude-code")
+    ).toBe("keep");
     expect(
       recommendedComplexityAction(
         { simple: { profile: "", model: "sonnet" }, intricate: { profile: "codex", model: "" } },
         "claude-code"
       )
-    ).toBe("clear");
+    ).toBe("keep");
   });
 });

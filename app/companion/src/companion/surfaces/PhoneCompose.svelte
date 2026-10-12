@@ -131,13 +131,16 @@
 <style>
   /* Over the whole page, like any page of a phone app, with the board
      under it just as it was left. Fixed to the page, which is itself
-     sized to what the keyboard leaves visible (viewport.ts). */
+     sized to what the keyboard leaves visible (viewport.ts). Fixed, it
+     spans the page's side insets as well, so it keeps clear of them
+     itself, as the page does (routes/+page.svelte). */
   .sheet {
     position: fixed;
     inset: 0;
     z-index: 20;
     display: flex;
     flex-direction: column;
+    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
     background: var(--surface-base);
   }
   .form {
@@ -146,8 +149,7 @@
     flex-direction: column;
     gap: 14px;
     min-height: 0;
-    padding: 14px max(14px, env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom))
-      max(14px, env(safe-area-inset-left));
+    padding: 14px 14px calc(20px + env(safe-area-inset-bottom));
     overflow-y: auto;
   }
   .kinds {
@@ -181,7 +183,7 @@
     text-transform: uppercase;
   }
   /* 16px and no smaller: below it iOS zooms the page into a field the
-     moment it takes focus. */
+     moment it takes focus. More at a larger text size. */
   input,
   textarea,
   select {
@@ -194,7 +196,7 @@
     background: var(--surface-sunken);
     color: var(--text);
     font: inherit;
-    font-size: 16px;
+    font-size: max(16px, 1rem);
   }
   textarea {
     resize: vertical;

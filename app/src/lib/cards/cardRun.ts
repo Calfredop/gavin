@@ -205,6 +205,17 @@ export function composeDevelopPrompt(
   });
 }
 
+/// The agent's extra prompt lines at the END of a composed prompt, each
+/// its own line, blanks skipped, separated from the prompt by a blank
+/// line. Appended after composition rather than woven into a template so
+/// the same list lands identically on a run, a resume, a review, a
+/// develop and a Best-of-N candidate -- and matches what the host does to
+/// the wizard's prompts (`append_prompt_extras` in agent_setup.rs).
+export function withPromptExtras(prompt: string, extras: readonly string[] | null | undefined): string {
+  const lines = (extras ?? []).map((l) => l.trim()).filter(Boolean);
+  return lines.length === 0 ? prompt : `${prompt}\n\n${lines.join("\n")}`;
+}
+
 // POSIX single-quoting: wrap in single quotes, closing/reopening around
 // each embedded single quote. Newlines and every other byte ride inside
 // the quotes untouched.
@@ -396,15 +407,32 @@ export function noPromptReason(agentLabel: string): string {
   );
 }
 
+/// Whether a visible run launches this agent BARE and hands it the
+/// composed prompt through the daemon's follow-up queue instead of argv
+/// (K3). The daemon holds the queued prompt until the agent's gavin-mcp
+/// handshake reports the agent alive -- the only "the TUI is up" signal
+/// a CLI with no prompt flag has -- then writes it into the PTY.
+///
+/// This is the answer that keeps `promptArgs: null` from meaning one
+/// thing. Cursor's null is a refusal (`noPromptReason`); kimi's null
+/// with this flag is a launch with the prompt arriving a breath later.
+export function usesPromptInjection(agent: {
+  promptArgs: string | null;
+  promptInjection?: boolean;
+}): boolean {
+  return agent.promptArgs === null && agent.promptInjection === true;
+}
+
 // The same answer in gitState's agentCommitBlocker shape, for the
 // surfaces that bind a reason to a control rather than react to a failed
 // launch. Hang it on a NON-disabled ancestor: a disabled element never
 // fires mouseenter, so a tooltip bound to one can never appear.
 export function agentPromptBlocker(
   promptArgs: string | null,
-  agentLabel: string
+  agentLabel: string,
+  promptInjection = false
 ): string | null {
-  return promptArgs === null ? noPromptReason(agentLabel) : null;
+  return promptArgs === null && !promptInjection ? noPromptReason(agentLabel) : null;
 }
 
 /// Legacy one-liner kept for back-compat tests. The Git tab's

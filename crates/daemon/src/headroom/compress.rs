@@ -12,8 +12,11 @@
 //! recipe is a function of the agent, the port, the session id and the
 //! command line. Neither reads the clock, the disk or the process
 //! table, which is what lets every row of the decision be a unit test.
-//! The one fact that lives on disk -- where the installed Headroom keeps
-//! its opencode plugin -- is looked up by the caller and handed in.
+//! The facts that live on disk -- where the installed Headroom keeps
+//! its opencode plugin, the OAuth host Kimi persists -- are looked up
+//! by the caller and handed in. So is the one write a launch needs:
+//! the caller runs `provision_kimi_credential`, filling the credential
+//! slot a routed Kimi derives, from the human's own login.
 //!
 //! Nothing here is remembered. A resume, a relaunch, a fallback and an
 //! auto-resume are all fresh spawns, so each is decided again against
@@ -54,6 +57,22 @@ const GEMINI_BASE_URL: &str = "GOOGLE_GEMINI_BASE_URL";
 /// anyway: it is what the commands Codex runs read.
 const OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
 
+/// What the Kimi Code CLI reads its managed provider's base URL from
+/// (verified against 2.1.1: it redirects the OpenAI-compatible chat
+/// traffic at runtime). Kimi appends `/chat/completions` to it as-is,
+/// so like an OpenAI client it is handed a base that ends in `/v1`.
+pub const KIMI_BASE_URL: &str = "KIMI_CODE_BASE_URL";
+
+/// The OAuth host half of Kimi's credential-slot derivation. Setting
+/// `KIMI_CODE_BASE_URL` re-derives the slot kimi reads
+/// (`kimi_credential_slot`) from this host and the override, so a
+/// routed kimi needs it set to the host the human logged in against.
+const KIMI_OAUTH_HOST: &str = "KIMI_CODE_OAUTH_HOST";
+
+/// The host kimi's derivation assumes when neither its configuration
+/// nor the environment names one.
+pub const KIMI_DEFAULT_OAUTH_HOST: &str = "https://auth.kimi.com";
+
 /// Configuration opencode merges over its on-disk files, so a recipe
 /// needs no file of its own.
 pub const OPENCODE_CONFIG: &str = "OPENCODE_CONFIG_CONTENT";
@@ -69,8 +88,9 @@ const CODEX_BASE_URL_KEY: &str = "openai_base_url";
 pub const OPENCODE_PLUGIN: [&str; 5] =
     ["headroom", "providers", "opencode", "_dist", "entry.opencode.js"];
 
-/// The profile id of the agent the human describes themselves.
-const CUSTOM: &str = "custom";
+fn is_stock_profile_id(id: &str) -> bool {
+    matches!(id, "claude-code" | "codex" | "gemini" | "cursor" | "opencode" | "kimi-code")
+}
 
 /// What is about to be launched, as far as the daemon can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,9 +98,9 @@ pub enum Launch<'a> {
     /// The app named the agent profile doing the launching
     /// (`CreateSession`'s `profile_id`).
     Profile(&'a str),
-    /// The `custom` profile, whose settings name the API it speaks
+    /// A non-stock profile whose settings name the API it speaks
     /// (`CreateSession`'s `api_family`). A custom agent that names none
-    /// is `Profile("custom")`: gavin knows nothing of the binary, and
+    /// is `Profile(id)`: gavin knows nothing of the binary, and
     /// has no recipe for it.
     Custom(ApiFamily),
     /// A command line another agent asked for over MCP
@@ -91,17 +111,21 @@ pub enum Launch<'a> {
 }
 
 impl<'a> Launch<'a> {
-    /// What a `CreateSession` names. No profile is a shell; the family
-    /// counts only on the `custom` profile, because every other one is
-    /// a binary gavin already knows the API of.
+    /// What a `CreateSession` names. No profile is a shell. A known
+    /// `api_family` on a non-stock profile is a custom recipe; stock
+    /// built-ins keep their own routes. The retired id `"custom"` still
+    /// counts as non-stock during the migration window.
     pub fn requested(profile_id: Option<&'a str>, api_family: Option<&str>) -> Launch<'a> {
         match profile_id {
             None => Launch::Shell,
-            Some(CUSTOM) => match api_family.and_then(ApiFamily::from_id) {
-                Some(family) => Launch::Custom(family),
-                None => Launch::Profile(CUSTOM),
-            },
-            Some(id) => Launch::Profile(id),
+            Some(id) => {
+                if !is_stock_profile_id(id) {
+                    if let Some(family) = api_family.and_then(ApiFamily::from_id) {
+                        return Launch::Custom(family);
+                    }
+                }
+                Launch::Profile(id)
+            }
         }
     }
 
@@ -150,6 +174,7 @@ pub enum Agent {
     Gemini,
     Cursor,
     Opencode,
+    Kimi,
     /// The human's own agent, with the API it speaks.
     Custom(ApiFamily),
     /// A profile gavin has no table row for: `custom` with no API
@@ -168,6 +193,7 @@ impl Agent {
             "gemini" => Agent::Gemini,
             "cursor" => Agent::Cursor,
             "opencode" => Agent::Opencode,
+            "kimi-code" => Agent::Kimi,
             _ => Agent::Other,
         }
     }
@@ -192,6 +218,7 @@ impl Agent {
             // `cursor-agent` what it installed before.
             "agent" | "cursor-agent" => Some(Agent::Cursor),
             "opencode" => Some(Agent::Opencode),
+            "kimi" => Some(Agent::Kimi),
             _ => None,
         }
     }
@@ -230,7 +257,10 @@ impl Reason {
 }
 
 /// What routes one agent through Headroom: environment that lasts as
-/// long as the process, and no file anywhere (ADR 0007).
+/// long as the process, and no file anywhere (ADR 0007) -- bar the
+/// credential copy a routed Kimi needs, which is the caller's write of
+/// the human's own login, not a file the recipe carries
+/// (`provision_kimi_credential`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recipe {
     pub env: Vec<(String, String)>,
@@ -318,6 +348,10 @@ pub struct Facts<'a> {
     /// Whether the Gemini CLI would authenticate with an API key
     /// (`gemini_uses_api_key`). Only a Gemini launch reads it.
     pub gemini_api_key: bool,
+    /// The OAuth host Kimi's managed provider persists, or
+    /// `KIMI_DEFAULT_OAUTH_HOST` when its configuration cannot be read.
+    /// Only a Kimi launch reads it.
+    pub kimi_oauth_host: &'a str,
 }
 
 /// What of the environment decides the Gemini CLI's auth type.
@@ -403,6 +437,7 @@ fn unroutable(agent: Agent) -> Option<Reason> {
         | Agent::Codex
         | Agent::Gemini
         | Agent::Opencode
+        | Agent::Kimi
         | Agent::Custom(_) => None,
         Agent::Cursor => Some(Reason::UnsupportedAgent),
         Agent::Other => Some(Reason::NoRecipe),
@@ -451,6 +486,17 @@ fn unroutable(agent: Agent) -> Option<Reason> {
 /// (`UNSUPPORTED_CLIENT`), so a session marked compressed there would not
 /// be a session that works.
 ///
+/// **Kimi.** `KIMI_CODE_BASE_URL` alone routes it: against 2.1.1 the
+/// variable redirected real chat traffic end-to-end, and kimi appends
+/// `/chat/completions` to what it is handed, which is the OpenAI shape
+/// `tagged_v1_url` exists for. The OAuth host comes along because the
+/// override re-derives the credential slot kimi reads from host and
+/// URL together (`kimi_credential_slot`): a user who logged in against
+/// another region's host would otherwise be derived a slot that cannot
+/// exist. Filling that slot is the one file a launch needs, and it is
+/// the caller's write, not the recipe's
+/// (`provision_kimi_credential`).
+///
 /// **Custom.** Whichever variable its API family's SDK reads.
 pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
     let base = base_url(port);
@@ -481,6 +527,10 @@ pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
         Agent::Custom(ApiFamily::OpenAi) => {
             Some(Recipe::env(vec![(OPENAI_BASE_URL, tagged_v1_url(&base, session))]))
         }
+        Agent::Kimi => Some(Recipe::env(vec![
+            (KIMI_BASE_URL, tagged_v1_url(&base, session)),
+            (KIMI_OAUTH_HOST, facts.kimi_oauth_host.to_string()),
+        ])),
         Agent::Gemini | Agent::Cursor | Agent::Other => None,
     }
 }
@@ -496,10 +546,165 @@ fn tagged_url(base: &str, session_id: &str) -> String {
 }
 
 /// The tagged base URL for a client whose own default base URL ends in
-/// `/v1` -- OpenAI's, and the AI SDK providers opencode is built on --
-/// because those clients append only what comes after it.
+/// `/v1` -- OpenAI's, Kimi's managed provider, and the AI SDK providers
+/// opencode is built on -- because those clients append only what comes
+/// after it.
 fn tagged_v1_url(base: &str, session_id: &str) -> String {
     format!("{}/v1", tagged_url(base, session_id))
+}
+
+/// The credential slot kimi reads under a given OAuth host and base
+/// URL, as 2.1.1 derives it (reproduced byte-exact against a live
+/// install's slot): the first 16 hex chars of the SHA-256 of the JSON
+/// object `{"oauthHost":…,"baseUrl":…}`, keys in that order. With
+/// `KIMI_CODE_BASE_URL` set the URL in the pair is the override, so a
+/// routed kimi reads a different slot than the one it logged into.
+pub fn kimi_credential_slot(oauth_host: &str, base_url: &str) -> String {
+    let json = format!("{{\"oauthHost\":\"{oauth_host}\",\"baseUrl\":\"{base_url}\"}}");
+    let digest = ring::digest::digest(&ring::digest::SHA256, json.as_bytes());
+    let hex: String = digest.as_ref()[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("kimi-code-env-{hex}")
+}
+
+/// What of `~/.kimi-code/config.toml` a compressed Kimi launch reads:
+/// the managed provider's persisted OAuth host and base URL, either
+/// `None` when the file does not parse or names none -- the defaults
+/// stand then.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KimiConfig {
+    /// `[providers."managed:kimi-code".oauth] oauth_host`.
+    pub oauth_host: Option<String>,
+    /// `[providers."managed:kimi-code"] base_url`.
+    pub base_url: Option<String>,
+}
+
+/// The `KimiConfig` of a config.toml's text.
+pub fn kimi_config(text: &str) -> KimiConfig {
+    let Ok(config) = toml::from_str::<toml::Value>(text) else { return KimiConfig::default() };
+    let Some(provider) = config.get("providers").and_then(|p| p.get("managed:kimi-code")) else {
+        return KimiConfig::default();
+    };
+    KimiConfig {
+        oauth_host: provider
+            .get("oauth")
+            .and_then(|oauth| oauth.get("oauth_host"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_string),
+        base_url: provider.get("base_url").and_then(toml::Value::as_str).map(str::to_string),
+    }
+}
+
+/// Fills the credential slot a routed kimi will read, from the human's
+/// own login.
+///
+/// With `KIMI_CODE_BASE_URL` set kimi re-derives the slot it reads
+/// (`kimi_credential_slot`), and a launch whose derived slot is empty
+/// fails authentication exactly as a logged-out kimi does. So the
+/// human's existing credential is copied under the derived name. A
+/// copy, never a move or an edit: the human's file stays as it is, and
+/// an existing derived slot is never overwritten -- kimi may have
+/// refreshed the token in it. The source is the slot the persisted
+/// configuration itself derives when it names a base URL, else the
+/// only `kimi-code-env-*.json` there is; with none, or several to
+/// guess between, nothing is written, and the launch fails the way an
+/// Fills the credential slot a routed kimi will read, from the freshest
+/// of the human's own logins.
+///
+/// With `KIMI_CODE_BASE_URL` set kimi re-derives the slot it reads
+/// (`kimi_credential_slot`), and a launch whose derived slot is empty
+/// fails authentication exactly as a logged-out kimi does. The slot
+/// names the session-tagged base URL, so every session reads its own
+/// file, copied from a login slot at launch time.
+///
+/// A copied token dies fast: the managed grant lives 15 minutes
+/// (`expires_in: 900`, watched live) and refreshing rotates the
+/// refresh token, so any copy older than the newest refresh is a dead
+/// grant, and kimi WIPES a slot whose refresh is rejected -- under the
+/// old never-overwrite rule that dead grant stayed dead forever, and
+/// the launch failed with `OAuthUnauthorizedError: Stored token ... was
+/// rejected; re-login required` no matter how healthy the human's own
+/// login was (bug-kimi-compressed-auth, sessions of 2026-10-06). The
+/// rules now:
+///
+/// - The source is the freshest credential on disk (largest
+///   `expires_at`), not a guess at which slot the login flow wrote:
+///   with a slot per session there is always more than one, and the
+///   persisted configuration's slot is not necessarily the newest.
+/// - A target slot at least as fresh as every source (kimi refreshed
+///   it itself) is left alone.
+/// - Anything older -- a wiped slot above all -- is overwritten with
+///   the fresh copy. A copy, never a move or an edit: the human's
+///   file stays as it is.
+/// - With no live credential anywhere, nothing is written: the launch
+///   fails the way a genuinely logged-out kimi's does.
+pub fn provision_kimi_credential(
+    credentials: &Path,
+    oauth_host: &str,
+    routed_base: &str,
+    persisted_base: Option<&str>,
+) {
+    let target = credentials.join(format!("{}.json", kimi_credential_slot(oauth_host, routed_base)));
+    let Some(source) = freshest_kimi_credential(credentials, oauth_host, persisted_base) else { return };
+    let target_freshness = kimi_credential_freshness(&target);
+    if target_freshness > 0 && target_freshness >= kimi_credential_freshness(&source) {
+        return;
+    }
+    let _ = std::fs::copy(&source, &target);
+}
+
+/// The freshest `kimi-code-env-*.json` in `credentials` (largest
+/// `expires_at`). The persisted configuration's slot is a candidate
+/// like any other -- it is where the login flow wrote, not necessarily
+/// where the newest token lives; on a freshness tie it wins, being the
+/// slot a fresh login would have written. `None` when no file holds a
+/// non-empty token.
+fn freshest_kimi_credential(
+    credentials: &Path,
+    oauth_host: &str,
+    persisted_base: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let persisted = persisted_base
+        .map(|base| credentials.join(format!("{}.json", kimi_credential_slot(oauth_host, base))))
+        .filter(|path| path.is_file());
+    let mut best: Option<(u64, std::path::PathBuf)> = None;
+    let mut consider = |path: std::path::PathBuf| {
+        let fresh = kimi_credential_freshness(&path);
+        if fresh > 0 && best.as_ref().is_none_or(|(freshest, _)| fresh > *freshest) {
+            best = Some((fresh, path));
+        }
+    };
+    if let Some(path) = persisted {
+        consider(path);
+    }
+    if let Ok(entries) = std::fs::read_dir(credentials) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                name.starts_with("kimi-code-env-") && name.ends_with(".json")
+            }) {
+                consider(path);
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+/// How fresh the token in `path` is: its `expires_at` epoch seconds. 0
+/// for a missing, unreadable, unparseable or WIPED file (kimi empties
+/// the token fields when a refresh is rejected) -- a dead grant, the
+/// thing a fresh copy cures. A file with a token but no clock ranks 1:
+/// below any real timestamp, above a wipe.
+fn kimi_credential_freshness(path: &Path) -> u64 {
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else { return 0 };
+    if doc
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return 0;
+    }
+    doc.get("expires_at").and_then(serde_json::Value::as_u64).unwrap_or(1)
 }
 
 /// Whether `url` is the tagged URL a recipe gave `session_id`, on any
@@ -887,6 +1092,17 @@ pub fn inherited_routing(
         removed.push((OPENAI_BASE_URL, None));
     }
 
+    // Kimi's, and the OAuth host with it: gavin only ever sets the host
+    // beside its own base URL (the credential slot is derived from the
+    // pair), so the host goes when and only when the URL was gavin's.
+    // A host the human exported alone stays -- kimi reads it on every
+    // run, routed or not, and removing it would re-derive the slot of
+    // an unrouted launch.
+    if inherited(KIMI_BASE_URL).is_some_and(|url| is_tagged_for(&url, launcher)) {
+        removed.push((KIMI_BASE_URL, None));
+        removed.push((KIMI_OAUTH_HOST, None));
+    }
+
     // opencode's.
     if let Some(kept) = inherited(OPENCODE_CONFIG)
         .and_then(|config| without_opencode_recipe(&config, launcher))
@@ -965,6 +1181,7 @@ mod tests {
             opencode_plugin: None,
             without_headroom: false,
             gemini_api_key: false,
+            kimi_oauth_host: KIMI_DEFAULT_OAUTH_HOST,
         }
     }
 
@@ -1175,10 +1392,270 @@ mod tests {
         let cursor = decide(spawned("agent --approve-mcps --trust"));
         let codex = decide(spawned("codex 'fix it'"));
         let gemini = decide(spawned("gemini 'fix it'"));
+        let kimi = decide(spawned("kimi -p 'fix it'"));
 
         assert_eq!(cursor, Decision::Uncompressed(Some(Reason::UnsupportedAgent)));
         assert!(codex.compressed());
         assert_eq!(gemini, Decision::Uncompressed(Some(Reason::NoRecipe)));
+        assert!(kimi.compressed());
+    }
+
+    fn kimi() -> Facts<'static> {
+        Facts {
+            launch: Launch::Profile("kimi-code"),
+            command: Some("kimi -p 'Read the card'"),
+            kimi_oauth_host: "https://auth.kimi.ai",
+            ..facts()
+        }
+    }
+
+    /// The verified shape (2.1.1): kimi appends `/chat/completions` to
+    /// the base as-is, so it is handed the same `/p/<id>/v1` an OpenAI
+    /// client is, plus the host its credential slot is derived from.
+    #[test]
+    fn the_kimi_recipe_is_environment_alone_with_the_oauth_host_beside_the_base_url() {
+        let decision = decide(kimi());
+
+        assert!(decision.compressed());
+        assert_eq!(
+            env_of(&decision),
+            [("KIMI_CODE_BASE_URL", OPENAI_URL), ("KIMI_CODE_OAUTH_HOST", "https://auth.kimi.ai")]
+        );
+        assert_eq!(decision.command(), None, "Kimi is routed by environment alone");
+    }
+
+    /// A configuration that cannot be read leaves the derivation's own
+    /// default standing.
+    #[test]
+    fn a_kimi_launch_with_no_readable_oauth_host_is_handed_the_default() {
+        let decision = decide(Facts { kimi_oauth_host: KIMI_DEFAULT_OAUTH_HOST, ..kimi() });
+
+        assert_eq!(
+            env_of(&decision),
+            [("KIMI_CODE_BASE_URL", OPENAI_URL), ("KIMI_CODE_OAUTH_HOST", KIMI_DEFAULT_OAUTH_HOST)]
+        );
+    }
+
+    /// The derivation, pinned to the slot a live install persisted for
+    /// this host and base URL (`~/.kimi-code/config.toml`'s
+    /// `oauth/kimi-code-env-0e4f99c69cc27850`).
+    #[test]
+    fn the_credential_slot_is_derived_exactly_as_kimi_derives_it() {
+        assert_eq!(
+            kimi_credential_slot("https://auth.kimi.ai", "https://api.kimi.ai/coding/v1"),
+            "kimi-code-env-0e4f99c69cc27850"
+        );
+        // The key order is part of the formula: hashed as written,
+        // `{"oauthHost":…,"baseUrl":…}`, not sorted.
+        assert_ne!(
+            kimi_credential_slot("https://auth.kimi.ai", "https://api.kimi.ai/coding/v1"),
+            kimi_credential_slot("https://api.kimi.ai/coding/v1", "https://auth.kimi.ai")
+        );
+    }
+
+    const KIMI_CONFIG: &str = r#"
+default_model = "kimi-code/k3"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.ai/coding/v1"
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+oauth_host = "https://auth.kimi.ai"
+"#;
+
+    #[test]
+    fn the_managed_providers_persisted_host_and_base_url_are_read() {
+        assert_eq!(
+            kimi_config(KIMI_CONFIG),
+            KimiConfig {
+                oauth_host: Some("https://auth.kimi.ai".to_string()),
+                base_url: Some("https://api.kimi.ai/coding/v1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_config_that_names_nothing_or_does_not_parse_leaves_the_defaults() {
+        assert_eq!(kimi_config("not toml ["), KimiConfig::default());
+        assert_eq!(kimi_config(""), KimiConfig::default());
+        assert_eq!(kimi_config("[providers.other]\ntype = \"x\""), KimiConfig::default());
+        // Half a configuration still gives its half.
+        assert_eq!(
+            kimi_config("[providers.\"managed:kimi-code\"]\nbase_url = \"https://api.kimi.com/coding/v1\""),
+            KimiConfig { oauth_host: None, base_url: Some("https://api.kimi.com/coding/v1".to_string()) }
+        );
+    }
+
+    /// What a launch provisions: the slot the routed base URL derives,
+    /// filled from the slot the human's own login is filed under.
+    #[test]
+    fn the_derived_slot_is_filled_from_the_persisted_logins_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path();
+        let login = credentials.join("kimi-code-env-0e4f99c69cc27850.json");
+        std::fs::write(&login, r#"{"access_token":"a"}"#).unwrap();
+
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+
+        let derived =
+            credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.ai", "http://127.0.0.1:41873/p/s/v1")));
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"a"}"#);
+        assert_eq!(std::fs::read_to_string(&login).unwrap(), r#"{"access_token":"a"}"#, "a copy, never a move");
+    }
+
+    /// Kimi may have refreshed the token in a derived slot; a later
+    /// launch must not put a staler copy back over it.
+    #[test]
+    fn a_refreshed_target_keeps_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path();
+        std::fs::write(
+            credentials.join("kimi-code-env-0e4f99c69cc27850.json"),
+            r#"{"access_token":"old","expires_at":100}"#,
+        )
+        .unwrap();
+        let derived =
+            credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.ai", "http://127.0.0.1:41873/p/s/v1")));
+        std::fs::write(&derived, r#"{"access_token":"refreshed","expires_at":200}"#).unwrap();
+
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"refreshed","expires_at":200}"#);
+    }
+
+    /// The failure this provisioning exists to prevent (live sessions of
+    /// 2026-10-06): the target slot's copy is older than some other slot
+    /// on disk -- refresh rotation killed it, or kimi wiped it when the
+    /// refresh was rejected. The freshest credential wins no matter
+    /// which slot it lives in; the persisted configuration's slot is a
+    /// candidate, not the answer.
+    #[test]
+    fn a_stale_or_wiped_target_gets_the_freshest_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path();
+        // The persisted configuration's slot: an OLD token.
+        std::fs::write(
+            credentials.join("kimi-code-env-0e4f99c69cc27850.json"),
+            r#"{"access_token":"old","expires_at":100}"#,
+        )
+        .unwrap();
+        // Another session's slot: the NEWEST token on disk.
+        std::fs::write(
+            credentials.join("kimi-code-env-deadbeefdeadbeef.json"),
+            r#"{"access_token":"newest","expires_at":300}"#,
+        )
+        .unwrap();
+        let derived =
+            credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.ai", "http://127.0.0.1:41873/p/s/v1")));
+
+        // A wiped slot (kimi empties the file when the refresh is
+        // rejected) is filled from the freshest credential...
+        std::fs::write(&derived, r#"{"access_token":"","expires_at":0}"#).unwrap();
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+        assert_eq!(std::fs::read_to_string(&derived).unwrap(), r#"{"access_token":"newest","expires_at":300}"#);
+
+        // ...and so is a merely stale one.
+        std::fs::write(&derived, r#"{"access_token":"old","expires_at":150}"#).unwrap();
+        provision_kimi_credential(
+            credentials,
+            "https://auth.kimi.ai",
+            "http://127.0.0.1:41873/p/s/v1",
+            Some("https://api.kimi.ai/coding/v1"),
+        );
+        assert_eq!(std::fs::read_to_string(&derived).unwrap(), r#"{"access_token":"newest","expires_at":300}"#);
+    }
+
+    /// A configuration that cannot be read still leaves the one
+    /// credential there is to copy.
+    #[test]
+    fn with_nothing_persisted_the_single_credential_there_is_is_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path();
+        std::fs::write(credentials.join("kimi-code-env-deadbeefdeadbeef.json"), r#"{"access_token":"a"}"#).unwrap();
+
+        provision_kimi_credential(credentials, "https://auth.kimi.com", "http://127.0.0.1:41873/p/s/v1", None);
+
+        let derived =
+            credentials.join(format!("{}.json", kimi_credential_slot("https://auth.kimi.com", "http://127.0.0.1:41873/p/s/v1")));
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"a"}"#);
+    }
+
+    /// With nothing live to copy nothing is written: the launch fails
+    /// the way an unauthenticated kimi's does, rather than with someone
+    /// else's login. Several files are no longer a reason to give up --
+    /// the freshest wins -- but several EMPTY ones copy nothing.
+    #[test]
+    fn with_no_live_credential_nothing_is_written() {
+        let empty = tempfile::tempdir().unwrap();
+        provision_kimi_credential(empty.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
+        assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
+
+        let several = tempfile::tempdir().unwrap();
+        for slot in ["kimi-code-env-aaaaaaaaaaaaaaaa.json", "kimi-code-env-bbbbbbbbbbbbbbbb.json"] {
+            std::fs::write(several.path().join(slot), "{}").unwrap();
+        }
+        provision_kimi_credential(several.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
+        assert_eq!(std::fs::read_dir(several.path()).unwrap().count(), 2, "wiped slots copy nothing");
+
+        let one_live = several.path().join("kimi-code-env-cccccccccccccccc.json");
+        std::fs::write(&one_live, r#"{"access_token":"live","expires_at":999}"#).unwrap();
+        provision_kimi_credential(several.path(), "https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1", None);
+        let derived =
+            several.path().join(format!("{}.json", kimi_credential_slot("https://auth.kimi.com", "http://127.0.0.1:1/p/s/v1")));
+        assert_eq!(std::fs::read_to_string(derived).unwrap(), r#"{"access_token":"live","expires_at":999}"#);
+    }
+
+    #[test]
+    fn a_daemon_started_from_a_compressed_kimi_session_does_not_pass_its_routing_on() {
+        let env = [
+            ("GAVIN_SESSION_ID", "launcher-1"),
+            ("KIMI_CODE_BASE_URL", "http://127.0.0.1:41873/p/launcher-1/v1"),
+            ("KIMI_CODE_OAUTH_HOST", "https://auth.kimi.ai"),
+        ];
+
+        assert_eq!(
+            inherited_routing(inherited(&env)),
+            [("KIMI_CODE_BASE_URL", None), ("KIMI_CODE_OAUTH_HOST", None)]
+        );
+    }
+
+    /// The host leaves with gavin's base URL and nowhere else: exported
+    /// alone or beside the human's own routing it is the human's, and
+    /// kimi reads it on every run, routed or not.
+    #[test]
+    fn an_oauth_host_that_is_not_beside_gavins_base_url_is_left_alone() {
+        let alone = [("GAVIN_SESSION_ID", "launcher-1"), ("KIMI_CODE_OAUTH_HOST", "https://auth.kimi.ai")];
+        let their_routing = [
+            ("GAVIN_SESSION_ID", "launcher-1"),
+            ("KIMI_CODE_BASE_URL", "https://proxy.example.com/coding/v1"),
+            ("KIMI_CODE_OAUTH_HOST", "https://auth.kimi.ai"),
+        ];
+        let their_tag = [
+            ("GAVIN_SESSION_ID", "launcher-1"),
+            ("KIMI_CODE_BASE_URL", "http://127.0.0.1:41873/p/launcher-10/v1"),
+            ("KIMI_CODE_OAUTH_HOST", "https://auth.kimi.ai"),
+        ];
+
+        for env in [&alone[..], &their_routing[..], &their_tag[..]] {
+            assert_eq!(inherited_routing(inherited(env)), [], "{env:?}");
+        }
     }
 
     #[test]
@@ -1246,6 +1723,7 @@ mod tests {
             Agent::Gemini,
             Agent::Cursor,
             Agent::Opencode,
+            Agent::Kimi,
             Agent::Custom(ApiFamily::Anthropic),
             Agent::Custom(ApiFamily::OpenAi),
             Agent::Other,
@@ -1387,6 +1865,7 @@ mod tests {
         assert_eq!(Agent::from_command("cursor-agent -p"), Some(Agent::Cursor));
         assert_eq!(Agent::from_command("opencode --prompt='x'"), Some(Agent::Opencode));
         assert_eq!(Agent::from_command("gemini"), Some(Agent::Gemini));
+        assert_eq!(Agent::from_command("/opt/homebrew/bin/kimi -p 'x'"), Some(Agent::Kimi));
     }
 
     const CODEX_FLAG: &str =
@@ -1685,10 +2164,12 @@ mod tests {
     }
 
     #[test]
-    fn an_api_family_counts_only_on_the_custom_profile() {
+    fn an_api_family_counts_on_any_non_stock_profile() {
         assert_eq!(Launch::requested(Some("custom"), Some("anthropic")), Launch::Custom(ApiFamily::Anthropic));
-        assert_eq!(Launch::requested(Some("custom"), Some(" openai ")), Launch::Custom(ApiFamily::OpenAi));
+        assert_eq!(Launch::requested(Some("custom-agent"), Some(" openai ")), Launch::Custom(ApiFamily::OpenAi));
+        assert_eq!(Launch::requested(Some("my-bot"), Some("anthropic")), Launch::Custom(ApiFamily::Anthropic));
         assert_eq!(Launch::requested(Some("claude-code"), Some("openai")), Launch::Profile("claude-code"));
+        assert_eq!(Launch::requested(Some("kimi-code"), Some("anthropic")), Launch::Profile("kimi-code"));
         assert_eq!(Launch::requested(None, Some("anthropic")), Launch::Shell);
     }
 

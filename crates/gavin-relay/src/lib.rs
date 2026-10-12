@@ -15,9 +15,13 @@
 //! `protocol::relay`, which is the contract three programs are written
 //! against. This crate is two of them: `server` is the Relay, and
 //! `client` is the blocking dial the daemon and the test Device share.
+//! `direct` is the Relay deleted (ADR 0009): a daemon answering a Device
+//! itself, and the pinned dial the test Device makes to it.
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod direct;
 #[cfg(feature = "server")]
 pub mod server;
 

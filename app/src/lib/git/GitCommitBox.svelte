@@ -114,9 +114,11 @@
     margin: 0;
     padding: 6px 8px;
     border-radius: 4px;
-    background: var(--warn-bg, rgba(210, 150, 0, 0.12));
-    color: var(--warn-fg, #b8860b);
-    font-size: 11px;
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    /* 11px; on a phone, times its text size (the Companion's
+       `--text-scale`, which the desk never sets). */
+    font-size: calc(11px * var(--text-scale, 1));
     line-height: 1.4;
   }
 

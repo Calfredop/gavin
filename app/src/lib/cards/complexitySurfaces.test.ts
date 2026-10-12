@@ -119,23 +119,42 @@ describe("the card surfaces", () => {
 });
 
 describe("the settings panels", () => {
+  const PANEL = "AgentPrimaryPanel.svelte";
+
   it.each([
     ["the workspace panel", WORKSPACE_PANEL],
     ["the app panel", APP_PANEL],
-  ])("%s renders the shared table rather than its own", (_name, file) => {
-    expect(source(file)).toContain("<ComplexityTable");
-    expect(source(file)).toContain('import ComplexityTable from "$lib/cards/ComplexityTable.svelte"');
+  ])("%s draws the table through the one per-agent panel, not its own copy", (_name, file) => {
+    expect(source(file)).toContain("<AgentPrimaryPanel");
+    expect(source(file)).not.toContain("<ComplexityTable");
   });
 
-  it("gives the workspace panel the app table to fall through to", () => {
-    // Without `inherited` every row would read "This workspace's agent",
-    // which is a lie about any level the app has attributed.
-    expect(source(WORKSPACE_PANEL)).toContain("inherited={$agentDefaultsStore.complexity}");
+  it("renders the shared table inside the per-agent panel", () => {
+    expect(source(PANEL)).toContain("<ComplexityTable");
+    expect(source(PANEL)).toContain('import ComplexityTable from "$lib/cards/ComplexityTable.svelte"');
+  });
+
+  it("keys the table by the agent it belongs to", () => {
+    // Complexity is per primary agent: the table shown is the one for the
+    // agent the panel was pointed at, never one table for every agent.
+    expect(source(PANEL)).toContain("primaryView(scope, primaryId, defaults, ws)");
+    expect(source("agentPrimary.ts")).toContain("complexityTableForPrimary(defaults.complexityTables, primaryId)");
+    expect(source("agentPrimary.ts")).toContain(
+      "withComplexityTableForPrimary(defaults.complexityTables, primaryId, table)"
+    );
+  });
+
+  it("lets a workspace follow the app table until it takes one of its own", () => {
+    // Without the toggle a workspace would silently freeze a copy of the
+    // app-wide table into itself the first time anybody looked at it.
+    expect(source(PANEL)).toContain("Give this workspace its own complexity table for {label}");
+    expect(source(PANEL)).toMatch(/<ComplexityTable \{profiles\} table=\{view\.appTable\} readonly/);
   });
 
   it("writes a workspace row to the workspace and an app row to the app", () => {
-    expect(source(WORKSPACE_PANEL)).toContain("setWorkspaceComplexityTable(workspaceId");
-    expect(source(APP_PANEL)).toContain("setAgentDefaults({ ...$agentDefaultsStore, complexity })");
+    expect(source("agentPrimary.ts")).toContain("setWorkspaceComplexityTable(workspaceId, primaryId, table)");
+    expect(source("agentPrimary.ts")).toContain("setAgentDefaults({");
+    expect(source(PANEL)).toContain("saveComplexityTable(scope, workspaceId, primaryId, defaults, next)");
   });
 
   it("clears a row rather than storing an empty one", () => {
@@ -143,14 +162,25 @@ describe("the settings panels", () => {
     // which is the opposite of what clearing a row means.
     expect(source(TABLE)).toContain("isAttributed(next) ? next : null");
   });
+
+  it("offers an advisor beside the effort, suggesting what the row's agent can take", () => {
+    expect(source(TABLE)).toContain("typeAdvisor(level, e.currentTarget.value)");
+    expect(source(TABLE)).toContain("advisorPresets(profiles, entry.profile)");
+    // A profile with no advisor flag keeps the box clearable, not hidden.
+    expect(source(TABLE)).toContain("advisorUnsupported(level) && !(entry.advisor ?? \"\").trim()");
+  });
 });
 
 describe("the custom agent", () => {
-  it("offers both halves app-wide, since neither is any use alone", () => {
-    // A command with no flag is an agent gavin cannot vary the model of,
-    // and a flag with no command names nothing.
-    expect(source(APP_PANEL)).toContain("customCommand:");
-    expect(source(APP_PANEL)).toContain("customModelFlag:");
+  it("edits named customs on both panels", () => {
+    // The old single customCommand/customModelFlag fields are gone. The
+    // app panel gives each custom its own per-agent tab (command + flags +
+    // API family through updateCustomProfile); the workspace panel edits
+    // its locals through the shared Customs editor.
+    expect(source(APP_PANEL)).toContain("updateCustomProfile(");
+    expect(source(APP_PANEL)).toContain("customProfiles: updateCustomProfile");
+    expect(source(WORKSPACE_PANEL)).toContain("CustomsEditor");
+    expect(source(WORKSPACE_PANEL)).toContain("setWorkspaceCustomProfiles");
   });
 
   it("gates the workspace's own flag on the daemon that has to store it", () => {

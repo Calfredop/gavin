@@ -27,10 +27,19 @@ snow = "0.10.0"
 # none of the Relay itself -- the daemon runs no async runtime, and with
 # `server` off this brings none in.
 gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"] }
+# The direct listener's certificate (`direct.rs`, ADR 0009): minted once,
+# self-signed, and trusted by a pin rather than a CA. The version and
+# provider seam 1 already builds for its Relay's certificate.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # Verifying a Device's hardware signature (`unlock.rs`): ECDSA over
 # P-256. Already built, at this version, under the TLS the dial above
 # runs on, so naming it here adds nothing to what is compiled.
 ring = "0.17"
+# The per-session browser (`browser/`): a blocking websocket, both ends,
+# to speak CDP to the headless shell and to proxy the Playwright MCP's
+# connection to it. The version and feature gavin-relay already builds,
+# so naming it here adds nothing to what is compiled.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 # Companion notification AEAD (ChaCha20-Poly1305). Same construction the
 # phone's Notification Service Extension / Android data-message handler
 # will open; the Push gateway never holds the key (security 06 §5.6).
@@ -46,6 +55,11 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # version and per-OS feature reasoning as app/src-tauri/Cargo.toml --
 # see the two target blocks below.
 trash = { version = "5", default-features = false }
+# Adopted-memory retrieval (`memory_index.rs`): BGE-small, quantized, run
+# locally through ONNX Runtime. rustls on both downloads for the reason
+# ureq above uses it -- no system OpenSSL to find on any of the three
+# OSes -- and no image models, which this never embeds.
+fastembed = { version = "7.1", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -54,6 +68,10 @@ tempfile = "3"
 gavin-relay = { path = "../gavin-relay", features = ["server", "client"] }
 companion-core = { path = "../companion-core", features = ["test-device"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# The notification fixture's ciphertexts are base64, as the phone's push
+# carries them (`test-fixtures/companion-notify`). The version protocol
+# already builds, so this adds nothing to what is compiled.
+base64 = "0.22"
 
 # `proc.rs` reaches for libc on the two unix arms and for Win32 on the
 # third; neither exists on the other's target, and both are absent from

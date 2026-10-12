@@ -29,10 +29,21 @@ const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
 
 /// A path `Command::new` can be given for `name`, or `None` when nothing
 /// on `PATH` answers to it.
+///
+/// `PATH` here is the app's own plus the well-known agent install
+/// directories it lacks (`protocol::bin_dirs`) -- the same directories
+/// the daemon adds when it starts an agent, so "Kimi Code: found" in the
+/// setup wizard means a session will start it. A Dock-launched app's
+/// `PATH` has no `~/.kimi-code/bin` or `~/.opencode/bin`.
 pub fn resolve(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH");
+    let home = crate::home::home_dir();
+    let dirs = protocol::bin_dirs::well_known_bin_dirs(home.as_deref(), cfg!(windows));
+    let path = protocol::bin_dirs::path_with_bin_dirs(path.as_deref(), &dirs, cfg!(windows), |p| p.is_dir())
+        .or(path);
     resolve_with(
         name,
-        std::env::var_os("PATH"),
+        path,
         std::env::var_os("PATHEXT"),
         cfg!(windows),
         |p| p.is_file(),

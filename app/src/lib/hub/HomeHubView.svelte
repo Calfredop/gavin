@@ -5,15 +5,25 @@
     switchWorkspaceView,
     agentProfilesStore,
     openWizard,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     setHomeAgentShare,
     trustedAgentConfigs,
+    wizardWorkspaceId,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { setupProgress, SETUP_STEPS } from "$lib/workspace/setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { UNKNOWN_STATUS, type AgentSkillsMark, type AgentSkillsStatus } from "$lib/agents/agentSkills";
   import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
+  import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
+  import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
+  import {
+    loadPlaywrightMark,
+    toPlaywrightReading,
+    workspacePlaywrightReading,
+    type PlaywrightReading,
+  } from "$lib/agents/playwrightSetup";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
@@ -56,9 +66,23 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
+  // The two strings the read effect below keys on. Read straight off
+  // `agentCfg` there, the effect depended on the whole object, and
+  // resolveAgentConfig builds a new one whenever any store feeding it
+  // emits -- which a busy agent's status pushes do about once a second.
+  // Every rebuild re-ran the reads, which put the setup inputs back to
+  // unknown, which drew and removed the "Finish setting up" banner, which
+  // resized the terminal under it. Strings compare by value, so these only
+  // propagate when the file or command actually changed.
+  const agentFile = $derived(agentCfg.file);
+  const agentCommand = $derived(agentCfg.command);
   // The excerpt has to come from the file the workspace actually points
   // at, or a project with its own docs/PRD.md shows an empty tile beside
   // a PRD tab full of prose.
@@ -78,16 +102,52 @@
   let prdBody = $state<string | null | undefined>(undefined);
   let agentFileBody = $state<string | null | undefined>(undefined);
   // Same unknown-until-read rule for the third input: the banner counts
-  // the Superpowers step too, and a check still running must not be
+  // the agent skills step too, and a check still running must not be
   // rendered as a step left undone.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
   // And the Headroom step's reading, which is the machine's rather than
   // this root's: shared, asked once and kept, so a visit to this tab costs
   // no round trip once it has landed. Unknown until then, for the reason
   // the two above are.
   ensureHeadroomReading();
   const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
+  // The Memory step's reading is this root's, shared with the wizard and
+  // asked once per root; unknown until then, for the reason the ones
+  // above are. "Not now" is a synchronous read off this machine.
+  const memory = $derived(workspaceMemoryReading(root ? $memoryReadings[root] : undefined, ws));
+  const memorySkipped = $derived(root ? loadMemorySkipped(root) : false);
+  $effect(() => {
+    if (root && !ws?.ssh) ensureMemoryReading(root);
+  });
+  // The Playwright step: the human's answer first, the three checks only
+  // without one, as the agent skills read below does. Both are taken
+  // again when the wizard opens or closes -- this panel stays mounted
+  // under it, and the step's answers are given there, so without that a
+  // "not now" would leave the banner up until the next visit. The last
+  // reading stays up while the new one is asked, so the banner does not
+  // blink; a different root drops it, since it says nothing about this one.
+  const isSsh = $derived(Boolean(ws?.ssh));
+  const playwrightMark = $derived(
+    (void $wizardWorkspaceId, root ? loadPlaywrightMark(root) : undefined)
+  );
+  let playwrightAsked = $state<PlaywrightReading | undefined>(undefined);
+  const playwright = $derived(workspacePlaywrightReading(playwrightAsked, ws));
+  let playwrightRoot: string | null = null;
+  let playwrightToken = 0;
+  $effect(() => {
+    const r = root;
+    void $wizardWorkspaceId;
+    const mine = ++playwrightToken;
+    if (r !== playwrightRoot) {
+      playwrightAsked = undefined;
+      playwrightRoot = r;
+    }
+    if (!r || isSsh || loadPlaywrightMark(r)) return;
+    void toPlaywrightReading(backend.playwrightStatus(r)).then((res) => {
+      if (mine === playwrightToken) playwrightAsked = res;
+    });
+  });
 
   const setup = $derived(
     setupProgress({
@@ -96,8 +156,8 @@
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
-      superpowers,
-      superpowersMark,
+      agentSkills,
+      agentSkillsMark,
       // Read off the workspace record rather than from git: the step's
       // evidence is a recorded answer, so the banner needs no extra round
       // trip on every visit to this tab -- and `git` is outside
@@ -106,7 +166,11 @@
       // Same shape, same reason -- see the git field above.
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
       headroomReading: headroom,
+      memoryReading: memory,
+      memorySkipped,
       headroomAsked: Boolean(ws?.headroomAsked),
+      playwright,
+      playwrightMark,
     })
   );
 
@@ -152,8 +216,8 @@
     // flight, whose answer belongs to the root we just left.
     prdBody = undefined;
     agentFileBody = undefined;
-    superpowers = undefined;
-    superpowersMark = undefined;
+    agentSkills = undefined;
+    agentSkillsMark = undefined;
     const mine = ++readToken;
     if (!r || !treeSettled) return;
     void backend
@@ -171,7 +235,7 @@
         prdBody = null;
       });
     void backend
-      .readFileForViewer(`${r}/${agentCfg.file}`)
+      .readFileForViewer(`${r}/${agentFile}`)
       .then((res) => {
         if (mine !== readToken) return;
         agentFileExists = res.exists;
@@ -194,19 +258,19 @@
     // back while any input is pending, so a read that threw must still
     // land an answer or the banner never appears again.
     void backend
-      .getSuperpowersMarks()
-      .catch(() => ({}) as Record<string, SuperpowersMark>)
+      .getAgentSkillsMarks()
+      .catch(() => ({}) as Record<string, AgentSkillsMark>)
       .then((marks) => {
         if (mine !== readToken) return;
         const recorded = marks[r];
-        superpowersMark = recorded;
+        agentSkillsMark = recorded;
         if (recorded) return;
         return backend
-          .superpowersStatus(r, agentCfg.command)
+          .agentSkillsStatus(r, agentCommand)
           .catch(() => UNKNOWN_STATUS)
           .then((res) => {
             if (mine !== readToken) return;
-            superpowers = res;
+            agentSkills = res;
           });
       });
     // One-shot git status for the tile — no watcher here; the Git tab

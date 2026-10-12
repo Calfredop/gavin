@@ -31,7 +31,16 @@ use std::time::SystemTime;
 
 use tauri::Manager;
 
-use crate::agent_setup::{profile_by_id, TokenLog};
+use crate::agent_setup::{stock_profile_by_id, TokenLog};
+
+/// The transcript layout a profile id's conversations are read through.
+/// Named customs answer None even though `profile_by_id` would fall back
+/// to claude-code: a custom is not claude, and reading under claude's
+/// log root would attribute claude's conversations (and their token
+/// costs) to it.
+fn token_log_for(profile_id: &str) -> Option<TokenLog> {
+    stock_profile_by_id(profile_id).and_then(|p| p.token_log)
+}
 
 /// How deep the codex rollout walk goes. Its sessions are filed
 /// `sessions/<year>/<month>/<day>/rollout-*.jsonl`; the same bound
@@ -160,7 +169,7 @@ fn conversation_log_blocking(profile_id: &str, conversation_id: Option<String>) 
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
         return ConversationLog::Unknown;
     };
-    let Some(log) = profile_by_id(profile_id).token_log else {
+    let Some(log) = token_log_for(profile_id) else {
         return ConversationLog::Unknown;
     };
     conversation_log_under(log, log_root(log).as_deref(), conversation_id.trim())
@@ -195,6 +204,7 @@ fn transcript_path(log: TokenLog, root: &Path, conversation_id: &str) -> Option<
     match log {
         TokenLog::ClaudeSessionJsonl => claude_transcript(root, conversation_id),
         TokenLog::CodexRollout => codex_rollout(root, conversation_id),
+        TokenLog::KimiWireJsonl => kimi_transcript(root, conversation_id),
     }
 }
 
@@ -229,7 +239,7 @@ fn card_run_tokens_blocking(cache: &TokenCache, profile_id: &str, conversation_i
             reason: "gavin did not record a conversation id for this run".to_string(),
         };
     };
-    let Some(log) = profile_by_id(profile_id).token_log else {
+    let Some(log) = token_log_for(profile_id) else {
         return TokenReport::Unsupported {
             reason: format!("gavin cannot read {profile_id}'s token counts"),
         };
@@ -245,21 +255,41 @@ fn card_run_tokens_blocking(cache: &TokenCache, profile_id: &str, conversation_i
         };
     };
 
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+    // kimi writes one wire per AGENT of the session (`main` and the
+    // `agent-N` subagents it spawned), and a run's cost is ALL of them:
+    // subagent tokens bill to the same account, so summing only main's
+    // wire would under-read exactly the runs that spent the most. Every
+    // other route is one file. The cache clock is the NEWEST wire's
+    // mtime, so a live run whose subagent is still writing still moves.
+    let paths = match log {
+        TokenLog::KimiWireJsonl => kimi_session_wires(&path),
+        _ => vec![path],
+    };
+    let mtime = paths
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .max()
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     if let Some((seen, report)) = cache.0.lock().unwrap().get(&conversation_id) {
         if *seen == mtime {
             return report.clone();
         }
     }
 
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return TokenReport::Unavailable {
-            reason: "the agent's transcript for this run could not be read".to_string(),
+    let mut text = String::new();
+    for p in &paths {
+        let Ok(part) = std::fs::read_to_string(p) else {
+            return TokenReport::Unavailable {
+                reason: "the agent's transcript for this run could not be read".to_string(),
+            };
         };
-    };
+        text.push_str(&part);
+        text.push('\n');
+    }
     let report = match log {
         TokenLog::ClaudeSessionJsonl => claude_totals(&text),
         TokenLog::CodexRollout => codex_totals(&text),
+        TokenLog::KimiWireJsonl => kimi_totals(&text),
     };
     cache.0.lock().unwrap().insert(conversation_id, (mtime, report.clone()));
     report
@@ -284,6 +314,7 @@ fn log_root(log: TokenLog) -> Option<PathBuf> {
     match log {
         TokenLog::ClaudeSessionJsonl => claude_projects_dir(),
         TokenLog::CodexRollout => codex_sessions_dir(),
+        TokenLog::KimiWireJsonl => kimi_home_dir(),
     }
 }
 
@@ -344,6 +375,65 @@ fn walk_rollouts(dir: &Path, depth: usize, budget: &mut usize, visit: &mut impl 
             visit(&path);
         }
     }
+}
+
+fn kimi_home_dir() -> Option<PathBuf> {
+    Some(home_dir()?.join(".kimi-code"))
+}
+
+/// The wire of the conversation itself, resolved through kimi's global
+/// session index -- the ONLY map from the id gavin holds to the directory
+/// kimi chose, since `transcript_path` gets no cwd to slug a path from
+/// (see `TokenLog::KimiWireJsonl` in agent_setup.rs). main's wire wins
+/// where several agents wrote; any other agent's is accepted over nothing
+/// (a run that died at spawn may have written no main wire yet).
+fn kimi_transcript(root: &Path, conversation_id: &str) -> Option<PathBuf> {
+    let session = kimi_session_dir(root, conversation_id)?;
+    kimi_agent_wires(&session.join("agents")).into_iter().next()
+}
+
+/// The session directory the index maps this conversation to. The LAST
+/// matching line wins: kimi appends to the index rather than rewriting
+/// it. A session whose directory is gone resolves to nothing, which the
+/// callers read as missing, not as unreadable.
+fn kimi_session_dir(root: &Path, conversation_id: &str) -> Option<PathBuf> {
+    let index = std::fs::read_to_string(root.join("session_index.jsonl")).ok()?;
+    let mut found = None;
+    for line in index.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if record.get("sessionId").and_then(|v| v.as_str()) != Some(conversation_id) {
+            continue;
+        }
+        if let Some(dir) = record.get("sessionDir").and_then(|v| v.as_str()).map(str::trim) {
+            if !dir.is_empty() {
+                found = Some(PathBuf::from(dir));
+            }
+        }
+    }
+    found.filter(|d| d.is_dir())
+}
+
+/// Every `wire.jsonl` under an `agents/` directory, `main` first: main is
+/// the conversation itself, the `agent-N` wires its subagents. Sorted, so
+/// the answer does not depend on readdir order.
+fn kimi_agent_wires(agents: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(agents) else { return Vec::new() };
+    let mut files: Vec<PathBuf> =
+        entries.flatten().map(|e| e.path().join("wire.jsonl")).filter(|p| p.is_file()).collect();
+    files.sort_by_key(|p| {
+        let main = p.parent().and_then(|a| a.file_name()).and_then(|n| n.to_str()) == Some("main");
+        (!main, p.clone())
+    });
+    files
+}
+
+/// The session's wires, given ONE of them:
+/// `<session>/agents/<agent>/wire.jsonl`. A path that does not match that
+/// shape answers just itself.
+fn kimi_session_wires(wire: &Path) -> Vec<PathBuf> {
+    let Some(agents) = wire.parent().and_then(|p| p.parent()) else { return vec![wire.to_path_buf()] };
+    let files = kimi_agent_wires(agents);
+    if files.is_empty() { vec![wire.to_path_buf()] } else { files }
 }
 
 /// Sum a Claude Code transcript, ONE COUNT PER MESSAGE.
@@ -491,9 +581,101 @@ pub fn codex_totals(text: &str) -> TokenReport {
     }
 }
 
+/// Sum a kimi wire's `usage.record` events.
+///
+/// Unlike the other two routes there is nothing to deduplicate and no
+/// cumulative row to prefer: kimi writes one record per LLM REQUEST, each
+/// carrying that request's own counts -- verified live against kimi 2.1.1
+/// (2026-10-05): `{"type":"usage.record","model":"kimi-code/k3","usage":
+/// {"inputOther":...,"output":...,"inputCacheRead":...,
+/// "inputCacheCreation":...},"usageScope":"turn"}`.
+///
+/// Only scope `turn` is summed. It is the one verified scope; another (a
+/// cumulative one, say) added to the sum would double-count -- the exact
+/// mistake the codex route exists to avoid -- so an unverified scope is
+/// skipped, not guessed at. `text` may be SEVERAL wires concatenated
+/// (main plus its subagents): the sum does not care which file a line
+/// came from.
+pub fn kimi_totals(text: &str) -> TokenReport {
+    let mut totals = TokenTotals::default();
+    let mut models: Vec<String> = Vec::new();
+    let mut records = 0u64;
+
+    for line in text.lines() {
+        // The cheap pre-filter `claude_totals` documents: the type is
+        // re-checked after the parse, so a line merely QUOTING either
+        // string costs a parse and nothing else. The leading quote keeps
+        // "agent.turn.ended" -- a different event that fires for every
+        // turn end alongside turn.ended -- from matching here.
+        if !line.contains("\"usage.record\"") && !line.contains("\"turn.ended\"") {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match record.get("type").and_then(|v| v.as_str()) {
+            Some("usage.record") => {
+                if record.get("usageScope").and_then(|v| v.as_str()) != Some("turn") {
+                    continue;
+                }
+                let Some(usage) = record.get("usage").filter(|u| u.is_object()) else { continue };
+                let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                totals.input_tokens += count("inputOther");
+                totals.output_tokens += count("output");
+                totals.cache_read_tokens += count("inputCacheRead");
+                totals.cache_write_tokens += count("inputCacheCreation");
+                records += 1;
+                if let Some(model) = record.get("model").and_then(|v| v.as_str()) {
+                    if !models.iter().any(|m| m == model) {
+                        models.push(model.to_string());
+                    }
+                }
+            }
+            // turn.ended, never agent.turn.ended: both fire per turn, and
+            // counting both would double the denominator.
+            Some("turn.ended") => totals.turns += 1,
+            _ => {}
+        }
+    }
+
+    if records == 0 {
+        return TokenReport::Unavailable {
+            reason: "the agent's transcript for this run records no token count".to_string(),
+        };
+    }
+    totals.total_tokens =
+        totals.input_tokens + totals.output_tokens + totals.cache_read_tokens + totals.cache_write_tokens;
+    TokenReport::Ready { totals, models }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A named custom -- the migrated `custom-agent`, a user slug, a
+    /// workspace `local:` id -- has no transcript layout of gavin's own:
+    /// the read paths answer Unknown/Unsupported through `token_log_for`
+    /// (`stock_profile_by_id`), never `profile_by_id`'s claude-code
+    /// fallback, which would read claude's conversations and token costs
+    /// as the custom's.
+    #[test]
+    fn a_named_custom_has_no_token_log_and_is_not_read_under_claudes_root() {
+        for id in ["custom", "custom-agent", "my-bot", "local:desk"] {
+            assert!(token_log_for(id).is_none(), "{id} took claude's token log");
+            assert_eq!(
+                conversation_log_blocking(id, Some("conv-1".to_string())),
+                ConversationLog::Unknown,
+                "{id} read a conversation"
+            );
+            assert!(matches!(
+                card_run_tokens_blocking(&TokenCache::new(), id, Some("conv-1".to_string())),
+                TokenReport::Unsupported { .. }
+            ));
+        }
+        // And the stock rows still resolve, so the guard is the custom
+        // shape and not the lookup itself.
+        for id in ["claude-code", "codex", "kimi-code"] {
+            assert!(token_log_for(id).is_some(), "{id} lost its token log");
+        }
+    }
 
     fn totals(report: &TokenReport) -> &TokenTotals {
         match report {
@@ -749,5 +931,118 @@ mod tests {
             Some(day.join("rollout-2026-09-03T10-00-00-conv-1.jsonl"))
         );
         assert_eq!(codex_rollout(dir.path(), "conv-9"), None);
+    }
+
+    /// The index is the only map from conversation id to session
+    /// directory, and main's wire is the transcript the existence check
+    /// answers about.
+    #[test]
+    fn a_kimi_conversation_resolves_through_the_session_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = root.join("sessions/wd_proj_0123456789ab/session_abc");
+        std::fs::create_dir_all(session.join("agents/main")).unwrap();
+        std::fs::create_dir_all(session.join("agents/agent-0")).unwrap();
+        std::fs::write(session.join("agents/agent-0/wire.jsonl"), "{}").unwrap();
+        let main = session.join("agents/main/wire.jsonl");
+        std::fs::write(&main, "{}").unwrap();
+        std::fs::write(
+            root.join("session_index.jsonl"),
+            format!(
+                "{{\"sessionId\":\"session_other\",\"sessionDir\":\"{0}\",\"workDir\":\"/w\"}}\n\
+                 {{\"sessionId\":\"session_abc\",\"sessionDir\":\"{0}\",\"workDir\":\"/w\"}}\n\
+                 not json\n",
+                session.display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(transcript_path(TokenLog::KimiWireJsonl, root, "session_abc"), Some(main));
+        assert_eq!(conversation_log_under(TokenLog::KimiWireJsonl, Some(root), "session_abc"), ConversationLog::Present);
+
+        // An id the index does not name, an index naming a directory that
+        // is gone, and no index at all all resolve to nothing.
+        assert_eq!(transcript_path(TokenLog::KimiWireJsonl, root, "session_absent"), None);
+        assert_eq!(conversation_log_under(TokenLog::KimiWireJsonl, Some(root), "session_absent"), ConversationLog::Missing);
+        std::fs::write(
+            root.join("session_index.jsonl"),
+            format!("{{\"sessionId\":\"session_abc\",\"sessionDir\":\"{}\",\"workDir\":\"/w\"}}\n", root.join("gone").display()),
+        )
+        .unwrap();
+        assert_eq!(transcript_path(TokenLog::KimiWireJsonl, root, "session_abc"), None);
+        let bare = tempfile::tempdir().unwrap();
+        assert_eq!(transcript_path(TokenLog::KimiWireJsonl, bare.path(), "session_abc"), None);
+    }
+
+    /// A run's cost is main's wire AND its subagents' wires -- they bill
+    /// to the same account -- and `kimi_session_wires` is what gathers
+    /// them from the one path the resolver returns.
+    #[test]
+    fn a_kimi_sessions_wires_are_main_and_its_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(agents.join("agent-0")).unwrap();
+        std::fs::create_dir_all(agents.join("main")).unwrap();
+        std::fs::write(agents.join("agent-0/wire.jsonl"), "{}").unwrap();
+        let main = agents.join("main/wire.jsonl");
+        std::fs::write(&main, "{}").unwrap();
+
+        assert_eq!(kimi_session_wires(&main), vec![main.clone(), agents.join("agent-0/wire.jsonl")]);
+        // A path that is not a wire in an agents directory answers itself.
+        let odd = dir.path().join("wire.jsonl");
+        assert_eq!(kimi_session_wires(&odd), vec![odd]);
+    }
+
+    /// The verified 2.1.1 shapes: one usage.record per LLM request (scope
+    /// `turn`), summed; one turn.ended per turn, counted. agent.turn.ended
+    /// fires alongside every turn.ended and must NOT count.
+    #[test]
+    fn kimi_usage_records_sum_across_requests_and_wires() {
+        let usage = |agent: &str, input: u64, output: u64, cache_read: u64, cache_write: u64| {
+            format!(
+                r#"{{"type":"usage.record","agentId":"{agent}","model":"kimi-code/k3","usage":{{"inputOther":{input},"output":{output},"inputCacheRead":{cache_read},"inputCacheCreation":{cache_write}}},"usageScope":"turn","time":1791218535568}}"#
+            )
+        };
+        let main_wire = [
+            usage("main", 100, 10, 1000, 5),
+            r#"{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}"#.to_string(),
+            r#"{"turnId":0,"outcome":"done","type":"agent.turn.ended","kind":"event"}"#.to_string(),
+            "not json".to_string(),
+        ]
+        .join("\n");
+        let subagent_wire = [
+            usage("agent-0", 200, 20, 2000, 0),
+            r#"{"type":"turn.ended","agentId":"agent-0","turnId":0,"reason":"completed"}"#.to_string(),
+        ]
+        .join("\n");
+
+        let report = kimi_totals(&format!("{main_wire}\n{subagent_wire}"));
+
+        let t = totals(&report);
+        assert_eq!(t.input_tokens, 300);
+        assert_eq!(t.output_tokens, 30);
+        assert_eq!(t.cache_read_tokens, 3000);
+        assert_eq!(t.cache_write_tokens, 5);
+        assert_eq!(t.total_tokens, 3335);
+        assert_eq!(t.turns, 2, "turn.ended only -- agent.turn.ended duplicates it");
+        match &report {
+            TokenReport::Ready { models, .. } => assert_eq!(models, &vec!["kimi-code/k3".to_string()]),
+            other => panic!("expected ready, got {other:?}"),
+        }
+    }
+
+    /// Only scope `turn` is verified. Another scope added to the sum
+    /// could be a cumulative row, which would double-count -- so it is
+    /// skipped, and a wire with nothing else is Unavailable rather than a
+    /// zero bill.
+    #[test]
+    fn kimi_skips_unverified_scopes_and_a_wire_with_no_usage_is_unavailable() {
+        let text = [
+            r#"{"type":"usage.record","usage":{"inputOther":999,"output":9},"usageScope":"session"}"#,
+            r#"{"type":"turn.ended","agentId":"main"}"#,
+        ]
+        .join("\n");
+        assert!(matches!(kimi_totals(&text), TokenReport::Unavailable { .. }));
+        assert!(matches!(kimi_totals(r#"{"type":"turn.ended"}"#), TokenReport::Unavailable { .. }));
     }
 }

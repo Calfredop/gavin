@@ -89,7 +89,7 @@ independently of the GUI. Design history is in
   data directories and AppImage/deb bundling on Linux, CI on `windows-latest` and
   `ubuntu-latest`.
 - **Workspace plumbing** — settings, init wizard, agent profiles that write real MCP
-  config, superpowers install, keyboard shortcuts, daemon restart from Settings,
+  config, agent skills install (Matt Pocock's), keyboard shortcuts, daemon restart from Settings,
   worktree setup scripts, a workspace-removal wizard with OS-trash and restore,
   an updater, machine memory-pressure gating, and a daemon version compatibility
   window with a banner and per-feature gating.
@@ -140,7 +140,7 @@ items had shipped.
 retired smoke checklist is not coming back as a routine UI backlog. But checks
 that genuinely need a person — another machine, a real install, a judgement
 call — are being brought back as card items (`Human test:`), gathered on the
-Decisions tab, rather than living only in an agent's memory of what it could not
+Review tab beside the work they check, rather than living only in an agent's memory of what it could not
 verify. Looking at what a change does in the running app stays the owner's.
 
 ## Out of scope

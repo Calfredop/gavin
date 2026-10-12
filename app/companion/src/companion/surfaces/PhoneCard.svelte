@@ -29,18 +29,21 @@
     renameCard,
     tickItem,
   } from "$companion/state/cards";
+  import { onReconnect } from "$companion/state/reachability";
   import { closePage, followCard, openCard } from "$companion/state/workstation";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import PhoneMarkdown from "$companion/surfaces/PhoneMarkdown.svelte";
-  import { cardAgent } from "$companion/surfaces/phoneBoard";
+  import { cardAgent, recoverBoard } from "$companion/surfaces/phoneBoard";
   import { allCards, deviceBar, findCard, owedItems, tickableItems } from "$companion/surfaces/phoneCard";
 
   interface Props {
     workspace: Workspace;
     /// The card's path, as the view holds it.
     path: string;
+    /// The surface the card is over, which Back returns to.
+    back?: string;
   }
-  let { workspace, path }: Props = $props();
+  let { workspace, path, back = "Board" }: Props = $props();
 
   const board = $derived($kanbanState[workspace.id]);
   const tree = $derived($gavinTrees[workspace.id]);
@@ -80,6 +83,15 @@
       r.stop();
       if (reading === r) reading = null;
     };
+  });
+  // The board it stands on and its file, read again when the connection
+  // comes back: what changed meanwhile was pushed to nobody.
+  $effect(() => {
+    const id = workspace.id;
+    return onReconnect(() => {
+      void recoverBoard(id);
+      void reading?.reread();
+    });
   });
   const body = $derived(content ? stripFrontmatter(content).trim() : "");
   const checklist = $derived(content && cardPath ? tickableItems(parseChecklist(content), tree, cardPath) : []);
@@ -199,7 +211,7 @@
   }
 </script>
 
-<PhoneHeader title={card?.title ?? "Card"} back="Board" onBack={closePage}>
+<PhoneHeader title={card?.title ?? "Card"} {back} onBack={closePage}>
   {#snippet status()}
     {#if badge}
       <StatusBadge indicator={badge} size={14} tip={null} />
@@ -374,8 +386,7 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    padding: 14px max(14px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom))
-      max(14px, env(safe-area-inset-left));
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
   }
   .note {
     margin: 0;
@@ -423,7 +434,7 @@
     text-transform: uppercase;
   }
   /* 16px and no smaller: below it iOS zooms the page into a field the
-     moment it takes focus. */
+     moment it takes focus. More at a larger text size. */
   .title,
   select {
     box-sizing: border-box;
@@ -435,7 +446,7 @@
     background: var(--surface-sunken);
     color: var(--text);
     font: inherit;
-    font-size: 16px;
+    font-size: max(16px, 1rem);
   }
   .title {
     font-weight: 600;

@@ -207,6 +207,34 @@ mod tests {
         assert_eq!(c.delivery, Delivery::DryRun);
     }
 
+    /// The dev stack's gateway. Its credentials are named and do not exist:
+    /// were any of them read, or an Apple or Google client built from them,
+    /// this would fail -- and a dry run's `send` completes with nothing
+    /// listening anywhere, which a sender that dialled out could not.
+    #[test]
+    fn a_dry_run_builds_no_apple_or_google_client_and_sends_nothing() {
+        use crate::clock::SystemClock;
+        use crate::sender::{ApnsEnvironment, Delivery, Target};
+        use crate::store::Platform;
+
+        let c = config(&[
+            (DELIVERY, "dry-run"),
+            (APNS_KEY_FILE, "/nonexistent/apns.p8"),
+            (APNS_KEY_ID, "K"),
+            (APNS_TEAM_ID, "T"),
+            (APNS_TOPIC, "dev.gavin.companion"),
+            (FCM_SERVICE_ACCOUNT_FILE, "/nonexistent/fcm.json"),
+        ])
+        .unwrap();
+        let sender = c.sender(Arc::new(SystemClock), Log::stderr()).expect("no credential file is read");
+        assert!(sender.supports(Platform::Ios) && sender.supports(Platform::Android));
+
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let apns = Target::Apns { token: "abc", environment: ApnsEnvironment::Development };
+        assert_eq!(runtime.block_on(sender.send(apns, b"ciphertext")), Delivery::Delivered);
+        assert_eq!(runtime.block_on(sender.send(Target::Fcm { token: "abc" }, b"ciphertext")), Delivery::Delivered);
+    }
+
     #[test]
     fn live_delivery_without_any_credentials_is_refused() {
         let err = config(&[]).unwrap_err().to_string();

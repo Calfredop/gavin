@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  browserSessionFor,
   followUpsSessionFor,
   isViewTab,
+  renameSeed,
   renameable,
   tabKind,
   tabLabel,
@@ -19,6 +21,7 @@ function ctx(over: Partial<TabNaming> = {}): TabNaming {
     cwdBySessionId: {},
     trees: {},
     orchestrations: {},
+    deviceBySessionId: {},
     ...over,
   };
 }
@@ -117,6 +120,19 @@ describe("tabLabel", () => {
     expect(tabLabel("q", c)).toContain("builder");
   });
 
+  // An agent's browser is the session's too, and named the same way.
+  it("names a browser tab after its terminal", () => {
+    const c = ctx({
+      cardTabsById: { w: { workspaceId: "ws", path: "", view: "browser", sessionId: "s1" } },
+      sessionNames: { s1: "builder" },
+    });
+    expect(tabKind("w", c)).toBe("browser");
+    expect(isViewTab("w", c)).toBe(true);
+    expect(browserSessionFor("w", c)).toBe("s1");
+    expect(followUpsSessionFor("w", c)).toBeNull();
+    expect(tabLabel("w", c)).toBe("builder · browser");
+  });
+
   it("falls back to a terminal's cwd, then to the id itself", () => {
     expect(tabLabel("s1", ctx({ sessionNames: { s1: "named" } }))).toBe("named");
     expect(tabLabel("s1", ctx({ cwdBySessionId: { s1: "/ws/project" } }))).toBe("project");
@@ -145,9 +161,46 @@ describe("tabTooltip", () => {
     expect(tabTooltip("q", c)).toBe("/ws/project");
   });
 
+  it("borrows the terminal's tooltip for a browser tab", () => {
+    const c = ctx({
+      cardTabsById: { w: { workspaceId: "ws", path: "", view: "browser", sessionId: "s1" } },
+      cwdBySessionId: { s1: "/ws/project" },
+    });
+    expect(tabTooltip("w", c)).toBe("/ws/project");
+  });
+
   it("falls back to the terminal's name, cwd, then the id", () => {
     expect(tabTooltip("s1", ctx({ sessionNames: { s1: "builder" } }))).toBe("builder");
     expect(tabTooltip("s1", ctx({ cwdBySessionId: { s1: "/ws" } }))).toBe("/ws");
     expect(tabTooltip("s1", ctx())).toBe("s1");
+  });
+});
+
+describe("a terminal a Device started", () => {
+  const naming = ctx({
+    sessionNames: { "s-1": "fix login" },
+    cwdBySessionId: { "s-2": "/work/app" },
+    deviceBySessionId: { "s-1": "Pixel", "s-2": "iPad" },
+  });
+
+  it("is labelled with the Device, after its own name", () => {
+    expect(tabLabel("s-1", naming)).toBe("fix login · Pixel");
+    expect(tabLabel("s-2", naming)).toBe("app · iPad");
+  });
+
+  it("says where it came from in its bubble", () => {
+    expect(tabTooltip("s-1", naming)).toBe("fix login · started from Pixel");
+  });
+
+  it("is renamed from its own name, so the Device is never stored as part of it", () => {
+    expect(renameSeed("s-1", naming)).toBe("fix login");
+    expect(renameSeed("s-2", naming)).toBe("app");
+  });
+
+  it("leaves a terminal the desk launched itself as it was", () => {
+    expect(tabLabel("s-3", ctx({ sessionNames: { "s-3": "desk run" }, deviceBySessionId: { "s-1": "Pixel" } }))).toBe(
+      "desk run"
+    );
+    expect(tabTooltip("s-3", ctx({ sessionNames: { "s-3": "desk run" } }))).toBe("desk run");
   });
 });

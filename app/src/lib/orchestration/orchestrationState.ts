@@ -104,6 +104,7 @@ import {
   agentForCard,
   agentForProfile,
   resolvedAgentFor,
+  promptExtrasFor,
   armFailureDetection,
   baseShaForLaunch,
   cardReviewed,
@@ -150,6 +151,8 @@ import {
   buildToolCommand,
   runStatusNeeded,
   unresumableConversationReason,
+  usesPromptInjection,
+  withPromptExtras,
 } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
@@ -175,6 +178,7 @@ import {
   resolveAttachmentsForRun,
   revealSession,
   sshLaunchBlocker,
+  type CardLaunchHost,
 } from "$lib/cards/cardRunActions";
 import { mayStartWork, nowStore, pausedWorkspaceKey, launchDecision } from "$lib/agents/agentPauseState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
@@ -990,7 +994,7 @@ export async function resumeStep(
   // Its first quiet is its history being painted, not a turn
   // (headroomMark.ts, `reachCheckDue`).
   noteReopenedConversation(sessionId);
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   const label = entry?.plan.title ?? step.cardPath;
@@ -1442,10 +1446,15 @@ async function executeToolLaunch(
   // exactly what "a shell step is simply re-run" means.
   const prompt =
     tool.kind === "agent"
-      ? withRetryPrefix(
-          body,
-          await retryNoteFor(workspaceId, rail, step.id),
-          mustPromptBody("action:until-retry-prefix", workspaceId)
+      ? withPromptExtras(
+          withRetryPrefix(
+            body,
+            await retryNoteFor(workspaceId, rail, step.id),
+            mustPromptBody("action:until-retry-prefix", workspaceId)
+          ),
+          // The launching agent's own extra prompt lines go last, after
+          // the retry note: they are standing instructions to that agent.
+          promptExtrasFor(workspaceId, agent.profileId)
         )
       : body;
   const command =
@@ -1483,7 +1492,7 @@ async function executeToolLaunch(
   // exit, or the epilogue is gone before anyone can read it -- the same
   // retain a standalone Tools-tab run registers.
   if (tool.kind === "agent") {
-    void armFailureDetection(sessionId, agent.failurePatterns);
+    void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   } else {
     retainTabOnExit(sessionId);
   }
@@ -1673,15 +1682,28 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await retryNoteFor(workspaceId, rail, stepId),
     mustPromptBody("action:until-retry-prefix", workspaceId)
   );
+  // The agent that actually launches (a fallback's, not the card's
+  // primary): the lines are instructions to THAT agent.
+  prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
 
   const conversationId = conversationIdForLaunch(launchAgent);
-  const command = buildRunCommand(
-    launchAgent.launchCommand,
-    launchAgent.promptArgs,
-    prompt,
-    launchAgent.sessionIdArgs,
-    conversationId
-  );
+  // An injection launch (K3) is the board Run's: the CLI has no prompt
+  // argv, so it starts bare and the prompt goes to the daemon's queue
+  // after the spawn. Not the profile's headless `--prompt=` form, which a rail
+  // step was once going to take: print mode forces kimi's `auto`
+  // permission policy (never ask) where the human chose to be asked, and
+  // the process exits when it answers -- taking the tab, and the rail's
+  // whole attention model of an agent that sits at its prompt, with it.
+  const inject = usesPromptInjection(launchAgent);
+  const command = inject
+    ? launchAgent.launchCommand
+    : buildRunCommand(
+        launchAgent.launchCommand,
+        launchAgent.promptArgs,
+        prompt,
+        launchAgent.sessionIdArgs,
+        conversationId
+      );
   if (command === null) {
     await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label));
     return false;
@@ -1700,7 +1722,23 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await stallLaunch(workspaceId, stepId, "could not start the agent");
     return false;
   }
-  void armFailureDetection(sessionId, launchAgent.failurePatterns);
+  if (inject) {
+    // Queued before anything else is awaited, so a fast MCP handshake
+    // can never find the queue empty. A session that never gets its
+    // prompt is an agent idling on nothing, so the step stalls rather
+    // than running.
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      await stallLaunch(
+        workspaceId,
+        stepId,
+        `couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`
+      );
+      return false;
+    }
+  }
+  void armFailureDetection(sessionId, launchAgent.failurePatterns, launchAgent.untrustedOsc133);
 
   // Named before the agent has drawn a frame, same as a board Run and the
   // tool step above: the agent's own gavin_name_session refines this, but
@@ -3043,12 +3081,31 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 // about back exactly as it read it), so two runs at once do not divide
 // the work, they overwrite each other.
 
+/// Where an Organize or Reorganize meets the surface that asked for it:
+/// a card launch's host (`CardLaunchHost`) without the jump to a card's
+/// session, since there is no card, and with the one step a run of these
+/// adds -- putting the human in front of it. At the desk that is the
+/// desk's tab and queue; a Device hands in its own (companion's
+/// `state/rails.ts`), for the reasons the card launch gives.
+export interface OrchestrationLaunchHost extends Pick<CardLaunchHost, "hold" | "place"> {
+  reveal(sessionId: string): Promise<void>;
+}
+
+const DESK_ORCHESTRATION_HOST: OrchestrationLaunchHost = {
+  hold: (intent) => (holdOrQueue(intent) ? { go: false, error: null } : { go: true }),
+  place: (workspaceId, sessionId) => handleAgentSessionSpawned(workspaceId, sessionId),
+  reveal: async (sessionId) => {
+    await revealSession(sessionId);
+  },
+};
+
 /// Spawns the run, records it, and lands the human in its tab. The error
 /// string is for the tab's own strip; null means it started.
 async function launchOrchestrationAgent(
   workspaceId: string,
   record: Omit<OrchestrationAgentRecord, "sessionId">,
   prompt: string,
+  host: OrchestrationLaunchHost,
   /// The drain calling back in with an intent that has already cleared
   /// the launch wall. Asking again there would re-queue it for ever.
   queued = false
@@ -3080,19 +3137,24 @@ async function launchOrchestrationAgent(
   // AFTER the slot guard above, because "one of these at a time per
   // workspace" is a different rule and refusing is the right answer to
   // it, while a full machine is something to wait out.
-  if (!queued && holdOrQueue({
-    kind: "orchestration",
-    workspaceId,
-    label: record.label,
-    prompt,
-    agentLabel: record.label,
-    railId: record.railId ?? null,
-  })) {
-    return null;
+  if (!queued) {
+    const held = host.hold({
+      kind: "orchestration",
+      workspaceId,
+      label: record.label,
+      prompt,
+      agentLabel: record.label,
+      railId: record.railId ?? null,
+    });
+    if (!held.go) return held.error;
   }
 
   const agent = resolvedAgentFor(workspaceId);
-  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    withPromptExtras(prompt, promptExtrasFor(workspaceId, agent.profileId))
+  );
   // The same refusal every other launch gives a no-prompt profile,
   // returned as the button's error rather than thrown past it.
   if (command === null) return noPromptReason(agent.label);
@@ -3105,7 +3167,7 @@ async function launchOrchestrationAgent(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  host.place(workspaceId, sessionId);
   // Written down BEFORE the jump, because the window may not survive the
   // run: an unrecorded session is one the next window has no way to tell
   // apart from any other agent on the Agents page.
@@ -3115,7 +3177,7 @@ async function launchOrchestrationAgent(
   // finishes -- left where they were, the human would be watching a tab
   // that says nothing about the request they just made. Before the
   // rename below, so a failed rename (cosmetic) cannot swallow the jump.
-  await revealSession(sessionId);
+  await host.reveal(sessionId);
   const provisional = provisionalSessionName(record.label);
   if (provisional) await setSessionName(sessionId, provisional);
   return null;
@@ -3128,7 +3190,8 @@ async function launchOrchestrationAgent(
 export function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
-  conflictSummary: string[]
+  conflictSummary: string[],
+  host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
@@ -3140,7 +3203,8 @@ export function requestOrganize(
       conflictSummary,
       mustPromptBody("action:organize", workspaceId),
       mustPromptBody("action:name-tab-first", workspaceId)
-    )
+    ),
+    host
   );
 }
 
@@ -3153,7 +3217,8 @@ export function requestRailReorganize(
   railId: string,
   cards: Map<string, CardEntry>,
   tools: ToolSummary[],
-  conflictSummary: string[]
+  conflictSummary: string[],
+  host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
@@ -3169,7 +3234,8 @@ export function requestRailReorganize(
       conflictSummary,
       mustPromptBody("action:reorganize", workspaceId),
       mustPromptBody("action:name-tab-first", workspaceId)
-    )
+    ),
+    host
   );
 }
 
@@ -3265,6 +3331,7 @@ export async function launchQueuedOrchestrationAgent(
     intent.workspaceId,
     { label: intent.agentLabel, railId: intent.railId },
     intent.prompt,
+    DESK_ORCHESTRATION_HOST,
     true
   );
 }

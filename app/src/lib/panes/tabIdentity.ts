@@ -22,7 +22,15 @@ import type { BoardTab, CardTab, GavinTree } from "$lib/core/gavin";
 import type { FileTab } from "$lib/core/layoutState";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { linkForCardPath } from "$lib/cards/cardTabLink";
-import { boardTabLabel, cardTabLabel, folderName, followUpsTabLabel, sessionLabel } from "$lib/core/paths";
+import {
+  boardTabLabel,
+  browserTabLabel,
+  cardTabLabel,
+  deviceSessionLabel,
+  folderName,
+  followUpsTabLabel,
+  sessionLabel,
+} from "$lib/core/paths";
 
 /// The three maps that classify a tab id.
 export interface TabMaps {
@@ -39,9 +47,12 @@ export interface TabNaming extends TabMaps {
   cwdBySessionId: Record<string, string>;
   trees: Record<string, GavinTree>;
   orchestrations: Record<string, Orchestration>;
+  /// The Device that started a terminal, by name (companion-16), which its
+  /// label carries. Empty until the Devices list has been read.
+  deviceBySessionId: Record<string, string>;
 }
 
-export type TabKind = "terminal" | "file" | "board" | "card" | "followups";
+export type TabKind = "terminal" | "file" | "board" | "card" | "followups" | "browser";
 
 /// A follow-up queue is a card tab with `view: "followups"` -- and no
 /// card. Its subject rides in `sessionId`, because an agent's queue
@@ -49,7 +60,8 @@ export type TabKind = "terminal" | "file" | "board" | "card" | "followups";
 export function tabKind(tabId: string, maps: TabMaps): TabKind {
   if (maps.boardTabsById[tabId]) return "board";
   if (maps.cardTabsById[tabId]) {
-    return maps.cardTabsById[tabId].view === "followups" ? "followups" : "card";
+    const view = maps.cardTabsById[tabId].view;
+    return view === "followups" || view === "browser" ? view : "card";
   }
   if (maps.fileTabsById[tabId]) return "file";
   return "terminal";
@@ -68,6 +80,13 @@ export function isViewTab(tabId: string, maps: TabMaps): boolean {
 export function followUpsSessionFor(tabId: string, maps: TabMaps): string | null {
   const tab = maps.cardTabsById[tabId];
   return tab?.view === "followups" ? (tab.sessionId ?? null) : null;
+}
+
+/// The session whose browser a browser tab shows, or null for every other
+/// kind of tab. Keyed like the queue: the browser belongs to the session.
+export function browserSessionFor(tabId: string, maps: TabMaps): string | null {
+  const tab = maps.cardTabsById[tabId];
+  return tab?.view === "browser" ? (tab.sessionId ?? null) : null;
 }
 
 /// Only a terminal may be renamed. Every other label is exact
@@ -97,12 +116,24 @@ export function tabLabel(tabId: string, ctx: TabNaming): string {
     if (card.view === "followups") {
       return followUpsTabLabel(sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, card.sessionId ?? tabId));
     }
+    if (card.view === "browser") {
+      return browserTabLabel(sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, card.sessionId ?? tabId));
+    }
     const title = linkForCardPath(ctx.orchestrations[card.workspaceId], ctx.trees[card.workspaceId], card.path).title;
     return cardTabLabel(title, card.view);
   }
   const file = ctx.fileTabsById[tabId];
   if (file) return folderName(file.path);
-  return sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId);
+  const own = sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId);
+  const device = ctx.deviceBySessionId[tabId];
+  return device ? deviceSessionLabel(own, device) : own;
+}
+
+/// What a rename starts from: the terminal's own name, without the Device
+/// that started it. Seeding the editor with the whole label would store the
+/// Device's name AS the terminal's, and the tab would then say it twice.
+export function renameSeed(tabId: string, ctx: TabNaming): string {
+  return renameable(tabId, ctx) ? sessionLabel(ctx.sessionNames, ctx.cwdBySessionId, tabId) : tabLabel(tabId, ctx);
 }
 
 /// The hover text: where the tab points, which is the part the label had
@@ -112,7 +143,7 @@ export function tabLabel(tabId: string, ctx: TabNaming): string {
 export function tabTooltip(tabId: string, ctx: TabNaming): string {
   const board = ctx.boardTabsById[tabId];
   if (board) return board.contextFolder;
-  const queueFor = followUpsSessionFor(tabId, ctx);
+  const queueFor = followUpsSessionFor(tabId, ctx) ?? browserSessionFor(tabId, ctx);
   if (queueFor) return tabTooltip(queueFor, ctx);
   // Reached by a queue tab with no session recorded as well, which is
   // the one case where a follow-ups tab answers with its own card path.
@@ -120,5 +151,7 @@ export function tabTooltip(tabId: string, ctx: TabNaming): string {
   if (card) return card.path;
   const file = ctx.fileTabsById[tabId];
   if (file) return file.path;
-  return ctx.sessionNames[tabId] ?? ctx.cwdBySessionId[tabId] ?? tabId;
+  const where = ctx.sessionNames[tabId] ?? ctx.cwdBySessionId[tabId] ?? tabId;
+  const device = ctx.deviceBySessionId[tabId];
+  return device ? `${where} · started from ${device}` : where;
 }

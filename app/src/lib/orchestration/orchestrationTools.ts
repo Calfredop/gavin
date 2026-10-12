@@ -689,6 +689,36 @@ export const BUILTIN_TOOLS: Tool[] = [
       "Report pass/fail per check with the evidence you actually saw — never assume a " +
       "check passed because the page loaded. Close the tab when you are done.",
   },
+  // The same check through the Playwright MCP gavin installs per
+  // workspace: a headless browser per agent session, launched by the
+  // daemon and shown live beside the agent's tab. The Chrome tool above
+  // stays as it was -- it drives the human's own signed-in Chrome, which
+  // this one cannot reach and is not meant to.
+  {
+    id: "builtin:browser-test-playwright",
+    name: "Browser test (Playwright)",
+    description: "An agent drives gavin's Playwright browser through a checklist against a URL.",
+    kind: "agent",
+    scope: "builtin",
+    params: [
+      { name: "url", label: "URL", default: "http://localhost:5173" },
+      {
+        name: "checks",
+        label: "Checks (one per line)",
+        default: "- the page renders with no console errors",
+      },
+    ],
+    body:
+      "Use the Playwright browser tools (browser_navigate, browser_snapshot, browser_click, " +
+      "browser_type, browser_console_messages) to test {{url}}. If they are not available, " +
+      "say so and stop: Playwright is not installed for this workspace, and gavin's setup " +
+      "has a Playwright step that installs it.\n\n" +
+      'Open it in a NEW tab (browser_tabs with action "new"), then verify each of these:\n{{checks}}\n\n' +
+      "Read the console with browser_console_messages and report any errors. " +
+      "Report pass/fail per check with the evidence you actually saw in a snapshot — never " +
+      "assume a check passed because the page loaded. Close the tab when you are done " +
+      '(browser_tabs with action "close").',
+  },
   {
     id: "builtin:code-review",
     name: "Review this branch",

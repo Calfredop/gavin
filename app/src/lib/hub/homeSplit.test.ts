@@ -1,12 +1,32 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_AGENT_SHARE,
+  DEFAULT_TERMINAL_SHARE,
   DIVIDER_PX,
   MIN_HOME_PANE_PX,
   agentShareFromWidth,
   homeGridColumns,
   resolveAgentShare,
+  terminalShareFromHeight,
 } from "$lib/hub/homeSplit";
+
+describe("terminalShareFromHeight", () => {
+  it("turns a dragged height into the terminal's share of the agent cell", () => {
+    expect(terminalShareFromHeight(150, 600)).toBe(0.25);
+    expect(terminalShareFromHeight(300, 600)).toBe(DEFAULT_TERMINAL_SHARE);
+  });
+
+  it("keeps both the terminal and the browser on screen", () => {
+    // 120 px each: (600 - 120) / 600 and 120 / 600.
+    expect(terminalShareFromHeight(600, 600)).toBe(0.8);
+    expect(terminalShareFromHeight(-50, 600)).toBe(0.2);
+  });
+
+  it("falls back to an even split when the cell cannot hold two minimums", () => {
+    expect(terminalShareFromHeight(50, 200)).toBe(DEFAULT_TERMINAL_SHARE);
+    expect(terminalShareFromHeight(50, 0)).toBe(DEFAULT_TERMINAL_SHARE);
+  });
+});
 
 describe("agentShareFromWidth", () => {
   it("turns a dragged width into the agent cell's share of the row", () => {

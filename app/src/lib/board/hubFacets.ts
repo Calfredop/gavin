@@ -14,7 +14,8 @@
 // unmounted tabs simply read the current store when they are next shown.
 
 import { writable } from "svelte/store";
-import { emptyFacets, type BoardFacets } from "$lib/board/boardFilters";
+import { emptyExclude, emptyFacets, facetsActive, type BoardFacets } from "$lib/board/boardFilters";
+import { HUB_FACETS_KEY, isStringArray, loadRecord, mirrorRecord } from "$lib/hub/hubFilterStorage";
 
 /// The three tabs that answer context/kind/rail the same way.
 export const HUB_FACET_TABS = ["kanban", "review", "plans"] as const;
@@ -42,7 +43,47 @@ function emptyWorkspace(): WorkspaceHubFacets {
   };
 }
 
-export const hubFacetState = writable<Record<string, WorkspaceHubFacets>>({});
+function reviveFacets(value: unknown): BoardFacets | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Partial<Record<keyof BoardFacets, unknown>>;
+  const ex = (typeof v.exclude === "object" && v.exclude !== null ? v.exclude : {}) as Record<string, unknown>;
+  const list = (x: unknown): string[] => (isStringArray(x) ? x : []);
+  return {
+    context: list(v.context),
+    kind: list(v.kind),
+    rail: list(v.rail),
+    label: list(v.label),
+    exclude: { ...emptyExclude(), context: list(ex.context), kind: list(ex.kind), rail: list(ex.rail), label: list(ex.label) },
+  };
+}
+
+function reviveWorkspace(value: unknown): WorkspaceHubFacets | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as { shared?: unknown; linked?: Record<string, unknown>; own?: Record<string, unknown> };
+  const ws = emptyWorkspace();
+  ws.shared = reviveFacets(v.shared) ?? ws.shared;
+  for (const tab of HUB_FACET_TABS) {
+    if (v.linked?.[tab] === false) ws.linked[tab] = false;
+    const own = reviveFacets(v.own?.[tab]);
+    if (own) ws.own[tab] = own;
+  }
+  return ws;
+}
+
+/// Facets and link state outlive the app: the store starts from what the
+/// last run left in localStorage and mirrors every change back. Only a
+/// workspace that differs from the default is written.
+export const hubFacetState = writable<Record<string, WorkspaceHubFacets>>(
+  loadRecord(HUB_FACETS_KEY, reviveWorkspace)
+);
+
+mirrorRecord(hubFacetState, HUB_FACETS_KEY, (ws) => {
+  const untouched =
+    !facetsActive(ws.shared) &&
+    HUB_FACET_TABS.every((t) => ws.linked[t]) &&
+    Object.keys(ws.own).length === 0;
+  return untouched ? null : ws;
+});
 
 /// The facets a tab should filter by right now -- `shared` while linked,
 /// its own frozen answer otherwise. Takes the workspace's stored state

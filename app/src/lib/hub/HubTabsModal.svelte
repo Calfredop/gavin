@@ -25,7 +25,7 @@
     workspaceHasHubTabOrder,
     workspaceOverridesHubTabs,
   } from "$lib/hub/hubTabPrefs";
-  import { agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { agentDefaultsStore, agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import { hubLabel } from "$lib/core/workspace";
 
@@ -69,7 +69,11 @@
       : resolveAgentConfig(
           $trustedAgentConfigs(workspaceId),
           $agentProfilesStore,
-          $agentModelDefaultsStore
+          $agentModelDefaultsStore,
+          undefined,
+          undefined,
+          undefined,
+          $agentDefaultsStore.defaultAgent
         ).file
   );
 

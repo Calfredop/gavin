@@ -4,24 +4,38 @@ import {
   applyPrdSections,
   agentFlowAvailable,
   prdHasPlaceholders,
+  playwrightStepDone,
+  playwrightStepSettled,
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
 } from "$lib/workspace/setupWizard";
-import type { SuperpowersStatus } from "$lib/agents/superpowers";
+import type { AgentSkillsStatus } from "$lib/agents/agentSkills";
 import type { HeadroomStatus } from "$lib/agents/compression";
 import { SSH_UNAVAILABLE, workspaceHeadroomReading, type HeadroomReading } from "$lib/agents/headroomSetup";
+import {
+  SSH_MEMORY_UNAVAILABLE,
+  workspaceMemoryReading,
+  type MemoryIndexStatus,
+  type MemoryReading,
+} from "$lib/cards/memoryIndex";
+import {
+  SSH_PLAYWRIGHT_ELSEWHERE,
+  workspacePlaywrightReading,
+  type PlaywrightReading,
+  type PlaywrightStatus,
+} from "$lib/agents/playwrightSetup";
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
-/// `pending` without completing the Superpowers step.
-const SP_ABSENT: SuperpowersStatus = {
+/// `pending` without completing the agent skills step.
+const SP_ABSENT: AgentSkillsStatus = {
   state: "absent",
   detail: "",
   command: "",
   installable: true,
   output: "",
 };
-const SP_FOUND: SuperpowersStatus = { ...SP_ABSENT, state: "verified" };
+const SP_FOUND: AgentSkillsStatus = { ...SP_ABSENT, state: "verified" };
 
 function headroomStatus(over: Partial<HeadroomStatus> = {}): HeadroomStatus {
   return {
@@ -73,18 +87,49 @@ const TEMPLATE = [
   "",
 ].join("\n");
 
+function memStatus(over: Partial<MemoryIndexStatus>): MemoryReading {
+  return {
+    kind: "status",
+    status: { model: "absent", modelError: null, learned: 0, indexed: 0, inSync: true, ...over },
+  };
+}
+const MEM_ABSENT = memStatus({});
+const MEM_READY = memStatus({ model: "ready", learned: 2, indexed: 2 });
+
+function pwStatus(over: Partial<PlaywrightStatus> = {}): PlaywrightReading {
+  return {
+    kind: "status",
+    status: {
+      state: "absent",
+      detail: "",
+      checks: [],
+      command: "npx -y @playwright/mcp@0.0.83 install-browser chromium-headless-shell",
+      installable: true,
+      conflict: null,
+      output: "",
+      ...over,
+    },
+  };
+}
+const PW_ABSENT = pwStatus();
+const PW_READY = pwStatus({ state: "verified", installable: false });
+
 const NOTHING_DONE = {
   hasRoot: true,
   configCommand: null,
   agentFileBody: null,
   prdBody: TEMPLATE,
   mainSessionId: null,
-  superpowers: SP_ABSENT,
-  superpowersMark: undefined,
+  agentSkills: SP_ABSENT,
+  agentSkillsMark: undefined,
   gitTrackingAsked: false,
   requireReviewAsked: false,
   headroomReading: HR_ABSENT,
   headroomAsked: false,
+  memoryReading: MEM_ABSENT,
+  memorySkipped: false,
+  playwright: PW_ABSENT,
+  playwrightMark: undefined,
 };
 
 const ALL_DONE = {
@@ -93,12 +138,16 @@ const ALL_DONE = {
   agentFileBody: "<!-- gavin:start -->",
   prdBody: TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "Real."),
   mainSessionId: "agent-1",
-  superpowers: SP_FOUND,
-  superpowersMark: undefined,
+  agentSkills: SP_FOUND,
+  agentSkillsMark: undefined,
   gitTrackingAsked: true,
   requireReviewAsked: true,
   headroomReading: HR_VERIFIED,
   headroomAsked: true,
+  memoryReading: MEM_READY,
+  memorySkipped: false,
+  playwright: PW_READY,
+  playwrightMark: undefined,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -187,18 +236,21 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third, Headroom fourth, Git fifth and Review sixth", () => {
-    // Superpowers beside Integration because it is agent tooling (S2);
+  it("puts agent skills third, Headroom fourth, Memory fifth, Playwright sixth, Git seventh and Review eighth", () => {
+    // agent skills beside Integration because it is agent tooling (S2);
     // Headroom right after it, agent tooling too (the Headroom spec, "The
-    // switch"); Git after those because it asks about the files gavin has
+    // switch"); Memory after Headroom; Playwright after Memory, the last of
+    // the tooling (the Playwright spec, "Init and catchup"); Git after those because it asks about the files gavin has
     // by then created; Review right after Git, the same shape of question,
     // before PRD because that step writes into a file the earlier ones
     // create.
     expect(SETUP_STEPS).toEqual([
       "agent",
       "integration",
-      "superpowers",
+      "agentSkills",
       "headroom",
+      "memory",
+      "playwright",
       "git",
       "review",
       "prd",
@@ -206,39 +258,39 @@ describe("setupProgress", () => {
     ]);
   });
 
-  it("counts Superpowers when a check found the plugin", () => {
-    const p = setupProgress({ ...NOTHING_DONE, superpowers: SP_FOUND });
-    expect(p.done).toEqual(["superpowers"]);
+  it("counts agent skills when a check found the plugin", () => {
+    const p = setupProgress({ ...NOTHING_DONE, agentSkills: SP_FOUND });
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
-  it("counts Superpowers on the human's word where gavin could not check", () => {
+  it("counts agent skills on the human's word where gavin could not check", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: { ...SP_ABSENT, state: "asserted", installable: false },
-      superpowersMark: "installed",
+      agentSkills: { ...SP_ABSENT, state: "asserted", installable: false },
+      agentSkillsMark: "installed",
     });
-    expect(p.done).toEqual(["superpowers"]);
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // S6's second route, and the reason it exists: without it, declining
   // once leaves the Home banner nagging for ever.
-  it("counts Superpowers as answered once it has been declined", () => {
-    const p = setupProgress({ ...NOTHING_DONE, superpowersMark: "skipped" });
-    expect(p.done).toEqual(["superpowers"]);
+  it("counts agent skills as answered once it has been declined", () => {
+    const p = setupProgress({ ...NOTHING_DONE, agentSkillsMark: "skipped" });
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // gavin failing to check is not the human deciding.
-  it("does not count Superpowers just because gavin cannot check it", () => {
+  it("does not count agent skills just because gavin cannot check it", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: { ...SP_ABSENT, state: "unavailable", installable: false },
+      agentSkills: { ...SP_ABSENT, state: "unavailable", installable: false },
     });
     expect(p.done).toEqual([]);
     expect(p.next).toBe("agent");
   });
 
-  it("is pending while the Superpowers check has not come back", () => {
-    expect(setupProgress({ ...NOTHING_DONE, superpowers: undefined }).pending).toBe(true);
+  it("is pending while the agent skills check has not come back", () => {
+    expect(setupProgress({ ...NOTHING_DONE, agentSkills: undefined }).pending).toBe(true);
   });
 
   // A settled marker answers on its own, so an in-flight detector that
@@ -246,11 +298,11 @@ describe("setupProgress", () => {
   it("is settled by a marker even with the check still running", () => {
     const p = setupProgress({
       ...NOTHING_DONE,
-      superpowers: undefined,
-      superpowersMark: "skipped",
+      agentSkills: undefined,
+      agentSkillsMark: "skipped",
     });
     expect(p.pending).toBe(false);
-    expect(p.done).toEqual(["superpowers"]);
+    expect(p.done).toEqual(["agentSkills"]);
   });
 
   // The one step whose evidence is a recorded word rather than state on
@@ -316,7 +368,7 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(8);
+    expect(SETUP_STEPS).toHaveLength(10);
   });
 
   // Both counters. The Home banner reads its total off SETUP_STEPS and
@@ -325,7 +377,7 @@ describe("setupProgress", () => {
   // `next` disagree about where Headroom is.
   it("draws the wizard's stepper from the same steps, Headroom included", () => {
     const wizard = SOURCES["SetupWizard.svelte"];
-    const ids = [...wizard.matchAll(/\{ id: "([a-z]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
+    const ids = [...wizard.matchAll(/\{ id: "([a-zA-Z]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
     expect(ids).toEqual(SETUP_STEPS);
     expect(wizard).toContain('current === "headroom"');
     expect(wizard).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
@@ -333,6 +385,22 @@ describe("setupProgress", () => {
     expect(home).toContain("{SETUP_STEPS.length}");
     expect(home).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
     expect(home).toContain("headroomReading: headroom,");
+    // And the Memory step, named on both surfaces.
+    expect(wizard).toContain('{ id: "memory", label: "Memory" }');
+    expect(wizard).toContain('current === "memory"');
+    expect(wizard).toContain("<MemoryStep");
+    expect(wizard).toContain("memoryReading: memory,");
+    expect(wizard).toContain("memorySkipped,");
+    expect(home).toContain("memoryReading: memory,");
+    expect(home).toContain("memorySkipped,");
+    // And Playwright's, on both.
+    expect(wizard).toContain('{ id: "playwright", label: "Playwright" }');
+    expect(wizard).toContain('current === "playwright"');
+    expect(wizard).toContain("<PlaywrightStep");
+    for (const src of [wizard, home]) {
+      expect(src).toContain("playwright,");
+      expect(src).toContain("playwrightMark,");
+    }
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a
@@ -368,10 +436,170 @@ describe("setupProgress", () => {
   });
 });
 
-describe("setupProgress: the Headroom step", () => {
-  const upToHeadroom = { ...NOTHING_DONE, configCommand: "claude", agentFileBody: "<!-- gavin:start -->", superpowers: SP_FOUND };
+describe("setupProgress: the Memory step", () => {
+  const upToMemory = {
+    ...NOTHING_DONE,
+    configCommand: "claude",
+    agentFileBody: "<!-- gavin:start -->",
+    agentSkills: SP_FOUND,
+    headroomAsked: true,
+  };
 
-  it("comes right after Superpowers", () => {
+  it("comes right after Headroom", () => {
+    expect(setupProgress(upToMemory).next).toBe("memory");
+  });
+
+  it("counts once the model is here and the index matches Learned, empty included", () => {
+    expect(setupProgress({ ...NOTHING_DONE, memoryReading: MEM_READY }).done).toEqual(["memory"]);
+    const empty = memStatus({ model: "ready" });
+    expect(setupProgress({ ...NOTHING_DONE, memoryReading: empty }).done).toEqual(["memory"]);
+  });
+
+  // A model with a stale index is not done: the step is where it is
+  // brought up, and a fact adopted since is one search would miss.
+  it("does not count with no model, a download running, or a stale index", () => {
+    for (const memory of [
+      MEM_ABSENT,
+      memStatus({ model: "downloading" }),
+      memStatus({ model: "failed", modelError: "offline" }),
+      memStatus({ model: "ready", learned: 3, indexed: 2, inSync: false }),
+    ]) {
+      expect(setupProgress({ ...upToMemory, memoryReading: memory }).done).not.toContain("memory");
+    }
+  });
+
+  // "Not now" is a recorded answer, not a fake "installed": the reading
+  // still says absent, and only the mark finishes the step.
+  it("counts on the human's not now, whatever the reading", () => {
+    const p = setupProgress({ ...upToMemory, memoryReading: MEM_ABSENT, memorySkipped: true });
+    expect(p.done).toContain("memory");
+    expect(p.next).toBe("playwright");
+  });
+
+  it("counts on its own where the index cannot serve the workspace", () => {
+    const ssh = workspaceMemoryReading(MEM_ABSENT, { ssh: { host: "box" } });
+    expect(ssh).toEqual({ kind: "unavailable", reason: SSH_MEMORY_UNAVAILABLE });
+    expect(setupProgress({ ...upToMemory, memoryReading: ssh }).done).toContain("memory");
+    expect(workspaceMemoryReading(MEM_ABSENT, null)).toBe(MEM_ABSENT);
+  });
+
+  it("is pending while the reading has not landed, unless the human already declined", () => {
+    expect(setupProgress({ ...upToMemory, memoryReading: undefined }).pending).toBe(true);
+    const declined = setupProgress({ ...upToMemory, memoryReading: undefined, memorySkipped: true });
+    expect(declined.pending).toBe(false);
+    expect(declined.done).toContain("memory");
+  });
+
+  it("settles on a failed ask and on a daemon too old to ask, without counting either", () => {
+    for (const memory of [
+      { kind: "error", message: "gone" } as MemoryReading,
+      { kind: "blocked", reason: "Needs daemon v60" } as MemoryReading,
+    ]) {
+      const p = setupProgress({ ...upToMemory, memoryReading: memory });
+      expect(p.pending).toBe(false);
+      expect(p.done).not.toContain("memory");
+    }
+  });
+
+  // Outside the nag, like Headroom: no index is a workspace whose agents
+  // read `### Learned` as they always did.
+  it("never makes the Home banner nag", () => {
+    const p = setupProgress({ ...ALL_DONE, memoryReading: MEM_ABSENT });
+    expect(p.configured).toBe(true);
+    expect(p.complete).toBe(false);
+  });
+});
+
+describe("setupProgress: the Playwright step", () => {
+  const upToPlaywright = {
+    ...NOTHING_DONE,
+    configCommand: "claude",
+    agentFileBody: "<!-- gavin:start -->",
+    agentSkills: SP_FOUND,
+    headroomAsked: true,
+    memoryReading: MEM_READY,
+  };
+
+  it("comes right after Memory", () => {
+    expect(setupProgress(upToPlaywright).next).toBe("playwright");
+  });
+
+  it("counts once the three checks found it set up", () => {
+    expect(setupProgress({ ...NOTHING_DONE, playwright: PW_READY }).done).toEqual(["playwright"]);
+  });
+
+  // gavin unable to look -- a custom agent, an unreadable MCP config -- is
+  // not the human deciding, and a failed ask is not a check that passed.
+  it("does not count on a missing piece, on gavin unable to look, or on a failed ask", () => {
+    for (const playwright of [
+      PW_ABSENT,
+      pwStatus({ state: "unavailable", installable: false }),
+      { kind: "error", message: "gone" } as PlaywrightReading,
+    ]) {
+      expect(setupProgress({ ...upToPlaywright, playwright }).done).not.toContain("playwright");
+    }
+  });
+
+  // "Not now" is a recorded answer, not a fake "installed": the reading
+  // still says absent, and only the mark finishes the step.
+  it("counts on the human's not now, whatever the reading", () => {
+    const p = setupProgress({ ...upToPlaywright, playwright: PW_ABSENT, playwrightMark: "skipped" });
+    expect(p.done).toContain("playwright");
+    expect(p.next).toBe("git");
+  });
+
+  it("counts on the human's word where gavin could not check", () => {
+    const unchecked = pwStatus({ state: "unavailable", installable: false });
+    expect(setupProgress({ ...upToPlaywright, playwright: unchecked, playwrightMark: "installed" }).done).toContain(
+      "playwright"
+    );
+  });
+
+  it("counts on its own where the step cannot serve the workspace from here", () => {
+    const ssh = workspacePlaywrightReading(PW_ABSENT, { ssh: { host: "box" } });
+    expect(ssh).toEqual({ kind: "elsewhere", reason: SSH_PLAYWRIGHT_ELSEWHERE });
+    expect(setupProgress({ ...upToPlaywright, playwright: ssh }).done).toContain("playwright");
+    expect(workspacePlaywrightReading(PW_ABSENT, null)).toBe(PW_ABSENT);
+  });
+
+  it("is pending while the checks have not answered, unless the human already did", () => {
+    expect(setupProgress({ ...upToPlaywright, playwright: undefined }).pending).toBe(true);
+    const declined = setupProgress({ ...upToPlaywright, playwright: undefined, playwrightMark: "skipped" });
+    expect(declined.pending).toBe(false);
+    expect(declined.done).toContain("playwright");
+  });
+
+  it("settles on a failed ask without counting it", () => {
+    const p = setupProgress({ ...upToPlaywright, playwright: { kind: "error", message: "gone" } });
+    expect(p.pending).toBe(false);
+    expect(p.done).not.toContain("playwright");
+  });
+
+  // Inside the nag, unlike Headroom and Memory: a workspace that existed
+  // before the step -- every other step done -- is asked once by the Home
+  // banner, and "not now" ends it.
+  it("makes the Home banner ask a workspace set up before it existed, until answered", () => {
+    const before = { ...ALL_DONE, playwright: PW_ABSENT };
+    expect(setupProgress(before).configured).toBe(false);
+    expect(setupProgress(before).next).toBe("playwright");
+    expect(setupProgress({ ...before, playwrightMark: "skipped" }).configured).toBe(true);
+    expect(setupProgress({ ...before, playwright: PW_READY }).configured).toBe(true);
+  });
+
+  it("is done and settled by the same rules on their own", () => {
+    expect(playwrightStepDone(undefined, undefined)).toBe(false);
+    expect(playwrightStepDone(undefined, "skipped")).toBe(true);
+    expect(playwrightStepDone(PW_READY, undefined)).toBe(true);
+    expect(playwrightStepSettled(undefined, undefined)).toBe(false);
+    expect(playwrightStepSettled(PW_ABSENT, undefined)).toBe(true);
+    expect(playwrightStepSettled(undefined, "installed")).toBe(true);
+  });
+});
+
+describe("setupProgress: the Headroom step", () => {
+  const upToHeadroom = { ...NOTHING_DONE, configCommand: "claude", agentFileBody: "<!-- gavin:start -->", agentSkills: SP_FOUND };
+
+  it("comes right after agent skills", () => {
     expect(setupProgress(upToHeadroom).next).toBe("headroom");
   });
 

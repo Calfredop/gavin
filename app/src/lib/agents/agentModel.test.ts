@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  advisorPresets,
   commandSpecifiesEffort,
   commandSpecifiesModel,
+  composeAdvisor,
   composeEffort,
   composeLaunchCommand,
   effortOptions,
@@ -110,6 +112,15 @@ describe("commandSpecifiesEffort", () => {
   it("says no when there is no flag", () => {
     expect(commandSpecifiesEffort("claude --effort high", "")).toBe(false);
   });
+
+  it("detects an existing env-assignment prefix, kimi's shape", () => {
+    const flag = "KIMI_MODEL_THINKING_EFFORT=";
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT=low kimi", flag)).toBe(true);
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT='max' kimi -m kimi-code/k3", flag)).toBe(true);
+    expect(commandSpecifiesEffort("kimi -m kimi-code/k3", flag)).toBe(false);
+    // A same-named variable without a value is not an effort choice.
+    expect(commandSpecifiesEffort("KIMI_MODEL_THINKING_EFFORT kimi", flag)).toBe(false);
+  });
 });
 
 describe("composeEffort", () => {
@@ -122,6 +133,26 @@ describe("composeEffort", () => {
   it("attaches the level to a flag ending in =", () => {
     expect(composeEffort("codex", "-c model_reasoning_effort=", "xhigh")).toBe(
       "codex -c model_reasoning_effort=xhigh"
+    );
+  });
+
+  it("prepends an env-assignment shape before the whole command", () => {
+    // kimi's effort is `KIMI_MODEL_THINKING_EFFORT`, not an argv flag:
+    // the launch composes through `sh -c`, so the prefix lands like one.
+    expect(composeEffort("kimi", "KIMI_MODEL_THINKING_EFFORT=", "low")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=low kimi"
+    );
+    expect(composeEffort("kimi -m kimi-code/k3", "KIMI_MODEL_THINKING_EFFORT=", "max")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=max kimi -m kimi-code/k3"
+    );
+    // An effort the command already sets wins, same as the flag shapes.
+    expect(composeEffort("KIMI_MODEL_THINKING_EFFORT=low kimi", "KIMI_MODEL_THINKING_EFFORT=", "max")).toBe(
+      "KIMI_MODEL_THINKING_EFFORT=low kimi"
+    );
+    // A lowercase `-c key=` override is NOT the env shape: it keeps its
+    // append meaning.
+    expect(composeEffort("codex", "-c model_reasoning_effort=", "high")).toBe(
+      "codex -c model_reasoning_effort=high"
     );
   });
 
@@ -274,5 +305,42 @@ describe("effortPresets", () => {
 
   it("offers an unnamed row every level any profile documents, once each", () => {
     expect(effortPresets(profiles, "")).toEqual(["low", "medium", "high", "xhigh", "max", "minimal"]);
+  });
+});
+
+describe("composeAdvisor", () => {
+  it("separates the model from the flag, after everything else", () => {
+    expect(composeAdvisor("claude --model sonnet --effort high", "--advisor", "opus")).toBe(
+      "claude --model sonnet --effort high --advisor opus"
+    );
+  });
+
+  it("quotes an advisor a shell would read as more than itself", () => {
+    expect(composeAdvisor("claude", "--advisor", "opus[1m]")).toBe("claude --advisor 'opus[1m]'");
+  });
+
+  it("leaves the command alone with no advisor, no flag, or one already named", () => {
+    expect(composeAdvisor("claude", "--advisor", "  ")).toBe("claude");
+    expect(composeAdvisor("codex", "", "opus")).toBe("codex");
+    expect(composeAdvisor("claude --advisor fable", "--advisor", "opus")).toBe("claude --advisor fable");
+    expect(composeAdvisor("claude --advisor=fable", "--advisor", "opus")).toBe("claude --advisor=fable");
+  });
+});
+
+describe("advisorPresets", () => {
+  const profiles = [
+    { id: "claude-code", models: ["fable", "opus", "sonnet"], advisorFlag: "--advisor" },
+    { id: "codex", models: ["gpt-5.1"], advisorFlag: "" },
+    { id: "gemini", models: ["pro"] },
+  ];
+
+  it("offers a named profile its own models only when it takes an advisor", () => {
+    expect(advisorPresets(profiles, "claude-code")).toEqual(["fable", "opus", "sonnet"]);
+    expect(advisorPresets(profiles, "codex")).toEqual([]);
+    expect(advisorPresets(profiles, "gemini")).toEqual([]);
+  });
+
+  it("offers an unnamed row the models of every profile that takes one", () => {
+    expect(advisorPresets(profiles, "")).toEqual(["fable", "opus", "sonnet"]);
   });
 });

@@ -10,13 +10,15 @@
 // elsewhere (workstation.ts).
 
 /// The surfaces a workspace opens on, in the order the strip shows them.
-export const SURFACES = ["board", "rails", "sessions", "git", "files", "settings"] as const;
+export const SURFACES = ["board", "rails", "sessions", "decisions", "review", "git", "files", "settings"] as const;
 export type Surface = (typeof SURFACES)[number];
 
 export const SURFACE_LABELS: Record<Surface, string> = {
   board: "Board",
   rails: "Rails",
   sessions: "Sessions",
+  decisions: "Decisions",
+  review: "Review",
   git: "Git",
   files: "Files",
   settings: "Settings",
@@ -25,6 +27,11 @@ export const SURFACE_LABELS: Record<Surface, string> = {
 /// What is open over a workspace's board: one of its cards, by path, or
 /// its PRD.
 export type BoardPage = { kind: "card"; path: string } | { kind: "prd" };
+
+/// The surfaces a card opens over, and closing it goes back to: the
+/// board, and the two lists of cards owed something. Anywhere else a
+/// card opens over the board.
+const PAGE_SURFACES: readonly Surface[] = ["board", "decisions", "review"];
 
 /// What the Companion shows while no workspace is open: the workspace
 /// list, the Workstation's own settings, or adding a workspace.
@@ -46,8 +53,9 @@ export interface ViewState {
   surface: Surface;
   /// The terminal open over the workspace's sessions, or null.
   sessionId: string | null;
-  /// The page open over its board. Absent on the board itself, and
-  /// wherever the view is not on a board.
+  /// The page open over its board, or over the Decisions or Review list
+  /// it was opened from. Absent on the surface itself, and everywhere
+  /// else.
   page?: BoardPage;
   /// Absent until the Files surface has been somewhere in this workspace.
   files?: FilesPlace;
@@ -87,10 +95,12 @@ export function openTerminal(workspaceId: string, sessionId: string): ViewState 
   return { workspaceId, surface: "sessions", sessionId };
 }
 
-/// A card, or the PRD, over the open workspace's board -- which is where
-/// closing it goes back to.
+/// A card, or the PRD, over the open workspace's board -- or over the
+/// Decisions or Review list it was opened from. Closing it goes back to
+/// that surface.
 export function openPage(view: ViewState, page: BoardPage): ViewState {
-  return { ...view, surface: "board", sessionId: null, page };
+  const surface = PAGE_SURFACES.includes(view.surface) ? view.surface : "board";
+  return { ...view, surface, sessionId: null, page };
 }
 
 export function closePage(view: ViewState): ViewState {
@@ -196,9 +206,9 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     const restored = restorableScreen(screen);
     return restored ? { ...view, screen: restored } : view;
   }
-  // A page is over a board, and only over the board of a workspace. One
-  // this bundle cannot open is dropped, and the board shown under it.
-  const over = view.surface === "board" && view.sessionId === null ? readPage(page) : undefined;
+  // A page is over a board or a list of cards, and only a workspace's.
+  // One this bundle cannot open is dropped, and the surface shown under it.
+  const over = PAGE_SURFACES.includes(view.surface) && view.sessionId === null ? readPage(page) : undefined;
   const place = readPlace(files);
   return { ...view, ...(over ? { page: over } : {}), ...(place ? { files: place } : {}) };
 }

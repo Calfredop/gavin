@@ -127,6 +127,49 @@ the native side also refuses to open it outside a DEBUG build.
 Name devices by UDID or serial, never `booted`: other sessions on this Mac
 boot simulators of their own.
 
+## The touch recorder
+
+```
+scripts/touch-recorder.sh <iphone-udid> on       # in the open bundle
+# ...the human swipes the terminal...
+scripts/touch-recorder.sh <iphone-udid> report
+```
+
+What a finger on the terminal did, measured in the page of a debug build on
+a physical iPhone, one line per swipe: rows redrawn, how many after the
+finger lifted (momentum), the visible rows before and after, whether the
+page scrolled instead, and frame times. `touch-recorder.js` is the recorder
+itself, one expression any inspector can evaluate; `webview-eval.py`
+carries it over USB through the Mac's usbmuxd and opens no port. Synthetic
+`TouchEvent`s prove nothing here (they are untrusted), which is why this
+needs a finger.
+
+## A physical iPhone
+
+```
+DEVELOPMENT_TEAM=<team id> scripts/device-drive.sh ios-device <iphone-udid>   # build, install, launch, inspector
+scripts/device-drive.sh ios-device <iphone-udid> dom                      # the hub's text and its buttons
+scripts/device-drive.sh ios-device <iphone-udid> click "<label>"          # press one
+echo 'document.title' | scripts/device-drive.sh ios-device <iphone-udid> eval [gavin-bundle://]
+```
+
+A real phone has no `simctl` to tap or screenshot with, so the page is
+driven through Web Inspector, over USB through the Mac's usbmuxd
+(pymobiledevice3, in its own venv under `~/Library/Caches/gavin-companion`).
+`install` signs a debug build with `DEVELOPMENT_TEAM` from the environment
+(never commit it) and launches it with `devicectl`. `dom`, `click` and
+`eval` reach the hub (`capacitor://localhost`) or a bundle
+(`gavin-bundle://`) through `webview-eval.py` and open no port; `click`
+fires a synthetic click, which a Svelte handler takes but a gesture does
+not. `inspector` serves Chrome DevTools Protocol for Playwright, Puppeteer
+or a DevTools tab on `127.0.0.1:9322` (`--port` for another; 9222 is
+where an `adb forward` usually sits), through
+`device-inspector.py`, and stops itself unless every LAN address of this
+Mac is refused. Needs: the phone unlocked and trusted, Developer Mode on,
+Settings > Apps > Safari > Advanced > Web Inspector on, and Gavin in front
+-- a page is listed only then. Face ID cannot be scripted on a phone: the
+Unlock waits for its owner.
+
 ## How the bundle webview is sealed
 
 | | iOS | Android |
@@ -253,8 +296,8 @@ holding that Workstation's notification key:
 
 | | iOS | Android |
 |---|---|---|
-| where | a keychain item a Workstation, `AfterFirstUnlockThisDeviceOnly`, never synchronised | one file in `noBackupFilesDir`, sealed by a Keystore AES-GCM key |
-| why readable while locked | the notification service extension will open pushes on a locked phone | the same, for the FCM handler |
+| where | a keychain item a Workstation, `AfterFirstUnlockThisDeviceOnly`, never synchronised, in the group the app shares with its Notification Service Extension (`SharedKeychain.swift`) | one file in `noBackupFilesDir`, sealed by a Keystore AES-GCM key |
+| why readable while locked | the notification service extension opens pushes on a locked phone | the same, for the FCM handler (not yet written) |
 | gone with | the Device's keys (`deleteKeys`, and the first launch after a reinstall) | the Device's keys, and an uninstall |
 
 ### The scripted pairing
@@ -348,6 +391,15 @@ the core's rule, `ws://` only to this machine or this network.
   build's WebView can be asked directly: `adb -s <serial> forward
   tcp:9333 localabstract:webview_devtools_remote_<pid>`, then the page's
   DevTools socket from `http://127.0.0.1:9333/json`.
+- **`ios_webkit_debug_proxy` puts a phone's webview on the LAN.** It has no
+  bind option: `-u <udid>` listens on `*:9222` and `*:9221`, and with the
+  macOS firewall on, the Mac's LAN address still answered `/json` with the
+  page's `webSocketDebuggerUrl` -- JS in a debug build's shell webview,
+  which holds the Device's Noise key and, unlocked, a live Workstation
+  connection. Use `scripts/device-drive.sh` (above). Loopback is not the
+  whole of it either: pymobiledevice3's own `webinspector cdp` checks no
+  Host or Origin, so a web page in a browser on the Mac could open its
+  WebSocket; `device-inspector.py` refuses both.
 
 ## Served bundles
 
@@ -408,9 +460,15 @@ The hub shows each step under the Workstation's name while it opens.
 event name and a desktop event the daemon pushes (`DesktopEvent`) an
 `event` to each listener of that name; `unlisten` ends the wire's listen
 with the last listener. A call made while the connection is down is
-answered with an error the bundle shows, never dropped, and every event
-still listened for is listened for again when the connection comes back
-— the daemon keeps a listen per connection. The connection itself hands
+answered with an error the bundle shows, never dropped — coded
+`unreachable`, as is one the connection dropped or the daemon could not
+hand to its desktop app — and every event still listened for is listened
+for again when the connection comes back — the daemon keeps a listen per
+connection. The bundle is told each change as `connection` (up, or down
+with the hub's reason: `visit/connectionState.ts` over the live hub's
+state, `connectionSource(id).watchLive`), so the open screen says it is
+down once and reads itself again once it is up; the bundle's README has
+its side. The connection itself hands
 pushes to whoever listens (`Connection.onPush`); with nobody listening
 they wait for the next request to pass over, as before.
 
@@ -458,7 +516,11 @@ ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
   the app's last started activity stopping, and `SCREEN_OFF`), never on
   losing the focus (Control Center, the shade, a call banner, the prompt
   itself), and tells the web layer as a `lifecycle` event, with coming
-  back to the front.
+  back to the front. On iOS 27 the shade backgrounds the app while it is
+  down, so the iOS side believes a background only once it has lasted two seconds
+  (`briefBackground`, whose comment weighs what that costs); the screen
+  locking does not wait. A debug build logs every lifecycle notification
+  as `[gavin-lifecycle]`, natively and in the web console.
 - **Android's "in front"** spans two processes: the shell's activity and a
   bundle's, in `:bundle`. `AppForeground` counts both -- the bundle's
   start and stop cross over the channel -- and decides "background" 700 ms
@@ -481,12 +543,37 @@ ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
   every 15 s (which also finds a connection a dead network left open),
   and reconnects a drop from 1 s, doubling to 30 s, with no prompt. A
   Workstation that refused this Device for good (revoked, removed, unseen
-  ninety days) is not tried again until the next Unlock.
+  ninety days) is not tried again until the next Unlock. The owner need
+  not wait out the 30 s: an asleep, unreachable or desktop-app-not-running
+  row offers `Try now`, and tapping it -- or coming back to the app with
+  the Unlock still held -- dials (or asks) at once. At most once in 3 s,
+  and a try that fails leaves the unattended loop where it was, so a
+  phone tapped again and again does not dial its Relay from 1 s again.
 - **The inbox** (`src/shell/hub/inbox.ts`) is every ready Workstation's
   items, each labelled with its Workstation. One that is locked,
   connecting, asleep, unreachable, or whose desktop app is not running
   adds nothing. Tapping an item opens its Workstation, once a paired one
   can be opened (companion-23); until then the hub says so.
+- **The hub's layout** (`src/shell/surfaces/Hub.svelte`, over
+  `src/shell/hub/inboxView.ts`) leads with its own jobs, so a long inbox
+  never buries them (it did: 210 items put the Workstations, Pair and
+  Unlock 35 screens down). In order: the Unlock's banner, held at the top
+  while it is shown; the hub's own lines; a card per Workstation (its
+  state, its waiting count, `Try now`), the Demo last and one line once a
+  real one is paired, and `Pair a Workstation`; then `N waiting on you`
+  with the totals per kind and the first three items, and `Show all N`;
+  then, in a debug build, `Device keys`, closed. `Show all` opens the
+  whole inbox on a screen of its own (`InboxList.svelte`): grouped by
+  Workstation, then workspace (headed by name where the Workstation sends
+  one), filtered by kind, each item two lines at most, and windowed --
+  only the entries within a screen of the view are drawn, about 27
+  whatever the length. Its header's `Workstations` leads back; neither
+  platform's back gesture does (the shell has no `@capacitor/app`, and
+  iOS's swipe is off), as it does not for the pairing sheet either.
+  Spacing is phone.css's `--space-*` scale, 8px steps, with a step
+  between any two tap targets; `surfaces/spacing.test.ts` holds it, and
+  `surfaces/hub.test.ts` draws the order, the capped and full inbox and
+  the locked hub.
 
 `src/shell/hub/unlockedHub.ts` wires the two to the plugin; the page only
 draws them. A debug build logs each step (`[gavin-unlock]`, `[gavin-hub]`).
@@ -507,6 +594,60 @@ Workstations (`devstack.mjs hub`), then launches it: the Unlock must ask
 once and both answer ready; another app in front must lock both; back in
 front it must ask again and both answer again.
 
+## Notifications
+
+```
+scripts/notify-fixture.sh     # the extension's open against the daemon's seal (macOS)
+```
+
+The hub's Notifications row asks iOS to notify only when the owner taps
+`Turn on notifications`, and says what iOS answered; at every launch after
+that it fetches this install's APNs token without asking, and tells the
+Push gateway (`push/setup.ts`, `push/registration.ts`). The gateway's calls
+are native (`Push.gateway`): the gateway answers no CORS, and the hub's
+page is another origin. Its registration -- the Device id and secret that
+mint permissions to notify this phone -- is kept in the keychain, in the
+app's own group, and goes with the Device's keys.
+
+Once they are on, each paired Workstation is handed this phone's send
+permission (`push/handover.ts`): minted at the gateway per Workstation,
+renewed before it runs out, kept with the registration, and handed over
+the live connection as `SetThisDeviceSendPermission` (protocol v67) once
+per app run. The Notifications row lists each Workstation with what it
+can do ("Notifies", "Set up when it connects", or "Update Gavin at the
+desk" for one older than v67) and a Turn off that cancels its permission
+at the gateway and tells it, silencing that Workstation alone.
+
+A push is opened before iOS shows it, by the Notification Service
+Extension (`ios/App/NotificationService/`, an app-extension target embedded
+in the app): it tries each paired Workstation's notification key from the
+shared keychain group, drops a counter at or below the highest it has shown
+from that key, and replaces the gateway's placeholder with the
+Workstation's name and the item's text. It writes where a tap lands into
+the notification (`gavin://ws/<id>/session/<sid>?workspace=<w>`, or
+`/card?path=…`), which `push/decrypt.ts` reads back; the hub opens it once
+the Unlock and that Workstation's connection are there (`push/taps.ts`),
+or lands on the hub when nothing opened the push. A resolve removes the
+item's notification. A notification also leaves once its Workstation
+answers what is waiting without its item, resolve or not: the desk pushes
+under its attention items' ids.
+
+Both the tap and a notification shown with the app in front go through
+the notification centre's delegate, `PushTaps`, which `AppDelegate` sets
+before launch ends. `capacitor.config.ts` turns
+`ios.handleApplicationNotifications` off for it: left on, Capacitor's
+bridge takes the delegate over as it loads, and its router, with no push
+plugin registered, shows nothing in front and drops every tap.
+
+The format is `crates/daemon/src/notify_crypto.rs`'s, and the extension's
+Swift (`NotifyOpen.swift`, Foundation and CryptoKit only) is held to it by
+`test-fixtures/companion-notify`, which the daemon's suite seals from and
+`notify-fixture.sh` opens; `push/fixture.test.ts` runs that script on a Mac.
+What the Apple team, the App IDs and the filtering entitlement have to be,
+and why `simctl push` cannot test the extension, is
+`docs/companion-mobile.md`'s "Push notifications (iOS)". Android has no
+push yet: its calls reject, and the hub shows no Notifications row.
+
 ## What is here, and what is not
 
 The hub lists the paired Workstations, live while unlocked, with the
@@ -516,5 +657,6 @@ bundle and each paired Workstation's served one. The Device's keys
 (companion-22), and served, signed, cached bundles with landing on an
 inbox item (companion-23) are here. What the bundle can do once open is
 the bundle's own README's: a board to read, with the rest of the surfaces
-(companion-26 to -30) still to come. Notifications and the Push gateway
-are not here either.
+(companion-26 to -30) still to come. On iOS the shell asks to notify,
+registers with the Push gateway, hands each Workstation its permission
+and opens pushes (above).

@@ -16,6 +16,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(),
+  promptExtrasFor: vi.fn((): string[] => []),
   conversationIdForLaunch: vi.fn(() => "conv-1"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock("$lib/core/layoutState", () => ({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
 }));
 vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
@@ -72,6 +73,7 @@ const AGENT = {
   model: "",
   failurePatterns: ["API Error:"],
   failureCauses: [],
+  untrustedOsc133: false,
   sessionIdArgs: "--session-id",
   resumeArgs: "",
 };
@@ -274,7 +276,7 @@ describe("the launch", () => {
   // shell has no conversation, and its verdict is its exit code.
   it("arms failure detection and mints a conversation only for an agent tool", async () => {
     await requestToolRun("ws-1", tool({ kind: "agent", body: "do the thing" }));
-    expect(armFailureDetection).toHaveBeenCalledWith("sess-1", ["API Error:"]);
+    expect(armFailureDetection).toHaveBeenCalledWith("sess-1", ["API Error:"], false);
     expect(backend.startToolRun).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: "conv-1" })
     );

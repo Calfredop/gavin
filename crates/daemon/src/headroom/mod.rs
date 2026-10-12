@@ -275,6 +275,17 @@ impl Headroom {
             Some(compress::Agent::Gemini) => gemini_configured_for_api_key(workspace_path),
             _ => false,
         };
+        // And for Kimi, whose recipe needs the OAuth host the human's
+        // login is filed under, and whose derived credential slot the
+        // launch must find filled.
+        let kimi = match launch.agent() {
+            Some(compress::Agent::Kimi) => kimi_login(),
+            _ => None,
+        };
+        let kimi_oauth_host = kimi
+            .as_ref()
+            .and_then(|(_, config)| config.oauth_host.as_deref())
+            .unwrap_or(compress::KIMI_DEFAULT_OAUTH_HOST);
         let serving = self.inner.supervisor.serving();
         let decision = compress::decide(Facts {
             workspace_on: self.inner.switch.is_on(workspace_path),
@@ -287,7 +298,18 @@ impl Headroom {
             opencode_plugin: opencode_plugin.as_deref(),
             without_headroom,
             gemini_api_key,
+            kimi_oauth_host,
         });
+        // A compressed Kimi reads its credential from the slot the
+        // override derives; fill it from the human's own login before
+        // the launch (`compress::provision_kimi_credential`).
+        if decision.compressed() {
+            if let Some((credentials, config)) = &kimi {
+                if let Some((_, url)) = decision.env().iter().find(|(key, _)| key == compress::KIMI_BASE_URL) {
+                    compress::provision_kimi_credential(credentials, kimi_oauth_host, url, config.base_url.as_deref());
+                }
+            }
+        }
         if let (true, Some(serving)) = (decision.compressed(), serving) {
             self.lock_compressed()
                 .insert(session_id.to_string(), Tracked { pid: serving.pid, reach: None });
@@ -1204,4 +1226,21 @@ fn gemini_configured_for_api_key(workspace_path: &str) -> bool {
             login: on("GOOGLE_GENAI_USE_GCA"),
         },
     )
+}
+
+/// What a compressed Kimi launch needs from the user's kimi home: the
+/// credentials directory, and the managed provider's persisted
+/// configuration (`compress::KimiConfig`, empty when the file cannot
+/// be read -- the defaults stand then). `None` only when there is no
+/// home to read them from. The home follows kimi's own rule:
+/// `KIMI_CODE_HOME` when it relocates one, else `~/.kimi-code`.
+fn kimi_login() -> Option<(std::path::PathBuf, compress::KimiConfig)> {
+    let home = std::env::var_os("KIMI_CODE_HOME").map(std::path::PathBuf::from).or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(std::path::PathBuf::from(home).join(".kimi-code"))
+    })?;
+    let config = std::fs::read_to_string(home.join("config.toml"))
+        .map(|text| compress::kimi_config(&text))
+        .unwrap_or_default();
+    Some((home.join("credentials"), config))
 }

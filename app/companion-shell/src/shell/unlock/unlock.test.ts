@@ -104,9 +104,16 @@ describe("the Unlock", () => {
   it("never asks for a reconnect: a dropped connection is not an Unlock event", () => {
     // What there is to ask about while unlocked, short of leaving the
     // front, the phone locking, or a new connection being refused.
-    for (const event of [{ type: "foreground" }, { type: "unlock-requested" }, { type: "interrupted" }] as UnlockEvent[]) {
+    for (const event of [{ type: "unlock-requested" }, { type: "interrupted" }] as UnlockEvent[]) {
       expect(stepUnlock(UNLOCKED, event, PAIRED)).toEqual({ state: UNLOCKED, actions: [] });
     }
+  });
+
+  it("tries every Workstation now, without asking, when the app comes to the front with the Unlock still held", () => {
+    expect(stepUnlock(UNLOCKED, { type: "foreground" }, PAIRED)).toEqual({ state: UNLOCKED, actions: ["refresh"] });
+    // Asking, it is the prompt's answer that connects.
+    const asking = run([{ type: "foreground" }]).state;
+    expect(stepUnlock(asking, { type: "foreground" }, PAIRED)).toEqual({ state: asking, actions: [] });
   });
 
   it("asks again when Android's auth window closes, keeping the connections already open", () => {

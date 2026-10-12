@@ -4,21 +4,21 @@
 /// Complexity is chosen first and nothing is written yet. Advancing from
 /// that step commits the new profile and the realigned complexity table;
 /// the remaining steps set up the NEW agent (MCP / skills via integration,
-/// then Superpowers). Cancel before the commit leaves config untouched;
+/// then agent skills). Cancel before the commit leaves config untouched;
 /// leaving later only skips leftover setup.
 
-export type AgentChangeStep = "complexity" | "integration" | "superpowers";
+export type AgentChangeStep = "complexity" | "integration" | "agentSkills";
 
 export const AGENT_CHANGE_STEPS: Array<{ id: AgentChangeStep; label: string }> = [
   { id: "complexity", label: "Complexity" },
   { id: "integration", label: "Integration" },
-  { id: "superpowers", label: "Superpowers" },
+  { id: "agentSkills", label: "Matt Pocock's skills" },
 ];
 
 /// Whether advancing from this step writes the profile + complexity.
 /// Only the complexity step is pre-commit; everything after assumes the
 /// new profile is already in config.toml so setup_agent_integration and
-/// Superpowers see the agent being switched to.
+/// agent skills see the agent being switched to.
 export function agentChangeCommitsOnAdvance(step: AgentChangeStep): boolean {
   return step === "complexity";
 }
@@ -30,7 +30,7 @@ export function nextAgentChangeStep(step: AgentChangeStep): AgentChangeStep | nu
 }
 
 /// Opening the wizard on the profile already written is a re-run of
-/// Integration / Superpowers (and an optional complexity realign), not a
+/// Integration / agent skills (and an optional complexity realign), not a
 /// switch. A real switch also has to replace leftover `command` / `file`
 /// overrides so the new profile's defaults actually launch.
 export function agentChangeIsRerun(fromProfileId: string, toProfileId: string): boolean {

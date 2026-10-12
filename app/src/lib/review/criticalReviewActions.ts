@@ -14,6 +14,7 @@ import {
   createTiledPage,
   conversationIdForLaunch,
   profileIdForLaunch,
+  promptExtrasFor,
   resolvedAgentFor,
   setSessionName,
   switchWorkspaceView,
@@ -21,7 +22,7 @@ import {
 } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
+import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { candidateLabel, type Candidate } from "$lib/cards/bestOfN";
 import {
@@ -310,7 +311,7 @@ export async function launchCriticalReviewSessions(
     const command = buildRunCommand(
       agent.launchCommand,
       agent.promptArgs,
-      prompt,
+      withPromptExtras(prompt, promptExtrasFor(input.workspaceId, agent.profileId)),
       agent.sessionIdArgs,
       conversationId
     );
@@ -342,7 +343,7 @@ export async function launchCriticalReviewSessions(
 
   for (const [i, launch] of launches.entries()) {
     const sessionId = page.sessionIds[i];
-    void armFailureDetection(sessionId, launch.agent.failurePatterns);
+    void armFailureDetection(sessionId, launch.agent.failurePatterns, launch.agent.untrustedOsc133);
     const name = provisionalSessionName(launch.label);
     if (name) await setSessionName(sessionId, name);
   }

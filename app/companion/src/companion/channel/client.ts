@@ -12,6 +12,7 @@ import {
   readWorkstationMessage,
   type BundleMessage,
   type Capabilities,
+  type ConnectionState,
   type ErrorCode,
   type MessageType,
 } from "$companion/channel/messages";
@@ -45,6 +46,10 @@ export interface ChannelClient {
   /// shell does not know the message, so the caller can hide the way out
   /// rather than offer a button that does nothing.
   returnToHub(): Promise<boolean>;
+  /// Hears the connection to the Workstation go down and come back up,
+  /// from a shell that says so. One older than `connection` says
+  /// nothing, and this never fires. Returns how to stop hearing.
+  onConnection(handler: (state: ConnectionState) => void): () => void;
   close(): void;
 }
 
@@ -101,6 +106,7 @@ export function createChannelClient(port: ChannelPort): ChannelClient {
   let closed = false;
   const pending = new Map<number, Pending>();
   const listeners = new Map<number, (payload: unknown) => void>();
+  const connectionHandlers = new Set<(state: ConnectionState) => void>();
   let asked: Promise<Capabilities> | null = null;
 
   const stopReceiving = port.receive((raw) => {
@@ -114,6 +120,18 @@ export function createChannelClient(port: ChannelPort): ChannelClient {
     // A type from a newer shell. Nothing here is waiting on it.
     if (read.kind === "unknown") return;
     const message = read.message;
+    if (message.type === "connection") {
+      const state: ConnectionState =
+        message.state === "up" ? { state: "up" } : { state: "down", reason: message.reason };
+      for (const handler of [...connectionHandlers]) {
+        try {
+          handler(state);
+        } catch (e) {
+          console.error("a connection handler threw", e);
+        }
+      }
+      return;
+    }
     if (message.type === "event") {
       const handler = listeners.get(message.listener);
       if (!handler) return;
@@ -208,11 +226,19 @@ export function createChannelClient(port: ChannelPort): ChannelClient {
       return act("return-to-hub", { type: "return-to-hub" });
     },
 
+    onConnection(handler) {
+      connectionHandlers.add(handler);
+      return () => {
+        connectionHandlers.delete(handler);
+      };
+    },
+
     close(): void {
       if (closed) return;
       closed = true;
       stopReceiving();
       listeners.clear();
+      connectionHandlers.clear();
       const waiting = [...pending.values()];
       pending.clear();
       for (const p of waiting) p.reject(new ChannelError(CLOSED));

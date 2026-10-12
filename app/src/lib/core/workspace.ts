@@ -1,7 +1,7 @@
 import type { PauseCycle } from "$lib/agents/agentPause";
-import type { ComplexityTable } from "$lib/cards/complexity";
+import type { ComplexityTable, CustomProfile } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/panes/layout";
-import { allSessionIds, findLeafPath } from "$lib/panes/layout";
+import { addTab, allSessionIds, findLeafPath } from "$lib/panes/layout";
 
 export interface Page {
   id: string;
@@ -152,6 +152,12 @@ export interface Workspace {
   /// local like the accent colour -- how big the type is on this screen is
   /// not a fact about the project.
   terminalFontSize?: number;
+  /// When an agent's browser pane opens in this workspace: "auto" on the
+  /// browser's first frame, "chip" only from the tab's chip. Absent means
+  /// inherit the app-wide setting (and, failing that, "auto"). Stored as
+  /// the host wrote it; `browserView.ts` normalizes a word it does not know
+  /// to absent. Machine-local like the font size.
+  playwrightPaneOpen?: string;
   /// Whether a card filed in this workspace starts carrying the
   /// auto-commit block; absent means inherit the app-wide setting (and,
   /// failing that, gavin's default of off). Machine-local like the accent
@@ -182,13 +188,16 @@ export interface Workspace {
   /// how the app hub orders its recents: stamped newest first, then the
   /// never-stamped ones in their stored order.
   lastActiveAt?: number;
-  /// This workspace's own agent pause cycle. Absent means INHERIT the
-  /// app-wide one, which is not the same as off: a workspace that wants
-  /// no pause while the app has one stores a cycle with `enabled: false`.
-  agentPause?: PauseCycle;
-  /// This workspace's own fallback chain. Absent means INHERIT the
-  /// app-wide one; an empty array is an explicit "no fallback" override.
-  agentFallback?: string[];
+  /// This workspace's own pause cycles, keyed by primary profile id.
+  /// A key absent means INHERIT the app-wide cycle for that primary,
+  /// which is not the same as off: a workspace that wants no pause for a
+  /// primary stores a cycle with `enabled: false` under its key.
+  pauseCycles?: Record<string, PauseCycle>;
+  /// This workspace's own fallback chains keyed by primary profile id.
+  /// A missing key inherits the app-wide chain for that primary; a present
+  /// empty array is an explicit "no fallback" override for that primary.
+  /// An empty / absent map inherits every primary.
+  fallbackChains?: Record<string, string[]>;
   /// Profile ids this workspace has armed for fallback launch without
   /// switching the active agent. The workspace's own profile is not
   /// listed here — init and agent-change cover that.
@@ -201,12 +210,17 @@ export interface Workspace {
   /// milliseconds; absent means not pinned. Same rule and same reason as
   /// `Page.pinnedAt`, one level up.
   pinnedAt?: number;
-  /// This workspace's overrides of the app-wide complexity table, keyed
-  /// by level name. Overridden PER LEVEL: a level with no entry here
-  /// means "whatever the app says", so a workspace that only cares about
-  /// its hardest cards need not restate the other four. Absent (rather
-  /// than empty) is the ordinary inheriting case.
-  complexityAgents?: ComplexityTable;
+  /// This workspace's own complexity tables, keyed by primary profile
+  /// id. A key absent means INHERIT the app-wide table for that primary;
+  /// a key present is that primary's whole table (a level left alone in
+  /// it still means "run the workspace's agent"). An absent/empty map
+  /// inherits every primary's table.
+  complexityTables?: Record<string, ComplexityTable>;
+  /// Extra prompt lines / CLI args per primary. A key absent inherits
+  /// the app-wide list for that primary; a present empty list is an
+  /// explicit "nothing extra" override for it.
+  promptExtras?: Record<string, string[]>;
+  extraCliArgs?: Record<string, string[]>;
   /// Whether the human has been ASKED whether gavin's own files belong in
   /// this repo's git history. Not the answer: that is the ignore rule in
   /// the repository itself, which git owns and this must never shadow.
@@ -281,12 +295,13 @@ export interface Workspace {
   /// leaving compression on the app-wide default is indistinguishable on
   /// disk from nobody having decided yet.
   headroomAsked?: boolean;
-  /// This workspace's own resume flag for the `custom` agent profile
-  /// (v38), e.g. `--resume`. Absent means inherit the app-wide default
-  /// (`getCustomResumeArgs`), and failing that no resume at all for
-  /// `custom`. Machine-local like `terminalFontSize`: a resume flag is a
-  /// fact about the binary on THIS machine, not the repository.
+  /// This workspace's own resume flag for the retired hard-coded `custom`
+  /// profile. Cleared by migration onto `customProfiles[].resumeArgs`.
   customResumeArgs?: string;
+  /// Workspace-local named custom profiles (ids prefixed `local:`). Lives
+  /// on Workspace in config.json, not config.toml — same D35 reason as
+  /// the other machine-local agent settings.
+  customProfiles?: CustomProfile[];
   /// Overrides of shipped agent action prompts for this workspace, keyed
   /// by catalog id. Absent or empty inherits the app-wide map (and then
   /// the shipped default). Machine-local like `autoCommit`: which wording
@@ -534,6 +549,38 @@ export function createPage(
       w.id === workspaceId ? { ...w, pages: [...w.pages, page], activePageId: pageId } : w
     ),
   };
+}
+
+/// The page an agent session lands on when nothing chose one for it: an MCP
+/// spawn, a card run, a session adopted from the Sessions manager, and a
+/// session a Device started (`devicePresence.ts`). Found by name.
+export const AGENTS_PAGE_NAME = "Agents";
+
+/// Adds `sessionId` as a tab on the workspace's Agents page, creating the
+/// page with the session as its first tab when there is none (`newPageId`
+/// is only used then). Never steals focus: `createPage` activates the page
+/// it makes, so the page that was active is put back.
+export function addToAgentsPage(
+  state: WorkspacesData,
+  workspaceId: string,
+  sessionId: string,
+  newPageId: string
+): WorkspacesData {
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return state;
+  const agentsPage = ws.pages.find((p) => p.name === AGENTS_PAGE_NAME);
+  if (agentsPage) {
+    const anchor = allSessionIds(agentsPage.layout)[0];
+    const tree = addTab(agentsPage.layout, anchor, sessionId);
+    return updatePageLayout(state, workspaceId, agentsPage.id, tree);
+  }
+  const previousActive = ws.activePageId;
+  const data = createPage(state, workspaceId, newPageId, AGENTS_PAGE_NAME, {
+    type: "leaf",
+    tabs: [sessionId],
+    activeTabIndex: 0,
+  });
+  return previousActive ? switchPage(data, workspaceId, previousActive) : data;
 }
 
 export function renamePage(state: WorkspacesData, workspaceId: string, pageId: string, name: string): WorkspacesData {

@@ -391,8 +391,9 @@ export const FEATURE_MIN_VERSION = {
   // wrong answer this tab must never give: the human would go away
   // satisfied.
   //
-  // So the consumer is the tab's answer controls (DecisionsHubView ->
-  // DecisionsItemRow), which is also why the gate is on the ITEMS and
+  // So the consumers are the answer controls (DecisionsHubView ->
+  // DecisionsItemRow for decisions, ReviewHubView -> DecisionsItemRow
+  // for human tests), which is also why the gate is on the ITEMS and
   // not the tab: waiting sessions, rail review gates and unreviewed
   // cards are all readable from an older daemon, so the tab still lists
   // them and says why the items are missing rather than drawing an empty
@@ -518,7 +519,7 @@ export const FEATURE_MIN_VERSION = {
   // custom profile, and withholds it from an older daemon besides
   // (`api_family_for_daemon` in session.rs). So its consumer is the one
   // surface that produces the value: the API family picker in Settings
-  // → Custom agent, disabled with this reason rather than offering a
+  // → Agents → Customs, disabled with this reason rather than offering a
   // choice the running daemon would drop.
   customApiFamily: 48,
   // Savings (v49): `HeadroomSavings`, every card run's snapshot since a
@@ -603,6 +604,88 @@ export const FEATURE_MIN_VERSION = {
   // agent's flag and both complexity tables live in config.json and
   // work against any daemon, so they are not behind it.
   agentEffort: 56,
+  // Adopted-memory retrieval (v60, `feat-vectorized-memory.md`). Three
+  // new TYPES, so `min_version_for` is the wire gate and nothing can be
+  // silently dropped. The entry is `headroomSetup`'s: a Memory step that
+  // asked an older daemon would draw the wire error as a missing model
+  // and offer a download the daemon cannot run.
+  //
+  // Its consumer is `readMemoryIndex` in memoryIndexState.ts, which
+  // settles on the reason instead of asking -- so the wizard's step, the
+  // Home count and the open-time backfill all stand down -- and the
+  // index sync after Adopt, which skips the ask.
+  memoryIndex: 60,
+  // Where the daemon's dial stands (`companion-32`): `GetRelayState` and
+  // the `RelayStateChanged` push are v61 request/response TYPES an older
+  // daemon answers `Unsupported`.
+  //
+  // Consumer: `remoteAccess.ts`'s `relayStateBlocked`, which the Settings
+  // section reads before it asks and before it draws the badge beside the
+  // Relay URL, and which `pairingUnavailable` reads so that an older
+  // daemon's silence is not taken for a Relay that failed.
+  relayState: 61,
+  // The direct listener (v69, ADR 0009): `SetDirectAccess` and
+  // `GetDirectState` are new request TYPES an older daemon answers
+  // `Unsupported`, and `Devices.directAccessEnabled` is a widened reply it
+  // never sends -- which would read as "off" for a daemon that has no
+  // switch to be off.
+  //
+  // Consumer: `remoteAccess.ts`'s `directAccessBlocked`, which the
+  // Settings section reads before it draws or sends the Direct connection
+  // switch and before it asks where the listener stands, and which
+  // `pairingUnavailable` reads before it lets a listener stand in for the
+  // Relay.
+  directAccess: 69,
+  // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
+  // and the `DeviceRefusalChanged` push are v62. An older daemon sends
+  // neither, and a row with no refusal reads as "nothing was refused" --
+  // which is a claim an older daemon cannot back.
+  //
+  // Consumer: `devicesPanel.ts`'s `refusalsBlocked`, which the Devices
+  // panel reads to say so under the list rather than leave the silence to
+  // be taken for a clean record.
+  deviceRefusals: 62,
+  // Where each Device is and what it is doing (`companion-16`):
+  // `DeviceInfo.presence` and the `DevicePresenceChanged` push are v63. An
+  // older daemon sends neither, so a row with no presence line reads as a
+  // Device doing nothing -- which that daemon cannot say -- and no session
+  // a Device starts is placed at the desk.
+  //
+  // Consumer: `devicesPanel.ts`'s `presenceBlocked`, which the Devices panel
+  // reads to say so under the list.
+  devicePresence: 63,
+  // A browser per agent session (`playwright-browser-broker`): the
+  // `PlaywrightEndpoint`, `WatchBrowser` and `ListBrowsers` request TYPES
+  // and the `BrowserChanged` push are v65. An older daemon has no browser
+  // to show, so an empty pane or a missing chip would read as an agent
+  // that never opened one.
+  //
+  // Consumer: the live pane and the tab's browser chip
+  // (`playwright-live-pane.md`), which say why there is no view instead.
+  playwrightBrowser: 65,
+  // Companion notifications reaching a phone (v67): a Device hands this
+  // Workstation its send permission (`SetThisDeviceSendPermission`, a new
+  // TYPE the shell sends and nothing here does), and two replies widen --
+  // `Devices.pushGatewayUrl` and `DeviceInfo.notifies`. An older daemon
+  // sends neither, so its empty field and its rows with no "notifies"
+  // would be claims it cannot back; and no phone can hand it a
+  // permission, so a gateway set there notifies nobody.
+  //
+  // Consumers: `remoteAccess.ts`'s `pushGatewayBlocked`, which the
+  // Settings section's Push gateway field reads before it draws or saves,
+  // and which the Devices panel reads before it draws the word.
+  pushGateway: 67,
+  // Session ownership (v68, ADR 0008): `SetSessionOwner` and
+  // `ListSessionOwners` are new TYPES and `SessionOwnerChanged` a push. An
+  // older daemon locks nothing -- two Devices and the desk type into one
+  // session together, as before -- so a surface that would draw the lock or
+  // offer Take over / Hand over has to say ownership is missing rather than
+  // show a session as free that nobody is guarding.
+  //
+  // Consumers: `sessionOwnershipState.ts`'s `ownershipBlocked`, which the
+  // Devices panel reads to say so under the list, and which the Companion's
+  // terminal reads for its lock bar and its Hand over button.
+  sessionOwnership: 68,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -6,6 +6,9 @@ import {
   answerOutcome,
   answerRefusal,
   answerText,
+  activeStatuses,
+  cardFinished,
+  decisionsFiltering,
   decisionsList,
   decisionsSummary,
   decisionsWaiting,
@@ -13,25 +16,33 @@ import {
   failAndCloseOutcome,
   failOutcome,
   failRefusal,
+  filterSubjects,
   humanItemPending,
   humanItemWaiting,
   notifyMessage,
   notifySkipped,
+  NO_CARD_STATUS,
+  NO_STATUS,
   orderSubjects,
   passOutcome,
   pendingItems,
   resolveSelection,
+  statusFilterLabel,
+  statusOptions,
   subjectDetail,
   subjectId,
+  subjectStatusKey,
   subjectTitle,
   subjectWaits,
   summaryLine,
+  toggleStatus,
   type CardSubject,
   type DecisionCard,
   type DecisionSubject,
   type DecisionsInput,
 } from "$lib/decisions/decisions";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
+import type { Column } from "$lib/board/kanban";
 import type { HumanItem, HumanItemState, PlanFileInfo } from "$lib/core/gavin";
 import type { Rail, StepAttention } from "$lib/orchestration/orchestration";
 
@@ -406,34 +417,12 @@ describe("the order", () => {
   });
 });
 
-describe("the two counts", () => {
+describe("the count", () => {
   it("counts a card with an open item as waiting on you", () => {
     const list = decisionsList(input({ cards: cards(planCard("card.md", [item()])) }));
-    expect(list.summary).toEqual({ waiting: 1, failedTests: 0 });
+    expect(list.summary).toEqual({ waiting: 1 });
     expect(decisionsWaiting(list.summary)).toBe(true);
-  });
-
-  // The whole reason the two counts are kept apart: a failed test is
-  // owed by the AGENT, and counting it as waiting on you would put a
-  // number on the tab that answering cannot bring down.
-  it("counts a card whose only item is a failed test apart, and does not light the tab", () => {
-    const list = decisionsList(
-      input({ cards: cards(planCard("card.md", [item({ kind: "test", state: "failed" })])) })
-    );
-    expect(list.summary).toEqual({ waiting: 0, failedTests: 1 });
-    expect(decisionsWaiting(list.summary)).toBe(false);
-    expect(subjectWaits(list.subjects[0])).toBe(false);
-  });
-
-  it("counts a card with both as waiting, and still names the failure", () => {
-    const list = decisionsList(
-      input({
-        cards: cards(
-          planCard("card.md", [item(), item({ kind: "test", state: "failed", lineIndex: 14 })])
-        ),
-      })
-    );
-    expect(list.summary).toEqual({ waiting: 1, failedTests: 1 });
+    expect(subjectWaits(list.subjects[0])).toBe(true);
   });
 
   // A card row with no items at all is one whose agent is waiting, which
@@ -470,19 +459,18 @@ describe("the two counts", () => {
         stepId: "st2",
         cardPath: OTHER,
         title: "other",
+        status: null,
         waitedMs: null,
         watched: false,
       },
     ];
-    expect(decisionsSummary(subjects)).toEqual({ waiting: 3, failedTests: 0 });
+    expect(decisionsSummary(subjects)).toEqual({ waiting: 3 });
   });
 
-  it("says both halves in one line, and nothing at all for an empty list", () => {
-    expect(summaryLine({ waiting: 2, failedTests: 1 })).toBe(
-      "2 waiting on you · 1 failed test, with the agent"
-    );
-    expect(summaryLine({ waiting: 1, failedTests: 0 })).toBe("1 waiting on you");
-    expect(summaryLine({ waiting: 0, failedTests: 0 })).toBeNull();
+  it("says the count in one line, and nothing at all for an empty list", () => {
+    expect(summaryLine({ waiting: 2 })).toBe("2 waiting on you");
+    expect(summaryLine({ waiting: 1 })).toBe("1 waiting on you");
+    expect(summaryLine({ waiting: 0 })).toBeNull();
     expect(NOTHING_WAITING).toMatch(/Nothing/);
   });
 });
@@ -594,7 +582,7 @@ describe("what the agent is told", () => {
 });
 
 describe("what a row calls itself", () => {
-  it("counts a card's decisions and tests apart", () => {
+  it("counts a card's decisions, and only those", () => {
     const list = decisionsList(
       input({
         cards: cards(
@@ -606,7 +594,7 @@ describe("what a row calls itself", () => {
         ),
       })
     );
-    expect(subjectDetail(list.subjects[0])).toBe("2 decisions · 1 human test");
+    expect(subjectDetail(list.subjects[0])).toBe("2 decisions");
   });
 
   it("falls back to a card's file name when its title is blank", () => {
@@ -630,5 +618,210 @@ describe("every HumanItemState is accounted for", () => {
   it("treats exactly open and failed as still owed", () => {
     const owed = STATES.filter((state) => humanItemPending(item({ state })));
     expect(owed).toEqual(["open", "failed"]);
+  });
+});
+
+describe("human tests are the Review tab's", () => {
+  it("leaves out a card whose only items are human tests", () => {
+    const list = decisionsList(
+      input({
+        cards: cards(
+          planCard("card.md", [
+            item({ kind: "test", text: "the installer runs" }),
+            item({ kind: "test", text: "it signs", state: "failed", lineIndex: 14 }),
+          ])
+        ),
+      })
+    );
+    expect(list.subjects).toEqual([]);
+    expect(decisionsWaiting(list.summary)).toBe(false);
+  });
+
+  it("lists only the decisions of a card that carries both", () => {
+    const list = decisionsList(
+      input({
+        cards: cards(
+          planCard("card.md", [item(), item({ kind: "test", text: "the installer runs", lineIndex: 14 })])
+        ),
+      })
+    );
+    const subject = list.subjects[0] as CardSubject;
+    expect(subject.items.map((i) => i.kind)).toEqual(["decision"]);
+  });
+
+  it("narrows pendingItems to one kind when asked, and to none when not", () => {
+    const plan = planCard("card.md", [
+      item({ lineIndex: 3 }),
+      item({ kind: "test", text: "the installer runs", lineIndex: 5 }),
+    ]);
+    expect(pendingItems(plan, "test").map((i) => i.kind)).toEqual(["test"]);
+    expect(pendingItems(plan, "decision").map((i) => i.kind)).toEqual(["decision"]);
+    expect(pendingItems(plan).map((i) => i.kind)).toEqual(["decision", "test"]);
+  });
+});
+
+describe("finished cards ask nothing", () => {
+  it("leaves out a Done card's open decision", () => {
+    const list = decisionsList(
+      input({
+        cards: cards(planCard("card.md", [item()], { status: "Done" })),
+        doneStatus: "Done",
+      })
+    );
+    expect(list.subjects).toEqual([]);
+  });
+
+  // The daemon files a card under plans/done/ by the `done` slug alone,
+  // so a card is finished by it before the board has even loaded.
+  it("knows a done card before the board has loaded", () => {
+    const list = decisionsList(input({ cards: cards(planCard("card.md", [item()], { status: " done " })) }));
+    expect(list.subjects).toEqual([]);
+  });
+
+  it("follows a board whose done column is called something else", () => {
+    const list = decisionsList(
+      input({
+        cards: cards(planCard("card.md", [item()], { status: "Shipped" })),
+        doneStatus: "Shipped",
+      })
+    );
+    expect(list.subjects).toEqual([]);
+  });
+
+  it("leaves out an archived card whatever status it was archived with", () => {
+    const archived = planCard("card.md", [item()], {
+      path: "/ws/.gavin-root/plans/archive/card.md",
+      status: "In Progress",
+    });
+    const list = decisionsList(input({ cards: cards(archived), doneStatus: "Done" }));
+    expect(list.subjects).toEqual([]);
+  });
+
+  // A nested task has no status of its own: it is as finished as the
+  // plan it rides inside.
+  it("reads a nested task's status off its parent plan", () => {
+    const nested = planCard("task.md", [item()], { status: null, kind: "task", parent: "plan.md" });
+    const done = planCard("plan.md", [], { kind: "plan", status: "Done" });
+    expect(decisionsList(input({ cards: cards(nested, done), doneStatus: "Done" })).subjects).toEqual([]);
+
+    const open = planCard("plan.md", [], { kind: "plan", status: "Review" });
+    const list = decisionsList(input({ cards: cards(nested, open), doneStatus: "Done" }));
+    expect(list.subjects).toHaveLength(1);
+    expect((list.subjects[0] as CardSubject).status).toBe("Review");
+  });
+
+  it("says so through cardFinished, which the Review tab shares", () => {
+    const card = { plan: planCard("card.md", [], { status: "Done" }), contextFolder: "/ws/.gavin-root" };
+    const plans = new Map([[card.plan.path, card]]);
+    expect(cardFinished(card, plans, "Done")).toBe(true);
+    const live = { ...card, plan: { ...card.plan, status: "Review" } };
+    expect(cardFinished(live, new Map([[live.plan.path, live]]), "Done")).toBe(false);
+  });
+
+  // An agent still waiting is a live wait, not an item on a closed card.
+  it("still lists a waiting agent bound to a Done card, with nothing to answer", () => {
+    const list = decisionsList(
+      input({
+        cards: cards(planCard("card.md", [item()], { status: "Done" })),
+        doneStatus: "Done",
+        bindings: new Map([[CARD, "s1"]]),
+        inbox: [row({ cardPath: CARD, cardWorkspaceId: "ws-1" })],
+      })
+    );
+    expect(list.subjects).toHaveLength(1);
+    expect((list.subjects[0] as CardSubject).items).toEqual([]);
+  });
+});
+
+describe("searching and filtering", () => {
+  const COLUMNS: Column[] = [
+    { id: "c3", name: "Done", position: 3 },
+    { id: "c1", name: "To Do", position: 0 },
+    { id: "c2", name: "In Progress", position: 1 },
+    { id: "c4", name: "Review", position: 2 },
+  ];
+
+  function mixed(): DecisionSubject[] {
+    return decisionsList(
+      input({
+        cards: cards(
+          planCard("card.md", [item({ text: "Which serializer?", options: ["serde", "bincode"] })]),
+          planCard("other.md", [item({ text: "Ship it?" })], { status: "Review" }),
+          planCard("loose.md", [item({ text: "Name it?" })], { status: "Someday" })
+        ),
+        doneStatus: "Done",
+        inbox: [row({ sessionId: "s9", tabName: "release shell" })],
+      })
+    ).subjects;
+  }
+
+  it("files every row under a status key, and a cardless one under No card", () => {
+    const keys = mixed().map((s) => [subjectTitle(s), subjectStatusKey(s)]);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        ["card", "in-progress"],
+        ["other", "review"],
+        ["loose", "someday"],
+        ["release shell", NO_CARD_STATUS],
+      ])
+    );
+  });
+
+  it("offers the board's columns in order without Done, then what only the list holds", () => {
+    const options = statusOptions(COLUMNS, "Done", mixed());
+    expect(options.map((o) => o.label)).toEqual(["To Do", "In Progress", "Review", "Someday", "No card"]);
+    expect(options.map((o) => o.count)).toEqual([0, 1, 1, 1, 1]);
+  });
+
+  it("names a card with no status apart from a row with no card", () => {
+    const subjects = decisionsList(
+      input({
+        cards: cards(planCard("card.md", [item()], { status: null })),
+        inbox: [row({ sessionId: "s9" })],
+      })
+    ).subjects;
+    const options = statusOptions([], null, subjects);
+    expect(options.map((o) => [o.key, o.label])).toEqual([
+      [NO_STATUS, "No status"],
+      [NO_CARD_STATUS, "No card"],
+    ]);
+  });
+
+  it("shows everything with no status chosen, and only the chosen ones otherwise", () => {
+    const subjects = mixed();
+    const options = statusOptions(COLUMNS, "Done", subjects);
+    expect(filterSubjects(subjects, { query: "", statuses: [] }, options)).toHaveLength(4);
+    const narrowed = filterSubjects(subjects, { query: "", statuses: ["review", NO_CARD_STATUS] }, options);
+    expect(narrowed.map(subjectTitle).sort()).toEqual(["other", "release shell"]);
+  });
+
+  // pruneFacets' rule: a choice the picker no longer offers is dropped
+  // rather than obeyed, or a renamed column would empty the list with
+  // nothing on screen to say why.
+  it("ignores a chosen status the picker no longer offers", () => {
+    const subjects = mixed();
+    const options = statusOptions(COLUMNS, "Done", subjects);
+    expect(activeStatuses(["qa"], options)).toEqual([]);
+    expect(filterSubjects(subjects, { query: "", statuses: ["qa"] }, options)).toHaveLength(4);
+    expect(decisionsFiltering({ query: "", statuses: ["qa"] }, options)).toBe(false);
+    expect(statusFilterLabel(["qa"], options)).toBe("All");
+  });
+
+  it("finds a row by what its decisions ask and offer, not only by its title", () => {
+    const subjects = mixed();
+    const options = statusOptions(COLUMNS, "Done", subjects);
+    const byOption = filterSubjects(subjects, { query: "bincode", statuses: [] }, options);
+    expect(byOption.map(subjectTitle)).toEqual(["card"]);
+    const byQuestion = filterSubjects(subjects, { query: "ship", statuses: [] }, options);
+    expect(byQuestion.map(subjectTitle)).toEqual(["other"]);
+    expect(decisionsFiltering({ query: "ship", statuses: [] }, options)).toBe(true);
+  });
+
+  it("names the chosen statuses in board order, and toggles one at a time", () => {
+    const options = statusOptions(COLUMNS, "Done", mixed());
+    expect(statusFilterLabel([], options)).toBe("All");
+    expect(statusFilterLabel(["review", "to-do"], options)).toBe("To Do, Review");
+    expect(toggleStatus(["review"], "to-do")).toEqual(["review", "to-do"]);
+    expect(toggleStatus(["review", "to-do"], "review")).toEqual(["to-do"]);
   });
 });

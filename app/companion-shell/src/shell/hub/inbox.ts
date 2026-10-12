@@ -18,6 +18,8 @@ export interface InboxRow {
   workstationName: string;
   /// The workspace's id on its Workstation: where tapping the row lands.
   workspace: string;
+  /// Its name, when the Workstation said it.
+  workspaceName?: string;
   kind: AttentionKind;
   text: string;
   target: AttentionTarget | null;
@@ -51,6 +53,7 @@ function row(ws: Pick<PairedWorkstation, "id" | "name">, item: AttentionItem, ke
     workstationId: ws.id,
     workstationName: ws.name,
     workspace: item.workspace,
+    ...(item.workspaceName ? { workspaceName: item.workspaceName } : {}),
     kind: item.kind,
     text: item.text,
     target: item.target,

@@ -49,10 +49,15 @@ interface LiveState {
   // of this module; a transform set on the reloaded module has to be the
   // one those closures read.
   inputTransform?: InputTransform | null;
+  // See setInputGate. Here for inputTransform's reason.
+  inputGate?: InputGate | null;
 }
 
 /// Rewrites what a terminal's own keyboard typed, before it is sent.
 export type InputTransform = (sessionId: string, data: string) => string;
+
+/// Whether a terminal's own keyboard may send to its session right now.
+export type InputGate = (sessionId: string) => boolean;
 
 /// Every live terminal in the window, held where a hot reload cannot reach it.
 ///
@@ -201,6 +206,7 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
   term.open(container);
 
   term.onData((data) => {
+    if (live.inputGate && !live.inputGate(sessionId)) return;
     const bytes = live.inputTransform ? live.inputTransform(sessionId, data) : data;
     backend.writeInput(sessionId, bytes).catch(() => {});
   });
@@ -256,6 +262,17 @@ export function setInputTransform(transform: InputTransform): () => void {
   live.inputTransform = transform;
   return () => {
     if (live.inputTransform === transform) live.inputTransform = null;
+  };
+}
+
+/// Holds every terminal's keyboard to `gate`: what the session lock
+/// (`sessionOwnershipState.ts`) sets, so a terminal another Device owns
+/// drops its keystrokes here -- the one place a terminal's typing is sent --
+/// rather than sending each one to be refused. Released like a transform.
+export function setInputGate(gate: InputGate): () => void {
+  live.inputGate = gate;
+  return () => {
+    if (live.inputGate === gate) live.inputGate = null;
   };
 }
 

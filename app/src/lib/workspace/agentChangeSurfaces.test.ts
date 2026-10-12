@@ -3,7 +3,7 @@ import { svelteSources, tsSources } from "$lib/sources";
 
 // Switching the workspace Profile used to call setAgentField immediately,
 // which left complexity pins pointing at the previous agent with no
-// chance to realign and no MCP/Superpowers/skills check for the new CLI.
+// chance to realign and no MCP/agent skills/skills check for the new CLI.
 // The confirm mini-wizard is the whole fix; these pins catch a regression
 // that rewires the select back to a direct write.
 
@@ -44,7 +44,7 @@ describe("workspace agent change", () => {
     expect(wizard).toContain("realignComplexityTable");
     expect(wizard).toContain("recommendedComplexityAction");
     expect(wizard).toContain("IntegrationStep");
-    expect(wizard).toContain("SuperpowersStep");
+    expect(wizard).toContain("AgentSkillsStep");
     expect(wizard).toContain("switchWorkspaceAgentProfile");
     expect(wizard).toContain("agentChangeIsRerun");
 

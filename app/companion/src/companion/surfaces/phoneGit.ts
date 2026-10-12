@@ -18,14 +18,23 @@ import {
   type FileStatus,
   type InProgressKind,
 } from "$lib/git/git";
+import { get } from "svelte/store";
 import {
+  agentCommitBlocker,
+  agentCommitElapsed,
+  agentCommitPhase,
+  agentCommitStopping,
   canSync,
   currentBranch,
+  dismissError,
   findEntry,
+  gitStore,
   pushLabel,
+  refresh,
   runBlocker,
   type GitViewState,
 } from "$lib/git/gitState";
+import { isReachabilityError } from "$companion/state/reachability";
 
 export type GitScreen = "no-root" | "loading" | "git-missing" | "not-a-repo" | "ready";
 
@@ -38,6 +47,15 @@ export function gitScreen(rootPath: string | null | undefined, view: GitViewStat
   if (view.gitMissing) return "git-missing";
   if (view.repo?.notARepo) return "not-a-repo";
   return "ready";
+}
+
+/// What the Git surface does when the connection comes back: the banner
+/// that only said the Workstation could not be reached goes, and the view
+/// is read again -- once, through the desk's own refresh and its queue.
+/// A banner of git's own stays.
+export function recoverGit(workspaceId: string): Promise<void> {
+  if (isReachabilityError(get(gitStore)[workspaceId]?.error)) dismissError(workspaceId);
+  return refresh(workspaceId);
 }
 
 /// The two panes a phone switches between. The desk's third column --
@@ -68,6 +86,50 @@ export function syncButtons(view: GitViewState): { fetch: SyncButton; pull: Sync
     pull: { label: "Pull", enabled: !locked && sync.pull, count: branch?.behind ?? 0 },
     push: { label: pushLabel(view), enabled: !locked && sync.push, count: branch?.ahead ?? 0 },
   };
+}
+
+// ---- Commit via agent ------------------------------------------------
+
+export interface AgentCommitControl {
+  /// The button, a run going, or the moment after one that emptied the
+  /// tree.
+  shows: "button" | "running" | "done";
+  label: string;
+  /// How long the run has been going: "12s", "4m 3s".
+  elapsed: string | null;
+  /// Why the button cannot be pressed, said beside it: a phone has no
+  /// tooltip. Null when it can.
+  blocker: string | null;
+  /// Show the agent and Stop, once there is a session to show or stop.
+  canShow: boolean;
+  canStop: boolean;
+  /// The agent's session, which Show opens in the phone's terminal.
+  session: string | null;
+}
+
+/// The desk's "Commit via agent" control, read from the same view state
+/// and in the same words. `headlessArgs` is null until the Workstation's
+/// agent settings are read: unknown, which the button must not call "no
+/// headless mode".
+export function agentCommitControl(view: GitViewState, headlessArgs: string | null, now: number): AgentCommitControl {
+  const phase = agentCommitPhase(view);
+  if (phase === "starting" || phase === "running") {
+    const stopping = agentCommitStopping(view);
+    return {
+      shows: "running",
+      label: stopping ? "Stopping…" : "Committing…",
+      elapsed: agentCommitElapsed(view, now),
+      blocker: null,
+      canShow: phase === "running",
+      canStop: phase === "running" && !stopping,
+      session: view.agentCommit?.sessionId ?? null,
+    };
+  }
+  const idle = { elapsed: null, canShow: false, canStop: false, session: null };
+  if (phase === "done") return { shows: "done", label: "Committed", blocker: null, ...idle };
+  const blocker =
+    headlessArgs === null ? "Reading the Workstation’s agent settings…" : agentCommitBlocker(view, headlessArgs);
+  return { shows: "button", label: "Commit via agent", blocker, ...idle };
 }
 
 /// Why syncing is not on offer, in words for a screen with no tooltips

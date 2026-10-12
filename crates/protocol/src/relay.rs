@@ -77,6 +77,20 @@ pub fn rendezvous_id(workstation_public_key: &[u8]) -> String {
     crate::hex_encode(&h.finalize())
 }
 
+/// The pin a pairing QR carries for the direct listener's certificate
+/// (ADR 0009, `PairingQr::direct_pin`):
+///
+/// ```text
+/// pin = hex(SHA-256(the certificate, DER))
+/// ```
+///
+/// The whole certificate rather than its key, so that every platform
+/// computes it from what its TLS stack hands over without parsing it:
+/// the DER as it arrived.
+pub fn certificate_pin(certificate_der: &[u8]) -> String {
+    crate::hex_encode(&Sha256::digest(certificate_der))
+}
+
 /// Whether `s` has the shape of a rendezvous id: 64 lowercase hex digits.
 pub fn is_rendezvous_id(s: &str) -> bool {
     is_lower_hex(s, 64)
@@ -264,6 +278,9 @@ pub enum RelayUrlError {
     Credentials,
     /// `ws://` to a host that is not on this machine or this network.
     PlainToPublicHost,
+    /// A dev (debug) build asked to use a Relay that is not on this
+    /// machine or this network. See `RelayUrl::parse_for`.
+    PublicHostInDevBuild,
 }
 
 impl std::fmt::Display for RelayUrlError {
@@ -289,6 +306,10 @@ impl std::fmt::Display for RelayUrlError {
                 f,
                 "ws:// would send the admission token unencrypted — use wss:// for a Relay that is not on this machine or this network"
             ),
+            RelayUrlError::PublicHostInDevBuild => write!(
+                f,
+                "a development build only talks to a Relay on this machine or this network — point it at the local dev stack (docs/dev-setup.md), or use a release build for a public Relay"
+            ),
         }
     }
 }
@@ -296,6 +317,23 @@ impl std::fmt::Display for RelayUrlError {
 impl std::error::Error for RelayUrlError {}
 
 impl RelayUrl {
+    /// `parse`, and then the build's own rule: a dev (debug) build may use
+    /// only a Relay on loopback or the LAN, so a build made from a
+    /// working tree cannot carry a real Workstation's admission token, or
+    /// its Devices' traffic, to somebody's public Relay. A release build
+    /// takes what `parse` takes.
+    ///
+    /// The dev and release builds share one trust store, so this is asked
+    /// where the URL is stored AND where it is dialled: a public URL the
+    /// release build saved is still not one the dev build's daemon dials.
+    pub fn parse_for(url: &str, profile: crate::BuildProfile) -> Result<Self, RelayUrlError> {
+        let parsed = Self::parse(url)?;
+        if profile == crate::BuildProfile::Dev && !parsed.local {
+            return Err(RelayUrlError::PublicHostInDevBuild);
+        }
+        Ok(parsed)
+    }
+
     /// Reads `url` and decides whether it may be dialled.
     ///
     /// `wss://` is accepted for any host. `ws://` is accepted only for a
@@ -400,7 +438,11 @@ fn name_or_ipv4(host: &str) -> Result<Option<std::net::Ipv4Addr>, RelayUrlError>
     Ok(None)
 }
 
-fn address_is_local(address: std::net::IpAddr) -> bool {
+/// Whether `address` is this machine or this network: loopback, a
+/// private or link-local address, or one Tailscale hands out. What
+/// `RelayUrl` calls a local host, and what the daemon's direct listener
+/// takes a connection from (ADR 0009).
+pub fn address_is_local(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
@@ -458,6 +500,17 @@ mod tests {
 
     /// Two purposes, and the Relay reads neither: each is a label it
     /// forwards. Both have to be labels it WILL forward.
+    /// Pinned for the reason the rendezvous id is: the shell's native
+    /// side computes the same digest from the certificate its TLS stack
+    /// hands it, and a change here would strand every direct address.
+    #[test]
+    fn the_certificate_pin_is_the_hash_of_the_der() {
+        let pin = certificate_pin(b"not really a certificate");
+        assert_eq!(pin.len(), 64);
+        assert_eq!(pin, crate::hex_encode(&Sha256::digest(b"not really a certificate")));
+        assert!(pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    }
+
     #[test]
     fn a_stream_is_for_pairing_or_for_connecting() {
         assert_eq!(PURPOSE_PAIR, "pair");
@@ -546,6 +599,21 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_build_refuses_a_public_relay_and_a_release_build_takes_it() {
+        use crate::BuildProfile::{Dev, Release};
+        for url in ["wss://relay.example/gavin", "wss://8.8.8.8:9000", "wss://[2001:db8::1]"] {
+            assert_eq!(RelayUrl::parse_for(url, Dev), Err(RelayUrlError::PublicHostInDevBuild), "{url}");
+            assert!(RelayUrl::parse_for(url, Release).is_ok(), "{url}");
+        }
+        for url in ["ws://127.0.0.1:9000", "wss://localhost", "ws://192.168.1.20:9000", "ws://studio.local", "ws://[::1]:1"] {
+            assert!(RelayUrl::parse_for(url, Dev).is_ok(), "{url}");
+            assert!(RelayUrl::parse_for(url, Release).is_ok(), "{url}");
+        }
+        // What is wrong with the URL itself is still said first.
+        assert_eq!(RelayUrl::parse_for("ws://relay.example", Dev), Err(RelayUrlError::PlainToPublicHost));
+    }
+
+    #[test]
     fn a_plain_url_to_a_public_host_is_refused() {
         for url in ["ws://relay.example/gavin", "ws://8.8.8.8:9000", "ws://[2001:db8::1]:9000"] {
             assert_eq!(RelayUrl::parse(url), Err(RelayUrlError::PlainToPublicHost), "{url}");
@@ -612,6 +680,8 @@ mod tests {
             RelayUrlError::Port => "port",
             RelayUrlError::Credentials => "credentials",
             RelayUrlError::PlainToPublicHost => "plain-to-public-host",
+            // `parse_for`'s, never `parse`'s, so the shared table has no case for it.
+            RelayUrlError::PublicHostInDevBuild => "public-host-in-dev-build",
         }
     }
 

@@ -111,7 +111,27 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   begin_pairing: ["ordinary"],
   reject_pairing: ["ordinary"],
   list_devices: ["ordinary"],
+  // A read of the dial's state; the admission token is in no answer.
+  get_relay_state: ["ordinary"],
   set_remote_access: ["ordinary"],
+  // The direct listener (ADR 0009), by `set_remote_access`'s reasoning:
+  // turning it on removes no work and ends no process, a Device that
+  // reaches it still needs `confirm_pairing` to become one, and gating
+  // the switch would gate turning the port off. The state read carries
+  // addresses and a port, which the QR prints anyway.
+  get_direct_state: ["ordinary"],
+  set_direct_access: ["ordinary"],
+  // Where the daemon posts notifications, and what it posts (v49/v67).
+  // Neither removes work or ends a process. A gateway of a script's
+  // choosing is handed sealed payloads it holds no key for, and the send
+  // permissions that go with them as bearer tokens: with those it can
+  // make the real gateway push to a paired phone -- rate-limited per
+  // Device, and still sealed by the daemon, so only text the desk could
+  // have sent anyway. Which is all `push_companion_notify` lets the page
+  // do directly: the desk decides what to notify, and the page is the
+  // desk.
+  set_push_gateway_url: ["ordinary"],
+  push_companion_notify: ["ordinary"],
 
   // ---- destructive, deliberately not gated ----
   kill_session: [
@@ -156,6 +176,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   adopt_session: ["ordinary"],
   snapshot_session: ["ordinary"],
   set_failure_patterns: ["ordinary"],
+  distrust_osc133: ["ordinary"],
   get_workspaces_state: ["ordinary"],
   set_workspaces_state: ["ordinary"],
   get_workspace_settings: ["ordinary"],
@@ -193,6 +214,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   headroom_reach: ["ordinary"],
   detect_headroom: ["ordinary"],
   install_headroom: ["ordinary"],
+  // Adopted memories: the index's state, and bringing it up to the
+  // instructions file -- derived data, rebuilt from the file at will.
+  // The one cost is a model download the Memory step asks for.
+  get_memory_index: ["ordinary"],
+  ensure_memory_index: ["ordinary"],
   get_session_names: ["ordinary"],
   set_session_name: ["ordinary"],
   get_file_tabs: ["ordinary"],
@@ -256,6 +282,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   list_queued_inputs: ["ordinary"],
   set_queued_inputs: ["ordinary"],
   send_queued_input: ["ordinary"],
+  // Session ownership (v68): who may type into a session. From the desk the
+  // desk asks as itself; a Device's call is answered by the daemon as that
+  // Device (`RemoteAllowance::Daemon`), so neither is a gate's to hold.
+  set_session_owner: ["ordinary"],
+  list_session_owners: ["ordinary"],
   set_board_tabs: ["ordinary"],
   set_card_tabs: ["ordinary"],
   set_plan_frontmatter_field: ["ordinary"],
@@ -275,10 +306,35 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_root_config_field: ["ordinary"],
   get_agent_model_defaults: ["ordinary"],
   set_agent_model_default: ["ordinary"],
-  get_superpowers_marks: ["ordinary"],
-  set_superpowers_mark: ["ordinary"],
-  superpowers_status: ["ordinary"],
-  superpowers_install: ["ordinary"],
+  get_agent_skills_marks: ["ordinary"],
+  set_agent_skills_mark: ["ordinary"],
+  // The Settings note about the plugin gavin used to recommend: a read of
+  // config.json, and a write of one root into it.
+  agent_skills_farewell: ["ordinary"],
+  dismiss_agent_skills_farewell: ["ordinary"],
+  agent_skills_status: ["ordinary"],
+  agent_skills_install: ["ordinary"],
+  // The Playwright step: three checks, and an install of the pinned
+  // browser plus a `playwright` entry merged into the agent's MCP config
+  // -- the same kind of write as setup_agent_integration's below. The
+  // install runs `npx` with fixed arguments outside the workspace, so no
+  // repository chooses what it runs.
+  playwright_status: ["ordinary"],
+  playwright_install: ["ordinary"],
+  // The live view of an agent's browser: a stream to the asking window,
+  // its read-back, and the app-wide pane setting.
+  watch_browser: ["ordinary"],
+  unwatch_browser: ["ordinary"],
+  watch_browser_for_device: ["ordinary"],
+  unwatch_browser_for_device: ["ordinary"],
+  // A Device's "Commit via agent": the ask, which the desk window that
+  // runs the workspace answers with its own press (or Stop) -- a hidden
+  // agent that commits and never pushes -- and that window's answer.
+  agent_commit_for_device: ["ordinary"],
+  answer_agent_commit_request: ["ordinary"],
+  list_browsers: ["ordinary"],
+  get_playwright_pane_open: ["ordinary"],
+  set_playwright_pane_open: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.
@@ -291,8 +347,6 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // the same resolver card_run_tokens reads through. It writes nothing and
   // reaches nothing but files the CLI wrote on this machine.
   conversation_log: ["ordinary"],
-  get_agent_pause: ["ordinary"],
-  set_agent_pause: ["ordinary"],
   get_agent_defaults: ["ordinary"],
   set_agent_defaults: ["ordinary"],
   // The memory wall. A read and a preference write, the same shape as

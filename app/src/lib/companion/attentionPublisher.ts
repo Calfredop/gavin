@@ -88,7 +88,9 @@ function publishNow(): void {
     );
   }
 
-  publishCompanionAttention({ inbox, interrupted, humanTests, stoppedRails });
+  const workspaceNames = Object.fromEntries(state.workspaces.map((ws) => [ws.id, ws.name]));
+
+  publishCompanionAttention({ inbox, interrupted, humanTests, stoppedRails, workspaceNames });
 }
 
 /// Subscribe to every store the answer reads and republish on change.

@@ -98,6 +98,25 @@ export const DEFAULT_REORGANIZE =
   "{{read_first}}\n" +
   "{{carry_through}}";
 
+export const DEFAULT_CLEAN_STALE =
+  "{{name_tab_first}}\n\n" +
+  "The {{tab}} tab lists the {{item_noun}} still open on this workspace's cards. Some of them " +
+  "are stale, and your job is to find those and close them.\n\n" +
+  "{{items_block}}\n\n" +
+  "For each item, read its card and find out whether it still needs a human: check the code, " +
+  "the commits, and the other cards before you decide. An item is stale when what it asks was " +
+  "already settled — the code or a later commit already does one of the options, the card's " +
+  "body or another card records the call — or when the work it is about was dropped, redone " +
+  "another way, or superseded by a different card.\n\n" +
+  "Close a stale item by editing its card file: tick its box (`- [ ]` becomes `- [x]`) and add " +
+  "one line directly under it, indented two spaces past the item's dash, reading " +
+  "`Closed as stale (YYYY-MM-DD): <one sentence on why>` with today's date. Change nothing else " +
+  "on the item's line.\n\n" +
+  "Leave every item that still genuinely needs a human exactly as it is — when in doubt, leave " +
+  "it. Do not delete items, do not answer a live question on the human's behalf, do not change " +
+  "any card's status, and change no code.\n\n" +
+  "When you are done, list what you closed and why, and what you left open.";
+
 export const DEFAULT_CRITICAL_REVIEW_SUFFIX =
   "\n\nYou are one of {{reviewer_total}} reviewers critiquing this work side by side in the " +
   "same checkout. You are “{{reviewer_label}}”. This shell already starts where the " +

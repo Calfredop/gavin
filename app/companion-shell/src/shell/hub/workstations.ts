@@ -7,7 +7,7 @@
 // opens once it is ready: its desktop app is what serves its UI and
 // answers it (ADR 0003).
 import { DEMO } from "$companion/demo/sampleData";
-import { liveLabel, liveSummary, type LiveState, type LiveStateName } from "$shell/hub/live";
+import { liveLabel, liveSummary, tryNowOffered, type LiveState, type LiveStateName } from "$shell/hub/live";
 import type { PairedWorkstation } from "$shell/hub/paired";
 
 export type WorkstationState = LiveStateName;
@@ -17,12 +17,21 @@ export interface HubWorkstation {
   id: string;
   name: string;
   demo: boolean;
-  /// The line under the name.
+  /// The line under the name: what is wrong, and what to do. Empty where
+  /// the state says it all -- ready, or locked under the Unlock's banner.
   summary: string;
+  /// How many items it has waiting on the human; none unless it is
+  /// ready.
+  waiting?: number;
   state: WorkstationState;
+  /// The state, in words.
+  label: string;
   /// Whether tapping it opens its UI: the Demo always; a paired one when
   /// it is ready, since its desktop app serves the bundle and answers it.
   openable: boolean;
+  /// Whether tapping it tries it again now (`Try now`): a paired one that
+  /// is not ready, and may be by now.
+  tryNow?: boolean;
 }
 
 /// The Demo Workstation, under the identity its own end of the channel
@@ -33,8 +42,14 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   demo: DEMO.workstation.demo,
   summary: "Sample workspaces, cards and agents to explore. Nothing to pair.",
   state: "ready",
+  label: liveLabel({ state: "ready", items: [] }),
+  waiting: 0,
   openable: true,
 };
+
+/// Once a real Workstation is paired the Demo is one line, last: it is
+/// still there to explore, and no longer what the hub is for.
+const DEMO_COMPACT: HubWorkstation = { ...DEMO_WORKSTATION, summary: "" };
 
 const LOCKED: LiveState = { state: "locked" };
 
@@ -51,17 +66,16 @@ export function hubWorkstations(
         id: ws.id,
         name: ws.name,
         demo: false,
-        summary: liveSummary(state),
+        summary: state.state === "ready" || state.state === "locked" ? "" : liveSummary(state),
         state: state.state,
+        label: liveLabel(state),
+        waiting: state.state === "ready" ? state.items.length : 0,
         openable: state.state === "ready",
+        tryNow: tryNowOffered(state),
       };
     }),
-    DEMO_WORKSTATION,
+    paired.length > 0 ? DEMO_COMPACT : DEMO_WORKSTATION,
   ];
-}
-
-export function stateLabel(state: WorkstationState): string {
-  return liveLabel(state);
 }
 
 /// A Workstation's id becomes a host name in its bundle's origin. Anything

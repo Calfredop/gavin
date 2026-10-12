@@ -16,7 +16,7 @@ import {
   setAgentArmDeclined,
   workspaceComplexityTable,
 } from "$lib/core/layoutState";
-import { COMPLEXITY_LEVELS, complexityEntry } from "$lib/cards/complexity";
+import { COMPLEXITY_LEVELS, complexityEntryFor } from "$lib/cards/complexity";
 
 export interface ArmRequest {
   workspaceId: string;
@@ -91,11 +91,24 @@ export function owedArming(workspaceId: string): string[] {
   const workspace = state.workspaces.find((w) => w.id === workspaceId);
   if (!workspace) return [];
   const app = get(agentDefaultsStore);
-  const chain = effectiveFallbackChain(workspace.agentFallback, app.agentFallback);
-  const wsTable = workspaceComplexityTable(workspaceId);
+  // Union of EVERY primary's effective chain, not only the workspace
+  // agent's: a complexity table can launch a card on another primary,
+  // whose chain then walks agents this workspace was never asked to arm.
+  const appMap = app.fallbackChains ?? {};
+  const wsMap = workspace.fallbackChains ?? {};
+  const chain: string[] = [];
+  for (const primary of new Set([...Object.keys(appMap), ...Object.keys(wsMap)])) {
+    chain.push(...effectiveFallbackChain(wsMap, appMap, primary));
+  }
+  // Only the table of the agent this workspace runs is consulted: a card
+  // is attributed once, by that table, and the profile it picks is then
+  // the launch's primary (its own chain, its own cycle) -- not a second
+  // table lookup.
+  const workspaceProfileId = resolvedAgentFor(workspaceId).profileId;
+  const table = workspaceComplexityTable(workspaceId, workspaceProfileId);
   const complexityProfiles: string[] = [];
   for (const level of COMPLEXITY_LEVELS) {
-    const entry = complexityEntry(level, app.complexity, wsTable);
+    const entry = complexityEntryFor(level, table);
     const profile = entry?.profile.trim();
     if (profile) complexityProfiles.push(profile);
   }
@@ -104,7 +117,7 @@ export function owedArming(workspaceId: string): string[] {
     complexityProfiles,
     armed: new Set(workspace.armedAgents ?? []),
     declined: new Set(workspace.declinedAgents ?? []),
-    workspaceProfileId: resolvedAgentFor(workspaceId).profileId,
+    workspaceProfileId,
   });
 }
 

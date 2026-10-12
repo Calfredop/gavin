@@ -23,7 +23,7 @@
 
 <style>
   .group {
-    padding: 0 max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+    padding: 0 14px 8px;
     border-bottom: 1px solid var(--border);
   }
   .title {

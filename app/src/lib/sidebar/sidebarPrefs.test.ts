@@ -35,6 +35,11 @@ import {
   saveSidebarPeekOnHover,
   sidebarPeekOnHover,
   setSidebarPeekOnHover,
+  DIM_INACTIVE_KEY,
+  loadDimInactiveWorkspaces,
+  saveDimInactiveWorkspaces,
+  dimInactiveWorkspaces,
+  setDimInactiveWorkspaces,
 } from "$lib/sidebar/sidebarPrefs";
 import { layoutState } from "$lib/core/layoutState";
 import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
@@ -204,5 +209,29 @@ describe("remembering that hover opens the collapsed rail", () => {
     expect(get(sidebarPeekOnHover)).toBe(false);
     setSidebarPeekOnHover(true);
     expect(get(sidebarPeekOnHover)).toBe(true);
+  });
+});
+
+describe("remembering whether inactive workspaces are dimmed", () => {
+  it("round-trips through storage", () => {
+    const store = storage();
+    saveDimInactiveWorkspaces(false, store);
+    expect(store.map.get(DIM_INACTIVE_KEY)).toBe("false");
+    expect(loadDimInactiveWorkspaces(store)).toBe(false);
+    saveDimInactiveWorkspaces(true, store);
+    expect(loadDimInactiveWorkspaces(store)).toBe(true);
+  });
+
+  it("reads anything it did not write as on", () => {
+    expect(loadDimInactiveWorkspaces(storage())).toBe(true);
+    expect(loadDimInactiveWorkspaces(storage({ [DIM_INACTIVE_KEY]: "off" }))).toBe(true);
+    expect(loadDimInactiveWorkspaces(undefined)).toBe(true);
+  });
+
+  it("sets the store", () => {
+    setDimInactiveWorkspaces(false);
+    expect(get(dimInactiveWorkspaces)).toBe(false);
+    setDimInactiveWorkspaces(true);
+    expect(get(dimInactiveWorkspaces)).toBe(true);
   });
 });

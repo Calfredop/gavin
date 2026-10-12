@@ -8,6 +8,8 @@
   import { layoutState } from "$lib/core/layoutState";
   import { workspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
   import { DEMO_PACE_MS, deviceStorage, openChannel } from "$companion/state/entry";
+  import { RECONNECTED_MS, reachability, reachabilityBanner, reconnected } from "$companion/state/reachability";
+  import { SURFACE_LABELS } from "$companion/state/viewState";
   import {
     connection,
     connectWorkstation,
@@ -27,6 +29,7 @@
   import PhoneFiles from "$companion/surfaces/PhoneFiles.svelte";
   import PhoneGit from "$companion/surfaces/PhoneGit.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import PhoneItems from "$companion/surfaces/PhoneItems.svelte";
   import PhonePrd from "$companion/surfaces/PhonePrd.svelte";
   import PhoneRails from "$companion/surfaces/PhoneRails.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
@@ -80,6 +83,7 @@
     $view.page?.kind === "card" ? $view.page.path.slice($view.page.path.lastIndexOf("/") + 1) : ($view.page?.kind ?? null)
   );
   const ready = $derived($connection.status === "ready" ? $connection : null);
+  const offline = $derived(ready ? reachabilityBanner($reachability, $reconnected, ready.workstation.name) : null);
   const waiting = $derived(
     open
       ? workspaceAgentsSummary(open, {
@@ -92,7 +96,21 @@
   );
 </script>
 
-<main class="companion">
+<main class="companion" class:offline={offline !== null}>
+  <!-- The one place an outage is said: above whatever screen is up, which
+       keeps its place and its drafts, and reads again by itself once the
+       Workstation is back, saying `Reconnected` as it clears
+       (state/reachability.ts). -->
+  {#if offline}
+    <p
+      class="offline-line"
+      class:back={offline.tone === "back"}
+      role="status"
+      style:--reconnected-ms="{RECONNECTED_MS}ms"
+    >
+      {offline.text}
+    </p>
+  {/if}
   {#if $connection.status === "connecting"}
     <PhoneHeader title="Gavin" />
     <p class="note">Connecting to the Workstation…</p>
@@ -115,19 +133,23 @@
       {:else if open && $view.page}
         {#key `${open.id}:${pageKey}`}
           {#if $view.page.kind === "card"}
-            <PhoneCard workspace={open} path={$view.page.path} />
+            <PhoneCard workspace={open} path={$view.page.path} back={SURFACE_LABELS[$view.surface]} />
           {:else}
             <PhonePrd workspace={open} />
           {/if}
         {/key}
       {:else if open}
-        <PhoneHeader
-          title={open.name}
-          back="Workspaces"
-          onBack={showWorkspaces}
-          tag={ready.workstation.demo ? "demo" : null}
-        />
-        <SurfaceTabs current={$view.surface} onPick={showSurface} {waiting} />
+        <!-- One band, the header and the strip, which a phone on its
+             side folds into one row (below). -->
+        <div class="chrome">
+          <PhoneHeader
+            title={open.name}
+            back="Workspaces"
+            onBack={showWorkspaces}
+            tag={ready.workstation.demo ? "demo" : null}
+          />
+          <SurfaceTabs current={$view.surface} onPick={showSurface} {waiting} />
+        </div>
         <!-- Keyed on the root as well: a workspace pointed at another
              folder at the desk is another repository and another tree. -->
         {#key `${open.id}\u0000${open.rootPath ?? ""}`}
@@ -136,9 +158,11 @@
               <PhoneSessions workspace={open} />
             </div>
           {:else if $view.surface === "rails"}
-            <div class="scroll">
-              <PhoneRails workspace={open} />
-            </div>
+            <PhoneRails workspace={open} />
+          {:else if $view.surface === "decisions"}
+            <PhoneItems workspace={open} kind="decisions" />
+          {:else if $view.surface === "review"}
+            <PhoneItems workspace={open} kind="tests" />
           {:else if $view.surface === "git"}
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}
@@ -194,7 +218,73 @@
        visible height (viewport.ts) goes further, and leaves out the soft
        keyboard: a page that did not would type under it. */
     height: var(--visible-height, 100dvh);
+    /* Clear of the side insets, the Dynamic Island's band and the
+       rounded corners of a phone on its side (62px each way on an iPhone
+       16 Pro, 0 upright), once for every surface: none of them reads a
+       side inset of its own. A sheet fixed over the page spans these
+       too, and keeps clear itself (PhoneCompose.svelte).
+       `seam/landscape.test.ts` holds it. */
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    box-sizing: border-box;
     transform: translateY(var(--visible-top, 0px));
+  }
+  .offline-line {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: calc(env(safe-area-inset-top) + 4px) 12px 4px;
+    border-bottom: 1px solid var(--border-warning);
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+  /* Back up: held long enough to read, then faded out before it is
+     removed, so the outage is seen to end. */
+  .offline-line.back {
+    border-bottom-color: var(--border-success);
+    background: var(--surface-success);
+    color: var(--success-text);
+    animation: reconnected var(--reconnected-ms) ease-in forwards;
+  }
+  @keyframes reconnected {
+    0%,
+    70% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  /* The line has taken the notch's inset; the header under it need not
+     (PhoneHeader.svelte reads this). */
+  .companion.offline {
+    --header-inset-top: 0px;
+  }
+  .chrome {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+  }
+  /* A phone on its side is 402px tall on an iPhone 16 Pro, and the
+     header over the strip took 94 of them: one row, the header's title
+     beside the strip. A tablet's landscape is tall enough to keep both. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .companion .chrome {
+      flex-direction: row;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-sunken);
+    }
+    .companion .chrome > :global(*) {
+      border-bottom: 0;
+    }
+    .companion .chrome > :global(:first-child) {
+      flex: 0 1 auto;
+      max-width: 40%;
+    }
+    .companion .chrome > :global(:last-child) {
+      flex: 1 1 0;
+      min-width: 0;
+    }
   }
   .scroll {
     flex: 1 1 auto;

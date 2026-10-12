@@ -1,6 +1,15 @@
 /* Tier 1 -- primitive ramps. Theme-independent: defined once, never
    redefined. Components must NOT reference these directly; they exist so
-   the tier-2 roles below can be re-pointed per theme. */
+   the tier-2 roles below can be re-pointed per theme.
+
+   Four steps are not the round number beside them -- grey-7, grey-9,
+   blue-2, red-4 -- because each is set where a text role clears 4.5:1,
+   WCAG AA for text under 18px, against every surface of its theme. The
+   hardest surface is the one nearest the text: #ddd (selected) in the
+   light theme, #3a3a3a (overlay, selected) in the dark. A step any
+   nearer and a caption on a modal or a selected row drops under the bar.
+   The Companion's seam/themeContrast.test.ts computes every pair from
+   this file. */
 :root {
   --grey-0: #1a1a1a;
   --grey-1: #1e1e1e;
@@ -9,9 +18,9 @@
   --grey-4: #3a3a3a;
   --grey-5: #444;
   --grey-6: #555;
-  --grey-7: #666;
+  --grey-7: #5e5e5e;
   --grey-8: #888;
-  --grey-9: #999;
+  --grey-9: #a6a6a6;
   --grey-10: #bbb;
   --grey-11: #ddd;
   --grey-12: #eee;
@@ -21,7 +30,7 @@
 
   --blue-0: #20242a;   /* dark tint surface */
   --blue-1: #2a3a4a;
-  --blue-2: #4a6a8a;
+  --blue-2: #42617e;
   --blue-3: #4a9eff;
   --blue-4: #7ea8d8;
   --blue-5: #d3e4f7; /* NEW */
@@ -39,7 +48,7 @@
   --red-1: #7a3030;
   --red-2: #b03a32; /* NEW */
   --red-3: #e0524a;
-  --red-4: #e08a8a;
+  --red-4: #e69696;
   --red-5: #f0c0c0;
   --red-6: #fdeaea; /* NEW -- light tint surface */
 
@@ -90,9 +99,14 @@
      names, and for the same reason. */
   --scrollbar-thumb: var(--grey-6);
 
+  /* Three steps of text, every one of them text: a caption in
+     --text-subtle is still something to read, at 11px, on a modal. So
+     the floor is 4.5:1 on the lightest surface here, #3a3a3a, and that
+     leaves muted and subtle closer together than #999 and #666 were --
+     which put subtle at 2.9:1 on the base surface and 2.0:1 on a modal. */
   --text: var(--grey-12);
-  --text-muted: var(--grey-9);
-  --text-subtle: var(--grey-7);
+  --text-muted: var(--grey-10);
+  --text-subtle: var(--grey-9);
   /* Foreground on a COLOURED fill (accent/danger/warning badges), not the
      inverse of --text. Those fills stay mid-to-dark in both themes, so
      this is white in both -- inverting it here would put near-black on a
@@ -148,13 +162,16 @@
 
   --scrollbar-thumb: var(--grey-10);
 
+  /* The same floor from the other side: 4.5:1 on #ddd, a selected row.
+     #888 was 3.5:1 on white. */
   --text: var(--grey-0);
-  --text-muted: var(--grey-7);
-  --text-subtle: var(--grey-8);
+  --text-muted: var(--grey-5);
+  --text-subtle: var(--grey-7);
   --text-inverted: var(--grey-15);
 
   /* Fills stay vivid; anything that renders as TEXT drops to blue-2,
-     which clears 4.5:1 on white where blue-3 does not. */
+     which clears 4.5:1 on every light surface where blue-3 does not
+     clear it even on white. */
   --accent: var(--blue-3);
   --accent-hover: var(--blue-2);
   --accent-text: var(--blue-2);

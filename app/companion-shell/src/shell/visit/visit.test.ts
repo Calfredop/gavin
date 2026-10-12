@@ -263,7 +263,7 @@ describe("visiting a Workstation", () => {
   });
 
   describe("a paired Workstation's bundle", () => {
-    const PAIRED: HubWorkstation = { id: "ws-1234", name: "Studio", demo: false, summary: "", state: "ready", openable: true };
+    const PAIRED: HubWorkstation = { id: "ws-1234", name: "Studio", demo: false, summary: "", state: "ready", label: "Ready", openable: true };
 
     it("is readied before the view opens, saying what it is doing, and the view serves it by hash", async () => {
       const seen: string[] = [];

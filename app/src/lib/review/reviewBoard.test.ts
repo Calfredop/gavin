@@ -699,6 +699,16 @@ describe("resolveReviewSelection", () => {
   it("selects nothing when both halves are empty", () => {
     expect(resolveReviewSelection([], [], "/a.md")).toBeNull();
   });
+
+  // The human tests head the list and wait on the human, so a tab opened
+  // on its mark lands on one.
+  it("keeps a card picked from its tests, and falls to the first of them first", () => {
+    const tests = ["/t1.md", "/t2.md"];
+    expect(resolveReviewSelection(groups, rails, "/t2.md", tests)).toBe("/t2.md");
+    expect(resolveReviewSelection(groups, rails, "/gone.md", tests)).toBe("/t1.md");
+    expect(resolveReviewSelection(groups, rails, railSubjectId("r1"), tests)).toBe(railSubjectId("r1"));
+    expect(resolveReviewSelection([], [], null, tests)).toBe("/t1.md");
+  });
 });
 
 describe("criticalReviewOffer", () => {

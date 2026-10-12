@@ -29,6 +29,28 @@ Admission is the first TEXT frame (`RelayHello`), never a header or a
 query string: a webview `WebSocket` cannot set headers, and a token in
 the URL lands in every reverse-proxy access log.
 
+## When you do not need one
+
+A Device on the same network or Tailscale tailnet as its Workstation can
+reach it with no Relay at all: turn on **Direct connection** in Settings →
+Remote access (ADR 0009). The daemon then listens itself, on port 8445 (a
+dev build on 8446), for Devices whose address is on this machine's network
+or tailnet, and the pairing QR names this Mac's Tailscale and LAN addresses
+with the hash of the certificate the listener serves. A Device tries those
+addresses first and the Relay after them.
+
+| | Direct connection | A Relay |
+| --- | --- | --- |
+| Reaches the Workstation from | the same LAN or tailnet | anywhere |
+| Something to run | nothing | the Relay, with TLS and a token |
+| Admission token | none | required |
+| Trust in what carries it | none: Noise end to end, TLS pinned by the QR | none: Noise end to end |
+
+Use both when the phone is sometimes away: the direct address when it
+answers, the Relay when it does not. Pair again after turning Direct
+connection on, so the phone learns the addresses. An address the Mac has
+since given up costs the phone one short try before it moves on.
+
 ## Configuration
 
 Environment variables. An empty value counts as unset. The Relay takes
@@ -272,6 +294,9 @@ at these defaults.
   proxies log; the token rides in the hello.
 
 ## Related
+
+- Direct connection, and why it is a listener in the daemon and not an
+  embedded Relay: [`adr/0009-a-device-can-reach-its-workstation-directly.md`](adr/0009-a-device-can-reach-its-workstation-directly.md)
 
 - Local stack and scripted pairing: `app/companion-shell/README.md`
 - Companion compile and store builds: [`companion-mobile.md`](companion-mobile.md)

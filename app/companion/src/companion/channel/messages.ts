@@ -29,6 +29,7 @@ export const MESSAGE_TYPES = [
   "unlisten",
   "open-external",
   "return-to-hub",
+  "connection",
 ] as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[number];
@@ -53,17 +54,41 @@ export type BundleMessageType = BundleMessage["type"];
 ///
 /// `unsupported`: this end does not know the message type -- the answer
 /// that lets a bundle newer than its shell carry on without the feature.
-export type ErrorCode = "unsupported";
+///
+/// `unreachable`: the request never reached the Workstation's desktop app
+/// -- no connection, a connection that dropped or went quiet, or a desktop
+/// app that is not there to ask. Not the Workstation's refusal, so a
+/// surface that showed it clears it once the connection is back.
+export type ErrorCode = "unsupported" | "unreachable";
+
+/// What a request that could not reach the Workstation is answered with,
+/// by the shell and by the Demo Workstation playing a dropped connection.
+export const NOT_REACHABLE = "The Workstation cannot be reached right now.";
+
+/// Why the Workstation cannot be reached: the hub's words for it
+/// (`hub/live.ts` in the shell).
+export type ConnectionReason = "unreachable" | "asleep" | "desktop-app-not-running";
+
+const CONNECTION_REASONS: readonly ConnectionReason[] = ["unreachable", "asleep", "desktop-app-not-running"];
+
+/// Whether the Workstation can be reached now, as the shell sees it. A
+/// bundle starts from `up`, and is told each change after that.
+export type ConnectionState = { state: "up" } | { state: "down"; reason: ConnectionReason };
 
 export type ResultMessage =
   | { v: number; type: "result"; id: number; ok: true; value: unknown }
   | { v: number; type: "result"; id: number; ok: false; error: string; code?: ErrorCode };
 
-/// What reaches a bundle: the answer to something it asked, or an event
-/// for a listener it registered (`listener` is that `listen`'s id).
+/// What reaches a bundle: the answer to something it asked, an event for
+/// a listener it registered (`listener` is that `listen`'s id), or -- the
+/// one message nobody asked for -- the connection to the Workstation
+/// going down or coming back up. `connection` carries no id: an older
+/// bundle drops it as a type it does not know, and keeps working as it
+/// did.
 export type WorkstationMessage =
   | ResultMessage
-  | { v: number; type: "event"; listener: number; event: string; payload: unknown };
+  | { v: number; type: "event"; listener: number; event: string; payload: unknown }
+  | ({ v: number; type: "connection" } & ConnectionState);
 
 /// Where a bundle should land once open: the target of the inbox item
 /// the human tapped in the hub, and the workspace it belongs to. The
@@ -220,7 +245,7 @@ export function readWorkstationMessage(raw: string): Inbound<WorkstationMessage>
       const failure = { v, type, id, ok: false as const, error: body.error };
       return {
         kind: "message",
-        message: body.code === "unsupported" ? { ...failure, code: body.code } : failure,
+        message: body.code === "unsupported" || body.code === "unreachable" ? { ...failure, code: body.code } : failure,
       };
     }
     case "event": {
@@ -231,6 +256,14 @@ export function readWorkstationMessage(raw: string): Inbound<WorkstationMessage>
         kind: "message",
         message: { v, type, listener, event: body.event, payload: body.payload ?? null },
       };
+    }
+    case "connection": {
+      if (body.state === "up") return { kind: "message", message: { v, type, state: "up" } };
+      if (body.state !== "down") return malformed(null, "connection without a state");
+      // A reason a newer shell has and this build does not is still a
+      // connection that is down.
+      const reason = CONNECTION_REASONS.find((r) => r === body.reason) ?? "unreachable";
+      return { kind: "message", message: { v, type, state: "down", reason } };
     }
     default:
       return { kind: "unknown", type, id: readId(body.id) };

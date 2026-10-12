@@ -1,6 +1,6 @@
 // Which app-level panel is open, if any.
 //
-// The task manager and the usage panel belong to no workspace -- they
+// The task manager, the usage panel and the Devices panel belong to no workspace -- they
 // report on the whole daemon and on every agent the fleet runs -- and
 // they are now reachable from two places: the sidebar footer's rows and
 // the app hub's own recaps. A `let showX = $state(false)` inside
@@ -14,7 +14,7 @@
 import { get, writable } from "svelte/store";
 import { hotState } from "$lib/core/hotState";
 
-export type AppPanel = "sessions" | "usage";
+export type AppPanel = "sessions" | "usage" | "devices";
 
 /// Deliberately not persisted: a panel that walks the process table
 /// every two seconds must not come back by itself at the next launch.

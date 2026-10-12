@@ -8,7 +8,7 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
@@ -27,6 +27,8 @@ import {
   buildResumeCommand,
   withFreshConversationId,
   noPromptReason,
+  usesPromptInjection,
+  withPromptExtras,
   provisionalSessionName,
   runStatusNeeded,
   unresumableConversationReason,
@@ -50,6 +52,7 @@ import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
+import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent, type NewLaunchIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
@@ -476,11 +479,13 @@ export async function developCard(
   const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
   const held = holdLaunch(workspaceId, decision);
   if (held) return held;
-  const command = buildRunCommand(
-    agent.launchCommand,
-    agent.promptArgs,
-    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop"))
+  const prompt = withPromptExtras(
+    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
+    promptExtrasFor(workspaceId, agent.profileId)
   );
+  const command = usesPromptInjection(agent)
+    ? agent.launchCommand
+    : buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
   if (command === null) return noPromptReason(agent.label);
 
   let sessionId: string;
@@ -494,9 +499,20 @@ export async function developCard(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
+  if (usesPromptInjection(agent)) {
+    // The launch carried no prompt; the daemon delivers this one the
+    // moment the agent's MCP handshake reports it alive (K3). Queued
+    // before anything else awaited below, so a fast handshake can never
+    // find the queue empty.
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      return `Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`;
+    }
+  }
   // No conversation id: a develop run binds nothing, so there is no
   // record for one to outlive and nothing that could ever resume it.
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   handleAgentSessionSpawned(workspaceId, sessionId);
   // Written down BEFORE the jump, and before anything can fail after it:
   // this record is the card's only indication that it is being rewritten,
@@ -565,7 +581,7 @@ async function launchCard(
   const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
-  if (agent.promptArgs === null) return noPromptReason(agent.label);
+  if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label);
 
   // Whether the conversation a resume would reopen exists at all. Asked
   // here, ahead of the launch wall, so the refusal reaches the surface
@@ -664,7 +680,7 @@ async function launchCard(
   // by the note refusal at the top of this function, and a closure over a
   // parameter loses that.
   const kind = card.kind;
-  const composePrompt = (at: string): string => {
+  const composeCardPrompt = (at: string): string => {
     if (mode === "review") {
       return composeReviewLaunchPrompt(
         at,
@@ -716,6 +732,12 @@ async function launchCard(
           promptOpts(workspaceId, "action:run-plan")
         );
   };
+  // The launching agent's own extra prompt lines, after whichever card
+  // prompt the mode composed. Keyed by the agent that actually launches
+  // (a fallback's, not the card's primary), because the lines are
+  // instructions to THAT agent.
+  const composePrompt = (at: string): string =>
+    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
     if (!file.exists) return `Card file not found: ${card.id}`;
@@ -792,7 +814,7 @@ async function launchCard(
     // Its first quiet is its history being painted, not a turn: nothing
     // has been asked of the model yet (headroomMark.ts, `reachCheckDue`).
     noteReopenedConversation(resumed);
-    void armFailureDetection(resumed, agent.failurePatterns);
+    void armFailureDetection(resumed, agent.failurePatterns, agent.untrustedOsc133);
     host.place(workspaceId, resumed);
     const name = provisionalSessionName(card.title);
     if (name) await setSessionName(resumed, name);
@@ -836,16 +858,23 @@ async function launchCard(
   const prompt = composePrompt(path);
 
   const conversationId = conversationIdForLaunch(agent);
-  const command = buildRunCommand(
-    agent.launchCommand,
-    agent.promptArgs,
-    prompt,
-    agent.sessionIdArgs,
-    conversationId
-  );
-  // Cannot be null -- the gate above returned already -- but the null is
-  // the whole point of buildRunCommand's signature, so it is checked
-  // rather than asserted away.
+  // An injection launch (K3) composes BARE: the CLI has no prompt argv,
+  // so the command is the launch line alone and the prompt goes to the
+  // daemon's queue after spawn, delivered the moment the agent's MCP
+  // handshake reports it alive.
+  const inject = usesPromptInjection(agent);
+  const command = inject
+    ? agent.launchCommand
+    : buildRunCommand(
+        agent.launchCommand,
+        agent.promptArgs,
+        prompt,
+        agent.sessionIdArgs,
+        conversationId
+      );
+  // Cannot be null for an argv profile -- the gate above returned
+  // already -- but the null is the whole point of buildRunCommand's
+  // signature, so it is checked rather than asserted away.
   if (command === null) return noPromptReason(agent.label);
   // A review runs WHERE THE WORK IS: the run's launch directory, which
   // is a worktree of its own whenever a rail cut one. The card's context
@@ -886,7 +915,18 @@ async function launchCard(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  if (inject) {
+    // The prompt the launch could not carry. Queued immediately after
+    // the spawn resolves, before anything else is awaited: the daemon
+    // holds it for the agent's first MCP Hello either way, so a fast
+    // handshake can never find the queue empty (K3).
+    try {
+      await backend.queueInput(sessionId, prompt);
+    } catch (e) {
+      return `Couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   host.place(workspaceId, sessionId);
   // Named before the agent has drawn a frame. The agent's own
   // gavin_name_session replaces this the moment it runs -- but that call
@@ -961,6 +1001,10 @@ export async function pasteToMainAgent(
   // a command, and the queue would hold a message that can never be
   // delivered (`interrupted` is never cleared).
   if (target.interrupted) return INTERRUPTED_REASON;
+  // Another Device working in the workspace agent (v68): said, not pasted
+  // into the middle of what it is typing.
+  const locked = inputLockedReason(mainSessionId);
+  if (locked) return locked;
   if (!target.blockedReason && shouldQueueForMainAgent(target.status)) {
     return queueFollowUp(mainSessionId, target, prompt);
   }
@@ -1014,7 +1058,7 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // whatever CLI the workspace chose -- a card's own `agent:`/`model:`
   // attribution never changes that.
   const agent = resolvedAgentFor(workspaceId);
-  const composePrompt = (at: string): string =>
+  const composeCardPrompt = (at: string): string =>
     card.kind === "task"
       ? composeTaskPrompt(
           at,
@@ -1034,6 +1078,8 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
           agent.sessionIdDiscovery,
           promptOpts(workspaceId, "action:run-plan")
         );
+  const composePrompt = (at: string): string =>
+    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
@@ -1142,7 +1188,7 @@ export async function relaunchCard(
   } catch (e) {
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   host.place(workspaceId, sessionId);
   await linkCardSessionAction(workspaceId, {
     ...binding,

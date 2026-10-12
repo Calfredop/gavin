@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    agentDefaultsStore,
     agentModelDefaultsStore,
     agentProfilesStore,
     layoutState,
@@ -32,8 +33,15 @@
   // this step write somewhere the Settings panel does not name.
   const agentFile = $derived(
     instructionsFile ??
-      resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
-        .file
+      resolveAgentConfig(
+        $trustedAgentConfigs(workspaceId),
+        $agentProfilesStore,
+        $agentModelDefaultsStore,
+        undefined,
+        undefined,
+        undefined,
+        $agentDefaultsStore.defaultAgent
+      ).file
   );
 
   let result = $state<backend.IntegrationResult | null>(null);

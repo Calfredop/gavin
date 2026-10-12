@@ -2,8 +2,15 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "$lib/core/workspace";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
-import { detailOf, sessionGroups, workspaceSessionIds, type SessionListInput } from "$companion/surfaces/sessionList";
+import {
+  DESK_PLACES_WITHIN_MS,
+  detailOf,
+  sessionGroups,
+  workspaceSessionIds,
+  type SessionListInput,
+} from "$companion/surfaces/sessionList";
 import { agentIndicator } from "$lib/ui/indicators";
+import { allSessionIds } from "$lib/panes/layout";
 
 const NO_TABS = { fileTabsById: {}, boardTabsById: {}, cardTabsById: {} };
 
@@ -80,6 +87,58 @@ describe("a workspace's sessions", () => {
     const groups = sessionGroups(input(atlas(), { startedHere: ["s-demo-1", "s-atlas-auth"] }));
     expect(groups.at(-1)).toMatchObject({ title: "Started from this phone", rows: [{ id: "s-demo-1" }] });
     expect(groups.flatMap((g) => g.rows.map((r) => r.id)).filter((id) => id === "s-atlas-auth")).toHaveLength(1);
+  });
+
+  // The desk places a start within moments when it is listening; past
+  // that, the phone says it has not instead of promising a tab.
+  it("say the desk has not placed what this phone started once it has had its time", () => {
+    const at = 1_000_000;
+    const started = (now: number) =>
+      sessionGroups(input(atlas(), { startedHere: ["s-demo-1"], startedAt: { "s-demo-1": at }, now })).at(-1)!;
+    expect(started(at + 1000)).toMatchObject({ key: "started-here", placingUntil: at + DESK_PLACES_WITHIN_MS });
+    expect(started(at + 1000).unplaced).toBeUndefined();
+    expect(started(at + DESK_PLACES_WITHIN_MS)).toMatchObject({ unplaced: true });
+    expect(started(at + DESK_PLACES_WITHIN_MS).placingUntil).toBeUndefined();
+    // Placed, it is not this phone's to list at all.
+    const placed = sessionGroups(
+      input(atlas(), { startedHere: ["s-atlas-auth"], startedAt: { "s-atlas-auth": at }, now: at + 60_000 })
+    );
+    expect(placed.some((g) => g.key === "started-here")).toBe(false);
+  });
+
+  it("offer to start the workspace agent where there is a folder and no agent", () => {
+    const groups = sessionGroups(input({ ...atlas(), mainSessionId: undefined }));
+    expect(groups[0]).toEqual({ key: "main", title: "Workspace agent", rows: [], startAgent: true });
+  });
+
+  it("offer no workspace agent to a workspace with no folder", () => {
+    const scratch = sampleState().workspaces.workspaces.find((w) => w.id === DEMO.scratch)!;
+    expect(sessionGroups(input(scratch)).some((g) => g.key === "main")).toBe(false);
+  });
+
+  // Started from the phone, not yet recorded by the desk: it is the agent
+  // already, so a second press cannot start another.
+  it("show the workspace agent this phone started until the desk records it", () => {
+    const groups = sessionGroups(
+      input({ ...atlas(), mainSessionId: undefined }, { startedHere: ["s-demo-1"], agentStartedHere: "s-demo-1" })
+    );
+    expect(groups[0]).toMatchObject({ title: "Workspace agent", rows: [{ id: "s-demo-1" }] });
+    expect(groups[0].startAgent).toBeUndefined();
+    expect(groups.some((g) => g.key === "started-here")).toBe(false);
+  });
+
+  // The desk had one already and placed this phone's as a tab.
+  it("list a workspace agent the desk placed on a page under that page, beside the desk's own", () => {
+    const ws = atlas();
+    const auth = ws.pages.find((p) => p.name === "auth")!;
+    const groups = sessionGroups(input(ws, { agentStartedHere: allSessionIds(auth.layout)[0] }));
+    expect(groups[0]).toMatchObject({ title: "Workspace agent", rows: [{ id: "s-atlas-main" }] });
+  });
+
+  it("offer no start where the agent sits on a page", () => {
+    const ws = atlas();
+    const groups = sessionGroups(input({ ...ws, mainSessionId: "s-atlas-auth" }));
+    expect(groups.some((g) => g.key === "main")).toBe(false);
   });
 
   it("are every id the list can show, for a view to check a terminal against", () => {

@@ -69,7 +69,11 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "setWorkspaceAutoCommit",
     "setWorkspaceRequireReview",
     "setWorkspaceComplexityTable",
+    "setWorkspaceCustomProfiles",
     "setWorkspacePause",
+    "setWorkspacePromptParams",
+    "dropWorkspaceProfileRefs",
+    "dropProfileRefsFromWorkspaces",
     "setWorkspaceFallback",
     "setWorkspaceFlag",
     "setAgentField",
@@ -125,7 +129,14 @@ describe("what the bundle takes from the desktop's layout state", () => {
       ]
     );
     expect(importedFrom(companionSource("companion/state/workstation.ts"), "$lib/core/layoutState").sort()).toEqual(
-      ["handleCwdChanged", "handleSessionStatusChanged", "layoutState", "loadAgentProfiles", "reloadAppSettings"]
+      [
+        "daemonCompat",
+        "handleCwdChanged",
+        "handleSessionStatusChanged",
+        "layoutState",
+        "loadAgentProfiles",
+        "reloadAppSettings",
+      ]
     );
     expect(
       importedFrom(codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte")), "$lib/core/layoutState")
@@ -256,7 +267,18 @@ describe("the Git surface", () => {
     }
   );
 
-  it.each(["setGitViewPrefs", "switchWorktree", "setGraphAll", "commitViaAgent", "openMergeTool"])(
+  // Commit via agent is the desk's to run (`state/agentCommit.ts` asks
+  // for it): its kill would reach the run's watch as a failure, and its
+  // reveal moves the desk's tabs.
+  it.each([
+    "setGitViewPrefs",
+    "switchWorktree",
+    "setGraphAll",
+    "commitViaAgent",
+    "stopAgentCommit",
+    "revealAgentCommit",
+    "openMergeTool",
+  ])(
     "never reaches for %s",
     (action) => {
       expect(git()).not.toMatch(new RegExp(`\\b${action}\\b`));
@@ -290,6 +312,64 @@ describe("the Files surface", () => {
       expect(files()).not.toMatch(new RegExp(`\\b${action}\\b`));
     }
   );
+});
+
+describe("the Agents settings hub", () => {
+  const app = () => codeOf(companionSource("companion/surfaces/PhoneAppSettings.svelte"));
+  const workspace = () => codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte"));
+
+  it("reuses the desk's tab shell on both screens", () => {
+    for (const text of [app(), workspace()]) {
+      expect(text).toContain('import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte"');
+      expect(text).toContain("<AgentsHubTabs");
+      expect(text).toContain('title="Agents"');
+      expect(text).toContain("agentsHubTabs");
+      expect(text).toContain("GENERAL_TAB");
+    }
+  });
+
+  it("app screen: General + per-agent tabs, customs inline, the + tab, setAgentDefaults", () => {
+    expect(app()).toContain("Default agent");
+    expect(app()).toContain("Add custom");
+    expect(app()).toContain("addCustomProfile");
+    expect(app()).toContain("customProfiles:");
+    expect(app()).toContain("agentsHubTabs(allProfiles, ADD_TAB_HINT.app)");
+    expect(app()).toContain("{:else if agentsTab === ADD_TAB}");
+    expect(app()).not.toContain("CustomsEditor");
+    expect(app()).not.toContain("APP_AGENTS_TABS");
+    expect(app()).not.toContain("customCommand");
+  });
+
+  it("workspace screen: General + per-agent tabs, CustomsEditor on local customs, the + tab", () => {
+    expect(workspace()).toContain("Add local custom");
+    expect(workspace()).toContain("setWorkspaceCustomProfiles");
+    expect(workspace()).toContain("dropWorkspaceProfileRefs");
+    expect(workspace()).toContain('import CustomsEditor from "$lib/agents/CustomsEditor.svelte"');
+    expect(workspace()).toContain("<CustomsEditor");
+    expect(workspace()).toContain("local");
+    expect(workspace()).toContain("agentsHubTabs(profiles, ADD_TAB_HINT.workspace)");
+    expect(workspace()).toContain("{:else if agentsTab === ADD_TAB}");
+    expect(workspace()).not.toContain("WORKSPACE_AGENTS_TABS");
+  });
+
+  it("draws every per-agent block through one phone panel, General and each tab alike", () => {
+    const panel = codeOf(companionSource("companion/surfaces/PhoneAgentPrimary.svelte"));
+    // Fallback, complexity, pause, prompt lines and CLI arguments live in
+    // the panel, read and written through the same module the desk's uses.
+    expect(panel).toContain("withFallbackChainForPrimary");
+    expect(panel).toContain("workspaceOwnsFallbackChain");
+    expect(panel).toContain("<ComplexityTable");
+    expect(panel).toContain("<PromptParamsEditor");
+    expect(panel).toContain("$lib/agents/agentPrimary");
+    // Both screens point it at an agent; neither keeps its own copy.
+    for (const text of [app(), workspace()]) {
+      expect(text).toContain("<PhoneAgentPrimary");
+      expect(text).not.toContain("<FallbackChainEditor");
+      expect(text).not.toContain("<ComplexityTable");
+    }
+    expect((app().match(/<PhoneAgentPrimary/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect((workspace().match(/<PhoneAgentPrimary/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("the page", () => {

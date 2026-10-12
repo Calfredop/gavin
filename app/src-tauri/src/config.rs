@@ -67,6 +67,48 @@ pub const SMOKETEST_WORKSPACE_ID: &str = "__smoketest__";
 pub const MIN_TERMINAL_FONT_SIZE: u16 = 8;
 pub const MAX_TERMINAL_FONT_SIZE: u16 = 32;
 
+/// Id of the single app-wide custom profile created when migrating the
+/// retired hard-coded `custom` row and its `customCommand` / `custom*`
+/// fields. Stable so every `"custom"` reference can be rewritten once.
+pub const MIGRATED_CUSTOM_PROFILE_ID: &str = "custom-agent";
+
+/// The retired hard-coded profile id. Kept only so migration and a short
+/// compat window can still recognise configs and launches that name it.
+pub const LEGACY_CUSTOM_PROFILE_ID: &str = "custom";
+
+/// Workspace-local custom profile ids are prefixed so they never collide
+/// with an app-wide custom slug the human chose.
+pub const LOCAL_PROFILE_PREFIX: &str = "local:";
+
+/// The six stock built-in profile ids, in their shipped order. Migration
+/// folds a legacy single fallback chain onto exactly these plus every
+/// custom id known at the time.
+pub const STOCK_PROFILE_IDS: [&str; 6] = ["claude-code", "codex", "gemini", "cursor", "opencode", "kimi-code"];
+
+/// Stock built-in profile ids. A custom slug must not use these; Headroom
+/// and `api_family_for_daemon` treat anything else as custom-like.
+pub fn is_stock_profile_id(id: &str) -> bool {
+    STOCK_PROFILE_IDS.contains(&id)
+}
+
+/// One named custom agent the human defined — app-wide on
+/// `AgentDefaultsConfig::custom_profiles`, or workspace-local on
+/// `Workspace::custom_profiles`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProfile {
+    pub id: String,
+    pub label: String,
+    pub command: String,
+    pub model_flag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort_flag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_family: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_args: Option<String>,
+}
+
 /// Per-workspace Git tab preferences (spec §1: splitter widths, diff
 /// layout, the hunk/line discard confirm opt-out). Crosses to the frontend
 /// inside Workspace, hence camelCase.
@@ -312,32 +354,54 @@ pub struct Workspace {
     /// workspaces save, so an older config simply loads with it absent.
     #[serde(default)]
     pub last_active_at: Option<i64>,
-    /// This workspace's own pause cycle, overriding the app-wide one.
-    /// Absent means INHERIT, which is not the same as off -- a workspace
-    /// that wants no pause while the app has one stores a cycle with
-    /// `enabled: false`, and `skip_serializing_if` keeps the key out of
-    /// config.json entirely for the ordinary inheriting case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Legacy single pause cycle. Deserialized so `migrate_pause_cycles`
+    /// can fold it onto `pause_cycles` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
     pub agent_pause: Option<AgentPauseConfig>,
+    /// This workspace's own pause cycles, keyed by PRIMARY profile id.
+    /// A key absent means INHERIT the app-wide cycle for that primary,
+    /// which is not the same as off — a workspace that wants no pause
+    /// for a primary stores a cycle with `enabled: false` under its key.
+    /// An empty map — the ordinary case — inherits every primary's
+    /// cycle, and `skip_serializing_if` keeps the key out of config.json
+    /// then.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pause_cycles: HashMap<String, AgentPauseConfig>,
     /// When this workspace was pinned to the top of the sidebar, epoch
     /// milliseconds; absent means not pinned. Same rule and same reason
     /// as `Page::pinned_at`, one level up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<i64>,
-    /// This workspace's overrides of the app-wide complexity table,
-    /// keyed by the level's written name. Overridden PER LEVEL rather
-    /// than wholesale: a workspace that wants its gnarly cards on a
-    /// different agent should not have to restate the other four, and a
-    /// level with no entry here genuinely means "whatever the app says".
+    /// Legacy single complexity table (one table for every agent).
+    /// Deserialized so `migrate_complexity_tables` can fold it onto
+    /// `complexity_tables` under every known primary; never serialized
+    /// again.
+    #[serde(default, skip_serializing)]
+    pub complexity_agents: HashMap<String, ComplexityAgent>,
+    /// This workspace's own complexity tables, keyed by PRIMARY profile
+    /// id. A key absent means INHERIT the app-wide table for that
+    /// primary; a key present is that primary's whole table (a level
+    /// with no entry in it still means "run the workspace's own agent").
+    /// An empty map — the ordinary case — inherits every primary's
+    /// table, and `skip_serializing_if` keeps the key out of config.json
+    /// then.
     ///
     /// Machine-local for the same reason as `auto_commit` and
-    /// `agent_pause` (D35): which model tier this human spends on a hard
+    /// `pause_cycles` (D35): which model tier this human spends on a hard
     /// card here is a habit and a subscription fact, not something to
-    /// hand everyone who clones the repo. `skip_serializing_if` keeps
-    /// the key out of config.json entirely for the ordinary inheriting
-    /// case.
+    /// hand everyone who clones the repo.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub complexity_agents: HashMap<String, ComplexityAgent>,
+    pub complexity_tables: HashMap<String, HashMap<String, ComplexityAgent>>,
+    /// Extra prompt-text lines appended to prompts composed for each
+    /// primary, and extra CLI arguments appended to each primary's
+    /// launch command. A key absent means INHERIT the app-wide list for
+    /// that primary; an empty vec under a key is an explicit "nothing
+    /// extra" override for it.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prompt_extras: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_cli_args: HashMap<String, Vec<String>>,
     /// Whether the human has been ASKED whether gavin's own files belong
     /// in this repo's git history. Not the answer -- that is the ignore
     /// rule in the repo itself (`git::tracking`), which git owns and this
@@ -346,7 +410,7 @@ pub struct Workspace {
     /// It exists because the setup wizard's git step has no other way to
     /// know it is finished: both answers are legitimate, and "tracked"
     /// is indistinguishable on disk from "nobody has decided yet". Same
-    /// problem the Superpowers step has, and the same shape of answer --
+    /// problem the agent skills step has, and the same shape of answer --
     /// a recorded word from the human, machine-local, because whether
     /// THIS person has seen a question is not a fact about the project.
     #[serde(default)]
@@ -451,32 +515,52 @@ pub struct Workspace {
     /// one unchanged, and every workspace in it has never been asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headroom_asked: bool,
-    /// This workspace's own resume flag for the `custom` agent profile
-    /// (v38), e.g. `--resume`. Absent means inherit
-    /// `AppConfig::custom_resume_args`, and failing that no resume at all
-    /// for `custom` -- the same "absence is a real state" shape as
-    /// `terminal_font_size`. Deliberately this config.json layer and not
-    /// `.gavin-root/config.toml`'s `[agent]` table (`file`/`mcp_file`/
-    /// `mcp_format`'s layer): those travel with the repo, but a resume
-    /// flag is a fact about the BINARY on this machine, exactly like
-    /// `command`/`model_flag` already are for every OTHER profile via
-    /// the verified table -- `custom` has no table row to carry one, and
-    /// config.toml has no app-wide layer to inherit from. Machine-local
-    /// (D35) like `auto_commit`.
+    /// When an agent's browser pane opens in this workspace
+    /// (`playwright-live-pane.md`): `auto` on the browser's first frame,
+    /// `chip` only when the tab's browser chip is pressed. Absent means
+    /// inherit `AppConfig::playwright_pane_open`, and failing that gavin's
+    /// own default (`auto`) -- stored as absence like `terminal_font_size`,
+    /// so absence is a real state and not a stand-in for the default.
+    /// A string the frontend normalizes (`browserView.ts`), not an enum: a
+    /// hand-edited word must read as "no setting", never fail the load of
+    /// the whole file. Machine-local (D35): how this human likes their desk
+    /// to behave is not a fact about the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playwright_pane_open: Option<String>,
+    /// Legacy resume flag for the retired hard-coded `custom` profile.
+    /// Kept deserializable so migration can fold it onto a
+    /// `CustomProfile::resume_args`; cleared and skipped once empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_resume_args: Option<String>,
-    /// This workspace's own fallback chain. Absent means INHERIT the
-    /// app-wide `AgentDefaultsConfig::agent_fallback`, which is not the
-    /// same as off — a workspace that wants no fallback while the app
-    /// has one stores an empty vec, and `skip_serializing_if` keeps the
-    /// key out of config.json for the ordinary inheriting case.
+    /// Workspace-local named custom profiles. Lives on `Workspace` in
+    /// config.json (not `.gavin-root/config.toml`) to match D35
+    /// machine-local agent settings (`custom_resume_args` etc.) and to
+    /// avoid a protocol bump for a fact that must not travel with the
+    /// repo. Ids are prefixed `local:` so they never collide with
+    /// app-wide custom slugs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_profiles: Vec<CustomProfile>,
+    /// Legacy single fallback chain — one list walked no matter which
+    /// agent was spent. Deserialized so `migrate_fallback_chains` can fold
+    /// it onto `fallback_chains` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
+    pub agent_fallback: Option<Vec<String>>,
+    /// This workspace's own fallback chains, keyed by PRIMARY profile id:
+    /// the chain walked when that agent is the launch's resolved agent and
+    /// is spent. A key absent means INHERIT the app-wide chain for that
+    /// primary, which is not the same as off — a workspace that wants no
+    /// fallback for a primary stores an empty vec under its key. The
+    /// primary is never an element of its own chain. An empty map — the
+    /// ordinary case — inherits every primary's chain, and
+    /// `skip_serializing_if` keeps the key out of config.json then.
     ///
     /// Machine-local like `agent_pause`: which CLI this human spends
     /// when a subscription window is full is a fact about this machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_fallback: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fallback_chains: HashMap<String, Vec<String>>,
     /// Profile ids this workspace has completed setup-only arming for
-    /// (Integration / Superpowers / skills) without switching the active
+    /// (Integration / agent skills / skills) without switching the active
     /// agent. The workspace's own profile is armed by init / agent-change,
     /// not this list. Empty is the ordinary case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -708,15 +792,20 @@ pub struct ComplexityAgent {
     /// older build reading it back sees nothing new.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
+    /// The model this level's agent consults as its advisor -- `opus`
+    /// beside a `sonnet` executor. Empty means no advisor. Skipped when
+    /// empty for `effort`'s reason.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub advisor: String,
 }
 
-/// The app-wide half of "which agent executes this card": the `custom`
-/// profile's own command and model flag, plus the complexity table.
+/// The app-wide half of "which agent executes this card": named custom
+/// profiles plus the complexity table.
 ///
-/// One struct rather than three `AppConfig` fields because they are one
-/// question, and because every field here is a field a save site can
+/// One struct rather than scattered `AppConfig` fields because they are
+/// one question, and because every field here is a field a save site can
 /// silently wipe (see `persist_workspaces`) -- keeping them together
-/// costs that argument list one positional instead of three.
+/// costs that argument list one positional instead of many.
 ///
 /// Machine-local, deliberately, and for the reason `Workspace::auto_commit`
 /// spells out: which CLI is installed here and which model tier this
@@ -724,24 +813,22 @@ pub struct ComplexityAgent {
 /// machine and this subscription, not about the project. The per-workspace
 /// override lives on `Workspace::complexity_agents` for the same reason,
 /// rather than in the repo's `.gavin-root/config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefaultsConfig {
-    /// The command the `custom` profile launches when a workspace on it
-    /// names none of its own. Empty means there is no app-wide custom
-    /// agent, which is the shipped state.
-    #[serde(default)]
+    /// Named app-wide custom agent profiles. Built-ins stay in
+    /// `AGENT_PROFILES`; these are user-defined rows merged at resolve
+    /// time. Empty is the shipped state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_profiles: Vec<CustomProfile>,
+    /// Legacy single-custom command. Deserialized so migration can fold
+    /// it into `custom_profiles`; skipped when empty after migrate.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub custom_command: String,
-    /// The argv that carries a model into that command, e.g. `--model`.
-    /// Empty means gavin has no way to put a model on it, and every
-    /// model control for the `custom` profile stays hidden rather than
-    /// guessing a flag -- the same posture the Rust profile table takes.
-    #[serde(default)]
+    /// Legacy model flag for the retired hard-coded `custom` profile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub custom_model_flag: String,
-    /// The argv that carries an effort level into that command, e.g.
-    /// `--effort`, or `--think=` for one that takes it attached. Empty
-    /// hides every effort control for `custom`, exactly as an empty
-    /// `custom_model_flag` hides the model ones.
+    /// Legacy effort flag for the retired hard-coded `custom` profile.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub custom_effort_flag: String,
     /// The app-wide default effort per profile id, beside `AppConfig::
@@ -751,37 +838,67 @@ pub struct AgentDefaultsConfig {
     /// new `persist_workspaces` positional, like `agent_fallback`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_efforts: HashMap<String, String>,
-    /// The API the custom agent speaks, which is what lets Headroom
-    /// compress it: `anthropic`, `openai` (OpenAI-compatible), or empty
-    /// for none -- the shipped state, and no recipe. Sent to the daemon
-    /// with every launch of the custom profile (`create_session`).
-    ///
-    /// A string rather than an enum, because config.json is read by more
-    /// than one build: a family a newer build added would make an older
-    /// one's parse of the WHOLE file fail, and every setting with it.
-    /// An unknown word reaches the daemon, which reads it as none.
-    /// Skipped when empty, so a config that never chose one is written
-    /// as it was.
+    /// Legacy API family for the retired hard-coded `custom` profile.
+    /// Folded onto `CustomProfile::api_family` by migration.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub custom_api_family: String,
-    /// Which agent and model each complexity level runs, keyed by the
-    /// level's written name (`Complexity::as_str`). A level with no entry
-    /// runs the workspace's own agent, exactly as every card did before
-    /// the field existed.
-    #[serde(default)]
+    /// Legacy single complexity table (one table for every agent).
+    /// Deserialized so `migrate_complexity_tables` can fold it onto
+    /// `complexity_tables` under every known primary; never serialized
+    /// again.
+    #[serde(default, skip_serializing)]
     pub complexity: HashMap<String, ComplexityAgent>,
-    /// Ordered fallback profile ids when a launch's resolved agent is
-    /// over its usage-probe threshold. Empty — the shipped default — is
-    /// pause-only, the behaviour every install had before this field.
+    /// Which agent and model each complexity level runs, keyed by PRIMARY
+    /// profile id and then by the level's written name
+    /// (`Complexity::as_str`). A primary with no table runs the
+    /// workspace's own agent at every level, exactly as every card did
+    /// before complexity existed; a level with no entry in a primary's
+    /// table means the same for that level.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub complexity_tables: HashMap<String, HashMap<String, ComplexityAgent>>,
+    /// The app-wide pause cycles, keyed by PRIMARY profile id. A primary
+    /// with no cycle is never held — the behaviour every install had
+    /// before the pause existed. Lives here rather than beside
+    /// `AppConfig::agent_pause` (which it replaces) so it rides the same
+    /// wholesale `set_agent_defaults` save as the other per-primary
+    /// maps. A workspace override lives on `Workspace::pause_cycles`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pause_cycles: HashMap<String, AgentPauseConfig>,
+    /// Extra prompt-text lines appended to prompts composed for each
+    /// primary, and extra CLI arguments appended to each primary's
+    /// launch command. A primary with no entry gets nothing extra. A
+    /// workspace override lives on `Workspace::prompt_extras` /
+    /// `Workspace::extra_cli_args`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prompt_extras: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_cli_args: HashMap<String, Vec<String>>,
+    /// The app-wide default agent: the profile a workspace with no
+    /// `[agent] profile` of its own resolves to. Absent — the shipped
+    /// state — means "claude-code", the hard-coded fallback every build
+    /// before this field used, so no migration is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    /// Legacy single fallback chain — one list walked no matter which
+    /// agent was spent. Deserialized so `migrate_fallback_chains` can fold
+    /// it onto `fallback_chains` under every known primary; never
+    /// serialized again.
+    #[serde(default, skip_serializing)]
+    pub agent_fallback: Vec<String>,
+    /// Ordered fallback profile ids when a launch's resolved agent is over
+    /// its usage-probe threshold, keyed by that PRIMARY agent's profile id
+    /// (the primary is never an element of its own chain). A primary with
+    /// no entry is pause-only, the behaviour every install had before
+    /// fallback chains existed.
     ///
     /// Lives here rather than as a thirteenth `persist_workspaces`
     /// positional because it is the same machine-local "which agent"
     /// question this struct already answers, and a new argument on that
     /// list is how a save site silently drops a setting. A workspace
-    /// override lives on `Workspace::agent_fallback`; absence there
-    /// inherits this chain.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agent_fallback: Vec<String>,
+    /// override lives on `Workspace::fallback_chains`; a key absent there
+    /// inherits this chain for that primary.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fallback_chains: HashMap<String, Vec<String>>,
     /// Per-profile percent at which a NEW launch walks away from that
     /// agent. Missing key means 90. Distinct from the pause cycle's
     /// `limit_percent`, which still gates resume. Machine-local with the
@@ -879,30 +996,37 @@ pub struct AppConfig {
     /// it silently resets on the next save.
     #[serde(default)]
     pub removed_workspaces: Vec<RemovedWorkspace>,
-    /// The app-wide agent pause cycle. `None` -- the shipped default --
-    /// means no cycle at all, so no existing workspace changes behaviour
-    /// on update. A workspace with no cycle of its own inherits this one.
-    /// Like session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces it must be carried through `persist_workspaces`,
-    /// or it silently resets on the next save.
-    #[serde(default)]
+    /// Legacy single app-wide pause cycle. Deserialized so
+    /// `migrate_pause_cycles` can fold it onto
+    /// `AgentDefaultsConfig::pause_cycles` under every known primary;
+    /// never serialized again. Still carried through `persist_workspaces`
+    /// positionally — always `None` once migrated.
+    #[serde(default, skip_serializing)]
     pub agent_pause: Option<AgentPauseConfig>,
-    /// What the human told gavin about Superpowers, keyed by workspace
-    /// root path. The seventh carry-through field.
+    /// What the human told gavin about Matt Pocock's skills, keyed by
+    /// workspace root path: "Not now" for any agent, "I've installed it"
+    /// for a custom one (`agent_skills.rs`). The seventh carry-through
+    /// field.
     ///
-    /// Machine-local on purpose (spec S9): a repo can travel to a machine
-    /// that has no Superpowers, so an assertion made here must not vouch
-    /// for a checkout somewhere else. That is also why this is not an
-    /// `[agent].superpowers` key in `.gavin-root/config.toml` -- besides
-    /// travelling, a new root-config key widens `SetRootConfigField`,
-    /// which `min_version_for` gates by request TYPE and therefore cannot
-    /// see, so it would have cost a protocol bump to store a fact that
-    /// should never have left this machine.
-    #[serde(default)]
-    pub superpowers: HashMap<String, SuperpowersMark>,
+    /// Machine-local on purpose: an assertion about a custom agent's
+    /// install vouches for this machine, not for a checkout somewhere
+    /// else. That is also why this is not an `[agent]` key in
+    /// `.gavin-root/config.toml` -- besides travelling, a new root-config
+    /// key widens `SetRootConfigField`, which `min_version_for` gates by
+    /// request TYPE and therefore cannot see, so it would have cost a
+    /// protocol bump to store a fact that should never have left this
+    /// machine.
+    ///
+    /// A new key rather than the old `superpowers` one renamed: a word
+    /// about Superpowers is not a word about these skills, and reading
+    /// one as the other would finish a setup step nobody saw. Skipped
+    /// while empty, so a file nobody has answered this in is written back
+    /// with no key the older build sharing it does not know.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_skills: HashMap<String, AgentSkillsMark>,
     /// The app-wide custom agent and complexity table. The eighth
     /// carry-through field: like session_names/file_tabs/board_tabs/
-    /// theme/agent_models/removed_workspaces/agent_pause/superpowers it
+    /// theme/agent_models/removed_workspaces/agent_pause/agent_skills it
     /// must be carried through `persist_workspaces`, or it silently
     /// resets on the next save.
     ///
@@ -915,7 +1039,7 @@ pub struct AppConfig {
     /// Whether a workspace gavin INITIALISES starts with its own files
     /// tracked by git. The ninth carry-through field: like
     /// session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces/agent_pause/superpowers/agent_defaults it must be
+    /// removed_workspaces/agent_pause/agent_skills/agent_defaults it must be
     /// carried through `persist_workspaces`, or it silently resets on the
     /// next save.
     ///
@@ -933,7 +1057,7 @@ pub struct AppConfig {
     /// default reaches every install that never expressed a preference.
     /// The tenth carry-through field: like session_names/file_tabs/
     /// board_tabs/theme/agent_models/removed_workspaces/agent_pause/
-    /// superpowers/agent_defaults/git_tracking it must be carried through
+    /// agent_skills/agent_defaults/git_tracking it must be carried through
     /// `persist_workspaces`, or it silently resets on the next save.
     ///
     /// Unlike `git_tracking`, this is not an initialisation-only default:
@@ -948,7 +1072,7 @@ pub struct AppConfig {
     /// change how the workspaces that already exist talk to their
     /// models. The THIRTEENTH carry-through field: like session_names/
     /// file_tabs/board_tabs/theme/agent_models/removed_workspaces/
-    /// agent_pause/superpowers/agent_defaults/git_tracking/
+    /// agent_pause/agent_skills/agent_defaults/git_tracking/
     /// require_review/launch/custom_resume_args it must be carried
     /// through `persist_workspaces`, or it silently resets on the next
     /// save.
@@ -965,7 +1089,7 @@ pub struct AppConfig {
     pub headroom: HeadroomDefault,
     /// The app-wide launch wall. The ELEVENTH carry-through field: like
     /// session_names/file_tabs/board_tabs/theme/agent_models/
-    /// removed_workspaces/agent_pause/superpowers/agent_defaults/
+    /// removed_workspaces/agent_pause/agent_skills/agent_defaults/
     /// git_tracking/require_review it must be carried through
     /// `persist_workspaces`, or it silently resets on the next save.
     ///
@@ -976,16 +1100,15 @@ pub struct AppConfig {
     /// never touched it.
     #[serde(default)]
     pub launch: Option<LaunchConfig>,
-    /// The app-wide resume flag for the `custom` agent profile (v38),
-    /// e.g. `--resume`. Absent means nobody has set one and `custom`
-    /// resumes not at all, the same "absence is real" convention as
-    /// `terminal_font_size`/`auto_commit`. The TWELFTH carry-through
-    /// field: like session_names/file_tabs/board_tabs/theme/
-    /// agent_models/removed_workspaces/agent_pause/superpowers/
+    /// Legacy app-wide resume flag for the retired hard-coded `custom`
+    /// profile. Deserialized so migration can fold it onto
+    /// `CustomProfile::resume_args`; skipped once cleared. The TWELFTH
+    /// carry-through field: like session_names/file_tabs/board_tabs/
+    /// theme/agent_models/removed_workspaces/agent_pause/agent_skills/
     /// agent_defaults/git_tracking/require_review/launch it must be
     /// carried through `persist_workspaces`, or it silently resets on
     /// the next save.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_resume_args: Option<String>,
     /// The TypeSafe turn verdict's settings, including the API key.
     ///
@@ -1013,6 +1136,33 @@ pub struct AppConfig {
     /// also the one seam a later move to the OS keychain would touch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typesafe: Option<TypeSafeConfig>,
+    /// What the human told gavin about Superpowers, keyed by root, from
+    /// before gavin recommended Matt Pocock's skills instead. Read, never
+    /// written: it is only the farewell note's targeting -- a root here
+    /// is one whose owner met Superpowers through gavin.
+    ///
+    /// Carried forward from disk like `typesafe`, not a positional, and
+    /// still written back under its old key: a release build and a dev
+    /// build share this file, and an older one still reads it as its
+    /// own setup step's answer.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub superpowers: HashMap<String, SuperpowersMark>,
+    /// Roots whose Superpowers farewell note was dismissed. Carried
+    /// forward from disk; written only by
+    /// `agent_skills::dismiss_agent_skills_farewell`'s read-modify-write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superpowers_farewell_dismissed: Vec<String>,
+    /// When an agent's browser pane opens, app-wide (`playwright-live-pane.md`):
+    /// `auto` or `chip`, for every workspace with no word of its own
+    /// (`Workspace::playwright_pane_open`). Absent means nobody chose and
+    /// gavin's own default (`auto`) applies.
+    ///
+    /// Carried forward from disk like `typesafe`, not a positional on
+    /// `persist_workspaces`: its one writer is `browser_view.rs`'s own
+    /// read-modify-write, and a fourteenth same-shaped argument on that
+    /// list is the hazard its own comments warn about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playwright_pane_open: Option<String>,
 }
 
 /// The TypeSafe features' settings: the turn verdict's switch, change
@@ -1092,24 +1242,602 @@ impl HeadroomDefault {
 #[serde(transparent)]
 pub struct GitTrackingDefault(pub Option<bool>);
 
-/// The human's word about Superpowers for one workspace. A distinct type
-/// rather than a `String` so it cannot be transposed with the three
-/// same-shaped `HashMap<String, String>` fields it travels beside through
-/// `persist_workspaces` -- that argument list is already long enough to
-/// swap silently, and the comment there says so.
+/// The human's word about Matt Pocock's skills for one workspace. A
+/// distinct type rather than a `String` so it cannot be transposed with
+/// the three same-shaped `HashMap<String, String>` fields it travels
+/// beside through `persist_workspaces` -- that argument list is already
+/// long enough to swap silently, and the comment there says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SuperpowersMark {
-    /// "I've installed it" -- taken on trust where gavin cannot check.
+pub enum AgentSkillsMark {
+    /// "I've installed it" -- taken on trust for a custom agent, the one
+    /// profile gavin can neither check nor install for.
     Installed,
     /// "Not now". Finishes the setup step without claiming anything is
     /// installed, so declining once stops the Home banner nagging for
-    /// ever (spec S6).
+    /// ever.
+    Skipped,
+}
+
+/// The retired Superpowers answer, kept only so `AppConfig::superpowers`
+/// still parses. Same spelling the old builds wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuperpowersMark {
+    Installed,
     Skipped,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.json")
+}
+
+fn profile_id_is_legacy_custom(id: &str) -> bool {
+    id.trim() == LEGACY_CUSTOM_PROFILE_ID
+}
+
+fn rewrite_profile_id(id: &mut String, replacement: &str) {
+    if profile_id_is_legacy_custom(id) {
+        *id = replacement.to_string();
+    }
+}
+
+fn rewrite_profile_ids(ids: &mut [String], replacement: &str) {
+    for id in ids {
+        rewrite_profile_id(id, replacement);
+    }
+}
+
+/// Whether any key or element of a per-primary chain map names the
+/// retired hard-coded `custom` profile.
+fn chain_map_references(map: &HashMap<String, Vec<String>>) -> bool {
+    map.keys().any(|k| profile_id_is_legacy_custom(k))
+        || map.values().flatten().any(|id| profile_id_is_legacy_custom(id))
+}
+
+/// The `rewrite_profile_ids` pass over a per-primary chain map: the
+/// legacy id can sit in a key (the primary) as well as in a chain.
+fn rewrite_chain_map_profile_ids(map: &mut HashMap<String, Vec<String>>, replacement: &str) {
+    rename_map_key(map, LEGACY_CUSTOM_PROFILE_ID, replacement);
+    for chain in map.values_mut() {
+        rewrite_profile_ids(chain, replacement);
+    }
+}
+
+/// Whether any primary key or nested entry's profile names the retired
+/// hard-coded `custom` profile.
+fn complexity_maps_reference(map: &HashMap<String, HashMap<String, ComplexityAgent>>) -> bool {
+    map.keys().any(|k| profile_id_is_legacy_custom(k))
+        || map
+            .values()
+            .flat_map(|t| t.values())
+            .any(|a| profile_id_is_legacy_custom(&a.profile))
+}
+
+/// The same pass over per-primary complexity tables: rewrite a legacy
+/// primary key and every entry's `profile`.
+fn rewrite_complexity_maps_profile_ids(
+    map: &mut HashMap<String, HashMap<String, ComplexityAgent>>,
+    replacement: &str,
+) {
+    rename_map_key(map, LEGACY_CUSTOM_PROFILE_ID, replacement);
+    for table in map.values_mut() {
+        for entry in table.values_mut() {
+            rewrite_profile_id(&mut entry.profile, replacement);
+        }
+    }
+}
+
+fn rename_map_key<V>(map: &mut HashMap<String, V>, from: &str, to: &str) {
+    if let Some(value) = map.remove(from) {
+        map.entry(to.to_string()).or_insert(value);
+    }
+}
+
+fn config_toml_profile_is_custom(root: &Path) -> bool {
+    let path = root.join(".gavin-root").join("config.toml");
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(doc) = existing.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    doc.get("agent")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("profile"))
+        .and_then(|v| v.as_str())
+        .map(profile_id_is_legacy_custom)
+        .unwrap_or(false)
+}
+
+fn rewrite_config_toml_custom_profile(root: &Path, new_id: &str) {
+    let path = root.join(".gavin-root").join("config.toml");
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut doc) = existing.parse::<toml_edit::DocumentMut>() else {
+        return;
+    };
+    let is_custom = doc
+        .get("agent")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("profile"))
+        .and_then(|v| v.as_str())
+        .map(profile_id_is_legacy_custom)
+        .unwrap_or(false);
+    if !is_custom {
+        return;
+    }
+    doc["agent"]["profile"] = toml_edit::value(new_id);
+    if let Some(t) = doc["agent"].as_table_mut() {
+        t.set_implicit(false);
+    }
+    let _ = std::fs::write(&path, doc.to_string());
+}
+
+fn references_legacy_custom(config: &AppConfig) -> bool {
+    let d = &config.agent_defaults;
+    if d.complexity.values().any(|a| profile_id_is_legacy_custom(&a.profile))
+        || complexity_maps_reference(&d.complexity_tables)
+        || d.agent_fallback.iter().any(|id| profile_id_is_legacy_custom(id))
+        || chain_map_references(&d.fallback_chains)
+        || d.fallback_thresholds.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.agent_efforts.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.pause_cycles.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.prompt_extras.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || d.extra_cli_args.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+        || config.agent_models.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+    {
+        return true;
+    }
+    for ws in &config.workspaces {
+        if ws.complexity_agents.values().any(|a| profile_id_is_legacy_custom(&a.profile))
+            || complexity_maps_reference(&ws.complexity_tables)
+            || ws
+                .agent_fallback
+                .as_ref()
+                .is_some_and(|c| c.iter().any(|id| profile_id_is_legacy_custom(id)))
+            || chain_map_references(&ws.fallback_chains)
+            || ws.pause_cycles.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+            || ws.prompt_extras.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+            || ws.extra_cli_args.contains_key(LEGACY_CUSTOM_PROFILE_ID)
+            || ws.declined_agents.iter().any(|id| profile_id_is_legacy_custom(id))
+            || ws.armed_agents.iter().any(|id| profile_id_is_legacy_custom(id))
+        {
+            return true;
+        }
+        if ws
+            .root_path
+            .as_deref()
+            .is_some_and(|r| config_toml_profile_is_custom(Path::new(r)))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn needs_custom_migration(config: &AppConfig) -> bool {
+    let d = &config.agent_defaults;
+    if !d.custom_command.trim().is_empty()
+        || !d.custom_model_flag.trim().is_empty()
+        || !d.custom_effort_flag.trim().is_empty()
+        || !d.custom_api_family.trim().is_empty()
+        || config
+            .custom_resume_args
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty())
+    {
+        return true;
+    }
+    if config.workspaces.iter().any(|ws| {
+        ws.custom_resume_args
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty())
+    }) {
+        return true;
+    }
+    references_legacy_custom(config)
+}
+
+fn take_nonempty_option(value: &mut Option<String>) -> Option<String> {
+    value.take().filter(|s| !s.trim().is_empty())
+}
+
+/// Fold the retired hard-coded `custom` profile and its `custom*` fields
+/// into `custom_profiles`, rewrite every `"custom"` reference to the
+/// migrated id, and clear the legacy fields. Idempotent: a second call
+/// on an already-migrated config returns false and leaves it alone.
+pub fn migrate_custom_profiles(config: &mut AppConfig) -> bool {
+    if !needs_custom_migration(config) {
+        return false;
+    }
+
+    let app_resume = take_nonempty_option(&mut config.custom_resume_args);
+    if !config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .any(|p| p.id == MIGRATED_CUSTOM_PROFILE_ID)
+    {
+        config.agent_defaults.custom_profiles.push(CustomProfile {
+            id: MIGRATED_CUSTOM_PROFILE_ID.to_string(),
+            label: "Custom".to_string(),
+            command: std::mem::take(&mut config.agent_defaults.custom_command),
+            model_flag: std::mem::take(&mut config.agent_defaults.custom_model_flag),
+            effort_flag: std::mem::take(&mut config.agent_defaults.custom_effort_flag),
+            api_family: std::mem::take(&mut config.agent_defaults.custom_api_family),
+            resume_args: app_resume,
+        });
+    } else {
+        config.agent_defaults.custom_command.clear();
+        config.agent_defaults.custom_model_flag.clear();
+        config.agent_defaults.custom_effort_flag.clear();
+        config.agent_defaults.custom_api_family.clear();
+    }
+
+    for entry in config.agent_defaults.complexity.values_mut() {
+        rewrite_profile_id(&mut entry.profile, MIGRATED_CUSTOM_PROFILE_ID);
+    }
+    rewrite_profile_ids(&mut config.agent_defaults.agent_fallback, MIGRATED_CUSTOM_PROFILE_ID);
+    rewrite_chain_map_profile_ids(
+        &mut config.agent_defaults.fallback_chains,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rewrite_complexity_maps_profile_ids(
+        &mut config.agent_defaults.complexity_tables,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.pause_cycles,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.prompt_extras,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.extra_cli_args,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.fallback_thresholds,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_defaults.agent_efforts,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+    rename_map_key(
+        &mut config.agent_models,
+        LEGACY_CUSTOM_PROFILE_ID,
+        MIGRATED_CUSTOM_PROFILE_ID,
+    );
+
+    // Collect per-workspace decisions first so we can mutate
+    // `agent_defaults` and each workspace without overlapping borrows.
+    let workspace_plans: Vec<(usize, Option<String>, bool, Option<String>)> = config
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(i, ws)| {
+            let toml_was_custom = ws
+                .root_path
+                .as_deref()
+                .is_some_and(|r| config_toml_profile_is_custom(Path::new(r)));
+            let resume = ws
+                .custom_resume_args
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .cloned();
+            let root = ws.root_path.clone();
+            (i, root, toml_was_custom, resume)
+        })
+        .collect();
+
+    for (index, root, toml_was_custom, resume) in workspace_plans {
+        let replacement = if toml_was_custom {
+            if let Some(resume) = resume {
+                let local_id = format!("{LOCAL_PROFILE_PREFIX}{MIGRATED_CUSTOM_PROFILE_ID}");
+                let template = config
+                    .agent_defaults
+                    .custom_profiles
+                    .iter()
+                    .find(|p| p.id == MIGRATED_CUSTOM_PROFILE_ID)
+                    .cloned()
+                    .unwrap_or_else(|| CustomProfile {
+                        id: MIGRATED_CUSTOM_PROFILE_ID.to_string(),
+                        label: "Custom".to_string(),
+                        command: String::new(),
+                        model_flag: String::new(),
+                        effort_flag: String::new(),
+                        api_family: String::new(),
+                        resume_args: None,
+                    });
+                let ws = &mut config.workspaces[index];
+                if !ws.custom_profiles.iter().any(|p| p.id == local_id) {
+                    ws.custom_profiles.push(CustomProfile {
+                        id: local_id.clone(),
+                        label: template.label,
+                        command: template.command,
+                        model_flag: template.model_flag,
+                        effort_flag: template.effort_flag,
+                        api_family: template.api_family,
+                        resume_args: Some(resume),
+                    });
+                }
+                local_id
+            } else {
+                MIGRATED_CUSTOM_PROFILE_ID.to_string()
+            }
+        } else {
+            if let Some(resume) = resume {
+                if let Some(app) = config
+                    .agent_defaults
+                    .custom_profiles
+                    .iter_mut()
+                    .find(|p| p.id == MIGRATED_CUSTOM_PROFILE_ID)
+                {
+                    if app.resume_args.as_ref().is_none_or(|s| s.trim().is_empty()) {
+                        app.resume_args = Some(resume);
+                    }
+                }
+            }
+            MIGRATED_CUSTOM_PROFILE_ID.to_string()
+        };
+
+        let ws = &mut config.workspaces[index];
+        ws.custom_resume_args = None;
+        for entry in ws.complexity_agents.values_mut() {
+            rewrite_profile_id(&mut entry.profile, &replacement);
+        }
+        if let Some(ref mut chain) = ws.agent_fallback {
+            rewrite_profile_ids(chain, &replacement);
+        }
+        rewrite_chain_map_profile_ids(&mut ws.fallback_chains, &replacement);
+        rewrite_complexity_maps_profile_ids(&mut ws.complexity_tables, &replacement);
+        rename_map_key(&mut ws.pause_cycles, LEGACY_CUSTOM_PROFILE_ID, &replacement);
+        rename_map_key(&mut ws.prompt_extras, LEGACY_CUSTOM_PROFILE_ID, &replacement);
+        rename_map_key(&mut ws.extra_cli_args, LEGACY_CUSTOM_PROFILE_ID, &replacement);
+        rewrite_profile_ids(&mut ws.declined_agents, &replacement);
+        rewrite_profile_ids(&mut ws.armed_agents, &replacement);
+        if let Some(root) = root.as_deref() {
+            rewrite_config_toml_custom_profile(Path::new(root), &replacement);
+        }
+    }
+
+    true
+}
+
+/// Fold the legacy single fallback chain — one list walked no matter
+/// which agent was spent — into the per-primary maps: the old vec becomes
+/// EVERY known primary's chain (the six stock ids plus every custom id
+/// known at migration time), because the old model offered it for any
+/// spent agent. A workspace legacy `None` means it never chose, which the
+/// new model already spells as an empty map (inherit). Runs AFTER
+/// `migrate_custom_profiles` so the fold carries the rewritten ids and
+/// knows the migrated custom profiles. Idempotent: legacy fields are
+/// cleared as they are folded, so a second call returns false.
+pub fn migrate_fallback_chains(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+
+    if !config.agent_defaults.agent_fallback.is_empty() {
+        if config.agent_defaults.fallback_chains.is_empty() {
+            let chain = std::mem::take(&mut config.agent_defaults.agent_fallback);
+            for id in STOCK_PROFILE_IDS.iter().map(|s| s.to_string()).chain(app_custom_ids.iter().cloned()) {
+                config.agent_defaults.fallback_chains.insert(id, chain.clone());
+            }
+        } else {
+            // A map a newer build wrote wins; the legacy vec is dropped.
+            config.agent_defaults.agent_fallback.clear();
+        }
+        changed = true;
+    }
+
+    for ws in &mut config.workspaces {
+        let Some(chain) = ws.agent_fallback.take() else {
+            continue;
+        };
+        if ws.fallback_chains.is_empty() {
+            let ids = STOCK_PROFILE_IDS
+                .iter()
+                .map(|s| s.to_string())
+                .chain(app_custom_ids.iter().cloned())
+                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+            for id in ids {
+                ws.fallback_chains.insert(id, chain.clone());
+            }
+        }
+        changed = true;
+    }
+
+    changed
+}
+
+/// Every primary known at migration time: the stock ids plus the
+/// app-wide custom ids, and per workspace its `local:` customs.
+fn known_primaries(config: &AppConfig) -> Vec<String> {
+    STOCK_PROFILE_IDS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(config.agent_defaults.custom_profiles.iter().map(|p| p.id.clone()))
+        .collect()
+}
+
+/// Fold the legacy single complexity table — one table consulted no
+/// matter which agent a card resolved to — into the per-primary maps:
+/// the old table becomes EVERY known primary's table. Runs AFTER
+/// `migrate_custom_profiles` so the fold carries rewritten entry
+/// profiles and knows the migrated customs. Idempotent: legacy fields
+/// are cleared as they are folded, so a second call returns false.
+pub fn migrate_complexity_tables(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    // The legacy app-wide table, kept whole: a workspace's fold below
+    // starts from it, and a workspace-local custom (which the app-level
+    // fold cannot know) is seeded from it.
+    let mut legacy_app: HashMap<String, ComplexityAgent> = HashMap::new();
+    if !config.agent_defaults.complexity.is_empty() {
+        if config.agent_defaults.complexity_tables.is_empty() {
+            let table = std::mem::take(&mut config.agent_defaults.complexity);
+            for id in known_primaries(config) {
+                config.agent_defaults.complexity_tables.insert(id, table.clone());
+            }
+            legacy_app = table;
+        } else {
+            config.agent_defaults.complexity.clear();
+        }
+        changed = true;
+    }
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+    let app_tables = config.agent_defaults.complexity_tables.clone();
+    for ws in &mut config.workspaces {
+        let own_rows = std::mem::take(&mut ws.complexity_agents);
+        let has_own = !own_rows.is_empty();
+        let has_locals_to_seed = !legacy_app.is_empty() && !ws.custom_profiles.is_empty();
+        if !has_own && !has_locals_to_seed {
+            continue;
+        }
+        if ws.complexity_tables.is_empty() {
+            let ids = STOCK_PROFILE_IDS
+                .iter()
+                .map(|s| s.to_string())
+                .chain(app_custom_ids.iter().cloned())
+                .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+            for id in ids {
+                let is_local = ws.custom_profiles.iter().any(|p| p.id == id);
+                if !has_own && !is_local {
+                    // Nothing of its own and not a local: it inherits the
+                    // app's table for this agent, exactly as before.
+                    continue;
+                }
+                // The old rule was per LEVEL: a workspace row won, and a
+                // level it did not name fell through to the app's row.
+                // The new key replaces the table WHOLE, so the fold
+                // writes that overlay out. A local custom has no app
+                // table under its id (the app fold never knew it), so it
+                // starts from the legacy app table.
+                let mut table = if is_local {
+                    legacy_app.clone()
+                } else {
+                    app_tables.get(&id).cloned().unwrap_or_default()
+                };
+                table.extend(own_rows.clone());
+                if !table.is_empty() {
+                    ws.complexity_tables.insert(id, table);
+                }
+            }
+        }
+        changed = true;
+    }
+
+    changed
+}
+
+/// Fold the legacy single pause cycle — one cycle for every agent — into
+/// the per-primary maps: the old cycle becomes EVERY known primary's
+/// cycle, because the old model applied it to any launch. A workspace
+/// legacy `None` means it never chose, which the new model already
+/// spells as an empty map (inherit) — except for a workspace-local
+/// custom, which the app-wide fold cannot know: it is seeded from the
+/// legacy app cycle so it stays held exactly as it was. Idempotent:
+/// legacy fields are cleared as they are folded, so a second call
+/// returns false.
+pub fn migrate_pause_cycles(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    let legacy_app = config.agent_pause.take();
+    if let Some(cycle) = &legacy_app {
+        if config.agent_defaults.pause_cycles.is_empty() {
+            for id in known_primaries(config) {
+                config.agent_defaults.pause_cycles.insert(id, cycle.clone());
+            }
+        }
+        changed = true;
+    }
+
+    let app_custom_ids: Vec<String> = config
+        .agent_defaults
+        .custom_profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
+    for ws in &mut config.workspaces {
+        let own = ws.agent_pause.take();
+        if own.is_none() && (legacy_app.is_none() || ws.custom_profiles.is_empty()) {
+            continue;
+        }
+        if ws.pause_cycles.is_empty() {
+            match &own {
+                // The workspace chose a cycle of its own: it governed
+                // every agent, so it becomes every agent's.
+                Some(cycle) => {
+                    let ids = STOCK_PROFILE_IDS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .chain(app_custom_ids.iter().cloned())
+                        .chain(ws.custom_profiles.iter().map(|p| p.id.clone()));
+                    for id in ids {
+                        ws.pause_cycles.insert(id, cycle.clone());
+                    }
+                }
+                // It never chose: it follows the app per agent, but a
+                // local custom has no app entry to follow.
+                None => {
+                    if let Some(cycle) = &legacy_app {
+                        for p in &ws.custom_profiles {
+                            ws.pause_cycles.insert(p.id.clone(), cycle.clone());
+                        }
+                    }
+                }
+            }
+        }
+        changed = true;
+    }
+
+    changed
+}
+
+/// Look up the API family a launch should send for `profile_id`: the
+/// matching custom profile's, else the legacy `custom_api_family` while
+/// a config still names `"custom"`.
+pub fn api_family_for_profile(
+    defaults: &AgentDefaultsConfig,
+    workspace_customs: &[CustomProfile],
+    profile_id: Option<&str>,
+) -> Option<String> {
+    let id = profile_id.map(str::trim).filter(|s| !s.is_empty())?;
+    if let Some(profile) = workspace_customs.iter().find(|p| p.id == id) {
+        let family = profile.api_family.trim();
+        return (!family.is_empty()).then(|| family.to_string());
+    }
+    if let Some(profile) = defaults.custom_profiles.iter().find(|p| p.id == id) {
+        let family = profile.api_family.trim();
+        return (!family.is_empty()).then(|| family.to_string());
+    }
+    if profile_id_is_legacy_custom(id) {
+        let family = defaults.custom_api_family.trim();
+        return (!family.is_empty()).then(|| family.to_string());
+    }
+    None
 }
 
 pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
@@ -1123,7 +1851,20 @@ pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
     // session id is already normal, expected behavior (see the
     // ListSessions check in session::bootstrap), not something that
     // should block launch.
-    Ok(serde_json::from_str(&contents).unwrap_or_default())
+    let mut config: AppConfig = serde_json::from_str(&contents).unwrap_or_default();
+    // `|` rather than `||`: both passes must run even when the first one
+    // already changed something (the fallback fold needs the custom
+    // migration's rewritten ids).
+    if migrate_custom_profiles(&mut config)
+        | migrate_fallback_chains(&mut config)
+        | migrate_complexity_tables(&mut config)
+        | migrate_pause_cycles(&mut config)
+    {
+        // Persist so a second load is a no-op and legacy keys leave the
+        // file; a failed write still returns the migrated in-memory shape.
+        let _ = save(config_dir, &config);
+    }
+    Ok(config)
 }
 
 pub fn save(config_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
@@ -1212,8 +1953,12 @@ mod tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -1222,8 +1967,11 @@ mod tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -1288,14 +2036,17 @@ mod tests {
     fn fallback_chain_and_armed_agents_roundtrip_and_default_to_inherit() {
         let dir = tempfile::tempdir().unwrap();
         let mut ws = sample_workspace();
-        ws.agent_fallback = Some(vec!["codex".to_string(), "gemini".to_string()]);
+        ws.fallback_chains = HashMap::from([(
+            "claude-code".to_string(),
+            vec!["codex".to_string(), "gemini".to_string()],
+        )]);
         ws.armed_agents = vec!["codex".to_string()];
         ws.declined_agents = vec!["gemini".to_string()];
         save(dir.path(), &AppConfig { workspaces: vec![ws], ..Default::default() }).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(
-            loaded.workspaces[0].agent_fallback.as_deref(),
-            Some(["codex".to_string(), "gemini".to_string()].as_slice())
+            loaded.workspaces[0].fallback_chains.get("claude-code"),
+            Some(&vec!["codex".to_string(), "gemini".to_string()])
         );
         assert_eq!(loaded.workspaces[0].armed_agents, vec!["codex".to_string()]);
         assert_eq!(loaded.workspaces[0].declined_agents, vec!["gemini".to_string()]);
@@ -1306,36 +2057,275 @@ mod tests {
         )
         .unwrap();
         let old = load(dir.path()).unwrap();
-        assert_eq!(old.workspaces[0].agent_fallback, None);
+        assert!(old.workspaces[0].fallback_chains.is_empty());
         assert!(old.workspaces[0].armed_agents.is_empty());
         assert!(old.workspaces[0].declined_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
+        assert!(old.agent_defaults.fallback_chains.is_empty());
         assert!(old.agent_defaults.fallback_thresholds.is_empty());
     }
 
-    /// The custom agent's API family persists, and a config that never
-    /// chose one -- every config written before it existed -- reads as
-    /// none, which is the default and means no recipe. None is written
-    /// as no key at all.
+    /// Named custom profiles persist, and a config that never defined
+    /// any -- every config written before they existed -- reads as empty.
+    #[test]
+    fn custom_profiles_roundtrip_and_default_to_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.custom_profiles.push(CustomProfile {
+            id: "my-bot".to_string(),
+            label: "My Bot".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: "--llm".to_string(),
+            effort_flag: "--think=".to_string(),
+            api_family: "openai".to_string(),
+            resume_args: Some("--resume".to_string()),
+        });
+        let mut ws = sample_workspace();
+        ws.custom_profiles.push(CustomProfile {
+            id: "local:ws-bot".to_string(),
+            label: "WS Bot".to_string(),
+            command: "ws-agent".to_string(),
+            model_flag: "-m".to_string(),
+            effort_flag: String::new(),
+            api_family: String::new(),
+            resume_args: None,
+        });
+        config.workspaces.push(ws);
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.agent_defaults.custom_profiles.len(), 1);
+        assert_eq!(loaded.agent_defaults.custom_profiles[0].id, "my-bot");
+        assert_eq!(loaded.agent_defaults.custom_profiles[0].api_family, "openai");
+        assert_eq!(loaded.workspaces[0].custom_profiles[0].id, "local:ws-bot");
+
+        config.agent_defaults.custom_profiles.clear();
+        config.workspaces[0].custom_profiles.clear();
+        save(dir.path(), &config).unwrap();
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("customProfiles"), "{written}");
+    }
+
+    /// The retired hard-coded `custom` row and its `custom*` fields fold
+    /// into one app-wide `custom-agent` profile; a second load is a no-op.
+    #[test]
+    fn migrates_legacy_custom_fields_once_and_rewrites_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".gavin-root")).unwrap();
+        std::fs::write(
+            root.join(".gavin-root").join("config.toml"),
+            "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n",
+        )
+        .unwrap();
+
+        // AppConfig fields are snake_case; nested Workspace / AgentDefaults
+        // are camelCase — match what an older build wrote to disk.
+        let raw = r#"{
+  "workspaces": [{
+    "id": "workspace-1",
+    "name": "Workspace 1",
+    "pages": [{"id":"page-1","name":"Page 1","layout":{"type":"leaf","tabs":["abc-123"],"activeTabIndex":0},"focusedSessionId":null}],
+    "activePageId": "page-1",
+    "activeView": null,
+    "rootPath": "ROOT",
+    "complexityAgents": {"complex": {"profile": "custom", "model": "big"}},
+    "agentFallback": ["custom", "codex"],
+    "armedAgents": ["custom"],
+    "declinedAgents": ["custom"],
+    "customResumeArgs": "--resume-ws"
+  }],
+  "custom_resume_args": "--resume-app",
+  "agent_models": {"custom": "big-model"},
+  "agent_defaults": {
+    "customCommand": "my-agent",
+    "customModelFlag": "--llm",
+    "customEffortFlag": "--think=",
+    "customApiFamily": "anthropic",
+    "complexity": {"intricate": {"profile": "custom", "model": "x"}},
+    "agentFallback": ["custom", "gemini"],
+    "fallbackThresholds": {"custom": 80},
+    "agentEfforts": {"custom": "high"}
+  }
+}"#
+        .replace("ROOT", &root.to_string_lossy());
+        std::fs::write(config_path(dir.path()), raw).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.agent_defaults.custom_profiles.len(), 1);
+        let profile = &loaded.agent_defaults.custom_profiles[0];
+        assert_eq!(profile.id, MIGRATED_CUSTOM_PROFILE_ID);
+        assert_eq!(profile.label, "Custom");
+        assert_eq!(profile.command, "my-agent");
+        assert_eq!(profile.model_flag, "--llm");
+        assert_eq!(profile.effort_flag, "--think=");
+        assert_eq!(profile.api_family, "anthropic");
+        assert_eq!(profile.resume_args.as_deref(), Some("--resume-app"));
+        assert!(loaded.custom_resume_args.is_none());
+        assert!(loaded.agent_defaults.custom_command.is_empty());
+        assert!(loaded.agent_defaults.custom_model_flag.is_empty());
+        assert!(loaded.agent_defaults.custom_effort_flag.is_empty());
+        assert!(loaded.agent_defaults.custom_api_family.is_empty());
+        // The legacy complexity table was rewritten, then folded onto
+        // every known primary by `migrate_complexity_tables`.
+        assert!(loaded.agent_defaults.complexity.is_empty());
+        assert_eq!(
+            loaded.agent_defaults.complexity_tables["claude-code"]["intricate"].profile,
+            MIGRATED_CUSTOM_PROFILE_ID
+        );
+        // The legacy single chain was rewritten, then folded onto every
+        // known primary (the six stock ids plus the migrated custom one)
+        // by `migrate_fallback_chains`.
+        assert!(loaded.agent_defaults.agent_fallback.is_empty());
+        let expected_chain = vec![MIGRATED_CUSTOM_PROFILE_ID.to_string(), "gemini".to_string()];
+        for id in STOCK_PROFILE_IDS.iter().chain([MIGRATED_CUSTOM_PROFILE_ID].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.fallback_chains.get(*id),
+                Some(&expected_chain),
+                "app chain for {id}"
+            );
+        }
+        assert!(loaded
+            .agent_defaults
+            .fallback_thresholds
+            .contains_key(MIGRATED_CUSTOM_PROFILE_ID));
+        assert!(!loaded
+            .agent_defaults
+            .fallback_thresholds
+            .contains_key(LEGACY_CUSTOM_PROFILE_ID));
+        assert_eq!(
+            loaded.agent_models.get(MIGRATED_CUSTOM_PROFILE_ID).map(String::as_str),
+            Some("big-model")
+        );
+
+        let local_id = format!("{LOCAL_PROFILE_PREFIX}{MIGRATED_CUSTOM_PROFILE_ID}");
+        assert_eq!(loaded.workspaces[0].custom_profiles.len(), 1);
+        assert_eq!(loaded.workspaces[0].custom_profiles[0].id, local_id);
+        assert_eq!(
+            loaded.workspaces[0].custom_profiles[0].resume_args.as_deref(),
+            Some("--resume-ws")
+        );
+        assert!(loaded.workspaces[0].custom_resume_args.is_none());
+        // The workspace's legacy complexity table folded onto every known
+        // primary, rewritten to the local profile id first.
+        assert!(loaded.workspaces[0].complexity_agents.is_empty());
+        assert_eq!(
+            loaded.workspaces[0].complexity_tables["claude-code"]["complex"].profile,
+            local_id
+        );
+        // The workspace's legacy chain folded onto every known primary:
+        // stock, the app-wide custom, and this workspace's new local.
+        assert!(loaded.workspaces[0].agent_fallback.is_none());
+        let expected_ws_chain = vec![local_id.clone(), "codex".to_string()];
+        for id in STOCK_PROFILE_IDS
+            .iter()
+            .chain([MIGRATED_CUSTOM_PROFILE_ID, local_id.as_str()].iter())
+        {
+            assert_eq!(
+                loaded.workspaces[0].fallback_chains.get(*id),
+                Some(&expected_ws_chain),
+                "workspace chain for {id}"
+            );
+        }
+        assert_eq!(loaded.workspaces[0].armed_agents, vec![local_id.clone()]);
+        assert_eq!(loaded.workspaces[0].declined_agents, vec![local_id.clone()]);
+        let toml = std::fs::read_to_string(root.join(".gavin-root").join("config.toml")).unwrap();
+        assert!(toml.contains(&format!("profile = \"{local_id}\"")), "{toml}");
+        assert!(!toml.contains("profile = \"custom\""));
+
+        // Second load is a no-op: no legacy fields, no `"custom"` refs.
+        let again = load(dir.path()).unwrap();
+        assert_eq!(again, loaded);
+        let mut again_mut = again.clone();
+        assert!(!migrate_custom_profiles(&mut again_mut));
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("customCommand"), "{written}");
+        assert!(!written.contains("\"custom\""), "{written}");
+    }
+
+    /// The custom agent's API family persists on a CustomProfile, and a
+    /// config that never chose one reads as none.
     #[test]
     fn the_custom_api_family_roundtrips_and_defaults_to_none() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.agent_defaults.custom_api_family = "anthropic".to_string();
+        config.agent_defaults.custom_profiles.push(CustomProfile {
+            id: "my-bot".to_string(),
+            label: "My Bot".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: "--model".to_string(),
+            effort_flag: String::new(),
+            api_family: "anthropic".to_string(),
+            resume_args: None,
+        });
         save(dir.path(), &config).unwrap();
-        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "anthropic");
+        assert_eq!(
+            load(dir.path()).unwrap().agent_defaults.custom_profiles[0].api_family,
+            "anthropic"
+        );
 
-        config.agent_defaults.custom_api_family = String::new();
+        config.agent_defaults.custom_profiles[0].api_family.clear();
         save(dir.path(), &config).unwrap();
         let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
-        assert!(!written.contains("customApiFamily"), "{written}");
+        assert!(!written.contains("apiFamily"), "{written}");
 
         std::fs::write(
             config_path(dir.path()),
-            r#"{"workspaces":[],"agent_defaults":{"customCommand":"my-agent","customModelFlag":"--model","complexity":{}}}"#,
+            r#"{"workspaces":[],"agent_defaults":{"complexity":{}}}"#,
         )
         .unwrap();
-        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "");
+        assert!(load(dir.path()).unwrap().agent_defaults.custom_profiles.is_empty());
+    }
+
+    /// Resume args live on the CustomProfile after migration; an already-
+    /// migrated config round-trips without resurrecting the legacy keys.
+    #[test]
+    fn custom_resume_args_roundtrip_override_wins_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.custom_profiles.push(CustomProfile {
+            id: format!("{LOCAL_PROFILE_PREFIX}{MIGRATED_CUSTOM_PROFILE_ID}"),
+            label: "Custom".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: String::new(),
+            effort_flag: String::new(),
+            api_family: String::new(),
+            resume_args: Some("--resume-ws".to_string()),
+        });
+        let mut config = AppConfig {
+            workspaces: vec![ws],
+            ..Default::default()
+        };
+        config.agent_defaults.custom_profiles.push(CustomProfile {
+            id: MIGRATED_CUSTOM_PROFILE_ID.to_string(),
+            label: "Custom".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: String::new(),
+            effort_flag: String::new(),
+            api_family: String::new(),
+            resume_args: Some("--resume-app".to_string()),
+        });
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(
+            loaded.agent_defaults.custom_profiles[0].resume_args.as_deref(),
+            Some("--resume-app")
+        );
+        assert_eq!(
+            loaded.workspaces[0].custom_profiles[0].resume_args.as_deref(),
+            Some("--resume-ws")
+        );
+        assert!(loaded.custom_resume_args.is_none());
+        assert!(loaded.workspaces[0].custom_resume_args.is_none());
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.custom_resume_args, None);
+        assert_eq!(old.workspaces[0].custom_resume_args, None);
+        assert!(old.agent_defaults.custom_profiles.is_empty());
     }
 
     /// Every effort field round-trips, and a config written before any of
@@ -1346,50 +2336,261 @@ mod tests {
     fn agent_efforts_roundtrip_and_default_to_absent() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.agent_defaults.custom_effort_flag = "--think=".to_string();
+        config.agent_defaults.custom_profiles.push(CustomProfile {
+            id: "my-bot".to_string(),
+            label: "My Bot".to_string(),
+            command: "my-agent".to_string(),
+            model_flag: String::new(),
+            effort_flag: "--think=".to_string(),
+            api_family: String::new(),
+            resume_args: None,
+        });
         config.agent_defaults.agent_efforts.insert("claude-code".to_string(), "high".to_string());
-        config.agent_defaults.complexity.insert(
-            "intricate".to_string(),
-            ComplexityAgent { profile: String::new(), model: "opus".to_string(), effort: "max".to_string() },
+        config.agent_defaults.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "intricate".to_string(),
+                ComplexityAgent {
+                    profile: String::new(),
+                    model: "sonnet".to_string(),
+                    effort: "max".to_string(),
+                    advisor: "opus".to_string(),
+                },
+            )]),
         );
         save(dir.path(), &config).unwrap();
         let loaded = load(dir.path()).unwrap().agent_defaults;
-        assert_eq!(loaded.custom_effort_flag, "--think=");
+        assert_eq!(loaded.custom_profiles[0].effort_flag, "--think=");
         assert_eq!(loaded.agent_efforts.get("claude-code").map(String::as_str), Some("high"));
-        assert_eq!(loaded.complexity["intricate"].effort, "max");
+        assert_eq!(loaded.complexity_tables["claude-code"]["intricate"].effort, "max");
+        assert_eq!(loaded.complexity_tables["claude-code"]["intricate"].advisor, "opus");
 
         config.agent_defaults = AgentDefaultsConfig::default();
-        config.agent_defaults.complexity.insert(
-            "simple".to_string(),
-            ComplexityAgent { profile: String::new(), model: "haiku".to_string(), effort: String::new() },
+        config.agent_defaults.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "simple".to_string(),
+                ComplexityAgent { model: "haiku".to_string(), ..Default::default() },
+            )]),
         );
         save(dir.path(), &config).unwrap();
         let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
-        for key in ["customEffortFlag", "agentEfforts", "effort"] {
+        for key in ["customEffortFlag", "agentEfforts", "effort", "effortFlag", "advisor"] {
             assert!(!written.contains(key), "{key} written while empty: {written}");
         }
 
         std::fs::write(
             config_path(dir.path()),
-            r#"{"workspaces":[],"agent_defaults":{"customCommand":"","customModelFlag":"","complexity":{"complex":{"profile":"codex","model":"gpt-5.1"}}}}"#,
+            r#"{"workspaces":[],"agent_defaults":{"complexity":{"complex":{"profile":"codex","model":"gpt-5.1"}}}}"#,
         )
         .unwrap();
+        // A config written before per-primary tables folds the legacy
+        // `complexity` map onto every known primary.
         let old = load(dir.path()).unwrap().agent_defaults;
-        assert_eq!(old.complexity["complex"].effort, "");
+        assert!(old.complexity.is_empty());
+        assert_eq!(old.complexity_tables["claude-code"]["complex"].effort, "");
+        assert_eq!(old.complexity_tables["claude-code"]["complex"].advisor, "");
+        assert_eq!(old.complexity_tables["codex"]["complex"].model, "gpt-5.1");
         assert!(old.agent_efforts.is_empty());
-        assert_eq!(old.custom_effort_flag, "");
+        assert!(old.custom_profiles.is_empty());
     }
 
     #[test]
     fn agent_defaults_fallback_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.agent_defaults.agent_fallback = vec!["codex".to_string()];
+        config
+            .agent_defaults
+            .fallback_chains
+            .insert("claude-code".to_string(), vec!["codex".to_string()]);
         config.agent_defaults.fallback_thresholds.insert("claude-code".to_string(), 80);
         save(dir.path(), &config).unwrap();
         let loaded = load(dir.path()).unwrap().agent_defaults;
-        assert_eq!(loaded.agent_fallback, vec!["codex".to_string()]);
+        assert_eq!(
+            loaded.fallback_chains.get("claude-code"),
+            Some(&vec!["codex".to_string()])
+        );
+        assert!(loaded.agent_fallback.is_empty());
         assert_eq!(loaded.fallback_thresholds.get("claude-code"), Some(&80));
+    }
+
+    /// The app-wide default agent round-trips, and a config written before
+    /// the field existed reads as absent — which the frontend resolves to
+    /// "claude-code", the hard-coded fallback every older build used.
+    #[test]
+    fn default_agent_roundtrips_and_defaults_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.default_agent = Some("codex".to_string());
+        save(dir.path(), &config).unwrap();
+        assert_eq!(
+            load(dir.path()).unwrap().agent_defaults.default_agent.as_deref(),
+            Some("codex")
+        );
+
+        std::fs::write(config_path(dir.path()), r#"{"workspaces":[],"agent_defaults":{"complexity":{}}}"#).unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.default_agent, None);
+    }
+
+    /// The legacy single fallback chain — one list for every agent —
+    /// folds onto every known primary at both levels, once; a workspace
+    /// that never chose inherits (empty map), and a second load is a
+    /// no-op.
+    #[test]
+    fn migrates_legacy_fallback_chains_once_and_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{
+  "workspaces": [
+    {
+      "id": "with-chain",
+      "name": "With Chain",
+      "pages": [],
+      "activePageId": null,
+      "activeView": null,
+      "agentFallback": ["codex", "gemini"],
+      "customProfiles": [{"id": "local:bot", "label": "Bot", "command": "bot", "modelFlag": ""}]
+    },
+    {
+      "id": "inheriting",
+      "name": "Inheriting",
+      "pages": [],
+      "activePageId": null,
+      "activeView": null
+    }
+  ],
+  "agent_defaults": {
+    "complexity": {},
+    "agentFallback": ["codex"],
+    "customProfiles": [{"id": "my-bot", "label": "My Bot", "command": "mb", "modelFlag": ""}]
+  }
+}"#;
+        std::fs::write(config_path(dir.path()), raw).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert!(loaded.agent_defaults.agent_fallback.is_empty());
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot"].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.fallback_chains.get(*id),
+                Some(&vec!["codex".to_string()]),
+                "app chain for {id}"
+            );
+        }
+        let ws = &loaded.workspaces[0];
+        assert!(ws.agent_fallback.is_none());
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot", "local:bot"].iter()) {
+            assert_eq!(
+                ws.fallback_chains.get(*id),
+                Some(&vec!["codex".to_string(), "gemini".to_string()]),
+                "workspace chain for {id}"
+            );
+        }
+        // Legacy None: never chose, so an empty map — inherit.
+        assert!(loaded.workspaces[1].fallback_chains.is_empty());
+
+        // The file no longer carries the legacy key, and a second load is
+        // a no-op.
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("agentFallback"), "{written}");
+        assert!(written.contains("fallbackChains"), "{written}");
+        let again = load(dir.path()).unwrap();
+        assert_eq!(again, loaded);
+        let mut again_mut = again.clone();
+        assert!(!migrate_fallback_chains(&mut again_mut));
+    }
+
+    /// The legacy single complexity table and pause cycle fold onto every
+    /// known primary at both levels, once; legacy keys leave the file and
+    /// a second load is a no-op. The new prompt-param maps need no
+    /// migration: they have no legacy shape.
+    #[test]
+    fn migrates_legacy_complexity_and_pause_once_and_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{
+  "workspaces": [{
+    "id": "w",
+    "name": "W",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null,
+    "agentPause": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 7, "limitPercent": 90.0, "limitEnabled": true },
+    "complexityAgents": { "complex": { "profile": "codex", "model": "gpt" } },
+    "customProfiles": [{"id": "local:bot", "label": "Bot", "command": "bot", "modelFlag": ""}]
+  }, {
+    "id": "follower",
+    "name": "Follower",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null,
+    "customProfiles": [{"id": "local:helper", "label": "Helper", "command": "h", "modelFlag": ""}]
+  }, {
+    "id": "plain",
+    "name": "Plain",
+    "pages": [],
+    "activePageId": null,
+    "activeView": null
+  }],
+  "agent_pause": { "enabled": true, "periodMinutes": 240, "pauseMinutes": 5, "anchorMs": 3, "limitPercent": 95.0, "limitEnabled": false },
+  "agent_defaults": {
+    "complexity": { "intricate": { "profile": "claude-code", "model": "opus" } },
+    "customProfiles": [{"id": "my-bot", "label": "My Bot", "command": "mb", "modelFlag": ""}]
+  }
+}"#;
+        std::fs::write(config_path(dir.path()), raw).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot"].iter()) {
+            assert_eq!(
+                loaded.agent_defaults.complexity_tables[*id]["intricate"].model,
+                "opus",
+                "app complexity table for {id}"
+            );
+            let cycle = &loaded.agent_defaults.pause_cycles[*id];
+            assert_eq!((cycle.period_minutes, cycle.anchor_ms), (240, 3), "app cycle for {id}");
+        }
+        assert!(loaded.agent_defaults.complexity.is_empty());
+        assert!(loaded.agent_pause.is_none());
+
+        // A workspace that chose its own rows: they win PER LEVEL over the
+        // app's, and a level it left alone still falls through to the app's
+        // row -- the old rule, which a whole-table key would lose if the
+        // fold copied only the workspace's own rows. The cycle it chose
+        // governed every agent, so it becomes every agent's.
+        let ws = &loaded.workspaces[0];
+        for id in STOCK_PROFILE_IDS.iter().chain(["my-bot", "local:bot"].iter()) {
+            let table = &ws.complexity_tables[*id];
+            assert_eq!(table["complex"].profile, "codex", "ws own row for {id}");
+            assert_eq!(table["intricate"].model, "opus", "ws falls through to the app's row for {id}");
+            let cycle = &ws.pause_cycles[*id];
+            assert_eq!((cycle.pause_minutes, cycle.limit_percent), (10, 90.0), "ws cycle for {id}");
+        }
+        assert!(ws.complexity_agents.is_empty());
+        assert!(ws.agent_pause.is_none());
+
+        // A workspace that chose nothing follows the app per agent -- but a
+        // workspace-local custom has no app entry to follow, so it is
+        // seeded with what the old single table and cycle did to it.
+        let follower = &loaded.workspaces[1];
+        assert_eq!(follower.complexity_tables.keys().collect::<Vec<_>>(), ["local:helper"]);
+        assert_eq!(follower.complexity_tables["local:helper"]["intricate"].model, "opus");
+        assert_eq!(follower.pause_cycles.keys().collect::<Vec<_>>(), ["local:helper"]);
+        assert_eq!(follower.pause_cycles["local:helper"].period_minutes, 240);
+
+        // And one with nothing of its own and no locals stays fully inheriting.
+        let plain = &loaded.workspaces[2];
+        assert!(plain.complexity_tables.is_empty());
+        assert!(plain.pause_cycles.is_empty());
+
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("complexityAgents"), "{written}");
+        assert!(!written.contains("agentPause"), "{written}");
+        assert!(!written.contains("agent_pause"), "{written}");
+        assert!(written.contains("complexityTables"), "{written}");
+        assert!(written.contains("pauseCycles"), "{written}");
+        let again = load(dir.path()).unwrap();
+        assert_eq!(again, loaded);
+        let mut again_mut = again.clone();
+        assert!(!migrate_complexity_tables(&mut again_mut));
+        assert!(!migrate_pause_cycles(&mut again_mut));
     }
 
     /// Both halves of the setting round-trip, and both read as absent from
@@ -1421,34 +2622,9 @@ mod tests {
         assert_eq!(old.workspaces[0].terminal_font_size, None);
     }
 
-    /// v38: the `custom` agent profile's resume flag, exactly the same
-    /// workspace-overrides-app-default-overrides-absent shape as
-    /// `terminal_font_size` above -- a config.json-layer setting, not
-    /// `.gavin-root/config.toml`'s `[agent]` table.
-    #[test]
-    fn custom_resume_args_roundtrip_override_wins_and_default_to_absent() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ws = sample_workspace();
-        ws.custom_resume_args = Some("--resume-ws".to_string());
-        let config = AppConfig {
-            workspaces: vec![ws],
-            custom_resume_args: Some("--resume-app".to_string()),
-            ..Default::default()
-        };
-        save(dir.path(), &config).unwrap();
-        let loaded = load(dir.path()).unwrap();
-        assert_eq!(loaded.custom_resume_args, Some("--resume-app".to_string()));
-        assert_eq!(loaded.workspaces[0].custom_resume_args, Some("--resume-ws".to_string()));
-
-        std::fs::write(
-            config_path(dir.path()),
-            r#"{"workspaces":[{"id":"w","name":"W","pages":[],"activePageId":null,"activeView":null}]}"#,
-        )
-        .unwrap();
-        let old = load(dir.path()).unwrap();
-        assert_eq!(old.custom_resume_args, None);
-        assert_eq!(old.workspaces[0].custom_resume_args, None);
-    }
+    /// v38 legacy keys are gone after migration; resume lives on the
+    /// CustomProfile. Covered by `custom_resume_args_roundtrip_override_wins_and_default_to_absent`
+    /// above (the CustomProfile form) and `migrates_legacy_custom_fields_once_and_rewrites_refs`.
 
     #[test]
     fn save_then_load_roundtrips() {
@@ -1466,7 +2642,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1499,7 +2678,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1546,7 +2728,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1699,7 +2884,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1752,7 +2940,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1790,7 +2981,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1831,7 +3025,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1886,7 +3083,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1916,7 +3116,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -1954,7 +3157,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2103,7 +3309,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2151,7 +3360,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2194,7 +3406,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
@@ -2262,7 +3477,10 @@ mod tests {
             auto_commit: None,
             removed_workspaces: Vec::new(),
             agent_pause: None,
+            agent_skills: HashMap::new(),
             superpowers: HashMap::new(),
+            superpowers_farewell_dismissed: Vec::new(),
+            playwright_pane_open: None,
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),

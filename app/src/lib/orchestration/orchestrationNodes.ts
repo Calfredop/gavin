@@ -38,7 +38,7 @@
 // run state and conflict severity keep the badges they wear on the
 // strip, so no colour answers two questions.
 
-import type { Orchestration, Rail, Stage, StageMode, Step } from "$lib/orchestration/orchestration";
+import type { Orchestration, Rail, Stage, StageMode, Step, StepState } from "$lib/orchestration/orchestration";
 import {
   isGroup,
   isToolStep,
@@ -74,6 +74,42 @@ export function laneX(lane: number): number {
 /// The centre of a row.
 export function rowY(row: number): number {
   return row * ROW_H + ROW_H / 2;
+}
+
+// ---- A step's dot -----------------------------------------------------------
+// The commit graph's dot (GitGraphRow) on a pending, skipped or stalled
+// step. The two states a reader scans a rail FOR -- where it is now and
+// how far it got -- get a dot of their own, in the rail's colour still so
+// the lane reads unbroken: the running step a larger dot with a halo
+// pulsing round it, a done one a larger dot with a check cut out of it.
+// The row's badge says the same in words; the dot is what the eye finds
+// first down a column of them.
+
+export const DOT_R = 3.5;
+const MARKED_DOT_R = 5;
+
+export interface StepDot {
+  r: number;
+  halo: boolean;
+  check: boolean;
+}
+
+export function stepDot(state: StepState): StepDot {
+  switch (state) {
+    case "running":
+      return { r: MARKED_DOT_R, halo: true, check: false };
+    case "done":
+      return { r: MARKED_DOT_R, halo: false, check: true };
+    default:
+      return { r: DOT_R, halo: false, check: false };
+  }
+}
+
+/// The check inside a done dot centred on (cx, cy) of radius r: a short
+/// stroke down-right, a long one up-right, kept inside the disc.
+export function checkPath(cx: number, cy: number, r: number): string {
+  const s = r * 0.55;
+  return `M ${cx - s} ${cy} L ${cx - s * 0.25} ${cy + s * 0.7} L ${cx + s} ${cy - s * 0.65}`;
 }
 
 /// A sentence the graph cannot draw as a line, hung on a row. `warn` is

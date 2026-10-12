@@ -4,6 +4,7 @@ import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 import { get } from "svelte/store";
 import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
 import { executionKeys, executionKeysHash } from "$lib/workspace/workspaceTrust";
+import { EMPTY_AGENT_DEFAULTS } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/panes/layout";
 import { allSessionIds } from "$lib/panes/layout";
 import type { Page, Workspace } from "$lib/core/workspace";
@@ -74,9 +75,10 @@ vi.mock("$lib/core/backend", () => ({
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
   getAgentDefaults: vi
     .fn()
-    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, agentFallback: [] }),
+    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, fallbackChains: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  getPlaywrightPaneOpen: vi.fn().mockResolvedValue(null),
   getCustomResumeArgs: vi.fn().mockResolvedValue(null),
   setCustomResumeArgs: vi.fn().mockResolvedValue(undefined),
   getAutoCommit: vi.fn().mockResolvedValue(null),
@@ -109,7 +111,6 @@ vi.mock("$lib/core/backend", () => ({
   // duty. Resolved by default so a poll lands quietly rather than
   // failing into its catch.
   agentUsage: vi.fn().mockResolvedValue({ state: "unsupported" }),
-  getAgentPause: vi.fn().mockResolvedValue(null),
   systemMemory: vi.fn().mockResolvedValue(null),
   listDevices: vi.fn().mockResolvedValue({ devices: [], remoteAccessEnabled: false, relayUrl: null }),
   setSleepHold: vi.fn().mockResolvedValue(undefined),
@@ -245,6 +246,12 @@ import {
   openBoardInSplit,
   openCardInSplit,
   openFollowUpsInSplit,
+  openBrowserInSplit,
+  mainBrowserOpen,
+  mainBrowserShare,
+  setMainBrowserShare,
+  hideMainBrowser,
+  setWorkspacePlaywrightPaneOpen,
   setCardTabPath,
   retargetCardTabs,
   repairUnknownTabs,
@@ -255,6 +262,13 @@ import {
   startMainAgent,
   stopMainAgent,
   agentProfilesStore,
+  agentDefaultsStore,
+  agentForCard,
+  dropProfileRefsFromWorkspaces,
+  dropWorkspaceProfileRefs,
+  promptExtrasFor,
+  resolvedAgentFor,
+  workspaceComplexityTable,
   setWorkspaceColor,
   setWorkspaceFlag,
   setWorkspaceFontSize,
@@ -291,6 +305,7 @@ import {
   markRequireReviewAsked,
   setStatusNoticeHold,
   setWorkspacePause,
+  setWorkspacePromptParams,
   setWorkspaceFallback,
   markAgentArmed,
   setAgentArmDeclined,
@@ -1279,6 +1294,114 @@ describe("openFollowUpsInSplit", () => {
   });
 });
 
+describe("openBrowserInSplit", () => {
+  it("splits the browser beside its session without taking the focus", async () => {
+    // The auto-open: nobody pressed anything, and a human may be typing in
+    // the terminal the pane appears beside.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    expect(await openBrowserInSplit("a", false)).toBe(true);
+
+    const state = get(layoutState);
+    const [id, tab] = Object.entries(state.cardTabsById)[0];
+    expect(tab).toEqual({ workspaceId: "ws-1", path: "", view: "browser", sessionId: "a" });
+    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a", id]);
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.setCardTabs).toHaveBeenCalledWith(state.cardTabsById);
+  });
+
+  it("finds the session on a page that is not on screen", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+
+    expect(await openBrowserInSplit("b", false)).toBe(true);
+
+    const state = get(layoutState);
+    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a"]);
+    expect(allSessionIds(state.workspaces[0].pages[1].layout)).toHaveLength(2);
+  });
+
+  it("opens one pane per session, and the chip brings it forward", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openBrowserInSplit("a", false);
+    const [first] = Object.keys(get(layoutState).cardTabsById);
+
+    expect(await openBrowserInSplit("a", true)).toBe(true);
+
+    expect(Object.keys(get(layoutState).cardTabsById)).toEqual([first]);
+    expect(get(layoutState).focusedSessionId).toBe(first);
+  });
+
+  it("opens nothing for a session no page holds", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    expect(await openBrowserInSplit("elsewhere", false)).toBe(false);
+    expect(get(layoutState).cardTabsById).toEqual({});
+  });
+
+  describe("the main agent", () => {
+    beforeEach(() => mainBrowserOpen.set(new Set()));
+
+    it("opens its browser in its Home cell rather than as a tab", async () => {
+      // It lives outside every page tree, so there is no tab bar to add
+      // a tab to -- and the auto-open must still have somewhere to land.
+      setState([{ ...ws("ws-1", [page("page-1", leaf(["a"]))]), mainSessionId: "main-1" }], "ws-1", "a");
+
+      expect(await openBrowserInSplit("main-1", false)).toBe(true);
+
+      expect(get(mainBrowserOpen).has("main-1")).toBe(true);
+      expect(get(layoutState).cardTabsById).toEqual({});
+      expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toEqual(["a"]);
+      expect(get(layoutState).focusedSessionId).toBe("a");
+    });
+
+    it("hides it and shows it again", async () => {
+      setState([{ ...ws("ws-1", []), mainSessionId: "main-1" }], "ws-1", null);
+      await openBrowserInSplit("main-1", false);
+
+      hideMainBrowser("main-1");
+      expect(get(mainBrowserOpen).has("main-1")).toBe(false);
+
+      expect(await openBrowserInSplit("main-1", true)).toBe(true);
+      expect(get(mainBrowserOpen).has("main-1")).toBe(true);
+    });
+
+    it("keeps the dragged split per workspace, and a reset clears it", () => {
+      mainBrowserShare.set({});
+      setMainBrowserShare("ws-1", 0.3);
+      setMainBrowserShare("ws-2", 0.7);
+      expect(get(mainBrowserShare)).toEqual({ "ws-1": 0.3, "ws-2": 0.7 });
+
+      setMainBrowserShare("ws-1", undefined);
+      expect(get(mainBrowserShare)).toEqual({ "ws-2": 0.7 });
+    });
+
+    it("loses it when the agent exits, so a restarted agent starts without one", async () => {
+      setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", mainSessionId: "main-1" }], "ws-1", null);
+      await openBrowserInSplit("main-1", false);
+
+      handleSessionExited("main-1");
+
+      expect(get(mainBrowserOpen).size).toBe(0);
+    });
+  });
+});
+
+describe("setWorkspacePlaywrightPaneOpen", () => {
+  it("is a workspace setting, cleared with null", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await setWorkspacePlaywrightPaneOpen("ws-1", "chip");
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { playwrightPaneOpen: "chip" });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+
+    await setWorkspacePlaywrightPaneOpen("ws-1", null);
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { playwrightPaneOpen: null });
+  });
+});
+
 describe("handleSessionExited", () => {
   it("finds and removes a session in a non-active page", () => {
     setState(
@@ -1311,6 +1434,18 @@ describe("handleSessionExited", () => {
     await Promise.resolve();
 
     expect(get(layoutState).cardTabsById[queueTab]).toBeUndefined();
+  });
+
+  it("takes the session's browser pane with it", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openBrowserInSplit("a", false);
+    const browserTab = Object.keys(get(layoutState).cardTabsById)[0];
+
+    handleSessionExited("a");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(get(layoutState).cardTabsById[browserTab]).toBeUndefined();
   });
 
   it("reassigns focus to the active page's first session when the focused session exits", () => {
@@ -4075,6 +4210,150 @@ function seedAgentConfig(
   }));
 }
 
+/// Per-agent settings resolve against the agent a launch runs: its own
+/// complexity table, its own extra CLI arguments, its own prompt lines --
+/// the workspace's value under that agent's key, else the app's.
+describe("per-agent settings in a workspace", () => {
+  const profile = (id: string, command: string) => ({
+    ...agentProfile(id, []),
+    command,
+    modelFlag: "--model",
+  });
+
+  beforeEach(() => {
+    agentProfilesStore.set([profile("claude-code", "claude"), profile("codex", "codex")]);
+    // Module-level, and an earlier test may have left a model default.
+    agentModelDefaultsStore.set({});
+    agentDefaultsStore.set({
+      ...EMPTY_AGENT_DEFAULTS,
+      complexityTables: {
+        "claude-code": { intricate: { profile: "codex", model: "gpt-5" } },
+        codex: { intricate: { profile: "", model: "codex-big" } },
+      },
+      extraCliArgs: { "claude-code": ["--verbose"], codex: ["--app-codex"] },
+      promptExtras: { "claude-code": ["App line."] },
+    });
+    setState([ws("w1", [])], "w1", null);
+    seedAgentConfig("w1", { profile: "claude-code", file: null, command: null });
+  });
+
+  // Module-level store: what these tests put in it must not still be
+  // there for the main-agent tests below.
+  afterEach(() => {
+    agentDefaultsStore.set(EMPTY_AGENT_DEFAULTS);
+  });
+
+  it("reads the complexity table of the agent the workspace runs", () => {
+    expect(workspaceComplexityTable("w1", "claude-code")).toEqual({
+      intricate: { profile: "codex", model: "gpt-5" },
+    });
+    expect(workspaceComplexityTable("w1", "codex")).toEqual({ intricate: { profile: "", model: "codex-big" } });
+    expect(workspaceComplexityTable("w1", "gemini")).toEqual({});
+  });
+
+  it("routes a rated card through the workspace agent's table, not another agent's", () => {
+    const routed = agentForCard("w1", { complexity: "intricate" });
+    expect(routed.profileId).toBe("codex");
+    expect(routed.model).toBe("gpt-5");
+    // And the workspace's own table for that agent replaces the app's whole.
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "w1" ? { ...w, complexityTables: { "claude-code": {} } } : w
+      ),
+    }));
+    expect(agentForCard("w1", { complexity: "intricate" }).profileId).toBe("claude-code");
+  });
+
+  it("appends the agent's extra CLI arguments to its launch command", () => {
+    expect(resolvedAgentFor("w1").launchCommand).toBe("claude --verbose");
+    // A workspace's own list replaces the app's for that agent only.
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "w1" ? { ...w, extraCliArgs: { "claude-code": ["--quiet"] } } : w
+      ),
+    }));
+    expect(resolvedAgentFor("w1").launchCommand).toBe("claude --quiet");
+    // An own empty list is an explicit "nothing extra".
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => (w.id === "w1" ? { ...w, extraCliArgs: { "claude-code": [] } } : w)),
+    }));
+    expect(resolvedAgentFor("w1").launchCommand).toBe("claude");
+  });
+
+  it("gives a routed card the launching agent's own arguments, not the workspace agent's", () => {
+    expect(agentForCard("w1", { complexity: "intricate" }).launchCommand).toBe("codex --model gpt-5 --app-codex");
+  });
+
+  it("answers prompt lines per agent, inheriting the app's until the workspace sets its own", () => {
+    expect(promptExtrasFor("w1", "claude-code")).toEqual(["App line."]);
+    expect(promptExtrasFor("w1", "codex")).toEqual([]);
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => (w.id === "w1" ? { ...w, promptExtras: { "claude-code": [] } } : w)),
+    }));
+    expect(promptExtrasFor("w1", "claude-code")).toEqual([]);
+  });
+
+  it("clears every per-agent key of a deleted local custom in one settings write", async () => {
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "w1"
+          ? {
+              ...w,
+              fallbackChains: { "local:bot": ["codex"], "claude-code": ["local:bot"] },
+              pauseCycles: { "local:bot": { enabled: true, periodMinutes: 300, pauseMinutes: 10, anchorMs: 1, limitPercent: 95, limitEnabled: true } },
+              promptExtras: { "local:bot": ["x"] },
+            }
+          : w
+      ),
+    }));
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
+
+    await dropWorkspaceProfileRefs("w1", "local:bot");
+
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledTimes(1);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("w1", {
+      fallbackChains: { "claude-code": [] },
+      pauseCycles: null,
+      promptExtras: null,
+    });
+    // Nothing referenced: no write at all.
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
+    await dropWorkspaceProfileRefs("w1", "local:other");
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  /// An app-wide custom is deleted everywhere: every workspace's own keys
+  /// for its slug go too, or they come back with the next custom of that name.
+  it("sweeps a deleted app-wide custom out of every workspace", async () => {
+    const cycle = { enabled: true, periodMinutes: 300, pauseMinutes: 10, anchorMs: 1, limitPercent: 95, limitEnabled: true };
+    setState([ws("w1", []), ws("w2", []), ws("w3", [])], "w1", null);
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "w1"
+          ? { ...w, pauseCycles: { "my-bot": cycle } }
+          : w.id === "w2"
+            ? { ...w, complexityTables: { "claude-code": { intricate: { profile: "my-bot", model: "" } } } }
+            : w
+      ),
+    }));
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
+
+    await dropProfileRefsFromWorkspaces("my-bot");
+
+    const calls = vi.mocked(backend.setWorkspaceSettings).mock.calls;
+    expect(calls).toEqual([
+      ["w1", { pauseCycles: null }],
+      ["w2", { complexityTables: { "claude-code": {} } }],
+    ]);
+  });
+});
+
 describe("workspace settings", () => {
   it("setWorkspaceColor normalizes and persists", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
@@ -4436,10 +4715,29 @@ describe("workspace settings go through their own command", () => {
   };
   const cases: [string, () => Promise<void>, Record<string, unknown>][] = [
     ["setWorkspaceFlag", () => setWorkspaceFlag("ws-1", "notifyFinished", false), { notifyFinished: false }],
-    ["setWorkspacePause", () => setWorkspacePause("ws-1", pause), { agentPause: pause }],
-    ["setWorkspacePause(null)", () => setWorkspacePause("ws-1", null), { agentPause: null }],
-    ["setWorkspaceFallback", () => setWorkspaceFallback("ws-1", ["codex"]), { agentFallback: ["codex"] }],
-    ["setWorkspaceFallback(null)", () => setWorkspaceFallback("ws-1", null), { agentFallback: null }],
+    [
+      "setWorkspacePause",
+      () => setWorkspacePause("ws-1", "claude-code", pause),
+      { pauseCycles: { "claude-code": pause } },
+    ],
+    ["setWorkspacePause(null)", () => setWorkspacePause("ws-1", "claude-code", null), { pauseCycles: null }],
+    [
+      "setWorkspacePromptParams",
+      () => setWorkspacePromptParams("ws-1", "codex", "promptExtras", ["Be brief."]),
+      { promptExtras: { codex: ["Be brief."] } },
+    ],
+    [
+      "setWorkspacePromptParams(extraCliArgs, [])",
+      () => setWorkspacePromptParams("ws-1", "codex", "extraCliArgs", []),
+      { extraCliArgs: { codex: [] } },
+    ],
+    [
+      "setWorkspacePromptParams(null)",
+      () => setWorkspacePromptParams("ws-1", "codex", "promptExtras", null),
+      { promptExtras: null },
+    ],
+    ["setWorkspaceFallback", () => setWorkspaceFallback("ws-1", "claude-code", ["codex"]), { fallbackChains: { "claude-code": ["codex"] } }],
+    ["setWorkspaceFallback(null)", () => setWorkspaceFallback("ws-1", "claude-code", null), { fallbackChains: null }],
     [
       "markAgentArmed",
       () => markAgentArmed("ws-1", "codex"),
@@ -4471,10 +4769,21 @@ describe("workspace settings go through their own command", () => {
     ],
     [
       "setWorkspaceComplexityTable",
-      () => setWorkspaceComplexityTable("ws-1", { complex: { profile: "", model: "opus" } }),
-      { complexityAgents: { complex: { profile: "", model: "opus" } } },
+      () => setWorkspaceComplexityTable("ws-1", "claude-code", { complex: { profile: "", model: "opus" } }),
+      { complexityTables: { "claude-code": { complex: { profile: "", model: "opus" } } } },
     ],
-    ["setWorkspaceComplexityTable({})", () => setWorkspaceComplexityTable("ws-1", {}), { complexityAgents: null }],
+    // An own-but-empty table is a real answer ("no routing for this agent
+    // here"), so it is kept; only null hands the primary back to the app.
+    [
+      "setWorkspaceComplexityTable({})",
+      () => setWorkspaceComplexityTable("ws-1", "claude-code", {}),
+      { complexityTables: { "claude-code": {} } },
+    ],
+    [
+      "setWorkspaceComplexityTable(null)",
+      () => setWorkspaceComplexityTable("ws-1", "claude-code", null),
+      { complexityTables: null },
+    ],
     [
       "setWorkspaceActionPromptOverrides",
       () => setWorkspaceActionPromptOverrides("ws-1", { "action:run-task": "Do it.", "builtin:commit": "  " }),

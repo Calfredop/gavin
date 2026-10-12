@@ -38,6 +38,9 @@ export type AttentionTarget =
 export interface AttentionItem {
   id: string;
   workspace: string;
+  /// The workspace's name, which the phone heads its inbox's workspaces
+  /// by. Optional: an item whose workspace has no name carries none.
+  workspaceName?: string;
   kind: AttentionKind;
   text: string;
   target: AttentionTarget;
@@ -83,6 +86,8 @@ export interface AttentionAnswerInput {
   humanTests?: readonly HumanTestWaiting[];
   interrupted?: readonly InterruptedWaiting[];
   stoppedRails?: readonly StoppedRail[];
+  /// Workspace names by id, stamped onto every item as `workspaceName`.
+  workspaceNames?: Readonly<Record<string, string>>;
 }
 
 /// Build the attention answer the Device's GetAttention receives when
@@ -137,7 +142,12 @@ export function buildAttentionAnswer(input: AttentionAnswerInput): AttentionAnsw
     });
   }
 
-  return { version: ATTENTION_API_VERSION, items };
+  return { version: ATTENTION_API_VERSION, items: items.map((item) => named(item, input.workspaceNames)) };
+}
+
+function named(item: AttentionItem, names: AttentionAnswerInput["workspaceNames"]): AttentionItem {
+  const name = names?.[item.workspace]?.trim();
+  return name ? { ...item, workspaceName: name } : item;
 }
 
 /// Open human tests on a card, for the attention answer.

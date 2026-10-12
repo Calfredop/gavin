@@ -15,12 +15,26 @@
 //
 // The connection comes and goes with the Unlock and the network. A call
 // made while there is none is answered with an error the bundle shows,
-// never dropped; and when a connection comes back, every event still
-// listened for is listened for again on it, since the daemon keeps a
-// listen per connection and the new one has none.
-import { CHANNEL_VERSION, encode, readBundleMessage, type BundleMessage } from "$companion/channel/messages";
+// never dropped -- coded `unreachable`, as is one the connection dropped
+// or the daemon could not hand to its desktop app, so the bundle can
+// clear it once it is back. When a connection comes back, every event
+// still listened for is listened for again on it, since the daemon keeps
+// a listen per connection and the new one has none. And the bundle is
+// told each change, as `connection` (`connectionState.ts`), so the open
+// screen can say it is down once and read again by itself once it is up.
+import {
+  CHANNEL_VERSION,
+  NOT_REACHABLE,
+  encode,
+  readBundleMessage,
+  type BundleMessage,
+  type ConnectionState,
+  type ErrorCode,
+} from "$companion/channel/messages";
 import type { ChannelEndpoint } from "$companion/channel/port";
 import type { Connection } from "$shell/connection/connection";
+import type { LiveState } from "$shell/hub/live";
+import { connectionStateOf, sameConnectionState, UP } from "$shell/visit/connectionState";
 import type { VisitEndpoint } from "$shell/visit/visit";
 
 /// Where a visit gets its Workstation's connection: the live hub.
@@ -29,6 +43,10 @@ export interface ConnectionSource {
   /// Hears each connection as it comes, and `null` as it goes. Returns
   /// how to stop hearing.
   subscribe(listener: (connection: Connection | null) => void): () => void;
+  /// Hears the hub's state for the Workstation, now and as it changes
+  /// (null: not one the hub tracks). Without it the bundle is told only
+  /// whether there is a connection.
+  watchLive?(listener: (live: LiveState | null) => void): () => void;
 }
 
 /// How long a forwarded command may take. The daemon gives the desktop
@@ -40,7 +58,17 @@ export const INVOKE_TIMEOUT_MS = 65_000;
 /// itself, at once.
 export const LISTEN_TIMEOUT_MS = 15_000;
 
-export const NOT_CONNECTED = "The Workstation cannot be reached right now.";
+export const NOT_CONNECTED = NOT_REACHABLE;
+
+/// What the daemon answers a forwarded command with when it could not ask
+/// its desktop app (`desktop_unreachable` in crates/daemon/src/server.rs):
+/// a call that never reached the desk, which the bundle hears as
+/// `unreachable`. Matched whole: any other `Error` is a refusal.
+const DESK_UNREACHABLE = new Set([
+  "gavin-daemon: desktop app not running",
+  "gavin-daemon: the desktop app's connection dropped before it answered",
+  "gavin-daemon: the desktop app is open but did not answer in time",
+]);
 
 interface Options {
   log?(line: string): void;
@@ -69,11 +97,36 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
   /// Stops hearing the current connection's pushes.
   let stopPushes: (() => void) | null = null;
   let stopped = false;
+  /// The hub's state for the Workstation, when the source tells it.
+  let live: LiveState | null = null;
+  let connected = false;
+  /// What the connection is now, and what the bundle was last told of
+  /// it: it starts from up, and hears only changes -- once it has said
+  /// something, since only then is there a way to reach it.
+  let state: ConnectionState = UP;
+  let told: ConnectionState = UP;
 
   const ok = (id: number, value: unknown = null): void =>
     reply?.(encode({ v: CHANNEL_VERSION, type: "result", id, ok: true, value }));
-  const fail = (id: number, error: string): void =>
-    reply?.(encode({ v: CHANNEL_VERSION, type: "result", id, ok: false, error }));
+  const fail = (id: number, error: string, code?: ErrorCode): void =>
+    reply?.(
+      encode(
+        code
+          ? { v: CHANNEL_VERSION, type: "result", id, ok: false, error, code }
+          : { v: CHANNEL_VERSION, type: "result", id, ok: false, error }
+      )
+    );
+
+  const tell = (): void => {
+    if (!reply || stopped || sameConnectionState(state, told)) return;
+    told = state;
+    reply(encode({ v: CHANNEL_VERSION, type: "connection", ...state }));
+  };
+
+  const reassess = (): void => {
+    state = connectionStateOf(source.watchLive ? live : null, connected, state);
+    tell();
+  };
 
   /// The event names with at least one listener.
   const listened = (): Set<string> => new Set(listeners.values());
@@ -105,6 +158,8 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
   const hear = (connection: Connection | null): void => {
     stopPushes?.();
     stopPushes = null;
+    connected = connection !== null;
+    reassess();
     if (!connection || stopped) return;
     stopPushes = connection.onPush(onPush);
     // The daemon keeps a listen per connection: a new connection has to
@@ -119,7 +174,7 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
       case "invoke": {
         const connection = source.current();
         if (!connection) {
-          fail(message.id, NOT_CONNECTED);
+          fail(message.id, NOT_CONNECTED, "unreachable");
           return;
         }
         connection
@@ -129,11 +184,15 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
               if (isObject(answer) && answer.type === "DesktopResult") {
                 if (typeof answer.error === "string") fail(message.id, answer.error);
                 else ok(message.id, answer.value === undefined ? null : answer.value);
+              } else if (isObject(answer) && answer.type === "Error" && DESK_UNREACHABLE.has(String(answer.message))) {
+                fail(message.id, problemOf(answer), "unreachable");
               } else {
                 fail(message.id, problemOf(answer));
               }
             },
-            (e) => fail(message.id, e instanceof Error ? e.message : String(e))
+            // The connection dropped, or went quiet past the daemon's own
+            // answer: the call never came back from the desk.
+            (e) => fail(message.id, e instanceof Error ? e.message : String(e), "unreachable")
           );
         return;
       }
@@ -175,6 +234,8 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
   const endpoint: ChannelEndpoint = {
     receive(raw, replyTo) {
       reply = replyTo;
+      // The first chance to say what changed before the bundle spoke.
+      tell();
       const read = readBundleMessage(raw);
       if (read.kind === "message") receive(read.message);
       else if (read.id !== null) fail(read.id, read.kind === "unknown" ? `${read.type} is not a message this end carries` : read.reason);
@@ -185,11 +246,17 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
     endpoint,
     start() {
       stopped = false;
+      connected = source.current() !== null;
       const unsubscribe = source.subscribe(hear);
+      const stopLive = source.watchLive?.((next) => {
+        live = next;
+        reassess();
+      });
       hear(source.current());
       return () => {
         stopped = true;
         unsubscribe();
+        stopLive?.();
         stopPushes?.();
         stopPushes = null;
         // The listens are this visit's: the daemon drops them with the

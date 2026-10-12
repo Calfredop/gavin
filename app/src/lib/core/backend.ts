@@ -1,5 +1,4 @@
 import type { AgentDefaults } from "$lib/cards/complexity";
-import type { PauseCycle } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import type { GavinMemorySample, SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
 import type { LaunchConfig } from "$lib/agents/launchGate";
@@ -11,7 +10,10 @@ import { isTerminalReport } from "$lib/terminal/terminalReport";
 import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
-import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
+import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
+import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
+import type { BrowserFrame, DeviceBrowserWatch, LiveBrowser } from "$lib/panes/browserView";
+import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
 import type {
@@ -31,13 +33,14 @@ import type { SessionStatus } from "$lib/core/notifications";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
+import type { SessionOwnersList, SessionOwnership } from "$lib/core/sessionOwnership";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
-import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
+import type { DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
@@ -60,17 +63,26 @@ import { keyedQueue } from "$lib/core/keyedQueue";
 /// compression.ts); every other launch passes the bare id, and sends
 /// exactly the arguments it always did. What the daemon decided comes
 /// back as the `session-compression` event, not here.
+/// `workspaceAgent` and `workspaceId` are a Companion's asks of the desk:
+/// make the session the workspace's own agent (the Home tab's), and place
+/// it in that workspace -- the only way to name one with no folder. The
+/// host's command reads neither; the daemon reads them off the forwarded
+/// arguments into the Device's presence, and the desk decides
+/// (`devicePresence.ts`).
 export function createSession(
   cwd?: string,
   command?: string,
   workspaceRoot?: string,
-  profileId?: LaunchProfile
+  profileId?: LaunchProfile,
+  workspaceAgent?: boolean,
+  workspaceId?: string
 ): Promise<string> {
+  const ask = { ...(workspaceAgent ? { workspaceAgent: true } : {}), ...(workspaceId ? { workspaceId } : {}) };
   if (typeof profileId === "object") {
     const { profileId: id, withoutHeadroom } = profileId;
-    return invoke("create_session", { cwd, command, workspaceRoot, profileId: id, withoutHeadroom });
+    return invoke("create_session", { cwd, command, workspaceRoot, profileId: id, withoutHeadroom, ...ask });
   }
-  return invoke("create_session", { cwd, command, workspaceRoot, profileId });
+  return invoke("create_session", { cwd, command, workspaceRoot, profileId, ...ask });
 }
 
 
@@ -126,6 +138,24 @@ export function listDevices(): Promise<DeviceList> {
   return invoke("list_devices");
 }
 
+/// Where the daemon's dial to the Relay stands. Changes after this read
+/// arrive as the `relay-state-changed` event.
+export function getRelayState(): Promise<RelayState> {
+  return invoke("get_relay_state");
+}
+
+/// Where the daemon's direct listener stands (v69, ADR 0009). Changes
+/// after this read arrive as the `direct-state-changed` event.
+export function getDirectState(): Promise<DirectState> {
+  return invoke("get_direct_state");
+}
+
+/// The Direct connection switch. The daemon acts on it: on, while remote
+/// access is on too, it listens for Devices on this network or tailnet.
+export function setDirectAccess(enabled: boolean): Promise<void> {
+  return invoke("set_direct_access", { enabled });
+}
+
 export function revokeDevice(deviceId: string): Promise<void> {
   return invoke("revoke_device", { deviceId });
 }
@@ -151,6 +181,20 @@ export function setRemoteAccess(
     relayUrl,
     relayAdmission: relayAdmission ?? null,
   });
+}
+
+/// Where the daemon posts Companion notifications, or null for nowhere.
+/// The daemon refuses a URL it will not post to, and says why.
+export function setPushGatewayUrl(url: string | null): Promise<void> {
+  return invoke("set_push_gateway_url", { url });
+}
+
+/// What the desk decided to notify Devices of. The daemon queues the
+/// events and answers; sealing and posting happen after.
+export function pushCompanionNotify(
+  events: import("$lib/agents/companionNotifyDriver").CompanionNotifyEventWire[]
+): Promise<void> {
+  return invoke("push_companion_notify", { events });
 }
 
 export function getFileTabs(): Promise<Record<string, string>> {
@@ -463,6 +507,21 @@ export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<
   return invoke("set_headroom_workspaces", { workspaces });
 }
 
+/// Where a root's adopted-memory index stands: the model on this
+/// machine, and whether the index matches `### Learned`. Local only, like
+/// Headroom. See `memoryIndexState.ts`, its one caller.
+export function getMemoryIndex(rootPath: string): Promise<MemoryIndexStatus> {
+  return invoke("get_memory_index", { rootPath });
+}
+
+/// Brings a root's memory index up to `### Learned`. `download` lets a
+/// missing model be fetched (on the daemon's thread; the answer says
+/// `downloading` and `getMemoryIndex` follows it). See
+/// `memoryIndexState.ts`, its one caller.
+export function ensureMemoryIndex(rootPath: string, download: boolean): Promise<MemoryIndexStatus> {
+  return invoke("ensure_memory_index", { rootPath, download });
+}
+
 /// Headroom on this machine, as the local daemon sees it. Reads what
 /// detection stored; the first ask of a daemon's lifetime runs detection.
 /// See `headroomState.ts`, its one caller.
@@ -566,20 +625,6 @@ export function watchmanForget(root: string): Promise<void> {
   return invoke("watchman_forget", { root });
 }
 
-/// The app-wide agent pause cycle, machine-local beside the theme.
-/// `null` is no cycle at all, which is the shipped default.
-export function getAgentPause(): Promise<PauseCycle | null> {
-  return invoke("get_agent_pause");
-}
-
-/// Replaces it; `null` clears it. The ANCHOR is the caller's to supply
-/// and the host never rewrites it -- stamping `now` on every save would
-/// slide the pause forward each time somebody nudged a field, so the
-/// cycle would never fire for anyone who kept adjusting it.
-export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
-  return invoke("set_agent_pause", { agentPause });
-}
-
 /// The app-wide launch wall: how many agent turns may be in flight at
 /// once, and whether memory pressure holds new ones. `null` means nobody
 /// has expressed a preference and gavin's own default applies -- absence
@@ -589,7 +634,7 @@ export function getLaunchConfig(): Promise<LaunchConfig | null> {
   return invoke("get_launch_config");
 }
 
-/// Replaces it wholesale, the same shape as `setAgentPause`: the panel
+/// Replaces it wholesale, the same shape as `setAgentDefaults`: the panel
 /// holds both fields, so there is no per-key command and no way for one
 /// to be saved while the other is dropped.
 export function setLaunchConfig(launch: LaunchConfig | null): Promise<void> {
@@ -622,14 +667,14 @@ export function getAgentDefaults(): Promise<AgentDefaults> {
 }
 
 /// Replaces the whole struct. Wholesale rather than per key, the same
-/// shape as `setAgentPause`: the panel already holds every field, and a
+/// shape as `setLaunchConfig`: the panel already holds every field, and a
 /// per-key command is how one of them ends up saved while another is
 /// dropped.
 export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
   return invoke("set_agent_defaults", { agentDefaults });
 }
 
-/// Superpowers plugin status for one workspace root. Straight to Tauri,
+/// Agent skills (Matt Pocock's) status for one workspace root. Straight to Tauri,
 /// like the model defaults above: the detector reads the local checkout
 /// and the marker lives in the app's own config.json, so none of this
 /// needs a daemon request and all of it keeps working across a version
@@ -644,42 +689,146 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
 /// once the human approved this config, the profile's until then.
 /// `profileId` overlays the workspace's active agent so setup-only
 /// arming can probe Codex while `[agent] profile` still names Claude.
-export function superpowersStatus(
+export function agentSkillsStatus(
   rootPath: string,
   agentCommand: string,
   profileId?: string
-): Promise<SuperpowersStatus> {
-  return invoke("superpowers_status", { rootPath, agentCommand, profileId });
+): Promise<AgentSkillsStatus> {
+  return invoke("agent_skills_status", { rootPath, agentCommand, profileId });
 }
 
 /// Runs the install and returns the status that follows it. A failed
 /// install is not a rejection -- the returned status carries the run's
 /// stdout and stderr for the drawer, and its state is what the detector
 /// says afterwards. Rejects only when no install was attempted: a profile
-/// gavin must not install into, or a binary it could not spawn.
-/// `agentCommand`: as `superpowersStatus` above.
-/// `profileId`: as `superpowersStatus` — fallback arming names the chain
+/// gavin cannot install into (a custom agent), or a binary it could not
+/// spawn.
+/// `agentCommand`: as `agentSkillsStatus` above.
+/// `profileId`: as `agentSkillsStatus` — fallback arming names the chain
 /// agent so Install does not write the workspace's active CLI.
-export function superpowersInstall(
+export function agentSkillsInstall(
   rootPath: string,
   agentCommand: string,
   profileId?: string
-): Promise<SuperpowersStatus> {
-  return invoke("superpowers_install", { rootPath, agentCommand, profileId });
+): Promise<AgentSkillsStatus> {
+  return invoke("agent_skills_install", { rootPath, agentCommand, profileId });
 }
 
 /// What the human has told gavin, keyed by workspace root path.
-export function getSuperpowersMarks(): Promise<Record<string, SuperpowersMark>> {
-  return invoke("get_superpowers_marks");
+export function getAgentSkillsMarks(): Promise<Record<string, AgentSkillsMark>> {
+  return invoke("get_agent_skills_marks");
 }
 
 /// `null` forgets what was said, so someone who asserted an install and
 /// then removed it has a way back to the honest answer.
-export function setSuperpowersMark(
+export function setAgentSkillsMark(
   rootPath: string,
-  mark: SuperpowersMark | null
+  mark: AgentSkillsMark | null
 ): Promise<void> {
-  return invoke("set_superpowers_mark", { rootPath, mark });
+  return invoke("set_agent_skills_mark", { rootPath, mark });
+}
+
+/// Whether Settings → Agent owes this root the one-time note about the
+/// plugin gavin used to recommend: true only where this machine recorded
+/// an answer about it, and nobody has dismissed the note since.
+export function agentSkillsFarewell(rootPath: string): Promise<boolean> {
+  return invoke("agent_skills_farewell", { rootPath });
+}
+
+/// Dismisses that note for one root, for good.
+export function dismissAgentSkillsFarewell(rootPath: string): Promise<void> {
+  return invoke("dismiss_agent_skills_farewell", { rootPath });
+}
+
+/// Playwright's three checks for one workspace root (`agent_playwright.rs`):
+/// Node's `npx`, the pinned Chrome Headless Shell, and a `playwright`
+/// server in this agent's MCP config -- on the machine the workspace's
+/// agents run on, which for an ssh workspace is the host. Straight to
+/// Tauri, like `agentSkillsStatus`: nothing here is a daemon request.
+/// `profileId` overlays the workspace's agent, as it does there.
+export function playwrightStatus(rootPath: string, profileId?: string): Promise<PlaywrightStatus> {
+  return invoke("playwright_status", { rootPath, profileId });
+}
+
+/// Installs what is missing -- the browser, then the entry -- and returns
+/// the status that follows. A failed install is not a rejection: the
+/// status carries its output, and its state is what the checks say next.
+/// Rejects only when nothing was attempted (a custom agent, no root).
+/// `replaceForeign` answers a `conflict` the status showed: replace that
+/// `playwright` server with gavin's.
+export function playwrightInstall(
+  rootPath: string,
+  replaceForeign = false,
+  profileId?: string
+): Promise<PlaywrightStatus> {
+  return invoke("playwright_install", { rootPath, profileId, replaceForeign });
+}
+
+/// Streams an agent session's browser to THIS window, as
+/// `browser-desk-frame` events, until `unwatchBrowser` (`browser_view.rs`).
+/// Idempotent per window. Resolves with the newest frame the host already
+/// holds for the session, or null.
+export function watchBrowser(sessionId: string): Promise<BrowserFrame | null> {
+  return invoke("watch_browser", { sessionId });
+}
+
+export function unwatchBrowser(sessionId: string): Promise<void> {
+  return invoke("unwatch_browser", { sessionId });
+}
+
+/// A Device's view of a session's browser (the Companion, through the
+/// forwarding connection): takes or renews `watcher`'s lease on the
+/// session's phone-size stream, whose frames go to the Devices as
+/// `browser-frame`. Asked again within `leaseMs`, or the desk lets the
+/// stream go. Refused for a session on an ssh host.
+export function watchBrowserForDevice(sessionId: string, watcher: string): Promise<DeviceBrowserWatch> {
+  return invoke("watch_browser_for_device", { sessionId, watcher });
+}
+
+/// The view left the screen: `watcher`'s lease goes now rather than when
+/// it runs out.
+export function unwatchBrowserForDevice(sessionId: string, watcher: string): Promise<void> {
+  return invoke("unwatch_browser_for_device", { sessionId, watcher });
+}
+
+/// What a Device asks of a workspace's "Commit via agent": a run in the
+/// checkout it names, or a Stop for the run it names.
+export type DeviceCommitRequest = { action: "start"; cwd: string } | { action: "stop"; sessionId: string };
+
+/// A Device's "Commit via agent" (the Companion, through the forwarding
+/// connection). The desk window that runs the workspace runs it as its
+/// own press and answers: a start with the hidden session it began, a
+/// stop with null, and a refusal as the rejection's sentence.
+export function agentCommitForDevice(
+  workspaceId: string,
+  request: DeviceCommitRequest
+): Promise<{ sessionId: string; startedAt: number } | null> {
+  return invoke("agent_commit_for_device", { workspaceId, ...request });
+}
+
+/// A desk window's answer to `agent-commit-requested`, by its id.
+export function answerAgentCommitRequest(
+  id: number,
+  answer: { refused: string } | { value: unknown }
+): Promise<void> {
+  return invoke("answer_agent_commit_request", { id, answer });
+}
+
+/// Every agent browser running now, on every daemon the app talks to: the
+/// read-back for `browser-changed`. A daemon below v65 is left out.
+export function listBrowsers(): Promise<LiveBrowser[]> {
+  return invoke("list_browsers");
+}
+
+/// The app-wide browser pane setting (`browserView.ts`): `auto`, `chip`,
+/// or null when nobody chose -- absence rather than the default, the font
+/// size's convention.
+export function getPlaywrightPaneOpen(): Promise<string | null> {
+  return invoke("get_playwright_pane_open");
+}
+
+export function setPlaywrightPaneOpen(value: string | null): Promise<void> {
+  return invoke("set_playwright_pane_open", { value });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
@@ -737,6 +886,27 @@ export function setQueuedInputs(sessionId: string, queuedIds: string[]): Promise
 /// the override for an agent the human has decided not to wait for.
 export function sendQueuedInput(sessionId: string, queuedId: string): Promise<QueuedInput[]> {
   return invoke("send_queued_input", { sessionId, queuedId });
+}
+
+/// Makes `to` the owner of a session (v68): a Device's id, or null for the
+/// desk. `expect` is the owner the caller saw when it decided -- a change
+/// that lost the race is refused with who won -- and `force` passes the
+/// "typing right now" question once the human has answered it. From the
+/// desk this is the desk asking; from a Device the daemon answers it as
+/// that Device. A refusal is the error, read by `ownerRefusalFrom`.
+export function setSessionOwner(
+  sessionId: string,
+  to: string | null,
+  expect: string | null,
+  force = false
+): Promise<SessionOwnership> {
+  return invoke("set_session_owner", { sessionId, to, expect, force });
+}
+
+/// Every session a Device owns, the Devices with a live connection, and
+/// which Device is asking (v68): the read-back for the owner pushes.
+export function listSessionOwners(): Promise<SessionOwnersList> {
+  return invoke("list_session_owners");
 }
 
 export function resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {
@@ -1029,6 +1199,19 @@ export function listManagedSessions(): Promise<ManagedSessions> {
 /// caller has to branch on the daemon version to launch an agent.
 export function setFailurePatterns(sessionId: string, patterns: string[]): Promise<void> {
   return invoke("set_failure_patterns", { sessionId, patterns });
+}
+
+/// The profile's other half of the same per-session arming: this agent's
+/// OSC 133 markers are not to be believed, so the daemon drops every one
+/// for the session and the quiet-timer heuristic stays the authority
+/// (`session::distrust_osc133`). Sent at spawn alongside the failure
+/// patterns, only for profiles whose row says so (kimi-code today).
+///
+/// Best-effort on purpose, exactly like `setFailurePatterns`: against a
+/// daemon older than v64 the request is refused and the agent keeps the
+/// old OSC 133 behaviour -- for kimi, the stuck-in-working one.
+export function distrustOsc133(sessionId: string): Promise<void> {
+  return invoke("distrust_osc133", { sessionId });
 }
 
 /// The git half of the same read-back, one answer per cwd in the order
@@ -1348,6 +1531,8 @@ export function agentProfiles(): Promise<
     /// them -- the same reason `AgentProfileInfo` has them optional.
     effortFlag?: string;
     efforts?: string[];
+    /// Optional for the same reason: a host built before the advisor.
+    advisorFlag?: string;
     failurePatterns: string[];
     failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;
@@ -1722,8 +1907,17 @@ export function gitMergeToolName(cwd: string): Promise<string | null> {
 
 /// Installs the flow's step skill when the profile supports skills, and
 /// returns the prompt that starts the agent on it (spec §7.1).
-export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file"): Promise<string> {
-  return invoke("compose_agent_prompt", { rootPath, flow });
+///
+/// `promptExtras` is the EFFECTIVE list of extra prompt lines for the
+/// agent that will run it (workspace override else app-wide); the host
+/// appends them after composing, so a skill prompt and an inline-document
+/// prompt carry them alike.
+export function composeAgentPrompt(
+  rootPath: string,
+  flow: "prd" | "agent-file",
+  promptExtras: string[] = []
+): Promise<string> {
+  return invoke("compose_agent_prompt", { rootPath, flow, promptExtras });
 }
 
 // --- Orchestration (SP1) ----------------------------------------------------

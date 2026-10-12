@@ -32,6 +32,7 @@
   import ArchiveSelectionBar from "$lib/files/ArchiveSelectionBar.svelte";
   import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "$lib/board/kanbanDrag";
+  import { hubSearchState, searchFor, setHubSearch } from "$lib/hub/hubSearchState";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { Archive } from "@lucide/svelte";
@@ -151,7 +152,18 @@
   });
 
   // The search lens, over what the facets left standing.
-  let search = $state("");
+  let search = $state(untrack(() => searchFor($hubSearchState, workspaceId).kanban));
+  let seededFor = untrack(() => workspaceId);
+  $effect(() => {
+    if (workspaceId !== seededFor) {
+      // Shown for another workspace now: adopt ITS search, never write
+      // this one's into it.
+      seededFor = workspaceId;
+      search = untrack(() => searchFor($hubSearchState, workspaceId).kanban);
+      return;
+    }
+    setHubSearch(workspaceId, { kanban: search });
+  });
   const searching = $derived(isSearching(search));
   const view = $derived(faceted ? filterBoard(faceted, search) : null);
 

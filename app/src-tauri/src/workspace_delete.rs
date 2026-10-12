@@ -248,10 +248,19 @@ fn outside_contexts(root: &Path) -> Vec<PathBuf> {
 /// here, because a screen asking permission to remove nothing is a step
 /// that can only be answered wrong.
 pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
+    scan_with_default(root, None)
+}
+
+/// `scan` with the app-wide default agent (config.json's
+/// `agentDefaults.defaultAgent`): a root with no `[agent] profile` of
+/// its own is read as the agent its launches -- and therefore its
+/// integrations -- resolve to, so the footprint names the files the
+/// write path actually wrote.
+pub fn scan_with_default(root: &Path, default_agent: Option<&str>) -> Result<GavinFootprint, String> {
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
     }
-    let install = agent_setup::gavin_install(root);
+    let install = agent_setup::gavin_install(root, default_agent);
 
     let gavin_root_path = root.join(GAVIN_ROOT_DIR);
     let gavin_root = gavin_root_path.is_dir().then(|| {
@@ -292,7 +301,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         .map(|p| protocol::wire_path(&p));
 
     let mcp = install.mcp.and_then(|(path, server_key)| {
-        agent_setup::mcp_entry_present(root)
+        agent_setup::mcp_entry_present(root, default_agent)
             .then(|| McpFootprint { path: protocol::wire_path(&path), server_key })
     });
 
@@ -348,7 +357,13 @@ fn removable_paths(footprint: &GavinFootprint) -> Vec<String> {
 /// Executes an approved plan. Never fails as a whole: every item is
 /// attempted, and the report says which ones did not land and why.
 pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> {
-    let footprint = scan(root)?;
+    remove_with_default(root, plan, None)
+}
+
+/// `remove` with the app-wide default agent, so the scan it re-runs and
+/// the MCP edit resolve the profile the write path used (`scan_with_default`).
+pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Option<&str>) -> Result<RemovalReport, String> {
+    let footprint = scan_with_default(root, default_agent)?;
     let allowed = removable_paths(&footprint);
     let mut report = RemovalReport::default();
 
@@ -371,7 +386,7 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
     // knows how to take it out without reformatting everything else.
     for mcp in &plan.strip_mcp_key {
         match footprint.mcp.as_ref() {
-            Some(found) if found == mcp => match agent_setup::remove_mcp_entry(root) {
+            Some(found) if found == mcp => match agent_setup::remove_mcp_entry(root, default_agent) {
                 Ok(true) => report.done.push(format!(
                     "Removed the \"{}\" server from {}",
                     mcp.server_key, mcp.path
@@ -408,8 +423,12 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
 /// 150k entries and 2-7 s on a large repo's first walk, and as a plain
 /// `fn` all of it was main-thread time with the window frozen.
 #[tauri::command]
-pub async fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
-    tauri::async_runtime::spawn_blocking(move || scan(Path::new(&root_path)))
+pub async fn scan_gavin_footprint(
+    root_path: String,
+    agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
+) -> Result<GavinFootprint, String> {
+    let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
+    tauri::async_runtime::spawn_blocking(move || scan_with_default(Path::new(&root_path), default_agent.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -433,11 +452,15 @@ pub async fn remove_gavin_footprint(
     plan: RemovalPlan,
     token: String,
     gate: tauri::State<'_, crate::confirm_gate::ConfirmGate>,
+    agent_defaults: tauri::State<'_, crate::session::AgentDefaults>,
 ) -> Result<RemovalReport, String> {
     crate::confirm_gate::spend(&gate, &token, "remove_gavin_footprint", &root_path)?;
-    tauri::async_runtime::spawn_blocking(move || remove(Path::new(&root_path), &plan))
-        .await
-        .map_err(|e| e.to_string())?
+    let default_agent = agent_defaults.0.lock().unwrap().default_agent.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_with_default(Path::new(&root_path), &plan, default_agent.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -576,6 +599,59 @@ mod tests {
             f.agent_file.as_ref().unwrap(),
             &protocol::wire_path(&dir.path().join(".opencode/agent/mine.md"))
         );
+    }
+
+    /// The kimi-code profile: kimi's own skill root, claude-code's
+    /// `.mcp.json` (K6 -- two profiles share the one file), and no agent
+    /// file (the headless grant rides kimi's default `auto` policy).
+    fn kimi_workspace(dir: &Path) {
+        let gavin_root = dir.join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(gavin_root.join("plans")).unwrap();
+        std::fs::write(gavin_root.join("config.toml"), "[agent]\nprofile = \"kimi-code\"\n")
+            .unwrap();
+        for skill in ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"] {
+            let d = dir.join(".kimi-code").join("skills").join(skill);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "skill").unwrap();
+        }
+        std::fs::write(
+            dir.join(".mcp.json"),
+            "{\n  \"mcpServers\": {\n    \"gavin\": { \"command\": \"/bin/gavin-mcp\", \"args\": [] }\n  }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Project\n\n<!-- gavin:start -->\nblah\n<!-- gavin:end -->\n",
+        )
+        .unwrap();
+    }
+
+    /// Same pin as the opencode one, for the profile that shares TWO of
+    /// its neighbours' conventions: kimi's skills live under
+    /// `.kimi-code/skills/` while its MCP file is claude-code's
+    /// `.mcp.json`. A sweep that followed either half alone would miss
+    /// the other.
+    #[test]
+    fn the_scan_follows_the_profile_to_the_kimi_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        kimi_workspace(dir.path());
+        // A step skill, which appears in no table, and somebody else's
+        // skill, which is not gavin's to remove.
+        std::fs::create_dir_all(dir.path().join(".kimi-code/skills/gavin-write-prd")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".kimi-code/skills/my-own")).unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.skills.len(), 5, "four table skills plus the step skill: {:?}", f.skills);
+        assert!(f.skills.iter().all(|s| s.contains(".kimi-code/skills/gavin")));
+        assert!(!f.skills.iter().any(|s| s.ends_with("my-own")));
+        assert!(f.agent_file.is_none(), "kimi-code has no agent file");
+        assert_eq!(
+            f.mcp.as_ref().unwrap().path,
+            protocol::wire_path(&dir.path().join(".mcp.json"))
+        );
+        assert_eq!(f.mcp.as_ref().unwrap().server_key, "gavin");
+        assert!(f.instructions.as_ref().unwrap().ends_with("AGENTS.md"));
     }
 
     /// The agent file is removable BECAUSE the scan reported it -- the

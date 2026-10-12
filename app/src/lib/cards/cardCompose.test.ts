@@ -559,6 +559,28 @@ describe("composeCloseAction", () => {
   });
 });
 
+describe("CardComposeModal note mode", () => {
+  const composer = source("CardComposeModal.svelte");
+
+  it("keeps a named Title field on the note chip", () => {
+    // Note drops the body. The title is then the only text box, and without
+    // a Title label it sat as an unlabeled strip between the chips and the
+    // Column picker — which is exactly "Note mode lacks title".
+    expect(composer).toContain('class="compose-field-label">Title</span>');
+    expect(composer).toContain('class="compose-title"');
+    // Title stays outside the body-only gate: put it inside and the note
+    // chip loses the field the label is naming.
+    const titleIdx = composer.indexOf('class="compose-title"');
+    const bodyGate = composer.indexOf('{#if kind !== "note"}');
+    expect(titleIdx).toBeGreaterThan(-1);
+    expect(bodyGate).toBeGreaterThan(titleIdx);
+  });
+
+  it("names the note chip's placeholder as a title, not a body", () => {
+    expect(composer).toContain('kind === "note" ? "Note title…"');
+  });
+});
+
 // The policy above is only worth anything if every dismissal route in the
 // template actually goes through it. Read from the source because the
 // wiring IS the template -- there is no rendered assertion that catches an

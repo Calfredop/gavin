@@ -1,6 +1,8 @@
 <script lang="ts">
   // The Review tab's left column: finished cards, clustered by the files
-  // their runs touched.
+  // their runs touched -- and above them the cards whose human tests are
+  // still owed, because a test is a check on work like the diffs below
+  // it, and the one thing in this list that waits on the human.
   //
   // Collapsible to a rail rather than hideable, for the sidebar's
   // reason: the three columns to the right are all ABOUT the selected
@@ -16,11 +18,14 @@
     PanelLeftOpen,
     RefreshCw,
     Archive,
+    Bot,
+    BrushCleaning,
   } from "@lucide/svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { everyGroupExpanded, isGroupExpanded, type ReviewGroup, type ReviewRailCandidate } from "$lib/review/reviewBoard";
+  import { testSubjectDetail, testSubjectWaits, type ReviewTestRow } from "$lib/review/humanTests";
   import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/board/boardFilters";
   import type { RailIndex } from "$lib/board/planFilter";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
@@ -30,6 +35,15 @@
     groups: ReviewGroup[];
     /// Rails listed beside the card groups — same list, not a switcher.
     railSubjects?: ReviewRailCandidate[];
+    /// Cards with human tests still owed (review/humanTests.ts), already
+    /// through this list's search and facets. Selected by card path, like
+    /// the groups' cards.
+    tests?: ReviewTestRow[];
+    /// Why the tests cannot be listed (the daemon version gate), or null.
+    testsBlockedReason?: string | null;
+    /// "Clean stale tests" (decisions/cleanStale.ts): why it cannot run
+    /// (null when it can), its tooltip, and the press. Absent, no button.
+    clean?: { label: string; blocked: string | null; tip: string; onClean: () => void } | null;
     selected: string | null;
     collapsed: boolean;
     query: string;
@@ -75,6 +89,9 @@
   let {
     groups,
     railSubjects = [],
+    tests = [],
+    testsBlockedReason = null,
+    clean = null,
     selected,
     collapsed,
     query,
@@ -114,9 +131,9 @@
 
   let pickerOpen = $state(false);
   const total = $derived(
-    groups.reduce((n, g) => n + g.cards.length, 0) + railSubjects.length
+    groups.reduce((n, g) => n + g.cards.length, 0) + railSubjects.length + tests.length
   );
-  const empty = $derived(groups.length === 0 && railSubjects.length === 0);
+  const empty = $derived(groups.length === 0 && railSubjects.length === 0 && tests.length === 0);
 </script>
 
 {#if collapsed}
@@ -164,6 +181,23 @@
         disabled={loading}
         onclick={onRefresh}
       />
+      {#if clean}
+        <!-- The reason hangs on the SPAN: a disabled button fires no
+             mouseenter, so its own tooltip could never say why. -->
+        <span use:tooltip={clean.blocked}>
+          <IconButton
+            icon={Bot}
+            label={clean.label}
+            tip={clean.blocked ? null : clean.tip}
+            size={14}
+            disabled={clean.blocked !== null}
+            onclick={clean.onClean}
+          >
+            <!-- The rails' Clear broom beside the bot: an agent that cleans. -->
+            <BrushCleaning size={14} />
+          </IconButton>
+        </span>
+      {/if}
       <IconButton
         icon={PanelLeftClose}
         label="Collapse the review list"
@@ -210,6 +244,11 @@
     </div>
 
     <div class="groups">
+      {#if testsBlockedReason}
+        <!-- Said rather than drawn as no tests: an older daemon parses no
+             item lines, and its silence is not an answer. -->
+        <p class="group-hint blocked">Human tests can't be shown: {testsBlockedReason}</p>
+      {/if}
       {#if empty}
         <p class="empty">
           {filtering
@@ -217,6 +256,34 @@
             : "Nothing is waiting for review."}
         </p>
       {:else}
+        {#if tests.length > 0}
+          <div class="group">
+            <div class="group-head rails-head">
+              <span class="group-label">Human tests</span>
+              <span class="group-count">{tests.length}</span>
+            </div>
+            <div class="cards" role="listbox" aria-label="Cards with human tests to run">
+              {#each tests as row (row.subject.cardPath)}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <div
+                  class="card"
+                  class:selected={selected === row.subject.cardPath}
+                  class:quiet={!testSubjectWaits(row.subject)}
+                  role="option"
+                  aria-selected={selected === row.subject.cardPath}
+                  tabindex="-1"
+                  onclick={() => onSelect(row.subject.cardPath)}
+                >
+                  <span class="title">{row.subject.title}</span>
+                  <span class="meta">
+                    {#if row.subject.status}<span class="chip">{row.subject.status}</span>{/if}
+                    <span class="files">{testSubjectDetail(row.subject)}</span>
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
         {#if railSubjects.length > 0}
           <div class="group">
             <div class="group-head rails-head">
@@ -485,6 +552,9 @@
     color: var(--text-muted);
     opacity: 0.85;
   }
+  .group-hint.blocked {
+    margin: 6px 8px;
+  }
   .cards {
     display: flex;
     flex-direction: column;
@@ -503,6 +573,11 @@
   .card.selected {
     background: var(--surface-selected);
     border-left-color: var(--accent);
+  }
+  /* A card whose tests have all failed: listed so the human can see what
+     the agent owes, dimmed so it is not read as a check waiting to run. */
+  .card.quiet .title {
+    color: var(--text-muted);
   }
   .title {
     font-size: 0.88em;

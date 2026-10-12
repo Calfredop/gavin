@@ -10,12 +10,16 @@
 //
 // A board's and a card's commands have a table of their own
 // (cardCommands.ts), as do a workspace's rails (railCommands.ts), the Git
-// tab's and the Files tab's (gitCommands.ts, fileCommands.ts), the
+// tab's and the Files tab's (gitCommands.ts, fileCommands.ts), the desk's
+// commit agent a phone asks for (agentCommit.ts), the
 // settings (settingsCommands.ts) and the workspaces as Workstation data
 // (workspaceCommands.ts), gathered in with the rest below.
 import { agentLastLine } from "$lib/agents/turnVerdict";
 import type { GavinTree } from "$lib/core/gavin";
+import { AGENT_COMMIT_COMMANDS } from "$companion/demo/agentCommit";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import { BROWSER_COMMANDS } from "$companion/demo/browser";
+import { inputFromThisPhone, OWNER_COMMANDS } from "$companion/demo/owners";
 import { CARD_COMMANDS } from "$companion/demo/cardCommands";
 import { FILE_COMMANDS } from "$companion/demo/fileCommands";
 import { GIT_COMMANDS } from "$companion/demo/gitCommands";
@@ -116,7 +120,9 @@ const WORK: Record<string, DemoCommand> = {
   // The sessions themselves (sessions.ts). Typing is answered once the
   // session has written what it writes back, as a PTY's echo is.
   write_input: (args, demo): Answer<"writeInput"> => {
-    type(demo, sessionId(args, demo), typeof args.data === "string" ? args.data : "");
+    const id = sessionId(args, demo);
+    inputFromThisPhone(demo, id);
+    type(demo, id, typeof args.data === "string" ? args.data : "");
   },
   // Every terminal a phone opens is sized to the phone; the demo's
   // scripts do not reflow, so a size is taken and nothing else.
@@ -135,6 +141,8 @@ const WORK: Record<string, DemoCommand> = {
       cwd: optionalString(args.cwd),
       command: optionalString(args.command),
       workspaceRoot: optionalString(args.workspaceRoot),
+      workspaceId: optionalString(args.workspaceId),
+      workspaceAgent: args.workspaceAgent === true,
     }),
   kill_session: (args, demo): Answer<"killSession"> => {
     end(demo, sessionId(args, demo));
@@ -168,6 +176,7 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   models: ["opus", "sonnet", "haiku"],
   effortFlag: "--effort",
   efforts: ["low", "medium", "high", "xhigh", "max"],
+  advisorFlag: "--advisor",
   failurePatterns: [],
   failureCauses: [],
   sessionIdArgs: "",
@@ -263,7 +272,10 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...SETTINGS_COMMANDS,
   ...WORKSPACE_COMMANDS,
   ...GIT_COMMANDS,
+  ...AGENT_COMMIT_COMMANDS,
   ...FILE_COMMANDS,
   ...CARD_COMMANDS,
   ...RAIL_COMMANDS,
+  ...BROWSER_COMMANDS,
+  ...OWNER_COMMANDS,
 };

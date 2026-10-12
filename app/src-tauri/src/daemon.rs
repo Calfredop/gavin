@@ -74,11 +74,22 @@ pub fn spawn_real_daemon() -> anyhow::Result<std::process::Child> {
     spawn_detached(&binary)
 }
 
-/// Unix: nothing to arrange. Reparenting to init is what makes the
-/// daemon outlive the app, and it happens whether or not anyone asks.
+/// Unix: nothing to arrange for the daemon to outlive the app.
+/// Reparenting to init does that, whether or not anyone asks.
+///
+/// Its output goes to the log beside its databases, as on Windows. Left
+/// to inherit the app's, it went nowhere from a launched app and to the
+/// `tauri dev` terminal in the dev tree -- and when a phone said the
+/// desktop app was not running with the window open, nothing on disk said
+/// when the desk's forwarding connection had gone. `None` keeps the old
+/// inheritance rather than refusing to start a daemon over a log file.
 #[cfg(not(windows))]
 fn spawn_detached(binary: &Path) -> anyhow::Result<std::process::Child> {
-    Ok(Command::new(binary).spawn()?)
+    let mut command = Command::new(binary);
+    if let Some(log) = daemon_log_file() {
+        command.stdout(log.try_clone()?).stderr(log);
+    }
+    Ok(command.spawn()?)
 }
 
 /// Escapes the parent's job object. The one flag that fixes the bug: a
@@ -187,9 +198,8 @@ fn note_breakaway_refused(log: &Option<std::fs::File>) {
 /// Appended, never truncated: the interesting case is a daemon that died
 /// and was replaced, and truncating on start is exactly when the line
 /// explaining the death would be lost. `None` if it cannot be opened,
-/// which sends the output to null rather than refusing to start a daemon
-/// over a log file.
-#[cfg(windows)]
+/// which leaves the output where it was rather than refusing to start a
+/// daemon over a log file.
 fn daemon_log_file() -> Option<std::fs::File> {
     let dir = protocol::app_support_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
@@ -203,11 +213,8 @@ fn daemon_log_file() -> Option<std::fs::File> {
 /// which matters because this log is where a daemon that died and was
 /// replaced explains itself.
 ///
-/// A pure function compiled on every platform, the way
-/// `protocol::check_sun_path` and `transport::pipe_name_for_path` already
-/// are: the caller above is Windows-only, and a rule that can only be
-/// checked on one platform is a rule nobody checks.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// A pure function, so the rule is checked on every platform the tests
+/// run on.
 fn daemon_log_path(dir: &Path) -> PathBuf {
     dir.join(protocol::profile_file_name("daemon", "log", protocol::BuildProfile::current()))
 }

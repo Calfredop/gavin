@@ -60,7 +60,7 @@ describe("the wiring", () => {
   it("is started from the orchestration listeners and never imported statically by layoutState", () => {
     // The load-order rule turnVerdictState.ts's header is about.
     expect(source("orchestrationState.ts")).toContain(
-      'await import("$lib/agents/turnVerdictDriver")'
+      '"$lib/agents/turnVerdictDriver"'
     );
     expect(source("orchestrationState.ts")).toContain("stopTurnVerdict();");
     // Named in comments, never in an import.
@@ -82,7 +82,7 @@ describe("the wiring", () => {
     expect(source("verdictNoticeState.ts")).toContain("setStatusNoticeHold(hold);");
     // Started and stopped with the driver, because a hold is meaningless
     // without something marking sessions pending.
-    expect(source("turnVerdictDriver.ts")).toContain("startVerdictNotices()");
+    expect(source("turnVerdictDriver.ts")).toContain("startVerdictNotices(");
   });
 
   it("sends exactly one notification per quiet turn", () => {

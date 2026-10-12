@@ -86,7 +86,7 @@ pub(crate) fn persist_workspaces(
     session_names: HashMap<String, String>,
     file_tabs: HashMap<String, String>,
     board_tabs: HashMap<String, crate::config::BoardTabRecord>,
-    // Safe beside board_tabs for the reason `superpowers` spells out
+    // Safe beside board_tabs for the reason `agent_skills` spells out
     // below: its value type is not `BoardTabRecord`, so transposing the
     // two is a compile error rather than a silently swapped map.
     card_tabs: HashMap<String, crate::config::CardTabRecord>,
@@ -105,7 +105,7 @@ pub(crate) fn persist_workspaces(
     // transposing it with any of the three above is a type error, which
     // is the guarantee the comment on `agent_models` had to ask for in
     // prose.
-    superpowers: HashMap<String, crate::config::SuperpowersMark>,
+    agent_skills: HashMap<String, crate::config::AgentSkillsMark>,
     // The custom agent's command and flag plus the complexity table, in
     // one struct rather than three positionals -- see
     // `AgentDefaultsConfig`. Its type is shared with nothing else here,
@@ -146,11 +146,28 @@ pub(crate) fn persist_workspaces(
     // was going to overwrite every other field with defaults anyway, so
     // this loses nothing the rest of the function was not already
     // losing.
-    let typesafe = crate::config::load(config_dir).ok().and_then(|c| c.typesafe);
+    //
+    // The retired Superpowers marks and the farewell dismissals travel
+    // the same way, for a different reason: nothing in this process
+    // writes the first any more, and the second has one writer
+    // (`agent_skills::dismiss_agent_skills_farewell`) that edits the file
+    // directly. Mirroring either in managed state would be two more
+    // positionals for values no save site ever changes.
+    let on_disk = crate::config::load(config_dir).ok();
+    let typesafe = on_disk.as_ref().and_then(|c| c.typesafe.clone());
+    // The app-wide browser pane setting travels the same way: its one
+    // writer is `browser_view.rs`'s read-modify-write.
+    let playwright_pane_open = on_disk.as_ref().and_then(|c| c.playwright_pane_open.clone());
+    let (superpowers, superpowers_farewell_dismissed) = on_disk
+        .map(|c| (c.superpowers, c.superpowers_farewell_dismissed))
+        .unwrap_or_default();
     crate::config::save(
         config_dir,
         &crate::config::AppConfig {
             typesafe,
+            superpowers,
+            superpowers_farewell_dismissed,
+            playwright_pane_open,
             workspaces: data.workspaces.clone(),
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
@@ -163,7 +180,7 @@ pub(crate) fn persist_workspaces(
             auto_commit,
             removed_workspaces: data.removed_workspaces.clone(),
             agent_pause,
-            superpowers,
+            agent_skills,
             agent_defaults,
             git_tracking,
             require_review,
@@ -187,92 +204,14 @@ pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 /// describes.
 pub struct AgentModels(pub Mutex<HashMap<String, String>>);
 
-/// The app-wide agent pause cycle, `None` for no cycle at all.
-/// Tauri-managed and persisted into the same `AppConfig` as the rest --
-/// the seventh field a save site can silently wipe, and carried through
-/// `persist_workspaces` for exactly that reason.
+/// LEGACY: the app-wide single agent pause cycle, from before cycles were
+/// per primary agent (`AgentDefaultsConfig::pause_cycles`, which rides the
+/// wholesale agent-defaults save). `config::load` folds an old value onto
+/// every known primary and clears it, so this is always `None` once a
+/// config has loaded; it stays only because `persist_workspaces` still
+/// takes it positionally.
 pub struct AgentPause(pub Mutex<Option<crate::config::AgentPauseConfig>>);
 
-#[tauri::command]
-pub fn get_agent_pause(state: State<AgentPause>) -> Option<crate::config::AgentPauseConfig> {
-    state.0.lock().unwrap().clone()
-}
-
-/// Replaces the app-wide cycle. `None` clears it back to no cycle at
-/// all, the same "there is no separate clear command" shape as
-/// `set_theme_pref`.
-///
-/// The ANCHOR is the caller's to supply and gavin never rewrites it here:
-/// the frontend stamps one when the cycle is first switched on, and every
-/// later edit carries the same value through. Stamping `now` on each save
-/// would slide the pause forward every time somebody nudged a field, so
-/// the cycle would never actually fire for anyone who kept adjusting it.
-#[tauri::command]
-pub fn set_agent_pause(
-    agent_pause: Option<crate::config::AgentPauseConfig>,
-    app_handle: AppHandle,
-    window: tauri::Window,
-    request: tauri::ipc::Request<'_>,
-    state: State<WorkspacesState>,
-    names_state: State<SessionNames>,
-    file_tabs_state: State<FileTabs>,
-    board_tabs_state: State<BoardTabs>,
-    card_tabs_state: State<CardTabs>,
-    theme_state: State<ThemePref>,
-    agent_models_state: State<AgentModels>,
-    font_size_state: State<TerminalFontSize>,
-    auto_commit_state: State<AutoCommit>,
-    agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
-    agent_defaults_state: State<AgentDefaults>,
-    git_tracking_state: State<GitTrackingDefaults>,
-    require_review_state: State<RequireReviewDefaults>,
-    headroom_state: State<HeadroomDefaults>,
-    launch_state: State<LaunchSettings>,
-    custom_resume_args_state: State<CustomResumeArgs>,
-) -> Result<(), String> {
-    *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
-    let data = state.0.lock().unwrap().clone();
-    let session_names = names_state.0.lock().unwrap().clone();
-    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
-    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
-    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
-    let theme = theme_state.0.lock().unwrap().clone();
-    let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
-    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
-    let git_tracking = *git_tracking_state.0.lock().unwrap();
-    let require_review = *require_review_state.0.lock().unwrap();
-    let headroom = *headroom_state.0.lock().unwrap();
-    let launch = *launch_state.0.lock().unwrap();
-    let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
-    let terminal_font_size = *font_size_state.0.lock().unwrap();
-    let auto_commit = *auto_commit_state.0.lock().unwrap();
-    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(
-        &config_dir,
-        &data,
-        session_names,
-        file_tabs,
-        board_tabs,
-        card_tabs,
-        theme,
-        agent_models,
-        terminal_font_size,
-        auto_commit,
-        agent_pause,
-        superpowers,
-        agent_defaults,
-        git_tracking,
-        require_review,
-        headroom,
-        launch,
-        custom_resume_args,
-    )
-    .map_err(|e| e.to_string())?;
-    announce_app_settings(&app_handle, &window, &request);
-    Ok(())
-}
 /// The app-wide launch wall, `None` until somebody edits it (the shipped
 /// `LaunchConfig::default()` then applies). Tauri-managed and persisted
 /// into the same `AppConfig` as the rest -- the TENTH field a save site
@@ -286,7 +225,7 @@ pub fn get_launch_config(state: State<LaunchSettings>) -> Option<crate::config::
 }
 
 /// Replaces the app-wide launch wall wholesale, the same shape as
-/// `set_agent_pause` and `set_agent_defaults`: the panel edits both
+/// `set_agent_defaults`: the panel edits the whole struct
 /// fields and hands them back, so there is no per-key command and no way
 /// for one of them to be saved while the other is dropped.
 ///
@@ -310,7 +249,7 @@ pub fn set_launch_config(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -327,7 +266,7 @@ pub fn set_launch_config(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -348,7 +287,7 @@ pub fn set_launch_config(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -397,7 +336,7 @@ pub fn set_custom_resume_args(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -413,7 +352,7 @@ pub fn set_custom_resume_args(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -436,7 +375,7 @@ pub fn set_custom_resume_args(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -449,11 +388,11 @@ pub fn set_custom_resume_args(
     Ok(())
 }
 
-/// The human's Superpowers word per workspace root. Same carry-through
+/// The human's word about Matt Pocock's skills per workspace root. Same carry-through
 /// contract as `AgentModels` above; the value type differs from the
 /// String maps so a transposed argument is a compile error rather than a
 /// silently wiped field.
-pub struct SuperpowersMarks(pub Mutex<HashMap<String, crate::config::SuperpowersMark>>);
+pub struct AgentSkillsMarks(pub Mutex<HashMap<String, crate::config::AgentSkillsMark>>);
 
 /// The app-wide custom agent (command + model flag) and the complexity
 /// table. Tauri-managed and persisted into the same `AppConfig` as the
@@ -497,7 +436,7 @@ pub fn get_agent_defaults(state: State<AgentDefaults>) -> crate::config::AgentDe
 }
 
 /// Replaces the app-wide agent defaults wholesale, the same shape as
-/// `set_agent_pause`: the panel edits a whole struct and hands it back,
+/// `set_agent_defaults`: the panel edits a whole struct and hands it back,
 /// so there is no per-key command and no way for one field of it to be
 /// saved while another is dropped.
 #[tauri::command]
@@ -517,7 +456,7 @@ pub fn set_agent_defaults(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -538,7 +477,7 @@ pub fn set_agent_defaults(
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
@@ -555,7 +494,7 @@ pub fn set_agent_defaults(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -697,7 +636,9 @@ mod workspaces_data_tests {
     }
 
     /// The twelfth carry-through field (v38): the app-wide `custom`
-    /// resume flag.
+    /// resume flag. A legacy field since named customs: the value has to
+    /// survive the save so migration can still fold it onto the migrated
+    /// profile, which is where the answer reads back from.
     #[test]
     fn persist_workspaces_carries_the_custom_resume_args_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -723,9 +664,11 @@ mod workspaces_data_tests {
             Some("--resume".to_string()),
         )
         .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap();
+        assert_eq!(loaded.custom_resume_args, None);
         assert_eq!(
-            crate::config::load(dir.path()).unwrap().custom_resume_args,
-            Some("--resume".to_string())
+            loaded.agent_defaults.custom_profiles[0].resume_args.as_deref(),
+            Some("--resume")
         );
     }
 
@@ -839,12 +782,12 @@ mod workspaces_data_tests {
     /// loud: a wiped marker does not break anything, it just starts the
     /// Home banner nagging again about a step the human already declined.
     #[test]
-    fn persist_workspaces_carries_superpowers_marks_through() {
+    fn persist_workspaces_carries_agent_skills_marks_through() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let mut marks = HashMap::new();
-        marks.insert("/repo/one".to_string(), crate::config::SuperpowersMark::Skipped);
-        marks.insert("/repo/two".to_string(), crate::config::SuperpowersMark::Installed);
+        marks.insert("/repo/one".to_string(), crate::config::AgentSkillsMark::Skipped);
+        marks.insert("/repo/two".to_string(), crate::config::AgentSkillsMark::Installed);
         persist_workspaces(
             dir.path(),
             &data,
@@ -866,7 +809,47 @@ mod workspaces_data_tests {
             None,
         )
         .unwrap();
-        assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_skills, marks);
+    }
+
+    /// The retired Superpowers marks and the farewell dismissals are not
+    /// arguments, so nothing can forget to pass them -- but a save that
+    /// rebuilt the config without reading them back would drop the
+    /// farewell note's targeting, and the older build's own answer, on
+    /// the first layout change.
+    #[test]
+    fn persist_workspaces_keeps_the_superpowers_fields_it_finds_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut before = crate::config::AppConfig::default();
+        before.superpowers.insert("/met".to_string(), crate::config::SuperpowersMark::Installed);
+        before.superpowers_farewell_dismissed.push("/met".to_string());
+        crate::config::save(dir.path(), &before).unwrap();
+
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        let after = crate::config::load(dir.path()).unwrap();
+        assert_eq!(after.superpowers, before.superpowers);
+        assert_eq!(after.superpowers_farewell_dismissed, before.superpowers_farewell_dismissed);
     }
 
     /// The eighth carry-through field, and the one whose loss is the most
@@ -884,16 +867,32 @@ mod workspaces_data_tests {
                 profile: "claude-code".to_string(),
                 model: "opus".to_string(),
                 effort: "max".to_string(),
+                advisor: "opus".to_string(),
             },
         );
         let defaults = crate::config::AgentDefaultsConfig {
-            custom_command: "my-agent --yolo".to_string(),
-            custom_model_flag: "--llm".to_string(),
-            custom_effort_flag: "--think".to_string(),
+            custom_profiles: vec![crate::config::CustomProfile {
+                id: "custom-agent".to_string(),
+                label: "Custom".to_string(),
+                command: "my-agent --yolo".to_string(),
+                model_flag: "--llm".to_string(),
+                effort_flag: "--think".to_string(),
+                api_family: "openai".to_string(),
+                resume_args: None,
+            }],
+            custom_command: String::new(),
+            custom_model_flag: String::new(),
+            custom_effort_flag: String::new(),
             agent_efforts: HashMap::from([("claude-code".to_string(), "high".to_string())]),
-            custom_api_family: "openai".to_string(),
-            complexity,
-            agent_fallback: vec!["codex".to_string()],
+            custom_api_family: String::new(),
+            complexity: HashMap::new(),
+            complexity_tables: HashMap::from([("claude-code".to_string(), complexity)]),
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
+            default_agent: Some("codex".to_string()),
+            agent_fallback: Vec::new(),
+            fallback_chains: HashMap::from([("claude-code".to_string(), vec!["codex".to_string()])]),
             fallback_thresholds: {
                 let mut m = HashMap::new();
                 m.insert("claude-code".to_string(), 80);
@@ -1179,8 +1178,12 @@ mod workspaces_data_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -1189,20 +1192,27 @@ mod workspaces_data_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         };
-        ws.complexity_agents.insert(
-            "trivial".to_string(),
-            crate::config::ComplexityAgent {
-                profile: String::new(),
-                model: "haiku".to_string(),
-                effort: String::new(),
-            },
+        ws.complexity_tables.insert(
+            "claude-code".to_string(),
+            HashMap::from([(
+                "trivial".to_string(),
+                crate::config::ComplexityAgent {
+                    profile: String::new(),
+                    model: "haiku".to_string(),
+                    effort: String::new(),
+                    advisor: String::new(),
+                },
+            )]),
         );
         let data = WorkspacesData {
             workspaces: vec![ws.clone()],
@@ -1231,8 +1241,8 @@ mod workspaces_data_tests {
         )
         .unwrap();
         assert_eq!(
-            crate::config::load(dir.path()).unwrap().workspaces[0].complexity_agents,
-            ws.complexity_agents
+            crate::config::load(dir.path()).unwrap().workspaces[0].complexity_tables,
+            ws.complexity_tables
         );
     }
 
@@ -1241,11 +1251,11 @@ mod workspaces_data_tests {
     /// "installed" must load, and a renamed variant must not silently
     /// become the other one.
     #[test]
-    fn superpowers_marks_serialize_as_lowercase_names() {
+    fn agent_skills_marks_serialize_as_lowercase_names() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let mut marks = HashMap::new();
-        marks.insert("/repo".to_string(), crate::config::SuperpowersMark::Installed);
+        marks.insert("/repo".to_string(), crate::config::AgentSkillsMark::Installed);
         persist_workspaces(
             dir.path(),
             &data,
@@ -1290,7 +1300,7 @@ mod workspaces_data_tests {
     /// `AppConfig::default()`, so the failure mode here is not an error
     /// message, it is every workspace silently vanishing.
     #[test]
-    fn a_config_written_before_superpowers_existed_still_loads_its_workspaces() {
+    fn a_config_written_before_agent_skills_existed_still_loads_its_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             crate::config::config_path(dir.path()),
@@ -1302,7 +1312,7 @@ mod workspaces_data_tests {
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
-        assert!(loaded.superpowers.is_empty());
+        assert!(loaded.agent_skills.is_empty());
         assert_eq!(loaded.active_workspace_id.as_deref(), Some("ws-1"));
         assert_eq!(loaded.theme.as_deref(), Some("dark"));
     }
@@ -1345,6 +1355,9 @@ mod workspaces_data_tests {
     /// that reconstructed AppConfig without carrying them. A wiped pause
     /// cycle would be quieter than any of those -- nothing looks wrong
     /// until a rail runs straight through a window it was told to sit out.
+    /// The cycles live on `AgentDefaultsConfig::pause_cycles` now, riding
+    /// the wholesale agent-defaults carry-through; the legacy
+    /// `agent_pause` positional is deserialization-only for migration.
     #[test]
     fn persist_workspaces_carries_the_agent_pause_cycle_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -1357,6 +1370,10 @@ mod workspaces_data_tests {
             limit_percent: 95.0,
             limit_enabled: true,
         };
+        let defaults = crate::config::AgentDefaultsConfig {
+            pause_cycles: HashMap::from([("claude-code".to_string(), cycle.clone())]),
+            ..Default::default()
+        };
         persist_workspaces(
             dir.path(),
             &data,
@@ -1368,9 +1385,9 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             None,
-            Some(cycle.clone()),
+            None,
             HashMap::new(),
-            crate::config::AgentDefaultsConfig::default(),
+            defaults,
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
             crate::config::HeadroomDefault::default(),
@@ -1378,7 +1395,10 @@ mod workspaces_data_tests {
             None,
         )
         .unwrap();
-        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
+        assert_eq!(
+            crate::config::load(dir.path()).unwrap().agent_defaults.pause_cycles.get("claude-code"),
+            Some(&cycle)
+        );
     }
 
     /// The anchor is what makes the cycle survive a restart, so it has to
@@ -1428,8 +1448,12 @@ mod workspace_migration_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -1438,8 +1462,11 @@ mod workspace_migration_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -1543,7 +1570,7 @@ pub fn set_workspaces_state(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1583,7 +1610,7 @@ pub fn set_workspaces_state(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1602,7 +1629,7 @@ pub fn set_workspaces_state(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1685,7 +1712,7 @@ pub(crate) fn persist_current(app_handle: &AppHandle, data: &WorkspacesData) -> 
         *app_handle.state::<TerminalFontSize>().0.lock().unwrap(),
         *app_handle.state::<AutoCommit>().0.lock().unwrap(),
         app_handle.state::<AgentPause>().0.lock().unwrap().clone(),
-        app_handle.state::<SuperpowersMarks>().0.lock().unwrap().clone(),
+        app_handle.state::<AgentSkillsMarks>().0.lock().unwrap().clone(),
         app_handle.state::<AgentDefaults>().0.lock().unwrap().clone(),
         *app_handle.state::<GitTrackingDefaults>().0.lock().unwrap(),
         *app_handle.state::<RequireReviewDefaults>().0.lock().unwrap(),
@@ -1717,7 +1744,7 @@ pub fn set_agent_model_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1747,7 +1774,7 @@ pub fn set_agent_model_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1767,7 +1794,7 @@ pub fn set_agent_model_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1780,13 +1807,13 @@ pub fn set_agent_model_default(
     Ok(())
 }
 
-/// What the human has told gavin about Superpowers, keyed by workspace
+/// What the human has told gavin about Matt Pocock's skills, keyed by workspace
 /// root path. Machine-local, so it answers only for this machine -- see
-/// `AppConfig::superpowers`.
+/// `AppConfig::agent_skills`.
 #[tauri::command]
-pub fn get_superpowers_marks(
-    state: State<SuperpowersMarks>,
-) -> HashMap<String, crate::config::SuperpowersMark> {
+pub fn get_agent_skills_marks(
+    state: State<AgentSkillsMarks>,
+) -> HashMap<String, crate::config::AgentSkillsMark> {
     state.0.lock().unwrap().clone()
 }
 
@@ -1796,9 +1823,9 @@ pub fn get_superpowers_marks(
 /// the honest "absent", and overwriting with the other marker would say
 /// something they did not mean.
 #[tauri::command]
-pub fn set_superpowers_mark(
+pub fn set_agent_skills_mark(
     root_path: String,
-    mark: Option<crate::config::SuperpowersMark>,
+    mark: Option<crate::config::AgentSkillsMark>,
     app_handle: AppHandle,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
@@ -1810,7 +1837,7 @@ pub fn set_superpowers_mark(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1818,8 +1845,8 @@ pub fn set_superpowers_mark(
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
-    let superpowers = {
-        let mut current = superpowers_state.0.lock().unwrap();
+    let agent_skills = {
+        let mut current = agent_skills_state.0.lock().unwrap();
         match mark {
             Some(m) => {
                 current.insert(root_path, m);
@@ -1859,7 +1886,7 @@ pub fn set_superpowers_mark(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1891,7 +1918,7 @@ pub fn set_theme_pref(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -1917,7 +1944,7 @@ pub fn set_theme_pref(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -1936,7 +1963,7 @@ pub fn set_theme_pref(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -1978,7 +2005,7 @@ pub fn set_terminal_font_size(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2003,7 +2030,7 @@ pub fn set_terminal_font_size(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2023,7 +2050,7 @@ pub fn set_terminal_font_size(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2062,7 +2089,7 @@ pub fn set_auto_commit(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2084,7 +2111,7 @@ pub fn set_auto_commit(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2104,7 +2131,7 @@ pub fn set_auto_commit(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2143,7 +2170,7 @@ pub fn set_require_review(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2167,7 +2194,7 @@ pub fn set_require_review(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
@@ -2185,7 +2212,7 @@ pub fn set_require_review(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2229,7 +2256,7 @@ pub fn set_headroom_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2252,7 +2279,7 @@ pub fn set_headroom_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2271,7 +2298,7 @@ pub fn set_headroom_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2318,7 +2345,7 @@ pub fn set_git_tracking_default(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2341,7 +2368,7 @@ pub fn set_git_tracking_default(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let require_review = *require_review_state.0.lock().unwrap();
     let headroom = *headroom_state.0.lock().unwrap();
@@ -2360,7 +2387,7 @@ pub fn set_git_tracking_default(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2393,7 +2420,7 @@ pub fn set_session_name(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2424,7 +2451,7 @@ pub fn set_session_name(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2443,7 +2470,7 @@ pub fn set_session_name(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2478,7 +2505,7 @@ pub fn set_file_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2497,7 +2524,7 @@ pub fn set_file_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2516,7 +2543,7 @@ pub fn set_file_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2580,7 +2607,7 @@ pub fn set_card_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2599,7 +2626,7 @@ pub fn set_card_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2618,7 +2645,7 @@ pub fn set_card_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -2651,7 +2678,7 @@ pub fn set_board_tabs(
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
-    superpowers_state: State<SuperpowersMarks>,
+    agent_skills_state: State<AgentSkillsMarks>,
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
@@ -2670,7 +2697,7 @@ pub fn set_board_tabs(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
-    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_skills = agent_skills_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
@@ -2689,7 +2716,7 @@ pub fn set_board_tabs(
         terminal_font_size,
         auto_commit,
         agent_pause,
-        superpowers,
+        agent_skills,
         agent_defaults,
         git_tracking,
         require_review,
@@ -3460,6 +3487,12 @@ pub struct DeviceList {
     /// Whether the daemon holds an admission token for the Relay, never
     /// the token. `false` from a daemon older than v52, which holds none.
     pub relay_admission_set: bool,
+    /// Where the daemon posts Companion notifications (v67); `None` from
+    /// an older daemon, which cannot say (FEATURE_MIN_VERSION.pushGateway).
+    pub push_gateway_url: Option<String>,
+    /// Whether direct connection is switched on (v69); `false` from an
+    /// older daemon, which has no listener (FEATURE_MIN_VERSION.directAccess).
+    pub direct_access_enabled: bool,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3544,12 +3577,80 @@ pub async fn list_devices(
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::Devices { devices, remote_access_enabled, relay_url, relay_admission_set } => {
-            Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set })
-        }
+        Response::Devices {
+            devices,
+            remote_access_enabled,
+            relay_url,
+            relay_admission_set,
+            push_gateway_url,
+            direct_access_enabled,
+        } => Ok(DeviceList {
+            devices,
+            remote_access_enabled,
+            relay_url,
+            relay_admission_set,
+            push_gateway_url,
+            direct_access_enabled,
+        }),
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
     }
+}
+
+/// Where the daemon's dial to the Relay stands (v61). The Settings
+/// section's read on open; every change after arrives as the
+/// `relay-state-changed` event.
+#[tauri::command]
+pub async fn get_relay_state(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::RelayState, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetRelayState)
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::RelayState { state } => Ok(state),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected RelayState, got {other:?}")),
+    }
+}
+
+/// Where the daemon's direct listener stands (v69, ADR 0009). The Settings
+/// section's read on open; every change after arrives as the
+/// `direct-state-changed` event.
+#[tauri::command]
+pub async fn get_direct_state(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::DirectState, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetDirectState)
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::DirectState { state } => Ok(state),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected DirectState, got {other:?}")),
+    }
+}
+
+/// The Direct connection switch (v69, ADR 0009). The daemon listens while
+/// it and remote access are both on, and lets go when either goes off.
+#[tauri::command]
+pub async fn set_direct_access(
+    enabled: bool,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetDirectAccess { enabled })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
 }
 
 /// Revoke one device: the daemon marks the row and drops every live
@@ -3616,6 +3717,39 @@ pub async fn set_remote_access(
     expect_ok(resp)?;
     let _ = app_handle.emit("remote-access-changed", enabled);
     Ok(())
+}
+
+/// Where the daemon posts Companion notifications (v49), or none. The
+/// daemon checks the URL and says what is wrong with one it refuses.
+#[tauri::command]
+pub async fn set_push_gateway_url(
+    url: Option<String>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetPushGatewayUrl { url })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// What the desk decided to notify Devices of (v49): the daemon seals
+/// each event for every Device that handed it a send permission and posts
+/// them to the Push gateway, answering once they are queued.
+#[tauri::command]
+pub async fn push_companion_notify(
+    events: Vec<protocol::CompanionNotifyEvent>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::PushCompanionNotify { events })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
 }
 
 /// Walks the tree, replacing any session id not present in `valid_ids`
@@ -4381,8 +4515,12 @@ mod resolve_workspaces_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -4391,8 +4529,11 @@ mod resolve_workspaces_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -4904,20 +5045,21 @@ mod resolve_workspaces_tests {
     }
 
     #[test]
-    fn the_api_family_is_sent_only_with_the_custom_profile_to_a_daemon_that_reads_it() {
+    fn the_api_family_is_sent_with_non_stock_profiles_to_a_daemon_that_reads_it() {
         let at = protocol::CUSTOM_API_FAMILY_MIN_VERSION;
         assert_eq!(api_family_for_daemon(at, Some("custom"), Some("openai")).as_deref(), Some("openai"));
-        assert_eq!(api_family_for_daemon(at + 1, Some("custom"), Some(" anthropic ")).as_deref(), Some("anthropic"));
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), Some(" anthropic ")).as_deref(), Some("anthropic"));
+        assert_eq!(api_family_for_daemon(at, Some("my-bot"), Some("openai")).as_deref(), Some("openai"));
         // A v47 daemon would drop it; it reads profile_id and nothing more.
         assert_eq!(api_family_for_daemon(at - 1, Some("custom"), Some("openai")), None);
-        // Every other profile is a binary the daemon knows the API of.
+        // Stock built-ins are binaries the daemon knows the API of.
         assert_eq!(api_family_for_daemon(at, Some("claude-code"), Some("openai")), None);
         assert_eq!(api_family_for_daemon(at, Some("codex"), Some("anthropic")), None);
         // A shell names no profile, and so no family.
         assert_eq!(api_family_for_daemon(at, None, Some("openai")), None);
         // None, the default.
-        assert_eq!(api_family_for_daemon(at, Some("custom"), Some("")), None);
-        assert_eq!(api_family_for_daemon(at, Some("custom"), None), None);
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), Some("")), None);
+        assert_eq!(api_family_for_daemon(at, Some("custom-agent"), None), None);
     }
 
     /// The fallback shell belongs to no workspace and runs no agent, so
@@ -5358,6 +5500,64 @@ pub(crate) fn attach_and_relay(
                 Response::DeviceDisconnected { device_id } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "device-disconnected", device_id);
                 }
+                // A paired Device was refused a connection (v62). The
+                // daemon only sends it to an app that said it speaks 62.
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-refusal-changed",
+                        (device_id, refusal),
+                    );
+                }
+                // A Device's presence changed (v63): the whole of it, which
+                // the Devices panel draws, the terminal a Device is typing
+                // into marks, and from which the desk places a session the
+                // Device started. Only sent to an app that speaks 63.
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-presence-changed",
+                        (device_id, presence),
+                    );
+                }
+                // A session's owner changed (v68), whole: what locks the
+                // terminal a Device holds, and -- offered on through the
+                // forwarding connection -- what flips the Device that just
+                // lost it. Only sent to an app that speaks 68.
+                Response::SessionOwnerChanged { ownership } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-owner-changed", ownership);
+                }
+                // The dial's state changed (v61). The payload is the state
+                // itself, so the section redraws without asking again.
+                Response::RelayStateChanged { state } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "relay-state-changed", state);
+                }
+                // The direct listener's state changed (v69). Whole, like
+                // the dial's; only sent to an app that speaks 69.
+                Response::DirectStateChanged { state } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "direct-state-changed", state);
+                }
+                // A session's browser launched, navigated, changed tab or
+                // (`None`) stopped (v65): what lights the tab's browser chip
+                // and arms the pane's auto-open (`browserView.ts`). Whole,
+                // never a delta. Only sent to an app that speaks 65.
+                Response::BrowserChanged { session_id, browser } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "browser-changed", (session_id, browser));
+                }
+                // An ssh session's browser frames (v65): the desk's
+                // `WatchBrowser` for a session on a host rides that host's
+                // streaming connection (`RemoteLink::watch_browser`), so its
+                // pushes arrive here. A local session's watch has a
+                // connection of its own (`browser_view`).
+                Response::BrowserFrame { session_id, seq, data, width, height, url, title } => {
+                    crate::browser_view::relay_frame(
+                        &reader_app_handle,
+                        crate::browser_view::BrowserFrame { session_id, seq, data, width, height, url, title },
+                    );
+                }
+                Response::BrowserGone { session_id } => {
+                    crate::browser_view::relay_gone(&reader_app_handle, &session_id);
+                }
                 Response::AgentSessionSpawned {
                     workspace_id,
                     session_id,
@@ -5502,8 +5702,12 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 auto_commit: None,
                 auto_resume_runs: false,
                 agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
                 pinned_at: None,
                 complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
                 git_tracking_asked: false,
                 trusted_config_hash: None,
                 mcp_foreign_servers_choice: None,
@@ -5512,8 +5716,11 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 headroom: None,
                 require_review_asked: false,
                 headroom_asked: false,
+                playwright_pane_open: None,
                 custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -5557,7 +5764,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.terminal_font_size,
         config.auto_commit,
         config.agent_pause.clone(),
-        config.superpowers.clone(),
+        config.agent_skills.clone(),
         config.agent_defaults.clone(),
         config.git_tracking,
         config.require_review,
@@ -5580,7 +5787,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
     app_handle.manage(AutoCommit(Mutex::new(config.auto_commit)));
     app_handle.manage(AgentPause(Mutex::new(config.agent_pause)));
-    app_handle.manage(SuperpowersMarks(Mutex::new(config.superpowers)));
+    app_handle.manage(AgentSkillsMarks(Mutex::new(config.agent_skills)));
     app_handle.manage(AgentDefaults(Mutex::new(config.agent_defaults)));
     app_handle.manage(GitTrackingDefaults(Mutex::new(config.git_tracking)));
     app_handle.manage(RequireReviewDefaults(Mutex::new(config.require_review)));
@@ -5716,6 +5923,51 @@ pub async fn send_queued_input(
     .await
 }
 
+/// Makes `to` the owner of a session (v68): a Device's id, or `None` for
+/// the desk. Take back is `to: None` here; Hand over names a Device.
+/// `expect` is the owner the desk saw when the human pressed, and `force`
+/// passes the "typing right now" question once they have answered it.
+///
+/// Always the LOCAL daemon, whatever host the session runs on: ownership
+/// is kept where the Devices connect. The desk is the caller -- a
+/// Device's call of the same name is answered by the daemon itself
+/// (`RemoteAllowance::Daemon`), as that Device. A refusal comes back as
+/// the daemon's message, which carries the `OwnerRefusal` the webview
+/// reads (`sessionOwnership.ts`).
+#[tauri::command]
+pub async fn set_session_owner(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+    session_id: String,
+    to: Option<String>,
+    expect: Option<String>,
+    force: Option<bool>,
+) -> Result<protocol::SessionOwnership, String> {
+    let req = Request::SetSessionOwner { id: session_id, to, expect, force: force.unwrap_or(false) };
+    match state.lanes(current_compat(&compat)).request(req).await.map_err(|e| e.to_string())? {
+        Response::SessionOwnership { ownership } => Ok(ownership),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected SessionOwnership, got {other:?}")),
+    }
+}
+
+/// Every session a Device owns, the Devices with a live connection, and
+/// (here, always none) the asking Device: the read-back for a window that
+/// reloaded after the `session-owner-changed` pushes went by (v68).
+#[tauri::command]
+pub async fn list_session_owners(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::session_owner::SessionOwnersList, String> {
+    match state.lanes(current_compat(&compat)).request(Request::ListSessionOwners).await.map_err(|e| e.to_string())? {
+        Response::SessionOwners { owners, devices, you } => {
+            Ok(protocol::session_owner::SessionOwnersList { owners, devices, you })
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected SessionOwners, got {other:?}")),
+    }
+}
+
 #[tauri::command]
 pub fn resize_session(
     session_id: String,
@@ -5784,14 +6036,14 @@ pub(crate) fn profile_for_daemon(daemon_version: u32, profile_id: Option<&str>) 
     profile_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string)
 }
 
-/// The API family to name in a `CreateSession`: the custom agent's, on
-/// a launch of the custom profile, for a daemon that reads it -- and
-/// none otherwise.
+/// The API family to name in a `CreateSession`: a non-stock profile's,
+/// when the setting names one, for a daemon that reads it -- and none
+/// otherwise.
 ///
-/// Only the custom profile, because every other one is a binary the
-/// daemon already knows the API of, and a family sent with it would be
-/// a second answer to a question it has settled. None when the setting
-/// names none, which is the default and means no recipe. And none for a
+/// Not for stock built-ins: every one of those is a binary the daemon
+/// already knows the API of, and a family sent with it would be a second
+/// answer to a question it has settled. None when the setting names
+/// none, which is the default and means no recipe. And none for a
 /// daemon older than the widening, for the reason `profile_for_daemon`
 /// gives: it would parse the request and drop the field.
 pub(crate) fn api_family_for_daemon(
@@ -5802,7 +6054,8 @@ pub(crate) fn api_family_for_daemon(
     if daemon_version < protocol::CUSTOM_API_FAMILY_MIN_VERSION {
         return None;
     }
-    if profile_id.map(str::trim) != Some("custom") {
+    let id = profile_id.map(str::trim).filter(|s| !s.is_empty())?;
+    if crate::config::is_stock_profile_id(id) {
         return None;
     }
     api_family.map(str::trim).filter(|family| !family.is_empty()).map(str::to_string)
@@ -5973,7 +6226,10 @@ pub async fn create_session(
     compat: State<'_, DaemonCompatState>,
     agent_defaults: State<'_, AgentDefaults>,
 ) -> Result<String, String> {
-    let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();
+    let api_family = {
+        let defaults = agent_defaults.0.lock().unwrap();
+        crate::config::api_family_for_profile(&defaults, &[], profile_id.as_deref())
+    };
     let without_headroom = without_headroom.unwrap_or(false);
     if let crate::remote::Route::Remote(link) =
         crate::remote::route_for_root(&app_handle, workspace_root.as_deref())?
@@ -5984,7 +6240,7 @@ pub async fn create_session(
             workspace_root.as_deref(),
             command.as_deref(),
             profile_id.as_deref(),
-            Some(&api_family),
+            api_family.as_deref(),
             without_headroom,
             &link.home,
         )
@@ -5997,13 +6253,27 @@ pub async fn create_session(
         return Ok(created.id);
     }
     let compat = current_compat(&compat);
+    // A kimi launch reads two pieces of the human's own kimi state that
+    // the integration cannot prepare: the folder-trust record for the
+    // session's cwd (cards launch in context folders below the root,
+    // and a trusted parent does not cover a child), and the default
+    // permission mode for new sessions. Both are no-ops when already
+    // in place; the remote lane above skips this -- the state lives on
+    // the host, as `grant_folder_trust` has always known.
+    if profile_id
+        .as_deref()
+        .and_then(crate::agent_setup::stock_profile_by_id)
+        .is_some_and(|profile| profile.folder_trust.is_some())
+    {
+        crate::agent_setup::prepare_kimi_launch(cwd.as_deref(), workspace_root.as_deref(), &local_home());
+    }
     let created = create_agent_session(
         &command_state.lanes(compat),
         cwd.as_deref(),
         workspace_root.as_deref(),
         command.as_deref(),
         profile_id.as_deref(),
-        Some(&api_family),
+        api_family.as_deref(),
         without_headroom,
         &local_home(),
     )
@@ -6164,6 +6434,56 @@ pub async fn install_headroom(
 /// The status a Headroom request answers with -- every one answers with
 /// the status AFTER it. Each command awaits its own lane, in its own
 /// body, so the main-thread guard can see that it does.
+/// Where a workspace's adopted-memory index stands (v60): the embedding
+/// model on this machine, and whether the index matches `### Learned`.
+/// What the setup wizard's Memory step and the open-time backfill read.
+///
+/// Local only, like Headroom: the model and the index live on the
+/// machine whose daemon answers, and an ssh workspace's agents search on
+/// their host. A new request TYPE, so the lane's gate refuses it against
+/// an older daemon; the app reads `FEATURE_MIN_VERSION.memoryIndex` first.
+#[tauri::command]
+pub async fn get_memory_index(
+    root_path: String,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::MemoryIndexStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetMemoryIndex { root_path })
+        .await
+        .map_err(|e| e.to_string())?;
+    memory_index_status(resp)
+}
+
+/// Brings a workspace's memory index up to `### Learned` (v60). With
+/// `download` -- the Memory step, and the backfill of a workspace that
+/// already has memories -- a missing model is fetched first, and the
+/// answer comes back before it has finished. Without it -- Adopt -- a
+/// missing model is an error rather than a download nobody asked for.
+#[tauri::command]
+pub async fn ensure_memory_index(
+    root_path: String,
+    download: bool,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::MemoryIndexStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::EnsureMemoryIndex { root_path, download })
+        .await
+        .map_err(|e| e.to_string())?;
+    memory_index_status(resp)
+}
+
+fn memory_index_status(resp: Response) -> Result<protocol::MemoryIndexStatus, String> {
+    match resp {
+        Response::MemoryIndex { status } => Ok(status),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected the memory index's status, got {other:?}")),
+    }
+}
+
 fn headroom_status(resp: Response) -> Result<protocol::HeadroomStatus, String> {
     match resp {
         Response::Headroom { status } => Ok(status),
@@ -6271,6 +6591,28 @@ pub async fn set_failure_patterns(
     let route = crate::remote::route_for_session(&app_handle, &session_id)?;
     let resp = lanes_for(route, &state, &compat)
         .request(Request::SetFailurePatterns { id: session_id, patterns })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// The profile's other half of the same per-session arming: this agent's
+/// OSC 133 markers are not to be believed, so the daemon drops every one
+/// for the session and the quiet-timer heuristic stays the authority.
+///
+/// Best-effort, exactly like `set_failure_patterns`: against a daemon
+/// older than v64 the gate refuses the request and the agent keeps the
+/// old OSC 133 behaviour -- for kimi, the stuck-in-working one.
+#[tauri::command]
+pub async fn distrust_osc133(
+    session_id: String,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = lanes_for(route, &state, &compat)
+        .request(Request::DistrustOsc133 { id: session_id })
         .await
         .map_err(|e| e.to_string())?;
     expect_ok(resp)
@@ -7477,8 +7819,12 @@ mod main_session_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -7487,8 +7833,11 @@ mod main_session_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,
@@ -7886,6 +8235,9 @@ mod gate_tests {
                 },
             },
             Request::DeleteToolByRoot { root_path: "r".into(), id: "t".into() },
+            // v64: the profile's word that a session's OSC 133 markers lie.
+            // Sent beside SetFailurePatterns for kimi-code.
+            Request::DistrustOsc133 { id: "s".into() },
             // Deserialize-only in production, but nothing stops Rust code
             // from constructing it -- and the sweep needs to, to prove it
             // is refused everywhere rather than just trusting the comment
@@ -8221,8 +8573,12 @@ mod attach_target_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pause_cycles: HashMap::new(),
+            prompt_extras: HashMap::new(),
+            extra_cli_args: HashMap::new(),
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
@@ -8231,8 +8587,11 @@ mod attach_target_tests {
             headroom: None,
             require_review_asked: false,
             headroom_asked: false,
+            playwright_pane_open: None,
             custom_resume_args: None,
+            custom_profiles: Vec::new(),
             agent_fallback: None,
+            fallback_chains: HashMap::new(),
             armed_agents: Vec::new(),
             declined_agents: Vec::new(),
             ssh: None,

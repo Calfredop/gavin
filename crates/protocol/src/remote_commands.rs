@@ -15,6 +15,13 @@
 pub enum RemoteAllowance {
     Allowed,
     Refused,
+    /// Allowed, and answered by the daemon itself with the asking
+    /// Device's identity rather than forwarded (v68). The desktop runs a
+    /// forwarded command as the desk, so a command whose answer depends
+    /// on WHO asks -- taking a session over -- cannot be forwarded. The
+    /// desk's webview calls the same name, and its host sends the
+    /// daemon's own request for it.
+    Daemon,
 }
 
 /// Every desktop command name and whether the Remote role may call it.
@@ -38,6 +45,10 @@ pub fn allowance_for(command: &str) -> Option<RemoteAllowance> {
 const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
 
     ("write_input", RemoteAllowance::Allowed),
+    // Session ownership (v68). Answered by the daemon, which alone knows
+    // which Device is asking; see `RemoteAllowance::Daemon`.
+    ("set_session_owner", RemoteAllowance::Daemon),
+    ("list_session_owners", RemoteAllowance::Daemon),
     ("resize_session", RemoteAllowance::Allowed),
     ("create_session", RemoteAllowance::Allowed),
     ("kill_session", RemoteAllowance::Allowed),
@@ -51,6 +62,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_typesafe_change_attribution", RemoteAllowance::Allowed),
     ("typesafe_attribution", RemoteAllowance::Allowed),
     ("set_failure_patterns", RemoteAllowance::Allowed),
+    ("distrust_osc133", RemoteAllowance::Allowed),
     ("get_workspaces_state", RemoteAllowance::Allowed),
     ("set_workspaces_state", RemoteAllowance::Refused), // layout-saving
     // A workspace's settings, apart from its layout so a Device can change
@@ -79,6 +91,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // through `set_workspace_settings`.
     ("set_headroom_workspaces", RemoteAllowance::Refused), // meaningless away from the desk
     ("get_headroom_status", RemoteAllowance::Allowed),
+    // Adopted memories (v60). The status is a read; the ensure is what
+    // Adopt calls after writing `### Learned`, which a Device can press.
+    ("get_memory_index", RemoteAllowance::Allowed),
+    ("ensure_memory_index", RemoteAllowance::Allowed),
     ("headroom_savings", RemoteAllowance::Allowed),
     ("headroom_reach", RemoteAllowance::Allowed),
     ("detect_headroom", RemoteAllowance::Allowed),
@@ -113,9 +129,14 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("confirm_pairing", RemoteAllowance::Refused), // Trust
     ("reject_pairing", RemoteAllowance::Refused), // Trust
     ("list_devices", RemoteAllowance::Refused), // Trust
+    ("get_relay_state", RemoteAllowance::Refused), // Trust: the desk's own dial
+    ("get_direct_state", RemoteAllowance::Refused), // Trust: the desk's own listener
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust
+    ("set_direct_access", RemoteAllowance::Refused), // Trust
+    ("set_push_gateway_url", RemoteAllowance::Refused), // Trust: where the desk posts
+    ("push_companion_notify", RemoteAllowance::Refused), // the desk decides what to notify
     ("daemon_compat", RemoteAllowance::Allowed),
     ("open_confirmation", RemoteAllowance::Refused), // meaningless away from the desk
     ("answer_confirmation", RemoteAllowance::Refused), // meaningless away from the desk
@@ -171,10 +192,30 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_root_config_field", RemoteAllowance::Allowed),
     ("get_agent_model_defaults", RemoteAllowance::Allowed),
     ("set_agent_model_default", RemoteAllowance::Allowed),
-    ("get_superpowers_marks", RemoteAllowance::Allowed),
-    ("set_superpowers_mark", RemoteAllowance::Allowed),
-    ("superpowers_status", RemoteAllowance::Allowed),
-    ("superpowers_install", RemoteAllowance::Allowed),
+    ("get_agent_skills_marks", RemoteAllowance::Allowed),
+    ("set_agent_skills_mark", RemoteAllowance::Allowed),
+    ("agent_skills_farewell", RemoteAllowance::Allowed),
+    ("dismiss_agent_skills_farewell", RemoteAllowance::Allowed),
+    ("agent_skills_status", RemoteAllowance::Allowed),
+    ("agent_skills_install", RemoteAllowance::Allowed),
+    // The Playwright setup step, like the agent skills step beside it.
+    ("playwright_status", RemoteAllowance::Allowed),
+    ("playwright_install", RemoteAllowance::Allowed),
+    // The desk's live view of an agent's browser. The frames go to the
+    // desk window that asked, at the desk's size; a phone asks for its own
+    // small stream (`playwright-companion-view.md`), so these two mean
+    // nothing away from the desk. The read-back and the setting do.
+    ("watch_browser", RemoteAllowance::Refused), // meaningless away from the desk
+    ("unwatch_browser", RemoteAllowance::Refused), // meaningless away from the desk
+    // A Device's own view: the desk opens the session's stream at the
+    // phone's size and rate, held by a lease the view renews, and offers
+    // each frame to the Devices as `browser-frame`. The Device still sends
+    // the daemon nothing of its own.
+    ("watch_browser_for_device", RemoteAllowance::Allowed),
+    ("unwatch_browser_for_device", RemoteAllowance::Allowed),
+    ("list_browsers", RemoteAllowance::Allowed),
+    ("get_playwright_pane_open", RemoteAllowance::Allowed),
+    ("set_playwright_pane_open", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),
@@ -187,8 +228,6 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("pr_status", RemoteAllowance::Allowed),
     ("card_run_tokens", RemoteAllowance::Allowed),
     ("conversation_log", RemoteAllowance::Allowed),
-    ("get_agent_pause", RemoteAllowance::Allowed),
-    ("set_agent_pause", RemoteAllowance::Allowed),
     ("get_launch_config", RemoteAllowance::Allowed),
     ("set_launch_config", RemoteAllowance::Allowed),
     ("get_custom_resume_args", RemoteAllowance::Allowed),
@@ -228,6 +267,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("git_apply_patch", RemoteAllowance::Allowed),
     ("git_discard_files", RemoteAllowance::Allowed),
     ("git_commit", RemoteAllowance::Allowed),
+    // "Commit via agent" from a Device: the ask, which the desk window that
+    // runs the workspace answers with its own run, and that window's answer
+    // -- which only a desk window has to give.
+    ("agent_commit_for_device", RemoteAllowance::Allowed),
+    ("answer_agent_commit_request", RemoteAllowance::Refused), // meaningless away from the desk
     ("git_init", RemoteAllowance::Allowed),
     ("git_watch", RemoteAllowance::Allowed),
     ("git_unwatch", RemoteAllowance::Allowed),
@@ -301,6 +345,10 @@ mod tests {
             "revoke_device",
             "revoke_all_devices",
             "set_remote_access",
+            "set_direct_access",
+            "get_direct_state",
+            "set_push_gateway_url",
+            "push_companion_notify",
             "set_workspaces_state",
             "set_file_tabs",
             "set_board_tabs",
@@ -324,6 +372,14 @@ mod tests {
         assert_eq!(allowance_for("set_workspace_settings"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("add_workspace"), Some(RemoteAllowance::Allowed));
         assert_eq!(allowance_for("set_workspaces_state"), Some(RemoteAllowance::Refused));
+    }
+
+    /// Who is taking a session over is the Device on the connection, which
+    /// only the daemon knows: forwarded, the desk would take it.
+    #[test]
+    fn session_ownership_is_answered_by_the_daemon() {
+        assert_eq!(allowance_for("set_session_owner"), Some(RemoteAllowance::Daemon));
+        assert_eq!(allowance_for("list_session_owners"), Some(RemoteAllowance::Daemon));
     }
 
     #[test]

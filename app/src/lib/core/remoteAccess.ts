@@ -38,6 +38,70 @@ export interface DeviceInfo {
   /// second opinion in the app could grey a row the daemon will still
   /// accept, or leave un-greyed one it will refuse.
   stale: boolean;
+  /// The last time the daemon refused this Device a connection (v62), or
+  /// absent: an older daemon never sends it, and a Device that has not
+  /// been refused since the daemon started has none.
+  lastRefusal?: DeviceRefusal;
+  /// Where the Device is and what it is doing (v63), or absent: an older
+  /// daemon never sends it, and a Device that has had the desktop run
+  /// nothing since the daemon started has none.
+  presence?: DevicePresence;
+  /// Whether this Workstation holds a send permission from the Device
+  /// (v67): whether the desk's notifications reach it. An older daemon
+  /// never sends it, and its silence is not a no (`pushGatewayBlocked`).
+  notifies?: boolean;
+}
+
+/// `protocol::DevicePresence` (v63): what the daemon read off the commands
+/// a Device had the desktop run. `devicePresence.ts` holds every rule about
+/// it.
+export interface DevicePresence {
+  /// The desk's id of the workspace the Device last named.
+  workspaceId?: string;
+  /// The session it last sent input to. Whether that is typing NOW is
+  /// `devicePresence.ts`'s reading of `at`.
+  typing?: DeviceTyping;
+  /// The sessions it started, oldest first.
+  started: DeviceStartedSession[];
+}
+
+export interface DeviceTyping {
+  sessionId: string;
+  /// Wall-clock epoch SECONDS.
+  at: number;
+}
+
+export interface DeviceStartedSession {
+  sessionId: string;
+  /// The desk's id of the workspace the Device started it in. Absent from
+  /// a daemon that predates it, which leaves root and cwd to place it by.
+  workspaceId?: string;
+  workspaceRoot?: string;
+  cwd?: string;
+  /// Started as the workspace's own agent, the Home tab's. Absent for
+  /// a plain start, and from a daemon that predates it.
+  workspaceAgent?: boolean;
+  /// Wall-clock epoch SECONDS.
+  at: number;
+}
+
+/// Why a paired Device was refused, as `protocol::device_wire::
+/// ConnectRefusal` spells it. `other` is what a newer daemon's reason
+/// arrives as.
+export type RefusalReason =
+  | "not-paired"
+  | "revoked"
+  | "stale"
+  | "pair-again"
+  | "unlock"
+  | "busy"
+  | "other";
+
+/// One refused connection, `protocol::DeviceRefusal`. `at` is wall-clock
+/// epoch SECONDS.
+export interface DeviceRefusal {
+  reason: RefusalReason;
+  at: number;
 }
 
 /// `ListDevices`'s whole answer. The two settings ride along with the
@@ -52,6 +116,12 @@ export interface DeviceList {
   /// what it is. The token is a credential somebody handed the human,
   /// and nothing on the desk needs to read it back.
   relayAdmissionSet: boolean;
+  /// Where the daemon posts Companion notifications (v67), or null for
+  /// nowhere. Absent from an older daemon, which cannot say.
+  pushGatewayUrl?: string | null;
+  /// Whether direct connection is switched on (v69, ADR 0009). Absent
+  /// from an older daemon, which listens for nobody.
+  directAccessEnabled?: boolean;
 }
 
 /// `BeginPairing`'s answer.
@@ -607,12 +677,155 @@ export function admissionPlaceholder(set: boolean): string {
   return set ? "A token is stored — type a new one to replace it" : "No token stored";
 }
 
+// -- where the desk posts notifications ---------------------------------
+
+/// The Push gateway field's own line.
+export const PUSH_GATEWAY_NOTE =
+  "Where this Workstation sends notifications for its paired phones: the publisher's Push gateway, or one you run. It starts https:// — or plain http, for one on this network. What it carries is sealed with each phone's own key; the gateway cannot read it. Empty means no notifications are sent.";
+
+/// The gateway URL to send, or null for "post nowhere". What is wrong
+/// with one is the daemon's to say: it is the one that posts to it.
+export function pushGatewayUrlToSave(draft: string): string | null {
+  const trimmed = draft.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/// The field's gate, and the Devices panel's "notifies" word's. A daemon
+/// older than v67 neither says where it posts nor which Devices it can
+/// notify, and no phone can hand it a permission: an empty field and rows
+/// without the word would read as facts it cannot back.
+export function pushGatewayBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "pushGateway");
+}
+
 /// The admission field's own gate, on top of the section's. A daemon
 /// older than v52 parses `SetRemoteAccess` and drops the token on the
 /// floor (the compat gate is per request TYPE), so against one the field
 /// would accept a token and keep nothing.
 export function relayAdmissionBlocked(compat: DaemonCompat | null): string | null {
   return featureBlockedReason(compat, "relayAdmission");
+}
+
+// -- whether the daemon reached its Relay --------------------------------
+
+/// Where the daemon's dial stands, as `protocol::RelayState` puts it on
+/// the wire (v61). `since` is epoch SECONDS. `why` is a sentence the dial
+/// already had -- never the admission token, which appears in no error.
+/// `unknown` is a state a newer daemon reports.
+export type RelayState =
+  | { state: "not_wanted" }
+  | { state: "dialling" }
+  | { state: "connected"; since: number }
+  | { state: "failed"; why: string }
+  | { state: "unknown" };
+
+/// The gate for the state's own read: a daemon older than v61 answers
+/// `Unsupported` to it, and a failure would read as a Relay that is down.
+/// Null when the daemon is new enough or no verdict yet.
+export function relayStateBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "relayState");
+}
+
+/// What the row beside the Relay URL says, and the badge state to draw
+/// it with. `text` is the short word beside the glyph; `detail` the
+/// sentence under it, when there is more to say.
+export interface RelayStatus {
+  badge: "not_wanted" | "dialling" | "connected" | "failed" | null;
+  text: string;
+  detail: string | null;
+}
+
+export function relayStatus(state: RelayState | null, nowMs: number): RelayStatus {
+  if (state === null) return { badge: null, text: "", detail: null };
+  switch (state.state) {
+    case "not_wanted":
+      return {
+        badge: "not_wanted",
+        text: "Not connected",
+        detail: "Remote access is off, or no Relay URL is set.",
+      };
+    case "dialling":
+      return { badge: "dialling", text: "Connecting…", detail: null };
+    case "connected":
+      return {
+        badge: "connected",
+        text: "Connected",
+        detail: `Connected ${relativeTime(state.since * 1000, nowMs)}.`,
+      };
+    case "failed":
+      return {
+        badge: "failed",
+        text: "Could not connect",
+        detail: `${state.why}. Dialling again until it holds.`,
+      };
+    default:
+      // A state a newer daemon reports: say nothing rather than guess.
+      return { badge: null, text: "", detail: null };
+  }
+}
+
+// -- the direct listener (ADR 0009) -------------------------------------
+
+/// Where the daemon's direct listener stands, as `protocol::DirectState`
+/// puts it on the wire (v69). `addresses` are the `wss://` URLs the next
+/// pairing QR would carry. `unknown` is a state a newer daemon reports.
+export type DirectState =
+  | { state: "not_wanted" }
+  | { state: "listening"; port: number; addresses: string[] }
+  | { state: "failed"; why: string }
+  | { state: "unknown" };
+
+/// The switch's gate, and the state's: a daemon older than v69 answers
+/// `Unsupported` to both, and listens for nobody whatever it is told.
+/// Null when the daemon is new enough or no verdict yet.
+export function directAccessBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "directAccess");
+}
+
+/// The Direct connection switch's own line.
+export const DIRECT_NOTE =
+  "Lets a paired phone on the same network or Tailscale tailnet as this Mac connect straight to it, with no Relay. Takes effect while remote access is on. The daemon listens on a port of its own, and only for devices on this network or tailnet; the connection is encrypted end to end, and the pairing QR carries what a phone needs to trust it. A phone that cannot reach it falls back to the Relay, if one is set. Pair again after turning this on, so the phone learns where to find it.";
+
+/// What the row under the switch says, and the badge state to draw it
+/// with: `RelayStatus`'s shape. `detail` names the addresses a phone
+/// paired now will be given, which is the one thing the human needs to
+/// check -- that it is the network the phone will be on.
+export interface DirectStatus {
+  badge: "not_wanted" | "listening" | "failed" | null;
+  text: string;
+  detail: string | null;
+}
+
+export function directStatus(state: DirectState | null): DirectStatus {
+  if (state === null) return { badge: null, text: "", detail: null };
+  switch (state.state) {
+    case "not_wanted":
+      return {
+        badge: "not_wanted",
+        text: "Not listening",
+        detail: "Remote access or direct connection is off.",
+      };
+    case "listening":
+      return {
+        badge: "listening",
+        text: `Listening on port ${state.port}`,
+        detail:
+          state.addresses.length > 0
+            ? `A phone paired now will try ${state.addresses.join(", ")}.`
+            : "This Mac has no address on a local network or tailnet, so a phone has nowhere to reach it directly.",
+      };
+    case "failed":
+      return { badge: "failed", text: "Could not listen", detail: `${state.why}. Trying again.` };
+    default:
+      // A state a newer daemon reports: say nothing rather than guess.
+      return { badge: null, text: "", detail: null };
+  }
+}
+
+/// Whether a QR drawn now carries a direct address: the listener is bound
+/// and this Mac has an address a phone could dial. Unknown is not yes.
+function directPairable(direct: DirectState | null): boolean {
+  return direct?.state === "listening" && direct.addresses.length > 0;
 }
 
 // -- whether pairing can work -------------------------------------------
@@ -632,7 +845,9 @@ export function relayAdmissionBlocked(compat: DaemonCompat | null): string | nul
 /// work.
 export function pairingUnavailable(
   list: DeviceList | null,
-  compat: DaemonCompat | null
+  compat: DaemonCompat | null,
+  relay: RelayState | null = null,
+  direct: DirectState | null = null
 ): string | null {
   const blocked = featureBlockedReason(compat, "relayDial");
   if (blocked !== null) return blocked;
@@ -640,11 +855,28 @@ export function pairingUnavailable(
   if (!list.remoteAccessEnabled) {
     return "Turn remote access on first — a Device pairs through the Relay, and with this off the daemon is not connected to it.";
   }
+  // The direct listener is a way in on its own (ADR 0009): with it bound
+  // and an address to give, the QR pairs a Device on this network or
+  // tailnet whatever the Relay is doing.
+  if (directPairable(direct) && directAccessBlocked(compat) === null) return null;
   if (list.relayUrl === null) {
     return "Set a Relay URL first — a Device pairs through the Relay.";
   }
   if (relayUrlHint(list.relayUrl) !== null) {
     return "The daemon will not dial the Relay URL above, so a Device has nowhere to pair through.";
+  }
+  // Offered only while the daemon is connected. Unknown (no read yet, or
+  // a daemon too old to be asked) is not unavailable.
+  if (relay !== null && relayStateBlocked(compat) === null) {
+    if (relay.state === "dialling") {
+      return "The daemon is still connecting to the Relay — a Device could not pair through it yet.";
+    }
+    if (relay.state === "failed") {
+      return `The daemon has not reached the Relay: ${relay.why}.`;
+    }
+    if (relay.state === "not_wanted") {
+      return "The daemon is not connected to the Relay.";
+    }
   }
   return null;
 }

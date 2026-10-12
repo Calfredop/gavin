@@ -12,6 +12,7 @@
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import type { Landing } from "$companion/channel/messages";
+  import { onReconnect, reachability, shownError } from "$companion/state/reachability";
   import { openCard, openPrd, returnedFrom } from "$companion/state/workstation";
   import PhoneCompose from "$companion/surfaces/PhoneCompose.svelte";
   import { waitingCount } from "$companion/surfaces/phoneCard";
@@ -22,7 +23,9 @@
     landingCard,
     openingColumn,
     phoneBoard,
+    recoverBoard,
     scrollBehaviour,
+    stripScrollToShow,
   } from "$companion/surfaces/phoneBoard";
 
   interface Props {
@@ -40,7 +43,13 @@
   // is kept beside the boards, not in them.
   const loadError = $derived.by(() => {
     void $kanbanState;
-    return boardError(workspace.id);
+    return shownError(boardError(workspace.id), $reachability);
+  });
+
+  $effect(() => {
+    const id = workspace.id;
+    if (!workspace.rootPath) return;
+    return onReconnect(() => void recoverBoard(id));
   });
   const agents = $derived({
     board: $kanbanState[workspace.id],
@@ -49,6 +58,7 @@
   });
 
   let pager = $state<HTMLElement | null>(null);
+  let strip = $state<HTMLElement | null>(null);
   let shown = $state<string | null>(null);
   // The column a tap is on its way to. While it is set the strip already
   // names it, and the positions the pager passes through on the way are
@@ -93,6 +103,20 @@
       }),
     });
   }
+
+  // The strip keeps the shown column's tab in view, however it was
+  // reached: a tap, a swipe, the column the board opened on.
+  $effect(() => {
+    const key = shown;
+    if (!strip || key === null) return;
+    const index = columns.findIndex((c) => c.key === key);
+    const tab = strip.children[index] as HTMLElement | undefined;
+    if (!tab) return;
+    strip.scrollLeft = stripScrollToShow(
+      { left: tab.offsetLeft, width: tab.offsetWidth },
+      { scrollLeft: strip.scrollLeft, width: strip.clientWidth }
+    );
+  });
 
   // A swipe settles on a page; the strip above follows it.
   function followSwipe(): void {
@@ -151,30 +175,32 @@
   <p class="note">This board has no columns.</p>
 {:else}
   <div class="board">
-    <div class="tools">
-      <button type="button" class="tool" onclick={() => (composing = true)}>
-        <Plus size={16} />
-        <span>New card</span>
-      </button>
-      <button type="button" class="tool" onclick={openPrd}>
-        <BookOpen size={16} />
-        <span>PRD</span>
-      </button>
-    </div>
-    <div class="strip" role="tablist" aria-label="Columns">
-      {#each columns as column (column.key)}
-        <button
-          type="button"
-          role="tab"
-          class="tab tone-{column.tone}"
-          class:shown={column.key === shown}
-          aria-selected={column.key === shown}
-          onclick={() => show(column.key)}
-        >
-          <span class="tab-name">{column.name}</span>
-          <span class="tab-count">{column.cards.length}</span>
+    <div class="top">
+      <div class="tools">
+        <button type="button" class="tool" onclick={() => (composing = true)}>
+          <Plus size={16} />
+          <span>New card</span>
         </button>
-      {/each}
+        <button type="button" class="tool" onclick={openPrd}>
+          <BookOpen size={16} />
+          <span>PRD</span>
+        </button>
+      </div>
+      <div class="strip" role="tablist" aria-label="Columns" bind:this={strip}>
+        {#each columns as column (column.key)}
+          <button
+            type="button"
+            role="tab"
+            class="tab tone-{column.tone}"
+            class:shown={column.key === shown}
+            aria-selected={column.key === shown}
+            onclick={() => show(column.key)}
+          >
+            <span class="tab-name">{column.name}</span>
+            <span class="tab-count">{column.cards.length}</span>
+          </button>
+        {/each}
+      </div>
     </div>
 
     <div
@@ -258,6 +284,8 @@
      full it is -- and the way between them for a thumb that would rather
      tap than swipe. */
   .strip {
+    /* Positioned, so a tab's offsetLeft is from the strip's start. */
+    position: relative;
     display: flex;
     flex: 0 0 auto;
     overflow-x: auto;
@@ -289,14 +317,19 @@
     border-bottom-color: var(--tab-tone, var(--text-muted));
     color: var(--text);
   }
+  /* The underline is a fill and stays vivid; the count is text, so it
+     takes the tone's text role -- --accent on the sunken strip was
+     2.4:1 in the light theme. */
   .tab.shown .tab-count {
-    color: var(--tab-tone, var(--text-muted));
+    color: var(--tab-tone-text, var(--text-muted));
   }
   .tab.tone-progress {
     --tab-tone: var(--accent);
+    --tab-tone-text: var(--accent-text);
   }
   .tab.tone-done {
     --tab-tone: var(--success);
+    --tab-tone-text: var(--success-text);
   }
   .tab:focus-visible {
     outline: 2px solid var(--border-focus);
@@ -317,8 +350,7 @@
     flex: 0 0 100%;
     box-sizing: border-box;
     min-width: 0;
-    padding: 12px max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
-      max(12px, env(safe-area-inset-left));
+    padding: 12px 12px calc(16px + env(safe-area-inset-bottom));
     overflow-y: auto;
     scroll-snap-align: start;
     scroll-snap-stop: always;
@@ -332,9 +364,10 @@
     color: var(--text-subtle);
     font-size: 0.75rem;
   }
+  /* The badge's words are 0.85em of this: 11.9px, not under 11. */
   .agent {
     display: inline-flex;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
   }
   /* The desk's own vocabulary for a card with a question on it
      (the Decisions tab's), as a line a thumb can read. */
@@ -356,7 +389,7 @@
     display: flex;
     flex: 0 0 auto;
     gap: 8px;
-    padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-sunken);
   }
@@ -364,7 +397,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -378,5 +411,26 @@
   .tool:focus-visible {
     outline: 2px solid var(--border-focus);
     outline-offset: 2px;
+  }
+  /* A phone on its side has 402px to share: the tools beside the
+     strip, where upright they sit over it. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .top {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-sunken);
+    }
+    .tools,
+    .strip {
+      border-bottom: 0;
+    }
+    .tools {
+      flex: 0 0 auto;
+      padding-block: 4px;
+    }
+    .strip {
+      flex: 1 1 0;
+      min-width: 0;
+    }
   }
 </style>

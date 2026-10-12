@@ -5,6 +5,8 @@ use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod playwright;
+
 /// How long the version probe may sit in a read before the daemon is
 /// treated as unreachable. Matches the Windows named-pipe connect budget:
 /// Cursor's MCP loader times out listing tools when this blocks, and a
@@ -442,6 +444,11 @@ fn tool_definitions() -> Value {
     json!([
         { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_search_memories", "description": "Search this workspace's ADOPTED memories — the durable facts the human has adopted into the instructions file's `### Learned` section — by meaning, not by words. Ask in your own phrasing (\"can I kill the daemon?\" finds \"Never pkill gavin-daemon.\"); narrow by topic when you know one. Returns the closest facts best first, with their topics, their Why and a similarity score; an empty answer means nothing adopted is about that. Proposing a NEW memory is a `kind: note` card labelled `memory`, not this tool.", "inputSchema": { "type": "object", "properties": {
+            "query": { "type": "string", "description": "What you want to know, in any words." },
+            "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Only memories tagged with at least one of these topics." },
+            "limit": { "type": "integer", "description": "Optional. How many to return (default 5, at most 50)." }
+        }, "required": ["query"] } },
         { "name": "gavin_create_plan", "description": "Create a card file (note, task, or plan) in a gavin context with canonical frontmatter. Never overwrites. Creating one In Progress claims it for your session, so the board stops offering to start a second agent on it.", "inputSchema": { "type": "object", "properties": {
             "context_folder": { "type": "string", "description": "Folder that is the root or contains .gavin (relative allowed)" },
             "file_name": { "type": "string", "description": "kebab-case-name.md" },
@@ -470,7 +477,7 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
-        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). It appears in the workspace's Decisions tab with the card, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). A decision appears in the workspace's Decisions tab with the card and a test in its Review tab, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
             "card": { "type": "string", "description": "Path to the card file this is blocking; relative resolves against the workspace root" },
             "kind": { "type": "string", "enum": ["decision", "test"], "description": "decision = a question for the human to answer; test = a check for them to run by hand" },
             "text": { "type": "string", "description": "The question or the check, as one line. Specific enough to act on without reading the rest of the card" },
@@ -624,6 +631,18 @@ fn dispatch_tool(
                 .to_string(),
         },
         "gavin_get_board" => Request::GetBoardByRoot { root_path: root_str },
+        "gavin_search_memories" => Request::SearchMemories {
+            root_path: root_str,
+            query: require_arg(args, "query")?,
+            topics: match args.get("topics") {
+                Some(Value::Array(items)) => items.iter().filter_map(|t| t.as_str()).map(str::to_string).collect(),
+                // "daemon, pty" is the mistake an agent actually makes
+                // here, and it means what it says.
+                Some(Value::String(list)) => list.split(',').map(str::to_string).collect(),
+                _ => vec![],
+            },
+            limit: args.get("limit").and_then(Value::as_u64).map(|l| l.min(u32::MAX as u64) as u32),
+        },
         "gavin_promote_task" => Request::PromoteChecklistItem {
             plan_path: resolve_against_root(root, &require_arg(args, "plan_path")?)
                 .to_string_lossy()
@@ -689,6 +708,13 @@ fn dispatch_tool(
         Request::SetPlanFrontmatterField { path, .. } => Some(path.clone()),
         _ => None,
     };
+    // Which hub tab a filed item waits in: a test is a check on finished
+    // work and lists in the Review tab beside the diff it checks; a
+    // decision lists in the Decisions tab.
+    let item_tab = match &req {
+        Request::FileHumanItem { kind: protocol::HumanItemKind::Test, .. } => "Review",
+        _ => "Decisions",
+    };
     let resp = transport.request(&req)?;
     // Before the reply is shaped, and its outcome deliberately dropped:
     // see `claim_card`.
@@ -701,17 +727,20 @@ fn dispatch_tool(
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
         Response::HumanItemFiled { rearmed } => Ok(if rearmed {
-            "re-armed the identical test the human had already failed — their note on \
-             the last attempt is on the card, above the re-test line. It is back in \
-             their Decisions tab; carry on with whatever does not depend on it."
-                .to_string()
+            format!(
+                "re-armed the identical test the human had already failed — their note on \
+                 the last attempt is on the card, above the re-test line. It is back in \
+                 their {item_tab} tab; carry on with whatever does not depend on it."
+            )
         } else {
-            "filed on the card — it is in the human's Decisions tab now. The answer \
-             gets written under the item on the card itself, so read it there; nothing \
-             will interrupt you when it arrives. Carry on with whatever does not \
-             depend on it."
-                .to_string()
+            format!(
+                "filed on the card — it is in the human's {item_tab} tab now. The answer \
+                 gets written under the item on the card itself, so read it there; nothing \
+                 will interrupt you when it arrives. Carry on with whatever does not \
+                 depend on it."
+            )
         }),
+        Response::MemoryHits { hits } => Ok(memory_hits_text(&hits)),
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
@@ -729,6 +758,25 @@ fn dispatch_tool(
         Response::Error { message } => Err(anyhow::anyhow!(message)),
         other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
     }
+}
+
+/// Search results as an agent reads them: the fact first, everything
+/// about it after.
+fn memory_hits_text(hits: &[protocol::MemoryHit]) -> String {
+    if hits.is_empty() {
+        return "no adopted memory matches — nothing in this workspace's `### Learned` is about \
+                that (or nothing has been adopted yet)."
+            .to_string();
+    }
+    let mut out = String::new();
+    for (i, h) in hits.iter().enumerate() {
+        let topics = if h.topics.is_empty() { String::new() } else { format!("topics: {}; ", h.topics.join(", ")) };
+        out.push_str(&format!("{}. {}\n   ({}score {:.2}; {})\n", i + 1, h.fact, topics, h.score, h.source));
+        if let Some(why) = &h.why {
+            out.push_str(&format!("   Why: {why}\n"));
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// A tab label, not a sentence: one line, collapsed whitespace, and
@@ -756,6 +804,28 @@ fn clean_session_name(raw: &str) -> anyhow::Result<String> {
 /// tab at all -- a bare `claude` in a terminal, or a test.
 fn current_session_id() -> Option<String> {
     std::env::var("GAVIN_SESSION_ID").ok().filter(|v| !v.is_empty())
+}
+
+/// The eager half of the K3 prompt-injection handshake: connect to the
+/// daemon NOW, at process start, rather than lazily at the first tool
+/// call. `connect` presents this session's token -- the same `Hello` the
+/// lazy path sends -- and for an agent whose CLI has no prompt flag that
+/// Hello is the daemon's "the agent is alive" signal: it is what
+/// releases a card prompt the daemon is holding for this session's PTY.
+///
+/// Gated on `GAVIN_SESSION_ID`: outside a gavin tab there is no session
+/// to announce and nothing waiting on the signal, so the transport stays
+/// exactly as lazy as it always was. Every failure is swallowed: the
+/// lazy path retries at the first tool call, and an MCP server that
+/// fails to START reaches the agent as "server failed to start" -- which
+/// would cost it every gavin tool over a signal it never asked for.
+fn announce_to_daemon(transport: &mut dyn DaemonTransport, session_id: Option<String>) {
+    // Empty counts as absent, the way every other optional variable in
+    // this codebase is read.
+    if session_id.as_deref().is_none_or(str::is_empty) {
+        return;
+    }
+    let _ = transport.prepare();
 }
 
 /// The card this tool call just put in the calling session's hands, if
@@ -1793,6 +1863,30 @@ fn reexec_command(exe: &Path, blob: &[u8]) -> std::process::Command {
 }
 
 fn main() {
+    // `gavin-mcp playwright`: not this MCP server at all, but the shim
+    // that becomes the pinned Playwright MCP for this session's browser
+    // (`playwright.rs`). Dispatched before anything else is read or said.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new(protocol::playwright::SUBCOMMAND)) {
+        let extra: Vec<std::ffi::OsString> = args.collect();
+        let mut transport = SocketTransport::new();
+        match playwright::run(&mut transport, &extra) {
+            Ok(code) => std::process::exit(code),
+            Err(why) => {
+                // A daemon that moved ahead: the binary at our path has
+                // been replaced with one that speaks it, so it is asked
+                // instead, with the same argv. One handover, as ever.
+                if transport.reexec_requested().is_some() {
+                    if let Ok(exe) = std::env::current_exe() {
+                        eprintln!("gavin-mcp playwright: re-exec failed: {}", handover_to(&exe, &[]));
+                    }
+                }
+                eprintln!("gavin-mcp playwright: {why}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
     match &root {
         Some(r) => eprintln!("gavin-mcp: workspace root {}", r.display()),
@@ -1816,6 +1910,7 @@ fn main() {
     );
 
     let mut transport = SocketTransport::new();
+    announce_to_daemon(&mut transport, current_session_id());
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
@@ -1906,6 +2001,47 @@ mod tests {
     }
     fn mock(replies: Vec<Response>) -> MockTransport {
         MockTransport { replies, requests: vec![] }
+    }
+
+    /// Counts `prepare` calls, so the announce tests see the connect
+    /// decision without a socket.
+    #[derive(Default)]
+    struct PrepareCounting {
+        prepares: usize,
+        fail: bool,
+    }
+    impl DaemonTransport for PrepareCounting {
+        fn request(&mut self, _req: &Request) -> anyhow::Result<Response> {
+            anyhow::bail!("unused")
+        }
+        fn prepare(&mut self) -> anyhow::Result<()> {
+            self.prepares += 1;
+            if self.fail { anyhow::bail!("no daemon") } else { Ok(()) }
+        }
+    }
+
+    /// The eager announce (K3): inside a gavin session the daemon
+    /// connection -- and with it the session-token Hello -- happens at
+    /// process start, not at the first tool call. Outside one, the
+    /// transport stays as lazy as it always was.
+    #[test]
+    fn the_announce_connects_only_inside_a_gavin_session() {
+        let mut t = PrepareCounting::default();
+        announce_to_daemon(&mut t, None);
+        announce_to_daemon(&mut t, Some(String::new()));
+        assert_eq!(t.prepares, 0, "no session means no announce");
+        announce_to_daemon(&mut t, Some("sess-1".into()));
+        assert_eq!(t.prepares, 1);
+    }
+
+    /// A daemon that cannot be reached must not stop the server from
+    /// starting: the announce is a signal, not a prerequisite, and the
+    /// lazy path retries at the first tool call.
+    #[test]
+    fn a_failed_announce_is_swallowed() {
+        let mut t = PrepareCounting { prepares: 0, fail: true };
+        announce_to_daemon(&mut t, Some("sess-1".into()));
+        assert_eq!(t.prepares, 1, "the attempt was made and its failure dropped");
     }
 
     /// A fake daemon on a throwaway socket that answers the version probe
@@ -3621,6 +3757,57 @@ mod tests {
         }
     }
 
+    /// The search tool asks for this workspace's root, takes topics as
+    /// an array or the comma list an agent actually writes, and reads
+    /// the hits back best first with everything about each one.
+    #[test]
+    fn search_memories_maps_to_search_memories_and_reads_the_hits() {
+        let hit = protocol::MemoryHit {
+            fact: "Never pkill gavin-daemon.".into(),
+            topics: vec!["daemon".into(), "pty".into()],
+            why: Some("every other session loses its PTYs.".into()),
+            source: "CLAUDE.md".into(),
+            score: 0.8123,
+        };
+        let mut t = mock(vec![Response::MemoryHits { hits: vec![hit] }]);
+        let reply = call_with(
+            "gavin_search_memories",
+            json!({ "query": "can I kill the daemon?", "topics": "daemon, pty", "limit": 3 }),
+            &mut t,
+        );
+        assert_eq!(
+            reply,
+            "1. Never pkill gavin-daemon.\n   (topics: daemon, pty; score 0.81; CLAUDE.md)\n   Why: every other session loses its PTYs."
+        );
+        match &t.requests[0] {
+            Request::SearchMemories { root_path, query, topics, limit } => {
+                assert_eq!(root_path, &Path::new("/ws").to_string_lossy().to_string());
+                assert_eq!(query, "can I kill the daemon?");
+                assert_eq!(topics, &vec!["daemon".to_string(), " pty".to_string()]);
+                assert_eq!(*limit, Some(3));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// Nothing adopted is an answer the agent can act on, not an error;
+    /// a missing model is the daemon's sentence, passed through.
+    #[test]
+    fn search_memories_says_so_when_nothing_matches_or_the_model_is_missing() {
+        let mut t = mock(vec![Response::MemoryHits { hits: vec![] }]);
+        let reply = call_with("gavin_search_memories", json!({ "query": "x", "topics": ["a"] }), &mut t);
+        assert!(reply.starts_with("no adopted memory matches"), "{reply}");
+
+        let mut t = mock(vec![Response::Error { message: "gavin's memory model isn't on this machine yet.".into() }]);
+        let reply = call_with("gavin_search_memories", json!({ "query": "x" }), &mut t);
+        assert!(reply.contains("memory model"), "{reply}");
+
+        let mut t = mock(vec![]);
+        let reply = call_with("gavin_search_memories", json!({}), &mut t);
+        assert!(reply.contains("missing required argument: query"), "{reply}");
+        assert!(t.requests.is_empty());
+    }
+
     /// The tool maps to `FileHumanItem`, resolves the card against the
     /// root like every other card argument, and passes the shortlist
     /// through as written.
@@ -3670,6 +3857,11 @@ mod tests {
         )
         .unwrap();
         assert!(reply.contains("re-armed"), "{reply}");
+        // A test waits in the Review tab, beside the work it checks --
+        // telling the agent "Decisions" would have it send the human to
+        // the wrong tab.
+        assert!(reply.contains("Review tab"), "{reply}");
+        assert!(!reply.contains("Decisions tab"), "{reply}");
         match &t.requests[0] {
             Request::FileHumanItem { kind, options, .. } => {
                 // Case-insensitive: the agent typed the enum, not a path.

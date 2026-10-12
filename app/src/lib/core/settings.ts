@@ -1,8 +1,11 @@
-import { composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
+import { composeAdvisor, composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
 import type { FailureCausePattern } from "$lib/agents/autoResume";
+import type { CustomProfile } from "$lib/cards/complexity";
 import type { AgentConfig } from "$lib/core/gavin";
 import { isAbsolutePath } from "$lib/core/paths";
 import type { EffectiveTheme } from "$lib/ui/theme";
+
+export type { CustomProfile };
 
 /// Mirrors AgentProfileDto from agent_setup.rs, fetched via
 /// backend.agentProfiles(). Never duplicated as a literal table here --
@@ -25,6 +28,20 @@ export interface AgentProfileInfo {
   /// Null and "" are opposite answers, so nothing here may test it for
   /// truthiness -- "" is a working profile.
   promptArgs: string | null;
+  /// True when a visible run launches this agent BARE and its card
+  /// prompt reaches it through the daemon's follow-up queue instead of
+  /// argv (K3, agent_setup.rs's `prompt_injection`): the daemon holds the
+  /// queued prompt until the agent's gavin-mcp handshake says the agent
+  /// is alive, then writes it into the PTY. Only meaningful with
+  /// `promptArgs: null`; kimi-code is the first row. Optional because a
+  /// host built before K3 does not send it.
+  promptInjection?: boolean;
+  /// True when the app must tell the daemon to distrust this agent's
+  /// OSC 133 markers for the session (agent_setup.rs's
+  /// `untrusted_osc133`): kimi-code is the first row, whose markers
+  /// never say "idle" truthfully. Optional because a host built before
+  /// the flag does not send it.
+  untrustedOsc133?: boolean;
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
@@ -43,6 +60,11 @@ export interface AgentProfileInfo {
   effortFlag?: string;
   /// The effort levels the CLI documents, lowest first.
   efforts?: string[];
+  /// The flag that names a model this agent consults as its advisor
+  /// (`--advisor`, claude-code only). Empty or absent hides the advisor
+  /// control a complexity row offers. Optional because a host built
+  /// before the advisor does not send it.
+  advisorFlag?: string;
   /// What this agent prints when it has STOPPED because something broke.
   /// Empty where nobody has verified the text -- which reads as no
   /// failure detection, never as "nothing failed"
@@ -67,13 +89,60 @@ export interface AgentProfileInfo {
   resumeArgs: string;
   /// How gavin reads this agent's subscription limits ("anthropic-oauth",
   /// "codex-rollout", "cursor-session", "gemini-code-assist",
-  /// "opencode-go"), or null where it cannot -- which is `custom`, and is
-  /// a sentence the usage panel prints, not a bar it leaves empty. See
-  /// agent_setup.rs's usage_probe for what was checked.
+  /// "opencode-go"), or null where it cannot -- which is a named custom
+  /// profile, and is a sentence the usage panel prints, not a bar it
+  /// leaves empty. See agent_setup.rs's usage_probe for what was checked.
   usageProbe: string | null;
+  /// True when this row came from `Workspace.customProfiles` (ids are
+  /// prefixed `local:`). Absent/false for built-ins and app-wide customs.
+  local?: boolean;
 }
 
-/// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's
+/// Merge built-ins ∪ app-wide customs ∪ workspace locals. Locals are
+/// marked `local: true`. When both would somehow share an id, local wins.
+export function mergeAgentProfiles(
+  builtIns: AgentProfileInfo[],
+  appCustoms: CustomProfile[] = [],
+  workspaceCustoms: CustomProfile[] = []
+): AgentProfileInfo[] {
+  const byId = new Map<string, AgentProfileInfo>();
+  for (const profile of builtIns) {
+    byId.set(profile.id, profile);
+  }
+  for (const custom of appCustoms) {
+    byId.set(custom.id, customProfileToInfo(custom, false));
+  }
+  for (const custom of workspaceCustoms) {
+    byId.set(custom.id, customProfileToInfo(custom, true));
+  }
+  return [...byId.values()];
+}
+
+function customProfileToInfo(custom: CustomProfile, local: boolean): AgentProfileInfo {
+  return {
+    id: custom.id,
+    label: custom.label,
+    instructionsFile: "",
+    command: custom.command,
+    mcpSupported: false,
+    mcpConfigFile: "",
+    promptArgs: null,
+    headlessArgs: "",
+    modelFlag: custom.modelFlag,
+    models: [],
+    effortFlag: custom.effortFlag ?? "",
+    efforts: [],
+    failurePatterns: [],
+    failureCauses: [],
+    sessionIdArgs: "",
+    sessionIdDiscovery: "",
+    resumeArgs: custom.resumeArgs ?? "",
+    usageProbe: null,
+    ...(local ? { local: true } : {}),
+  };
+}
+
+/// Mirrors McpFormatDto from agent_setup.rs, for a custom profile's
 /// dialect picker.
 export interface McpFormatInfo {
   id: string;
@@ -318,6 +387,19 @@ export interface ResolvedAgent {
   /// describes the BINARY, and claude-code's argv on somebody else's
   /// agent would be garbage.
   promptArgs: string | null;
+  /// `promptArgs: null` without the refusal: this agent takes no prompt
+  /// ARGV, but a visible run launches it bare and the daemon injects the
+  /// composed prompt into its PTY once its MCP handshake reports the
+  /// agent alive (K3). Resolved through the same no-fallback chain as
+  /// promptArgs -- false for every profile that did not say so.
+  promptInjection: boolean;
+  /// This agent's OSC 133 markers are not to be believed (kimi-code):
+  /// the launcher sends Request::DistrustOsc133 for the session at
+  /// spawn so the daemon drops every marker and the quiet-timer
+  /// heuristic stays the authority. Resolved through the same
+  /// no-fallback chain as promptInjection -- false for every profile
+  /// that did not say so.
+  untrustedOsc133: boolean;
   /// The MCP config file gavin would write for this workspace, or "" when
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
@@ -346,7 +428,11 @@ export interface ResolvedAgent {
   /// one when the profile IS `custom`, else the table's verified flag.
   /// Empty means gavin has no way to put an effort on this command.
   effortFlag: string;
-  /// `command` with the model flag, then the effort flag, composed on.
+  /// The advisor model a complexity row asked for, or "" for none. Only
+  /// ever the row's: there is no workspace or app-wide advisor.
+  advisor: string;
+  /// `command` with the model flag, then the effort flag, then the
+  /// advisor flag, composed on.
   /// What every LAUNCHER uses. `command` above stays the raw configured value, because that
   /// is what the settings box edits and writes back to config.toml -- a
   /// flag folded into it would be persisted and then appended again.
@@ -378,11 +464,20 @@ export interface ResolvedAgent {
   resumeArgs: string;
 }
 
-const FALLBACK_PROFILE = "claude-code";
+/// The last-resort agent: the profile a workspace resolves to when it has
+/// no configured profile AND the app-wide default agent (`AgentDefaults.
+/// defaultAgent`) is empty or names nothing installed.
+export const FALLBACK_PROFILE = "claude-code";
 
-/// Explicit config beats the profile default beats claude-code's default
-/// (spec §4.2). Expressed once so the panel, the hub label, the home tile
-/// and the agent-file view can never disagree.
+/// Explicit config beats the profile default beats the app-wide default
+/// agent (empty → claude-code; spec §4.2). Expressed once so the panel,
+/// the hub label, the home tile and the agent-file view can never disagree.
+///
+/// Callers should pass `mergeAgentProfiles(builtIns, appCustoms,
+/// workspaceCustoms)` as `profiles` so named customs carry their own
+/// command / flags / resumeArgs. The `customAgent` and `customResumeArgs`
+/// parameters are deprecated no-ops kept only so existing call sites
+/// compile during the transition.
 export function resolveAgentConfig(
   config: AgentConfig | null | undefined,
   profiles: AgentProfileInfo[],
@@ -390,48 +485,32 @@ export function resolveAgentConfig(
   /// rather than defaulted, so the compiler names every call site
   /// instead of letting one silently stop inheriting.
   globalModels: Record<string, string>,
-  /// The app-wide custom agent: the command and model flag a workspace
-  /// on the `custom` profile inherits when it names none of its own.
-  /// OPTIONAL, unlike `globalModels`, and that asymmetry is deliberate:
-  /// every existing call site resolves an agent for a workspace that has
-  /// already chosen a profile, and defaulting to "no app-wide custom
-  /// agent" reproduces exactly the behaviour those call sites have
-  /// today. Making it required would have forced a dozen edits to
-  /// restate the empty case.
-  customAgent: { command: string; modelFlag: string; effortFlag?: string } = {
+  /** @deprecated Merge customs into `profiles` instead. */
+  _customAgent: { command: string; modelFlag: string; effortFlag?: string } = {
     command: "",
     modelFlag: "",
   },
-  /// The `custom` profile's resume flag (v38): this workspace's own
-  /// override (`Workspace.customResumeArgs`), then the app-wide default
-  /// (`getCustomResumeArgs`). Unlike `customAgent` above this has no
-  /// `.gavin-root/config.toml` layer at all -- a resume flag is a fact
-  /// about the binary on THIS machine, not the repository -- so there is
-  /// no `config?.resumeArgs` to check first. OPTIONAL for the same
-  /// reason `customAgent` is: every existing call site keeps resolving
-  /// "no custom resume flag" exactly as it does today.
-  customResumeArgs: { workspace?: string; app?: string } = {},
+  /** @deprecated Merge resumeArgs onto the custom profile entry instead. */
+  _customResumeArgs: { workspace?: string; app?: string } = {},
   /// The app-wide default effort per profile id (config.json's
-  /// `agentDefaults.agentEfforts`). OPTIONAL, for `customAgent`'s reason:
-  /// every call site that predates effort resolves "no app-wide effort",
-  /// which is what they launched with before it existed.
-  globalEfforts: Record<string, string> = {}
+  /// `agentDefaults.agentEfforts`). OPTIONAL: every call site that
+  /// predates effort resolves "no app-wide effort", which is what they
+  /// launched with before it existed.
+  globalEfforts: Record<string, string> = {},
+  /// App-wide default agent when the workspace has no profile. Empty /
+  /// omitted means `claude-code`.
+  appDefaultProfile: string = ""
 ): ResolvedAgent {
-  const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
+  const defaultId = nonEmpty(appDefaultProfile) ?? FALLBACK_PROFILE;
+  const requested = nonEmpty(config?.profile) ?? defaultId;
   const configured = nonEmpty(config?.mcpFile);
   const customMcpFile = configured && !validateMcpConfigPath(configured) ? configured : null;
   const profile = profiles.find((p) => p.id === requested);
-  const fallback = profiles.find((p) => p.id === FALLBACK_PROFILE);
+  const fallback = profiles.find((p) => p.id === defaultId) ?? profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
-  const profileId = effective?.id ?? FALLBACK_PROFILE;
-  // The app-wide custom command sits BETWEEN the workspace's own and the
-  // profile table's, and only for `custom` -- the stock rows carry a
-  // verified command of their own and have no business inheriting
-  // somebody's hand-written one.
-  const customDefault = profileId === "custom" ? nonEmpty(customAgent.command) : null;
+  const profileId = effective?.id ?? defaultId;
   const command =
     nonEmpty(config?.command) ??
-    customDefault ??
     nonEmpty(effective?.command) ??
     nonEmpty(fallback?.command) ??
     "claude";
@@ -439,24 +518,22 @@ export function resolveAgentConfig(
   // naming a profile that no longer exists runs claude-code, so it must
   // inherit claude-code's default rather than a dead row's.
   const model = nonEmpty(config?.model) ?? nonEmpty(globalModels[profileId]) ?? "";
-  // Same three layers as `command` above, in the same order: the
-  // workspace's own flag, then the app-wide custom one (for `custom`
-  // only), then the table's verified flag. A workspace flag wins even on
-  // a stock profile -- it is the more specific statement, exactly as an
-  // overridden `command` is -- but nobody is expected to set one there.
+  // Workspace flag, then the (possibly custom) profile entry's flag.
+  // A workspace flag wins even on a stock profile -- it is the more
+  // specific statement, exactly as an overridden `command` is.
   const modelFlag =
     nonEmpty(config?.modelFlag) ??
-    (profileId === "custom" ? nonEmpty(customAgent.modelFlag) : null) ??
     nonEmpty(effective?.modelFlag) ??
     "";
-  // The same two questions again, one field over: which level, and which
-  // flag carries it. Keyed by the RESOLVED profile for `model`'s reason.
   const effort = nonEmpty(config?.effort) ?? nonEmpty(globalEfforts[profileId]) ?? "";
   const effortFlag =
     nonEmpty(config?.effortFlag) ??
-    (profileId === "custom" ? nonEmpty(customAgent.effortFlag) : null) ??
     nonEmpty(effective?.effortFlag) ??
     "";
+  // No fallback chain: the flag describes the BINARY, the posture
+  // `headlessArgs` takes, so a custom agent never inherits claude's.
+  const advisor = nonEmpty(config?.advisor) ?? "";
+  const advisorFlag = effective?.advisorFlag ?? "";
   return {
     profileId,
     label: effective?.label ?? profileId,
@@ -464,22 +541,26 @@ export function resolveAgentConfig(
     modelFlag,
     effort,
     effortFlag,
+    advisor,
     // Model first, then effort: the order `claude --help` lists them in,
-    // and the one a human reading "Launches as" expects.
-    launchCommand: composeEffort(composeLaunchCommand(command, modelFlag, model), effortFlag, effort),
-    // `custom` carries empty defaults, so an unfilled custom profile still
-    // resolves to something openable rather than an empty path.
+    // and the one a human reading "Launches as" expects. The advisor
+    // follows, being a second model rather than a setting of the first.
+    launchCommand: composeAdvisor(
+      composeEffort(composeLaunchCommand(command, modelFlag, model), effortFlag, effort),
+      advisorFlag,
+      advisor
+    ),
+    // An unfilled custom profile still resolves to something openable
+    // rather than an empty path.
     file:
       nonEmpty(config?.file) ??
       nonEmpty(effective?.instructionsFile) ??
       nonEmpty(fallback?.instructionsFile) ??
       "CLAUDE.md",
     command,
-    // `custom` has no row in the table to carry a layout, so its support
-    // follows from whether someone has named a USABLE file for it -- the
-    // same resolution order as every other field, config over profile. A
-    // path Rust would refuse counts as no path, so the panel never offers
-    // a write that cannot happen.
+    // A named custom has no row in the built-in table to carry a layout,
+    // so its support follows from whether someone has named a USABLE
+    // file for it -- the same resolution order as every other field.
     mcpSupported: Boolean(effective?.mcpSupported || customMcpFile),
     mcpConfigFile: nonEmpty(effective?.mcpConfigFile) ?? customMcpFile ?? "",
     // No fallback chain, unlike file/command: this argv describes the
@@ -487,29 +568,12 @@ export function resolveAgentConfig(
     // garbage in its argv. Empty means "no headless run offered", the
     // same posture mcpSupported takes.
     headlessArgs: effective?.headlessArgs ?? "",
-    // Same posture as headlessArgs, and for the same reason: these three
-    // describe the BINARY. Claude Code's `--session-id` on somebody
-    // else's agent is garbage in its argv, and its error text on
-    // somebody else's screen would paint healthy sessions as broken. A
-    // config that OVERRIDES `command` keeps them, deliberately -- the
-    // override is nearly always a wrapper or an absolute path to the
-    // same binary, and the alternative is losing failure detection for
-    // everyone who pins a path.
     failurePatterns: effective?.failurePatterns ?? [],
     failureCauses: effective?.failureCauses ?? [],
     sessionIdArgs: effective?.sessionIdArgs ?? "",
     sessionIdDiscovery: effective?.sessionIdDiscovery ?? "",
-    // `custom` has no row of its own to carry a verified resumeArgs, so
-    // ITS answer comes from the config.json layer instead -- the
-    // workspace's own flag, else the app-wide one, else none. Every
-    // other profile keeps the table's verified answer unconditionally,
-    // the same no-fallback-BETWEEN-rows rule headlessArgs/sessionIdArgs
-    // already take: claude-code's `--resume` on somebody else's agent is
-    // garbage in its argv.
-    resumeArgs:
-      profileId === "custom"
-        ? nonEmpty(customResumeArgs.workspace) ?? nonEmpty(customResumeArgs.app) ?? ""
-        : effective?.resumeArgs ?? "",
+    // Resume lives ON the (merged) profile entry for named customs.
+    resumeArgs: effective?.resumeArgs ?? "",
     // Same no-fallback-BETWEEN-rows rule: a row that takes no prompt
     // gets null, and cursor's null never becomes claude-code's "".
     //
@@ -521,6 +585,33 @@ export function resolveAgentConfig(
     // denying that claude takes a prompt would block every card run in
     // the app with a sentence naming an agent nobody chose.
     promptArgs: effective ? effective.promptArgs : "",
+    promptInjection: effective?.promptInjection ?? false,
+    untrustedOsc133: effective?.untrustedOsc133 ?? false,
+  };
+}
+
+/// The resolved agent with this profile's extra CLI arguments appended
+/// to the launch command — each entry verbatim, space-separated, after
+/// the model and effort flags. Verbatim because they are the human's own
+/// argv words for their own machine, the same raw-text convention
+/// `command` and the flags already use. Every composer (`buildRunCommand`,
+/// `buildHeadlessCommand`) takes `launchCommand` as its base, so this is
+/// the single seam both interactive and headless launches read.
+///
+/// An agent that takes its prompt as the LAST bare word (`promptArgs: ""`:
+/// claude, codex, a custom) also gets `-- ` as its prompt prefix whenever
+/// there are extras. A variadic option in them (`--add-dir <dirs...>`,
+/// `--allowedTools <tools...>`) would otherwise read the prompt as one more
+/// value and start the run with no prompt; `--` ends option parsing so the
+/// prompt stays the prompt. An agent that attaches its prompt to a flag
+/// (`--prompt=`) needs nothing, and one that takes none stays refused.
+export function withExtraCliArgs(agent: ResolvedAgent, extras: readonly string[]): ResolvedAgent {
+  const args = extras.map((s) => s.trim()).filter(Boolean);
+  if (args.length === 0) return agent;
+  return {
+    ...agent,
+    launchCommand: `${agent.launchCommand} ${args.join(" ")}`,
+    promptArgs: agent.promptArgs === "" ? "-- " : agent.promptArgs,
   };
 }
 

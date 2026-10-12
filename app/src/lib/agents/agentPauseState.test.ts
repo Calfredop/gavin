@@ -2,8 +2,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { get } from "svelte/store";
 
 const backendMock = vi.hoisted(() => ({
-  getAgentPause: vi.fn(),
-  setAgentPause: vi.fn(async () => {}),
   agentUsage: vi.fn(),
 }));
 
@@ -15,19 +13,26 @@ const resolvedAgentForMock = vi.hoisted(() =>
 
 vi.mock("$lib/core/layoutState", async () => {
   const { writable } = await import("svelte/store");
+  const agentDefaultsStore = writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexityTables: {},
+    pauseCycles: {} as Record<string, unknown>,
+    fallbackChains: {},
+    fallbackThresholds: {} as Record<string, number>,
+    actionPromptOverrides: {} as Record<string, string>,
+  });
   return {
     layoutState: writable({
       workspaces: [] as unknown[],
       activeWorkspaceId: null as string | null,
     }),
     resolvedAgentFor: resolvedAgentForMock,
-    agentDefaultsStore: writable({
-      customCommand: "",
-      customModelFlag: "",
-      complexity: {},
-      agentFallback: [] as string[],
-      fallbackThresholds: {} as Record<string, number>,
-      actionPromptOverrides: {} as Record<string, string>,
+    agentDefaultsStore,
+    // The real one writes through the host; the store is what these tests
+    // read the pause cycles back out of.
+    setAgentDefaults: vi.fn(async (next: unknown) => {
+      agentDefaultsStore.set(next as never);
     }),
   };
 });
@@ -65,7 +70,6 @@ import {
   editableCycle,
   effectiveCycle,
   hydrateUsageCache,
-  loadAgentPause,
   mayStartWork,
   nowStore,
   pausedWorkspaces,
@@ -73,7 +77,7 @@ import {
   pauseFor,
   profilesInUse,
   refreshUsage,
-  saveAgentPause,
+  saveAgentPauseFor,
   launchDecision,
   launchPauseHold,
   startBlockedReason,
@@ -93,23 +97,35 @@ function cycle(over: Partial<PauseCycle> = {}): PauseCycle {
   return { ...DEFAULT_CYCLE, enabled: true, anchorMs: ANCHOR, ...over };
 }
 
+/// The app-wide cycle for one primary, written where it now lives: the
+/// agent defaults. `null` removes the primary's key (never held).
+function setAppCycle(value: PauseCycle | null, primary = "claude-code"): void {
+  agentDefaultsStore.update((d) => {
+    const pauseCycles = { ...((d as { pauseCycles?: Record<string, PauseCycle> }).pauseCycles ?? {}) };
+    if (value) pauseCycles[primary] = value;
+    else delete pauseCycles[primary];
+    return { ...d, pauseCycles } as never;
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   eventMock.handlers.clear();
   appDuty.set({ holder: "main", windows: ["main"] });
   resolvedAgentForMock.mockReturnValue({ profileId: "claude-code" });
-  agentPauseStore.set(null);
   agentUsageStore.set({});
   usageRefreshingStore.set({});
   layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
   agentDefaultsStore.set({
     customCommand: "",
     customModelFlag: "",
-    complexity: {},
-    agentFallback: [],
+    defaultAgent: "claude-code",
+    complexityTables: {},
+    pauseCycles: {},
+    fallbackChains: {},
     fallbackThresholds: {},
     actionPromptOverrides: {},
-  });
+  } as never);
 });
 
 afterEach(() => {
@@ -119,7 +135,7 @@ afterEach(() => {
 
 describe("effectiveCycle", () => {
   it("falls back to the app-wide cycle when a workspace has no override", () => {
-    agentPauseStore.set(cycle());
+    setAppCycle(cycle());
     layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
     expect(effectiveCycle("w1")).toEqual(cycle());
   });
@@ -129,9 +145,9 @@ describe("effectiveCycle", () => {
   /// stores `enabled: false`. A truthiness check would make those the
   /// same thing and silently re-enable a workspace somebody switched off.
   it("treats an override with enabled:false as off, not as absent", () => {
-    agentPauseStore.set(cycle({ enabled: true }));
+    setAppCycle(cycle({ enabled: true }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentPause: cycle({ enabled: false }) }],
+      workspaces: [{ id: "w1", pauseCycles: { "claude-code": cycle({ enabled: false }) } }],
       activeWorkspaceId: "w1",
     } as never);
     expect(effectiveCycle("w1")?.enabled).toBe(false);
@@ -139,9 +155,9 @@ describe("effectiveCycle", () => {
   });
 
   it("prefers a workspace's own numbers over the app's", () => {
-    agentPauseStore.set(cycle({ pauseMinutes: 10 }));
+    setAppCycle(cycle({ pauseMinutes: 10 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentPause: cycle({ pauseMinutes: 30 }) }],
+      workspaces: [{ id: "w1", pauseCycles: { "claude-code": cycle({ pauseMinutes: 30 }) } }],
       activeWorkspaceId: "w1",
     } as never);
     expect(effectiveCycle("w1")?.pauseMinutes).toBe(30);
@@ -150,45 +166,118 @@ describe("effectiveCycle", () => {
   it("gives an editor fields even when nothing is configured", () => {
     expect(editableCycle(null)).toEqual({ ...DEFAULT_CYCLE, anchorMs: 0 });
   });
+
+  /// Cycles are per primary agent: a workspace on codex is not held by
+  /// the cycle claude-code keeps, and an override for one primary says
+  /// nothing about another.
+  it("reads the cycle of the agent the workspace runs, not another agent's", () => {
+    setAppCycle(cycle({ pauseMinutes: 10 }), "claude-code");
+    setAppCycle(cycle({ pauseMinutes: 40 }), "codex");
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+
+    resolvedAgentForMock.mockReturnValue({ profileId: "codex" });
+    expect(effectiveCycle("w1")?.pauseMinutes).toBe(40);
+    resolvedAgentForMock.mockReturnValue({ profileId: "gemini" });
+    expect(effectiveCycle("w1")).toBeNull();
+  });
+
+  it("answers for an explicit primary, whatever the workspace runs", () => {
+    setAppCycle(cycle({ pauseMinutes: 40 }), "codex");
+    layoutState.set({
+      workspaces: [{ id: "w1", pauseCycles: { codex: cycle({ pauseMinutes: 55 }) } }],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(effectiveCycle("w1", "codex")?.pauseMinutes).toBe(55);
+    expect(effectiveCycle("w1", "claude-code")).toBeNull();
+  });
+
+  it("answers for the app default agent when asked outside any workspace", () => {
+    setAppCycle(cycle({ pauseMinutes: 12 }), "codex");
+    agentDefaultsStore.update((d) => ({ ...d, defaultAgent: "codex" }) as never);
+    expect(effectiveCycle(null)?.pauseMinutes).toBe(12);
+  });
 });
 
-describe("saveAgentPause", () => {
+describe("saveAgentPauseFor", () => {
   /// The anchor is the whole reason the cycle survives a restart. Minting
   /// a new one on every save would slide the pause forward each time
   /// somebody nudged a field, so a cycle under adjustment would never
   /// actually fire.
   it("stamps an anchor once and never rewrites it", async () => {
-    await saveAgentPause({ ...DEFAULT_CYCLE, enabled: true, anchorMs: 0 });
-    const stamped = get(agentPauseStore);
+    await saveAgentPauseFor("claude-code", { ...DEFAULT_CYCLE, enabled: true, anchorMs: 0 });
+    const stamped = get(agentPauseStore)["claude-code"];
     expect(stamped?.anchorMs).toBeGreaterThan(0);
 
-    await saveAgentPause({ ...stamped!, pauseMinutes: 25 });
-    expect(get(agentPauseStore)?.anchorMs).toBe(stamped!.anchorMs);
-    expect(get(agentPauseStore)?.pauseMinutes).toBe(25);
+    await saveAgentPauseFor("claude-code", { ...stamped!, pauseMinutes: 25 });
+    expect(get(agentPauseStore)["claude-code"]?.anchorMs).toBe(stamped!.anchorMs);
+    expect(get(agentPauseStore)["claude-code"]?.pauseMinutes).toBe(25);
   });
 
-  it("clears to no cycle at all", async () => {
-    await saveAgentPause(null);
-    expect(get(agentPauseStore)).toBeNull();
-    expect(backendMock.setAgentPause).toHaveBeenCalledWith(null);
+  it("clears one agent to no cycle at all without touching the others", async () => {
+    setAppCycle(cycle(), "claude-code");
+    setAppCycle(cycle({ pauseMinutes: 33 }), "codex");
+    await saveAgentPauseFor("claude-code", null);
+    expect(get(agentPauseStore)["claude-code"]).toBeUndefined();
+    expect(get(agentPauseStore).codex?.pauseMinutes).toBe(33);
+  });
+
+  it("ignores a blank agent id rather than writing an unnamed key", async () => {
+    await saveAgentPauseFor("  ", cycle());
+    expect(get(agentPauseStore)).toEqual({});
   });
 });
 
-describe("loadAgentPause", () => {
-  it("reads the stored cycle", async () => {
-    backendMock.getAgentPause.mockResolvedValueOnce(cycle());
-    await loadAgentPause();
-    expect(get(agentPauseStore)).toEqual(cycle());
+describe("agentPauseStore", () => {
+  /// It is a view of the agent defaults, not a second copy: the cycles
+  /// ride the same wholesale save as every other per-primary map.
+  it("follows the agent defaults", () => {
+    expect(get(agentPauseStore)).toEqual({});
+    setAppCycle(cycle(), "codex");
+    expect(get(agentPauseStore).codex).toEqual(cycle());
   });
+});
 
-  /// A failed read must leave the shipped default -- no cycle -- rather
-  /// than anything that could pause a workspace on the strength of an
-  /// error.
-  it("falls back to no cycle when the read fails", async () => {
-    agentPauseStore.set(cycle());
-    backendMock.getAgentPause.mockRejectedValueOnce(new Error("nope"));
-    await loadAgentPause();
-    expect(get(agentPauseStore)).toBeNull();
+describe("a fallback hop answers to the candidate's own cycle", () => {
+  it("does not hop a spent primary onto an agent that is inside its own pause window", () => {
+    setAppCycle(cycle({ enabled: false, limitPercent: 90, pauseMinutes: 10 }), "claude-code");
+    // codex keeps a schedule too, and the clock is inside ITS pause.
+    setAppCycle(cycle({ pauseMinutes: 10 }), "codex");
+    layoutState.set({
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, armedAgents: ["codex", "gemini"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    const spent = {
+      state: "ready" as const,
+      windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+      plan: null,
+      observedAt: 1,
+      cached: false,
+    };
+    agentUsageStore.set({ "claude-code": spent });
+    const inCodexPause = ANCHOR + 295 * MIN;
+    expect(launchDecision("w1", "claude-code", false, inCodexPause)).toEqual({
+      kind: "use",
+      profileId: "gemini",
+      viaFallback: true,
+    });
+    // Outside codex's window it is the first hop again.
+    expect(launchDecision("w1", "claude-code", false, ANCHOR + 100 * MIN)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+  });
+});
+
+describe("launchDecision keys the cycle by the launch's resolved primary", () => {
+  it("holds a launch resolved to the agent whose cycle is paused, not one resolved elsewhere", () => {
+    setAppCycle(cycle({ pauseMinutes: 10 }), "claude-code");
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    const inPause = ANCHOR + 295 * MIN;
+    expect(launchDecision("w1", "claude-code", false, inPause).kind).toBe("pause");
+    // codex keeps no cycle, so a card routed there launches during
+    // claude-code's pause.
+    expect(launchDecision("w1", "codex", false, inPause)).toMatchObject({ kind: "use" });
   });
 });
 
@@ -418,10 +507,45 @@ describe("profilesInUse", () => {
 
   it("includes fallback-chain ids so their usage is polled", () => {
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: "w1",
     } as never);
     expect(profilesInUse()).toEqual(["claude-code", "codex"]);
+  });
+
+  it("unions every primary's chain, not only the workspace agent's", () => {
+    layoutState.set({
+      workspaces: [
+        { id: "w1", fallbackChains: { "claude-code": ["codex"], gemini: ["opencode"] } },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "codex", "opencode"]);
+  });
+
+  /// A rated card can launch on whichever agent the workspace agent's
+  /// complexity table names, and that launch is gated on THAT agent's
+  /// usage -- so it has to be read even when no chain mentions it.
+  it("includes the agents the workspace agent's complexity table routes to", () => {
+    agentDefaultsStore.update(
+      (d) =>
+        ({
+          ...d,
+          complexityTables: {
+            "claude-code": { intricate: { profile: "codex", model: "" } },
+            // Another primary's table is not this workspace's.
+            gemini: { trivial: { profile: "opencode", model: "" } },
+          },
+        }) as never
+    );
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "codex"]);
+    // A workspace's own table replaces the app's for that agent.
+    layoutState.set({
+      workspaces: [{ id: "w1", complexityTables: { "claude-code": { trivial: { profile: "gemini", model: "" } } } }],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "gemini"]);
   });
 });
 
@@ -433,7 +557,7 @@ describe("the gate", () => {
   });
 
   it("reads the workspace's own agent for the limits that matter", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
     agentUsageStore.set({
       "claude-code": {
@@ -459,9 +583,9 @@ describe("the gate", () => {
   });
 
   it("walks an armed fallback instead of holding when the primary is spent", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -484,17 +608,19 @@ describe("the gate", () => {
   });
 
   it("walks a new launch at the profile fallback threshold while pause is still higher", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 95 }));
     agentDefaultsStore.set({
       customCommand: "",
       customModelFlag: "",
-      complexity: {},
-      agentFallback: [],
+      defaultAgent: "claude-code",
+      complexityTables: {},
+      pauseCycles: {},
+      fallbackChains: {},
       fallbackThresholds: { "claude-code": 80 },
       actionPromptOverrides: {},
-    });
+    } as never);
+    setAppCycle(cycle({ enabled: false, limitPercent: 95 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -519,9 +645,9 @@ describe("the gate", () => {
   });
 
   it("blocks and names the unarmed next chain agent rather than skipping it", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -547,8 +673,103 @@ describe("the gate", () => {
   /// how the human already said "run here instead".
   it("uses the workspace agent when the card's agent is spent and the chain is empty", () => {
     resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+      cursor: {
+        state: "ready",
+        windows: [
+          { id: "total", label: "Total", usedPercent: 45, resetsAt: null },
+          { id: "auto", label: "Auto", usedPercent: 45, resetsAt: null },
+        ],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "cursor",
+      viaFallback: true,
+    });
+  });
+
+  /// Per-primary chains: the chain that walks is the one stored FOR the
+  /// launch's resolved agent, not the workspace profile's — a card the
+  /// complexity table attributes to Claude walks Claude's chain even in a
+  /// Cursor workspace.
+  it("walks the chain of the card's resolved primary, not the workspace profile's", () => {
+    resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
+    // Cycles are per primary now (the migration folds an old single cycle
+    // onto every agent): a launch resolved to cursor is gated by cursor's.
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }), "cursor");
+    layoutState.set({
+      workspaces: [
+        {
+          id: "w1",
+          fallbackChains: { "claude-code": ["codex"], cursor: ["gemini"] },
+          armedAgents: ["codex", "gemini"],
+        },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+      // The workspace agent is spent too, so the walk reaches the chain —
+      // and must find claude-code's codex, never cursor's gemini.
+      cursor: {
+        state: "ready",
+        windows: [
+          { id: "total", label: "Total", usedPercent: 99, resetsAt: null },
+          { id: "auto", label: "Auto", usedPercent: 99, resetsAt: null },
+        ],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+    // And cursor's own launches walk cursor's chain.
+    expect(launchDecision("w1", "cursor", false)).toEqual({
+      kind: "use",
+      profileId: "gemini",
+      viaFallback: true,
+    });
+  });
+
+  /// The workspace-agent-first hop survives the per-primary map: it is
+  /// tried after the spent primary and before that primary's chain.
+  it("still tries the workspace agent before the resolved primary's chain", () => {
+    resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({
+      workspaces: [
+        {
+          id: "w1",
+          fallbackChains: { "claude-code": ["codex"] },
+          armedAgents: ["codex"],
+        },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
     agentUsageStore.set({
       "claude-code": {
         state: "ready",
@@ -577,7 +798,7 @@ describe("the gate", () => {
 
   it("does not invent a usage pause when no cycle is configured at all", () => {
     layoutState.set({
-      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -612,7 +833,7 @@ describe("pausedWorkspaces", () => {
   it("names every held workspace, not only the one in front of you", () => {
     // The hub is about the whole fleet: a workspace can be at its limit
     // while the active one has room, and `activePause` cannot say so.
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     agentUsageStore.set({ "claude-code": atLimit(97) });
     layoutState.set({
       workspaces: [
@@ -628,7 +849,7 @@ describe("pausedWorkspaces", () => {
   });
 
   it("is empty while nothing is held", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     agentUsageStore.set({ "claude-code": atLimit(12) });
     layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
     nowStore.set(ANCHOR);
@@ -636,11 +857,11 @@ describe("pausedWorkspaces", () => {
   });
 
   it("is empty when the primary is spent but an armed fallback can launch", () => {
-    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     agentUsageStore.set({ "claude-code": atLimit(97) });
     layoutState.set({
       workspaces: [
-        { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+        { id: "w1", name: "One", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] },
       ],
       activeWorkspaceId: "w1",
     } as never);
@@ -663,7 +884,7 @@ describe("pausedWorkspaces", () => {
       } as never);
 
     it("emits once when a pause starts and once when it lifts", () => {
-      agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+      setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
       agentUsageStore.set({ "claude-code": atLimit(12) });
       twoWorkspaces();
       nowStore.set(ANCHOR);
@@ -685,7 +906,7 @@ describe("pausedWorkspaces", () => {
     // another is held reads as "still paused" to a flag, and the rail
     // that just became free never gets the tick that would launch it.
     it("emits when the SET moves, even though something is still held", () => {
-      agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+      setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
       agentUsageStore.set({ "claude-code": atLimit(97) });
       twoWorkspaces();
       nowStore.set(ANCHOR);
@@ -698,7 +919,7 @@ describe("pausedWorkspaces", () => {
       // is the remaining way one workspace frees while another does not.
       layoutState.set({
         workspaces: [
-          { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+          { id: "w1", name: "One", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] },
           { id: "w2", name: "Two" },
         ],
         activeWorkspaceId: "w1",
@@ -706,6 +927,33 @@ describe("pausedWorkspaces", () => {
       stop();
       expect(seen.at(0)).toBe("w1 w2");
       expect(seen.at(-1)).toBe("w2");
+    });
+
+    // A card routed to codex launches on codex, gated on codex's own
+    // cycle -- which the held-workspace set (read off the workspace's own
+    // agent) cannot see. Without this a step skipped for codex's pause
+    // would never hear that the pause lifted.
+    it("emits when an agent a workspace can route to enters or leaves its own pause window", () => {
+      agentDefaultsStore.update(
+        (d) =>
+          ({
+            ...d,
+            complexityTables: { "claude-code": { intricate: { profile: "codex", model: "" } } },
+          }) as never
+      );
+      setAppCycle(cycle({ pauseMinutes: 10 }), "codex");
+      layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
+      nowStore.set(ANCHOR + 100 * MIN);
+
+      const seen: string[] = [];
+      const stop = pausedWorkspaceKey.subscribe((k) => seen.push(k));
+      // The workspace's own agent keeps no cycle, so it is never "held",
+      // yet codex enters its window...
+      nowStore.set(ANCHOR + 295 * MIN);
+      // ...and leaves it again.
+      nowStore.set(ANCHOR + 310 * MIN);
+      stop();
+      expect(seen).toEqual(["", " | w1:codex", ""]);
     });
   });
 });

@@ -1,7 +1,7 @@
 // The screen the page can use, with and without the soft keyboard, and
 // what tells a press from a swipe.
 import { describe, expect, it } from "vitest";
-import { drifted, SLOP_PX } from "$companion/surfaces/press";
+import { drifted, SLOP_PX, tap } from "$companion/surfaces/press";
 import { trackVisibleArea, visibleArea } from "$companion/surfaces/viewport";
 
 describe("the visible area", () => {
@@ -82,5 +82,69 @@ describe("a press", () => {
     expect(drifted(from, { x: 100 + SLOP_PX, y: 100 - SLOP_PX })).toBe(false);
     expect(drifted(from, { x: 100 + SLOP_PX + 1, y: 100 })).toBe(true);
     expect(drifted(from, { x: 100, y: 100 - SLOP_PX - 1 })).toBe(true);
+  });
+});
+
+describe("a tap on a surface that is also swiped", () => {
+  // The terminal: xterm 6.1 claims every touch on its screen for
+  // scrolling and cancels the touchstart, so no click follows a tap there.
+  function surface() {
+    const listeners = new Map<string, (e: unknown) => void>();
+    const node = {
+      addEventListener: (type: string, listener: (e: unknown) => void) => void listeners.set(type, listener),
+      removeEventListener: (type: string) => void listeners.delete(type),
+    };
+    let prevented = 0;
+    const pointer = (type: string, x: number, y: number, button = 0) =>
+      listeners.get(type)?.({ type, clientX: x, clientY: y, button, preventDefault: () => prevented++ });
+    return { node: node as unknown as HTMLElement, listeners, pointer, prevented: () => prevented };
+  }
+
+  it("is a pointer that comes up where it went down", () => {
+    const s = surface();
+    const taps: unknown[] = [];
+    tap(s.node, (e) => taps.push(e));
+    s.pointer("pointerdown", 100, 100);
+    s.pointer("pointermove", 100 + SLOP_PX, 100);
+    s.pointer("pointerup", 100 + SLOP_PX, 100);
+    expect(taps).toHaveLength(1);
+  });
+
+  it("is not the end of a swipe", () => {
+    const s = surface();
+    let taps = 0;
+    tap(s.node, () => taps++);
+    s.pointer("pointerdown", 100, 100);
+    s.pointer("pointermove", 100, 100 + SLOP_PX + 1);
+    s.pointer("pointermove", 100, 100);
+    s.pointer("pointerup", 100, 100);
+    expect(taps).toBe(0);
+  });
+
+  it("is not a touch the browser took back, nor a second button", () => {
+    const s = surface();
+    let taps = 0;
+    tap(s.node, () => taps++);
+    s.pointer("pointerdown", 100, 100);
+    s.pointer("pointercancel", 100, 100);
+    s.pointer("pointerup", 100, 100);
+    s.pointer("pointerdown", 100, 100, 2);
+    s.pointer("pointerup", 100, 100, 2);
+    expect(taps).toBe(0);
+  });
+
+  it("takes nothing from the surface: no default prevented, so focus, selection and its own gestures carry on", () => {
+    const s = surface();
+    tap(s.node, () => {});
+    s.pointer("pointerdown", 100, 100);
+    s.pointer("pointermove", 104, 100);
+    s.pointer("pointerup", 104, 100);
+    expect(s.prevented()).toBe(0);
+  });
+
+  it("lets go of the surface", () => {
+    const s = surface();
+    tap(s.node, () => {}).destroy();
+    expect([...s.listeners.keys()]).toEqual([]);
   });
 });

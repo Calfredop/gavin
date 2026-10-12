@@ -87,7 +87,10 @@ function flagIsInert(flag: string): boolean {
 ///
 /// An attached flag (ending in `=`) matches any token it begins, so
 /// `model_reasoning_effort="high"` counts; a separated one matches itself
-/// or its own `=` form, so `--effortless` does not.
+/// or its own `=` form, so `--effortless` does not. The env-assignment
+/// shape below rides the attached rule: `KIMI_MODEL_THINKING_EFFORT=low`
+/// at the front of the command is a token that begins with
+/// `KIMI_MODEL_THINKING_EFFORT=`.
 export function commandSpecifiesEffort(command: string, flag: string): boolean {
   const last = flag.trim().split(/\s+/).pop() ?? "";
   if (!last) return false;
@@ -96,15 +99,28 @@ export function commandSpecifiesEffort(command: string, flag: string): boolean {
   return tokens.some((token) => token === last || token.startsWith(`${last}=`));
 }
 
+/// The effort "flag" that is not a flag: an env-assignment shape
+/// (`KIMI_MODEL_THINKING_EFFORT=`), for an agent whose effort knob is an
+/// environment variable. Distinct from an attached flag because it goes
+/// BEFORE the command, not after it -- `KIMI_MODEL_THINKING_EFFORT=low
+/// kimi ...` -- and gavin composes every launch through `sh -c`, so the
+/// prefix composes like a flag. The shape is deliberately narrow
+/// (screaming-shell-variable only) so a lowercase `-c key=` override
+/// keeps its append meaning.
+const EFFORT_ENV_SHAPE = /^[A-Z][A-Z0-9_]*=$/;
+
 /// `command` plus the effort, when there is one to add, a usable flag to
 /// add it with, and the command does not already carry one. Returns
 /// `command` untouched otherwise, for `composeLaunchCommand`'s reason.
 ///
-/// Two shapes, the `headless_args` convention the Rust table uses: a flag
-/// ending in `=` takes the level attached (`-c model_reasoning_effort=high`),
-/// anything else takes it as the next argument (`--effort high`). The
-/// level is quoted exactly as a model name is, and in the attached shape
-/// the quotes still close on the same word: `--think='a b'` is one argv.
+/// Three shapes, the `AgentProfile::effort_flag` convention the Rust
+/// table documents: a flag ending in `=` takes the level attached
+/// (`-c model_reasoning_effort=high`), an env-assignment shape
+/// (`EFFORT_ENV_SHAPE`) is PREPENDED before the whole command
+/// (`KIMI_MODEL_THINKING_EFFORT=low kimi ...`), and anything else takes
+/// the level as the next argument (`--effort high`). The level is quoted
+/// exactly as a model name is, and in the attached shape the quotes still
+/// close on the same word: `--think='a b'` is one argv.
 export function composeEffort(command: string, flag: string, effort: string): string {
   const chosen = effort.trim();
   const usable = flag.trim();
@@ -112,7 +128,21 @@ export function composeEffort(command: string, flag: string, effort: string): st
     return command;
   }
   const level = quoteModel(chosen);
+  if (EFFORT_ENV_SHAPE.test(usable)) return `${usable}${level} ${command}`;
   return usable.endsWith("=") ? `${command} ${usable}${level}` : `${command} ${usable} ${level}`;
+}
+
+/// `command` plus `<flag> <advisor>`, under `composeLaunchCommand`'s
+/// rules: nothing to add, no usable flag, or a command that already names
+/// an advisor all leave `command` untouched. The advisor is a model name,
+/// so it is quoted as one.
+export function composeAdvisor(command: string, flag: string, advisor: string): string {
+  const chosen = advisor.trim();
+  const usable = flag.trim();
+  if (!chosen || !usable || !flagIsInert(usable) || commandSpecifiesEffort(command, usable)) {
+    return command;
+  }
+  return `${command} ${usable} ${quoteModel(chosen)}`;
 }
 
 /// The rows an EFFORT picker renders: inherit (labelled with what it
@@ -237,6 +267,28 @@ export function effortPresets(
   for (const profile of profiles) {
     for (const level of profile.efforts ?? []) {
       if (!out.includes(level)) out.push(level);
+    }
+  }
+  return out;
+}
+
+/// The advisor models to suggest for a complexity row: the named
+/// profile's own models when it takes an advisor, nothing when it does
+/// not. An unnamed row (this workspace's agent) is offered every model of
+/// every profile that takes one, for `effortPresets`' reason -- the box
+/// stays free text, and an advisor the eventual agent has no flag for is
+/// dropped at launch (`composeAdvisor`).
+export function advisorPresets(
+  profiles: readonly { id: string; models: string[]; advisorFlag?: string }[],
+  profileId: string
+): string[] {
+  const id = profileId.trim();
+  const out: string[] = [];
+  for (const profile of profiles) {
+    if (id && profile.id !== id) continue;
+    if (!profile.advisorFlag) continue;
+    for (const model of profile.models) {
+      if (!out.includes(model)) out.push(model);
     }
   }
   return out;

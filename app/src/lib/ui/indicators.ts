@@ -32,6 +32,7 @@
 
 import type { Component } from "svelte";
 import {
+  Cable,
   ChevronsRight,
   Clock,
   CircleDashed,
@@ -48,11 +49,14 @@ import {
   Hourglass,
   LoaderCircle,
   Lock,
+  LockKeyhole,
   MessageCircleQuestionMark,
   Minus,
   OctagonAlert,
   Pause,
   Pencil,
+  Plug,
+  PlugZap,
   Repeat,
   RotateCw,
   RouteOff,
@@ -61,13 +65,17 @@ import {
   SignalHigh,
   SignalLow,
   SignalMedium,
+  Smartphone,
   Square,
   SquareCheck,
   SquareDot,
   SquareSlash,
+  ShieldAlert,
+  ShieldX,
   SquareX,
   TriangleAlert,
   Unlink2,
+  Unplug,
 } from "@lucide/svelte";
 import type { SessionStatus } from "$lib/core/notifications";
 // The rails already own these three; re-declaring them here would be a
@@ -101,7 +109,10 @@ export type IndicatorAxis =
   | "rail"
   | "run"
   | "usage"
-  | "headroom";
+  | "headroom"
+  | "relay"
+  | "direct"
+  | "device";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -117,6 +128,9 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   run: "Run",
   usage: "Usage",
   headroom: "Headroom",
+  relay: "Relay",
+  direct: "Direct connection",
+  device: "Device",
 };
 
 export interface Indicator {
@@ -703,6 +717,109 @@ export function headroomIndicator(exception: HeadroomException | null): Indicato
 
 export const HEADROOM_EXCEPTIONS = ["not-ready", "relaunched", "not-reaching"] as const;
 
+// ---- relay -------------------------------------------------------------
+// Whether the daemon reached its Relay, beside the Relay URL in Settings.
+// `remoteAccess.ts` owns the state and the words a failure is given; this
+// file only draws the four answers. A plug family of its own, since a
+// wire that is or is not connected is not a git, run or agent fact.
+//
+// `failed` and `not_wanted` both read as an unplugged wire, told apart by
+// tone: one is broken, the other is simply off.
+
+const RELAY = {
+  not_wanted: make("relay", "not_wanted", Cable, "neutral", "not connected — remote access is off"),
+  dialling: make("relay", "dialling", PlugZap, "accent", "dialling the Relay"),
+  connected: make("relay", "connected", Plug, "success", "connected"),
+  failed: make("relay", "failed", Unplug, "danger", "could not connect"),
+};
+
+export const RELAY_STATES = ["not_wanted", "dialling", "connected", "failed"] as const;
+export type RelayIndicatorState = (typeof RELAY_STATES)[number];
+
+/// The badge for one of the dial's four states. A `why` for a failure
+/// goes in the bubble, after the axis, like the queue's does.
+export function relayIndicator(state: RelayIndicatorState, why?: string | null): Indicator {
+  const base = RELAY[state];
+  if (state !== "failed" || !why) return base;
+  const tip = `${AXIS_LABEL.relay} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
+// ---- direct ------------------------------------------------------------
+// Whether the daemon's direct listener is bound (ADR 0009), under the
+// Direct connection switch in Settings. The relay's glyphs, for the same
+// question asked of a different wire: `remoteAccess.ts` owns the words.
+
+const DIRECT = {
+  not_wanted: make("direct", "not_wanted", Cable, "neutral", "not listening — it is off"),
+  listening: make("direct", "listening", Plug, "success", "listening"),
+  failed: make("direct", "failed", Unplug, "danger", "could not listen"),
+};
+
+export const DIRECT_STATES = ["not_wanted", "listening", "failed"] as const;
+export type DirectIndicatorState = (typeof DIRECT_STATES)[number];
+
+/// The badge for one of the listener's three states. A `why` for a
+/// failure goes in the bubble, as the relay's does.
+export function directIndicator(state: DirectIndicatorState, why?: string | null): Indicator {
+  const base = DIRECT[state];
+  if (state !== "failed" || !why) return base;
+  const tip = `${AXIS_LABEL.direct} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
+// ---- device ------------------------------------------------------------
+// What the daemon last refused a paired Device, on its row in the Devices
+// panel. `devicesPanel.ts` owns which refusal is which and the words; this
+// file only draws the answers.
+//
+// A failed proof is its own state and the only `danger`: the handshake
+// proved someone holds the Device's Noise key and the signature proved it
+// is not the phone, which is what a copied key looks like. Every other
+// refusal is a Device that is known and being told no, so it is a warning.
+
+const DEVICE = {
+  proof_failed: make("device", "proof_failed", ShieldAlert, "danger", "failed its hardware proof"),
+  refused: make("device", "refused", ShieldX, "warning", "was refused a connection"),
+};
+
+export const DEVICE_STATES = ["proof_failed", "refused"] as const;
+export type DeviceIndicatorState = (typeof DEVICE_STATES)[number];
+
+/// The badge for a refused Device. `why`, when given, goes in the bubble
+/// after the axis, like the relay's.
+export function deviceIndicator(state: DeviceIndicatorState, why?: string | null): Indicator {
+  const base = DEVICE[state];
+  if (!why) return base;
+  const tip = `${AXIS_LABEL.device} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
+// A Device typing into a terminal right now (companion-16): the marker on
+// that terminal's tab. On the device axis because it is a fact about a
+// Device, and accent because that is the app's one "happening now" -- not a
+// shield, because it says nothing about trust. `devicePresence.ts` decides
+// when it is up and whose names it carries.
+const DEVICE_TYPING = make("device", "typing", Smartphone, "accent", "a Device is typing here");
+const DEVICE_OWNS = make("device", "owns", LockKeyhole, "accent", "a Device is working on this");
+
+/// The marker on a terminal a Device is typing into. `who` -- "Pixel is
+/// typing" -- goes in the bubble after the axis.
+export function deviceTypingIndicator(who?: string | null): Indicator {
+  if (!who) return DEVICE_TYPING;
+  const tip = `${AXIS_LABEL.device} · ${who}`;
+  return { ...DEVICE_TYPING, tip, label: tip };
+}
+
+/// The marker on a terminal a Device owns (v68): locked for this window
+/// until it is taken back. `who` -- "iPhone is working on this" -- goes in
+/// the bubble after the axis.
+export function deviceOwnsIndicator(who?: string | null): Indicator {
+  if (!who) return DEVICE_OWNS;
+  const tip = `${AXIS_LABEL.device} · ${who}`;
+  return { ...DEVICE_OWNS, tip, label: tip };
+}
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -788,5 +905,9 @@ export function allIndicators(): Indicator[] {
     shellOrphanIndicator(),
     ...PROJECTION_BANDS.map((band) => USAGE[band]),
     ...HEADROOM_EXCEPTIONS.map((exception) => HEADROOM[exception]),
+    ...RELAY_STATES.map((state) => RELAY[state]),
+    ...DEVICE_STATES.map((state) => DEVICE[state]),
+    DEVICE_TYPING,
+    DEVICE_OWNS,
   ];
 }

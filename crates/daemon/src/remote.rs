@@ -36,6 +36,11 @@
 //!
 //! A stream announced for any other purpose is left where it is.
 //!
+//! **The direct listener serves through here too.** `direct.rs` (ADR 0009)
+//! answers a Device on this network or tailnet itself, and hands what it
+//! accepted to `serve_pairing` and `serve_device` -- so the Relay's
+//! streams and the listener's are one path from the handshake on.
+//!
 //! **What ends a Device's connection.** The Device hanging up; the Relay
 //! going; a frame that does not open; remote access being turned off or
 //! pointed elsewhere; and the manager letting go of its end -- which is
@@ -48,6 +53,7 @@ use crate::server::{AwaitedPairing, PairingDecision, SessionManager};
 use gavin_relay::client::{self, DialError, DialOptions, RelayConnection, RelayStream};
 use protocol::device_wire::{ConnectVerdict, PairingVerdict, MAX_PAYLOAD};
 use protocol::relay::{self, RefusalReason, RelayHello, RelayReply};
+use protocol::RelayState;
 use protocol::transport::Stream;
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -187,10 +193,10 @@ static CONNECTING: AtomicUsize = AtomicUsize::new(0);
 
 /// One of the places there are for what a stream is for, given back
 /// however the serving ends.
-struct Serving(&'static AtomicUsize);
+pub(crate) struct Serving(&'static AtomicUsize);
 
 impl Serving {
-    fn begin(purpose: Purpose) -> Option<Self> {
+    pub(crate) fn begin(purpose: Purpose) -> Option<Self> {
         let (held, ceiling) = match purpose {
             Purpose::Pair => (&PAIRING, MAX_STREAMS),
             Purpose::Connect => (&CONNECTING, MAX_CONNECTING),
@@ -299,7 +305,7 @@ static LOGGED: Mutex<LogBudget> = Mutex::new(LogBudget { window: None, said: 0, 
 
 /// Says something about a stream the Relay handed over, if there is
 /// still room in the log for it.
-fn note(line: String) {
+pub(crate) fn note(line: String) {
     let spent = LOGGED.lock().map(|mut budget| budget.spend(Instant::now()));
     match spent {
         Ok(Logged::Line) => eprintln!("gavin-daemon: {line}"),
@@ -378,6 +384,14 @@ fn desired(manager: &SessionManager) -> Option<Dial> {
         return None;
     }
     let url = settings.relay_url?;
+    // The store is shared with the release build, which may have saved a
+    // public Relay; a dev build's daemon does not dial it.
+    // (Any other fault in the URL is the dial's to name in the log.)
+    if let Err(relay::RelayUrlError::PublicHostInDevBuild) =
+        relay::RelayUrl::parse_for(&url, manager.build_profile())
+    {
+        return None;
+    }
     let key = trust.static_public_key().ok()?;
     Some(Dial {
         url,
@@ -420,6 +434,13 @@ enum Ended {
     Undiallable(String),
     /// The connection failed or was refused, after being held this long.
     Lost(String, Duration),
+}
+
+pub(crate) fn epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Starts the dial. Called once, by `serve`, after the trust store is
@@ -465,14 +486,22 @@ fn supervise(manager: &Arc<SessionManager>) {
         let Some(dial) = desired(manager) else {
             // Until poked, or until it is time to look at the store
             // again on nobody's say-so.
+            manager.set_relay_state(RelayState::NotWanted);
             wake.wait_past(seen, Some(STORE_POLL));
             backoff.reset();
             said.forget();
             continue;
         };
         match hold(manager, &dial, &mut seen, &mut said) {
-            Ended::Changed | Ended::Slept => backoff.reset(),
+            Ended::Changed | Ended::Slept => {
+                // Dialled again at once, so what was said about the last
+                // dial -- a failure against a URL since changed -- is
+                // not said about the next.
+                manager.set_relay_state(RelayState::Dialling);
+                backoff.reset();
+            }
             Ended::Undiallable(why) => {
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!("the Relay is not being dialled: {why}"));
                 wait_while_wanted(manager, &dial, None);
                 backoff.reset();
@@ -481,6 +510,7 @@ fn supervise(manager: &Arc<SessionManager>) {
                 if held >= SETTLED {
                     backoff.reset();
                 }
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!(
                     "the connection to the Relay ended ({why}); dialling again until it holds"
                 ));
@@ -520,6 +550,12 @@ fn wait_while_wanted(manager: &SessionManager, dial: &Dial, at_most: Option<Dura
 /// Dials the Relay, registers this Workstation, and holds the connection
 /// until it ends or stops being wanted.
 fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut Said) -> Ended {
+    // A retry after a failure keeps saying it failed: "dialling" again
+    // every backoff would flap the desk between the two, and the reason
+    // is what the human needs until a dial holds.
+    if !matches!(manager.relay_state(), RelayState::Failed { .. }) {
+        manager.set_relay_state(RelayState::Dialling);
+    }
     let hello = RelayHello::workstation(&dial.token, &dial.rendezvous);
     let mut connection = match client::dial(&dial.url, &hello, &DialOptions::default()) {
         Ok(connection) => connection,
@@ -528,6 +564,7 @@ fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut S
     };
     said.forget();
     said.say("connected to the Relay".to_string());
+    manager.set_relay_state(RelayState::Connected { since: epoch_seconds() });
     let since = Instant::now();
     let ended = attend(manager, dial, seen, &mut connection, since);
     connection.close();
@@ -634,14 +671,14 @@ fn attend(
 
 /// What a stream this daemon picks up is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Purpose {
+pub(crate) enum Purpose {
     Pair,
     Connect,
 }
 
 /// What this daemon picks a stream announced for `purpose` up as, or
 /// `None` if it leaves it where it is.
-fn wanted(manager: &SessionManager, purpose: &str) -> Option<Purpose> {
+pub(crate) fn wanted(manager: &SessionManager, purpose: &str) -> Option<Purpose> {
     match purpose {
         // The Relay announces a stream to every daemon registered under
         // this Workstation's key, and the dev build and the release
@@ -668,8 +705,7 @@ pub(crate) fn deference(manager: &SessionManager) -> Duration {
     }
 }
 
-/// Serves a paired Device's connection: the handshake, the proof, and
-/// then its requests, for as long as it stays.
+/// Picks a paired Device's connection up from the Relay, and serves it.
 fn connect_through(
     manager: &Arc<SessionManager>,
     dial: &Dial,
@@ -681,13 +717,30 @@ fn connect_through(
         std::thread::sleep(wait);
     }
     let hello = RelayHello::stream(&dial.token, &dial.rendezvous, stream);
-    let mut stream = match client::dial(&dial.url, &hello, &DialOptions::default()) {
+    let stream = match client::dial(&dial.url, &hello, &DialOptions::default()) {
         Ok(connection) => connection.into_stream(),
         // Another daemon registered under this key picked it up.
         Err(DialError::Refused(RefusalReason::Gone)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
+    serve_device(manager, stream, serving, || desired(manager).as_ref() == Some(dial))
+}
 
+/// Serves a paired Device's connection: the handshake, the proof, and
+/// then its requests, for as long as it stays.
+///
+/// The stream is a Relay's or the direct listener's (ADR 0009); from
+/// here the two are one path. `still_wanted` is the transport's half of
+/// whether to go on carrying it -- the Relay dial still the one wanted,
+/// or the listener still switched on -- read from the store, which a
+/// daemon that cannot poke this one also writes. Whether the Device is
+/// still one to serve is asked here, of the store, beside it.
+pub(crate) fn serve_device(
+    manager: &Arc<SessionManager>,
+    mut stream: RelayStream,
+    serving: Serving,
+    still_wanted: impl Fn() -> bool,
+) -> anyhow::Result<()> {
     // Lifted out of the store so that neither the handshake nor the
     // Device's proof is waited for with the trust lock held: see
     // `pairing::ResponderKeys`.
@@ -703,7 +756,7 @@ fn connect_through(
         // Refused, and told so.
         Ok(Err(refused)) => {
             stream.close();
-            note(refusal(&refused));
+            refused_at_the_door(manager, &refused);
             return Ok(());
         }
         Err(e) => {
@@ -723,11 +776,10 @@ fn connect_through(
             let verdict = ConnectVerdict::Refused { reason };
             let _ = connect::send_verdict(&mut stream, &mut accepted.transport, &verdict);
             stream.close();
-            note(refusal(&connect::Refused {
-                reason,
-                device_id: Some(device_id),
-                why: None,
-            }));
+            refused_at_the_door(
+                manager,
+                &connect::Refused { reason, device_id: Some(device_id), why: None },
+            );
             return Ok(());
         }
     };
@@ -746,12 +798,10 @@ fn connect_through(
     drop(serving);
 
     let ended = carry(&mut stream, &mut accepted.transport, &near, || {
-        // The dial this connection came in by is still the one wanted,
-        // and the Device is still one to serve. Both are read from the
-        // store, which a daemon that cannot poke this one also writes:
-        // a revocation pressed at ITS desk marks the row and shuts the
-        // connections IT holds, and this one is not among them.
-        desired(manager).as_ref() == Some(dial) && manager.device_refusal(&device_id).is_none()
+        // A revocation pressed at ANOTHER daemon's desk marks the row and
+        // shuts the connections that daemon holds, and this one is not
+        // among them.
+        still_wanted() && manager.device_refusal(&device_id).is_none()
     });
     // Both halves, however it ended: the manager's end, so that its loop
     // stops reading and the desk is told the Device has gone; and the
@@ -762,6 +812,16 @@ fn connect_through(
         note(format!("{device_id}'s connection was dropped: {why}"));
     }
     Ok(())
+}
+
+/// A Device was refused a connection: the log says so, and if the key that
+/// handshook is one the store holds, so does the desk (v62). A key the
+/// store has never seen names no Device and stays in the log.
+fn refused_at_the_door(manager: &SessionManager, refused: &connect::Refused) {
+    note(refusal(refused));
+    if let Some(device_id) = &refused.device_id {
+        manager.note_device_refusal(device_id, refused.reason);
+    }
 }
 
 /// What the log says of a Device that was refused.
@@ -976,11 +1036,21 @@ fn carry(
 
 fn pair_through(manager: &Arc<SessionManager>, dial: &Dial, stream: &str) -> anyhow::Result<()> {
     let hello = RelayHello::stream(&dial.token, &dial.rendezvous, stream);
-    let mut stream = client::dial(&dial.url, &hello, &DialOptions::default())?.into_stream();
+    let stream = client::dial(&dial.url, &hello, &DialOptions::default())?.into_stream();
+    serve_pairing(manager, stream, || desired(manager).as_ref() == Some(dial))
+}
 
-    // Phase 2's responder, over the Relay's pipe. A handshake that fails
-    // -- a wrong secret, an expired offer, no desk to ask -- ends here,
-    // and dropping the stream is what tells the Device.
+/// Serves a pairing stream, a Relay's or the direct listener's: phase
+/// 2's responder, then the wait for the desk, then its verdict.
+/// `still_wanted` is what `serve_device`'s is.
+pub(crate) fn serve_pairing(
+    manager: &Arc<SessionManager>,
+    mut stream: RelayStream,
+    still_wanted: impl Fn() -> bool,
+) -> anyhow::Result<()> {
+    // A handshake that fails -- a wrong secret, an expired offer, no
+    // desk to ask -- ends here, and dropping the stream is what tells the
+    // Device.
     let awaited = manager.pair_over_awaited(&mut Within::new(&mut stream, HANDSHAKE));
     let mut pairing = match awaited {
         Ok(pairing) => pairing,
@@ -990,9 +1060,7 @@ fn pair_through(manager: &Arc<SessionManager>, dial: &Dial, stream: &str) -> any
         }
     };
 
-    let verdict = await_decision(manager, &pairing, &mut stream, DECISION, || {
-        desired(manager).as_ref() == Some(dial)
-    });
+    let verdict = await_decision(manager, &pairing, &mut stream, DECISION, still_wanted);
     let sent = pairing::send_verdict(&mut stream, &mut pairing.handshake.transport, &verdict);
     stream.close();
     sent
@@ -1105,6 +1173,8 @@ mod tests {
             .unwrap(),
         );
         manager.set_trust_store(TrustStore::open(&dir.path().join("devices.sqlite")).unwrap());
+        // The tests below use example hosts; the dev guard has its own.
+        manager.set_build_profile(protocol::BuildProfile::Release);
         manager
     }
 
@@ -1118,6 +1188,22 @@ mod tests {
                 relay_admission: token.map(str::to_string),
             })
             .unwrap();
+    }
+
+    /// The dev build shares its trust store with the release build, so a
+    /// public Relay the release build saved must not be dialled by it.
+    #[test]
+    fn a_dev_build_does_not_dial_a_public_relay_the_store_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(&dir);
+        tell(&manager, true, Some("wss://relay.example"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a release build dials it");
+
+        manager.set_build_profile(protocol::BuildProfile::Dev);
+        assert_eq!(desired(&manager), None, "a dev build does not");
+
+        tell(&manager, true, Some("ws://192.168.1.20:9000"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a Relay on the LAN is fine");
     }
 
     /// The rule the whole module hangs on: there is something to dial

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DEMO } from "$companion/demo/sampleData";
+import type { LiveState } from "$shell/hub/live";
 import { keepPairing } from "$shell/hub/paired";
-import { DEMO_WORKSTATION, hubWorkstations, isWorkstationHost, stateLabel } from "$shell/hub/workstations";
+import { DEMO_WORKSTATION, hubWorkstations, isWorkstationHost } from "$shell/hub/workstations";
 
 const paired = keepPairing(
   {
@@ -30,14 +31,24 @@ describe("the Workstations hub's list", () => {
         id: paired.id,
         name: "Studio Mac",
         demo: false,
-        summary: "Unlock to connect.",
+        // The Unlock's banner says what to do, once, over all of them.
+        summary: "",
         state: "locked",
+        label: "Locked",
+        waiting: 0,
         openable: false,
+        tryNow: false,
       },
-      DEMO_WORKSTATION,
+      { ...DEMO_WORKSTATION, summary: "" },
     ]);
-    expect(stateLabel("locked")).toBe("Locked");
     expect(DEMO_WORKSTATION.openable).toBe(true);
+  });
+
+  it("keeps the Demo's description until a real Workstation is paired, then makes it one line", () => {
+    expect(hubWorkstations()[0].summary).toBe(DEMO_WORKSTATION.summary);
+    expect(DEMO_WORKSTATION.summary).not.toBe("");
+    const list = hubWorkstations([paired]);
+    expect(list[list.length - 1]).toEqual({ ...DEMO_WORKSTATION, summary: "" });
   });
 
   it("shows each paired Workstation's live state: ready, desktop app not running, asleep", () => {
@@ -51,18 +62,43 @@ describe("the Workstations hub's list", () => {
       [other.id]: { state: "desktop-app-not-running" },
       [third.id]: { state: "asleep" },
     });
-    // Only a ready Workstation opens: its desktop app serves its UI.
+    // Only a ready Workstation opens: its desktop app serves its UI. The
+    // others can be tried again now.
     expect(list.slice(0, 3).map((ws) => ws.openable)).toEqual([true, false, false]);
-    expect(list.slice(0, 3).map((ws) => [ws.state, stateLabel(ws.state), ws.summary])).toEqual([
-      ["ready", "Ready", "1 waiting on you."],
+    expect(list.map((ws) => ws.tryNow ?? false)).toEqual([false, true, true, false]);
+    expect(list.slice(0, 3).map((ws) => [ws.state, ws.label, ws.summary])).toEqual([
+      // The count is the card's, not a sentence under it.
+      ["ready", "Ready", ""],
       [
         "desktop-app-not-running",
         "Desktop app not running",
-        "It is on, but Gavin’s desktop app is not running there, so nothing can answer.",
+        "It is on, but Gavin’s desktop app is not running there. Open Gavin at the desk.",
       ],
       ["asleep", "Asleep", "Its Relay has not heard from it: it is asleep, or remote access is off at the desk."],
     ]);
-    expect(stateLabel("ready")).toBe("Ready");
+    expect(list.map((ws) => ws.waiting)).toEqual([1, 0, 0, 0]);
+    expect(DEMO_WORKSTATION.label).toBe("Ready");
+  });
+
+  it("offers Try now on one waiting out its backoff or whose desktop app did not answer, and Pair again on one that refused", () => {
+    const offered = (live: LiveState) => hubWorkstations([paired], { [paired.id]: live })[0];
+    for (const live of [
+      { state: "asleep" },
+      { state: "unreachable", problem: "Could not reach its Relay." },
+      { state: "desktop-app-not-running", reason: "not-answering" },
+    ] as LiveState[]) {
+      expect(offered(live).tryNow).toBe(true);
+    }
+    for (const live of [
+      { state: "locked" },
+      { state: "connecting" },
+      { state: "ready", items: [] },
+      { state: "failed", problem: "This phone’s keys failed." },
+    ] as LiveState[]) {
+      expect(offered(live).tryNow).toBe(false);
+    }
+    const refused = offered({ state: "refused", problem: "This Device was revoked at the Workstation." });
+    expect([refused.tryNow, refused.label]).toEqual([false, "Pair again"]);
   });
 
   it("gives every listed Workstation an id that can be its bundle's host", () => {

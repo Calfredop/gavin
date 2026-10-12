@@ -19,6 +19,7 @@ import { fetchBoard } from "$lib/board/kanbanState";
 import * as backend from "$lib/core/backend";
 import { gavinTrees, initGavinListeners, refreshGavinTree } from "$lib/core/gavinState";
 import {
+  daemonCompat,
   handleCwdChanged,
   handleSessionStatusChanged,
   layoutState,
@@ -26,6 +27,7 @@ import {
   reloadAppSettings,
 } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
+import { refreshSessionOwners, watchSessionOwners } from "$lib/core/sessionOwnershipState";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import { rereadAfterOtherWindowWrote } from "$lib/orchestration/orchestrationState";
 import { allSessionIds } from "$lib/panes/layout";
@@ -35,7 +37,16 @@ import { applyInitTracking, nameForRoot } from "$lib/workspace/workspaceOpen";
 import { adoptSettingsRecord, type WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
+import {
+  DEFAULT_APPEARANCE,
+  loadAppearance,
+  localThemePref,
+  saveAppearance,
+  type Appearance,
+} from "$companion/state/appearance";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
+import { browserSessionEnded, reassertBrowserViews, startBrowserViews } from "$companion/state/browser";
+import { connectionChanged, onReconnect, resetReachability } from "$companion/state/reachability";
 import { forgetSession, resetSessions, startedHere } from "$companion/state/sessions";
 import { resetTurns, turnMovedOn } from "$companion/state/turn";
 import {
@@ -87,14 +98,29 @@ const landingStore = writable<Landing | null>(null);
 /// card. In memory only, like a landing.
 const returnedFromStore = writable<string | null>(null);
 
+/// The phone's own appearance for this Workstation (`appearance.ts`).
+const appearanceStore = writable<Appearance>(DEFAULT_APPEARANCE);
+
 export const connection: Readable<Connection> = { subscribe: connectionStore.subscribe };
 export const view: Readable<ViewState> = { subscribe: viewStore.subscribe };
 export const landing: Readable<Landing | null> = { subscribe: landingStore.subscribe };
 export const returnedFrom: Readable<string | null> = { subscribe: returnedFromStore.subscribe };
+export const appearance: Readable<Appearance> = { subscribe: appearanceStore.subscribe };
 
 /// Writes a view down on the Device. Null until a Workstation is
 /// connected, since a view belongs to one.
 let remember: ((next: ViewState) => void) | null = null;
+/// The same for the phone's appearance.
+let rememberAppearance: ((next: Appearance) => void) | null = null;
+
+/// Draws this Workstation's UI in `next` on this phone, and keeps the
+/// choice on the Device. Never a write to the Workstation: its theme is
+/// the desk's, changed only by the desk's own control.
+export function setAppearance(next: Appearance): void {
+  appearanceStore.set(next);
+  rememberAppearance?.(next);
+  void themeState.setLocal(localThemePref(next));
+}
 
 /// The one door every change of view goes through.
 function show(next: ViewState): void {
@@ -155,8 +181,15 @@ function holdsSession(ws: Workspace, sessionId: string): boolean {
   return (
     ws.mainSessionId === sessionId ||
     ws.pages.some((p) => allSessionIds(p.layout).includes(sessionId)) ||
-    get(startedHere)[sessionId] === ws.id
+    get(startedHere)[sessionId] === ws.id ||
+    commitAgentOf(ws) === sessionId
   );
+}
+
+/// The hidden agent the desk is committing a workspace with: on no page,
+/// and opened from the Git surface's Show the agent.
+function commitAgentOf(ws: Workspace): string | null {
+  return ws.gitView?.agentCommit?.sessionId ?? null;
 }
 
 /// Every session the view could have open in a workspace.
@@ -165,6 +198,8 @@ function sessionsOf(ws: Workspace | undefined): string[] {
   const ids = ws.pages.flatMap((p) => allSessionIds(p.layout));
   if (ws.mainSessionId) ids.push(ws.mainSessionId);
   for (const [id, workspaceId] of Object.entries(get(startedHere))) if (workspaceId === ws.id) ids.push(id);
+  const committing = commitAgentOf(ws);
+  if (committing) ids.push(committing);
   return ids;
 }
 
@@ -195,9 +230,10 @@ export function openPrd(): void {
   show(openPageIn(get(viewStore), { kind: "prd" }));
 }
 
-/// Back from a card or the PRD to the board under it, on the card's
-/// column. An inbox item's card stays outlined there: coming back to the
-/// board from the card it landed on is not going somewhere else.
+/// Back from a card or the PRD to the surface under it: the board, on the
+/// card's column, or the Decisions or Review list. An inbox item's card
+/// stays outlined on the board: coming back to the board from the card it
+/// landed on is not going somewhere else.
 export function closePage(): void {
   show(closePageIn(get(viewStore)));
 }
@@ -322,6 +358,13 @@ export async function addWorkspace(folder: string, setup: FolderSetup | null): P
   openWorkspace(added.id);
 }
 
+/// The workspaces read again, for a caller that must hold what the desk
+/// wrote before it answered: the write's `workspaces-synced` and the
+/// answer reach the phone by separate ways.
+export async function readWorkspacesAgain(): Promise<void> {
+  adoptWorkspaces(await backend.getWorkspacesState());
+}
+
 /// Another writer's change to one workspace's settings -- the desk, or
 /// this phone's own echo, which is the host's copy and so is taken too.
 /// Only settings move; the desk's layout of it is not the phone's.
@@ -373,6 +416,7 @@ function adoptWorkspaces(data: WorkspacesData): void {
 /// is not the phone's -- and a view showing it goes back to the list.
 function sessionEnded(sessionId: string): void {
   forgetSession(sessionId);
+  browserSessionEnded(sessionId);
   if (get(viewStore).sessionId === sessionId) show(closeTerminalIn(get(viewStore)));
   destroyTerminal(sessionId);
 }
@@ -380,7 +424,11 @@ function sessionEnded(sessionId: string): void {
 /// Every session's status as the Workstation holds it now. Written
 /// straight into the map rather than through the desktop's change
 /// handler: a status that was already in place is not a transition.
-async function loadSessions(): Promise<void> {
+///
+/// `afterGap`: read again once the connection is back. The pushes sent
+/// while it was down never arrived, so the Workstation's status is taken
+/// over the one heard before the gap, rather than only where none was.
+async function loadSessions(afterGap = false): Promise<void> {
   const [baselines, sessionNames] = await Promise.all([
     backend.getSessionBaselines().catch(() => null),
     backend.getSessionNames().catch(() => null),
@@ -394,9 +442,13 @@ async function loadSessions(): Promise<void> {
     for (const b of baselines?.sessions ?? []) {
       // A cwd already heard is newer than the read.
       cwdBySessionId[b.id] ??= b.cwd;
+      const status = parseSessionStatus(b.status);
       if (sessionStatusById[b.id] === undefined) {
-        sessionStatusById[b.id] = parseSessionStatus(b.status);
+        sessionStatusById[b.id] = status;
         statusSinceById[b.id] ??= { at: Date.now(), watched: false };
+      } else if (afterGap && sessionStatusById[b.id] !== status) {
+        sessionStatusById[b.id] = status;
+        statusSinceById[b.id] = { at: Date.now(), watched: false };
       }
       if (b.interrupted) interruptedSessionIds.add(b.id);
       if (b.failureReason && failureReasonById[b.id] === undefined) {
@@ -423,16 +475,19 @@ export async function connectWorkstation(
   storage: ViewStorage | null
 ): Promise<() => void> {
   connectionStore.set({ status: "connecting" });
+  resetReachability();
   const client = connectChannel(port);
-  const stops: UnlistenFn[] = [];
+  const stops: UnlistenFn[] = [client.onConnection(connectionChanged)];
   const disconnect = (): void => {
     for (const stop of stops.splice(0)) stop();
     remember = null;
+    rememberAppearance = null;
     resetSessions();
     resetTurns();
     settingsShown = false;
     profilesRead = false;
     saveProblemStore.set(null);
+    resetReachability();
     disconnectChannel();
   };
 
@@ -509,9 +564,31 @@ export async function connectWorkstation(
         layoutState.update((s) => ({ ...s, failureReasonById: { ...s.failureReasonById, [id]: reason } }));
       })
     );
+    // Which agents' browsers are running, for the button beside each
+    // terminal; their frames are listened for only while a view is up.
+    stops.push(await startBrowserViews());
+    // Which Device each session takes input from (v68): the lock on a
+    // terminal another Device owns, and the keys it drops.
+    stops.push(watchSessionOwners());
+    // The Workstation's daemon as its desk classified it, which every
+    // `featureBlockedReason` the desk's modules ask reads. Best-effort, as
+    // at the desk: a desk that cannot say leaves the gates open.
+    void backend
+      .daemonCompat()
+      .then((compat) => daemonCompat.set(compat))
+      .catch(() => {});
 
     const data = await backend.getWorkspacesState();
     const workstationId = capabilities.workstation.id;
+    // The phone's own appearance before anything is drawn: a choice that
+    // is not the Workstation's needs nothing from it, so it lands at once
+    // instead of after the desk's theme has been asked for.
+    const chosen = loadAppearance(storage, workstationId);
+    appearanceStore.set(chosen);
+    const local = localThemePref(chosen);
+    if (local) void themeState.setLocal(local);
+    else themeState.local = null;
+    rememberAppearance = (next) => saveAppearance(storage, workstationId, next);
     // Restored BEFORE the workspaces land, and only then made the way
     // views are remembered: restoring must not count as a change.
     viewStore.set(
@@ -536,6 +613,21 @@ export async function connectWorkstation(
     connectionStore.set({ status: "unavailable", reason: e instanceof Error ? e.message : String(e) });
     return () => {};
   }
+
+  // What every screen draws from, read again once the connection is back:
+  // the pushes sent while it was down never arrived. Each open surface
+  // re-reads its own (`onReconnect` in each).
+  stops.push(
+    onReconnect(() => {
+      void backend
+        .getWorkspacesState()
+        .then(adoptWorkspaces)
+        .catch(() => {});
+      void loadSessions(true);
+      void refreshSessionOwners();
+      reassertBrowserViews();
+    })
+  );
 
   // Not awaited: neither holds up the list. The theme repaints when it
   // arrives, and a row draws its agents when their statuses do.

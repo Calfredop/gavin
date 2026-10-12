@@ -82,6 +82,8 @@ impl Workstation {
             ],
             protocol_version: protocol::PROTOCOL_VERSION,
             relay_admission: Some("let-me-in".into()),
+            direct: Vec::new(),
+            direct_pin: None,
         }
         .to_qr_string()
     }
@@ -262,6 +264,8 @@ fn a_pairing_runs_through_the_json_face_and_keeps_the_workstation() {
                 "workstationKey": protocol::hex_encode(&ws.keys.public),
                 "relays": ["wss://relay.example/gavin", "ws://127.0.0.1:8443"],
                 "relayAdmission": "let-me-in",
+                "direct": [],
+                "directPin": null,
                 "deviceId": "dev-1",
                 "notificationKey": notification_key,
             },
@@ -647,6 +651,32 @@ fn connect_names_the_relays_to_dial_for_a_connection() {
     assert_eq!(hello["token"], "let-me-in");
     assert_eq!(hello["purpose"], "connect");
     assert_eq!(hello["rendezvous"], protocol::relay::rendezvous_id(&ws.keys.public));
+    assert_eq!(dials[0]["pin"], Value::Null, "a Relay is trusted as the platform trusts it");
+}
+
+/// What pairing kept of a direct listener (ADR 0009) comes first, with
+/// the pin to trust it by and no admission token; a record kept before
+/// v69 has neither field and dials its Relays as it did.
+#[test]
+fn connect_names_the_direct_listener_first_with_its_pin() {
+    let ws = Connected::new();
+    let started = call_json(json!({
+        "op": "connect-start",
+        "workstationKey": protocol::hex_encode(&ws.keys.public),
+        "relays": ["wss://relay.example/gavin"],
+        "relayAdmission": "let-me-in",
+        "direct": ["wss://192.168.1.20:8445"],
+        "directPin": "ef".repeat(32),
+        "noisePrivateKey": noise_key(),
+        "entropy": "78".repeat(32),
+    }));
+    let dials = started["ok"]["dials"].as_array().unwrap_or_else(|| panic!("{started}"));
+    let urls: Vec<_> = dials.iter().map(|d| d["url"].clone()).collect();
+    assert_eq!(urls, vec![json!("wss://192.168.1.20:8445"), json!("wss://relay.example/gavin")]);
+    assert_eq!(dials[0]["pin"], json!("ef".repeat(32)));
+    let hello: Value = serde_json::from_str(dials[0]["hello"].as_str().unwrap()).unwrap();
+    assert_eq!(hello["token"], "", "the admission token is the Relay's");
+    assert_eq!(dials[1]["pin"], Value::Null);
 }
 
 #[test]

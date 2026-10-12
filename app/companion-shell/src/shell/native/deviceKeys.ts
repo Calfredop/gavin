@@ -114,7 +114,9 @@ export interface DeviceKeysPlugin {
 /// Brief interruptions -- Control Center, the notification shade, a call
 /// banner, the Unlock's own prompt -- are none of these, and are not sent
 /// (`docs/research/2026-09-28-companion-device-keys.md`, "Brief
-/// interruptions").
+/// interruptions"). On iOS the shade does send the app to the background,
+/// so a background over within two seconds is not sent either, nor the
+/// foreground after it (`DeviceKeysPlugin.briefBackground`).
 export type LifecyclePhase = "foreground" | "background" | "screen-locked";
 
 export interface UnlockPlugin {
@@ -138,4 +140,10 @@ export interface UnlockPlugin {
   addListener(event: "lifecycle", listener: (e: { phase: LifecyclePhase }) => void): Promise<PluginListenerHandle>;
 }
 
-export const DeviceKeys = registerPlugin<DeviceKeysPlugin & UnlockPlugin>("DeviceKeys");
+/// A debug build on iOS: one line per lifecycle notification, with where
+/// the app stands, for the console beside `[gavin-unlock]`.
+export interface LifecycleTracePlugin {
+  addListener(event: "trace", listener: (e: { line: string }) => void): Promise<PluginListenerHandle>;
+}
+
+export const DeviceKeys = registerPlugin<DeviceKeysPlugin & UnlockPlugin & LifecycleTracePlugin>("DeviceKeys");

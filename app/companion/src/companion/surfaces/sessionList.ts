@@ -28,13 +28,30 @@ export interface SessionRow {
   /// What the badge says, in its own words without the axis: "working",
   /// "waiting for you", "stopped — <the agent's sentence>".
   said: string;
+  /// The Device working in it (v68), when that is not this one: the row
+  /// says so beside a lock, as the terminal will.
+  lockedBy: string | null;
 }
 
 export interface SessionGroup {
   key: string;
   title: string;
   rows: SessionRow[];
+  /// The workspace agent's group with no agent in it: the place to start
+  /// one, as the desk's Home tab offers.
+  startAgent?: true;
+  /// The started-here group once the desk has had time to place what is
+  /// in it and has not: the phone says so rather than promise a tab.
+  unplaced?: true;
+  /// While a start in it is still inside that time: when the time runs
+  /// out, epoch ms, for the list to look again.
+  placingUntil?: number;
 }
+
+/// How long the desk has to place a session this phone started before the
+/// list says it has not: a push to the desk, a layout write and the sync
+/// back, which take well under a second when the desk is listening.
+export const DESK_PLACES_WITHIN_MS = 5000;
 
 export interface SessionListInput {
   workspace: Workspace;
@@ -49,6 +66,16 @@ export interface SessionListInput {
   /// Sessions this Device started in the workspace that the desk has not
   /// placed on a page (yet): the phone's own, until the desk shows them.
   startedHere: readonly string[];
+  /// The workspace agent this Device started there, if any: the agent
+  /// until the desk records one, which it does as it places the session.
+  agentStartedHere?: string;
+  /// When each of `startedHere` was started, epoch ms, and the time now:
+  /// what says the desk has had long enough. Without them nothing is said.
+  startedAt?: Record<string, number>;
+  now?: number;
+  /// Who each session is locked by for this Device, by name
+  /// (`lockBySessionId`). Absent: nothing is locked.
+  lockedBy?: Record<string, string>;
 }
 
 /// An indicator's words after its axis ("Agent · working" → "working").
@@ -69,13 +96,26 @@ function row(input: SessionListInput, id: string): SessionRow {
     : status === "failed"
       ? agentFailedIndicator(input.failureReasonById[id])
       : agentIndicator(status);
-  return { id, name, folder: folder === name ? null : folder, status, badge, said: detailOf(badge) };
+  return {
+    id,
+    name,
+    folder: folder === name ? null : folder,
+    status,
+    badge,
+    said: detailOf(badge),
+    lockedBy: input.lockedBy?.[id] ?? null,
+  };
 }
 
 /// The workspace's sessions in groups: its own agent, then each page's
 /// terminals in the order the desk's tab strip has them, then the ones
 /// this Device started and no page holds. A page of files and boards only
 /// is not a group, and no session is listed twice.
+///
+/// A workspace with a folder always has its agent's group: the agent, or
+/// with none, the place to start one -- the desk's Home tab offers the
+/// same, and only for a workspace with a folder, since that is where the
+/// agent works.
 export function sessionGroups(input: SessionListInput): SessionGroup[] {
   const { workspace } = input;
   const seen = new Set<string>();
@@ -91,9 +131,12 @@ export function sessionGroups(input: SessionListInput): SessionGroup[] {
 
   const groups: SessionGroup[] = [];
   const pageIds = new Set(workspace.pages.flatMap((p) => allSessionIds(p.layout)));
-  const main = workspace.mainSessionId;
+  const pending = input.agentStartedHere && !pageIds.has(input.agentStartedHere) ? input.agentStartedHere : undefined;
+  const main = workspace.mainSessionId ?? pending;
   if (main && !pageIds.has(main)) {
     groups.push({ key: "main", title: "Workspace agent", rows: take([main]) });
+  } else if (!main && workspace.rootPath?.trim()) {
+    groups.push({ key: "main", title: "Workspace agent", rows: [], startAgent: true });
   }
   for (const page of workspace.pages) {
     const ids = sessionTabsOnly(
@@ -106,8 +149,23 @@ export function sessionGroups(input: SessionListInput): SessionGroup[] {
     if (rows.length > 0) groups.push({ key: `page:${page.id}`, title: page.name, rows });
   }
   const own = take(input.startedHere.filter((id) => !pageIds.has(id) && id !== main));
-  if (own.length > 0) groups.push({ key: "started-here", title: "Started from this phone", rows: own });
+  if (own.length > 0) {
+    groups.push({ key: "started-here", title: "Started from this phone", rows: own, ...deskPlacing(input, own) });
+  }
   return groups;
+}
+
+/// Whether the desk has had its time to place the sessions this phone
+/// started and still lists as its own, and when the next one's runs out.
+function deskPlacing(input: SessionListInput, own: SessionRow[]): Pick<SessionGroup, "unplaced" | "placingUntil"> {
+  const { startedAt, now } = input;
+  if (!startedAt || now === undefined) return {};
+  const ends = own.flatMap((r) => (r.id in startedAt ? [startedAt[r.id] + DESK_PLACES_WITHIN_MS] : []));
+  const pending = ends.filter((end) => end > now);
+  return {
+    ...(ends.some((end) => end <= now) ? { unplaced: true as const } : {}),
+    ...(pending.length > 0 ? { placingUntil: Math.min(...pending) } : {}),
+  };
 }
 
 /// Every session a workspace's list can show, whatever its group.

@@ -3,8 +3,10 @@
   import {
     layoutState,
     daemonCompat,
+    agentDefaultsStore,
     agentProfilesStore,
     agentModelDefaultsStore,
+    promptExtrasFor,
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
@@ -36,7 +38,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const profile = $derived($agentProfilesStore.find((p) => p.id === agentCfg.profileId));
@@ -119,7 +125,11 @@
     busy = true;
     error = null;
     try {
-      const prompt = await backend.composeAgentPrompt(ws.rootPath, "prd");
+      const prompt = await backend.composeAgentPrompt(
+        ws.rootPath,
+        "prd",
+        promptExtrasFor(workspaceId, agentCfg.profileId)
+      );
       await startMainAgentWithPrompt(workspaceId, prompt);
       onDone();
     } catch (e) {

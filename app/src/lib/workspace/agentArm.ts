@@ -1,15 +1,15 @@
 /// Setup-only arming for a fallback (or inherited default) agent.
 ///
-/// Same Integration / Superpowers steps as workspace agent-change, but
+/// Same Integration / agent skills steps as workspace agent-change, but
 /// MUST NOT commit a new active profile or rewrite difficulty pins. The
 /// workspace agent stays where it is; these steps only make another CLI
 /// launchable.
 
-export type AgentArmStep = "integration" | "superpowers";
+export type AgentArmStep = "integration" | "agentSkills";
 
 export const AGENT_ARM_STEPS: Array<{ id: AgentArmStep; label: string }> = [
   { id: "integration", label: "Integration" },
-  { id: "superpowers", label: "Superpowers" },
+  { id: "agentSkills", label: "Matt Pocock's skills" },
 ];
 
 export function nextAgentArmStep(step: AgentArmStep): AgentArmStep | null {

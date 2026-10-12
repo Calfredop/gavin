@@ -35,6 +35,14 @@
 	</dict>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<key>GavinKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)com.gavin.companion.shared</string>
+	<key>GavinPushGateway</key>
+	<string>$(GAVIN_PUSH_GATEWAY)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

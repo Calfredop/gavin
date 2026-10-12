@@ -6,12 +6,13 @@ import Security
 ///
 /// Registered on the shell's own Capacitor webview only. Each record is
 /// the web layer's JSON, opaque here, in a keychain item of its own under
-/// the Workstation's id: this device only, never synchronised, and
-/// readable after the first unlock, so that the notification service
-/// extension can open a Workstation's push on a locked phone once it
-/// exists. A record holds that Workstation's notification key, which is
-/// why it lives here and not in the webview's storage -- which the OS may
-/// also clear under storage pressure.
+/// the Workstation's id: this device only, never synchronised, readable
+/// after the first unlock, and in the keychain group the app shares with
+/// its Notification Service Extension (`SharedKeychain`), which opens a
+/// Workstation's push on a locked phone with the record's notification
+/// key and labels it with the record's name. That key is why a record
+/// lives here and not in the webview's storage -- which the OS may also
+/// clear under storage pressure.
 ///
 /// The records go with the Device's keys (`DeviceKeysPlugin.deleteAll`):
 /// each names the Device a Workstation paired, and a phone without those
@@ -26,9 +27,12 @@ public class WorkstationsPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
     ]
 
-    static let service = "com.gavin.companion.workstation"
+    static let service = SharedKeychain.workstationService
 
     @objc func list(_ call: CAPPluginCall) {
+        // Pairings kept before the group existed, moved where the
+        // extension can read them.
+        SharedKeychain.moveIntoGroup(service: Self.service)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -64,7 +68,7 @@ public class WorkstationsPlugin: CAPPlugin, CAPBridgedPlugin {
             kSecAttrSynchronizable as String: false,
             kSecValueData as String: Data(record.utf8),
         ]
-        let status = SecItemAdd(item as CFDictionary, nil)
+        let status = SharedKeychain.add(item)
         guard status == errSecSuccess else {
             call.reject("the Workstation could not be kept: OSStatus \(status)", "failed")
             return
@@ -91,5 +95,6 @@ public class WorkstationsPlugin: CAPPlugin, CAPBridgedPlugin {
 
     static func deleteAll() {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
+        SharedKeychain.deleteCounters()
     }
 }

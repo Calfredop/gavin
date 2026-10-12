@@ -12,9 +12,10 @@
 //!
 //! So those two are read at runtime, once per app start, and merged
 //! BEHIND the static list rather than over it (`mergeDiscoveredModels`,
-//! agentModel.ts). Which route each profile has is the table's answer
-//! (`agent_setup::ModelCatalog`); this module only carries the routes
-//! out.
+//! agentModel.ts). kimi-code joins them for the same reason: its aliases
+//! are managed and refresh upstream. Which route each profile has is the
+//! table's answer (`agent_setup::ModelCatalog`); this module only carries
+//! the routes out.
 //!
 //! Three constraints shape it.
 //!
@@ -103,6 +104,7 @@ fn resolve_all() -> HashMap<String, Vec<String>> {
         let models = match route {
             ModelCatalog::CodexCache => codex_models(&codex_home()),
             ModelCatalog::OpencodeCli => opencode_models(),
+            ModelCatalog::KimiCli => kimi_models(),
         };
         if !models.is_empty() {
             out.insert(profile.id.to_string(), models);
@@ -199,6 +201,40 @@ pub fn parse_opencode_models(stdout: &str) -> Vec<String> {
         }
     }
     out
+}
+
+// ---- kimi --------------------------------------------------------------------
+
+fn kimi_models() -> Vec<String> {
+    // Resolved rather than named: on Windows `kimi` is an npm shim and
+    // `CreateProcess` will not start it without the extension (see
+    // `program`); a miss leaves the bare name, which is the same answer
+    // a machine with no CLI already gives.
+    let bin = crate::program::resolve_or_name("kimi");
+    match run(&bin.to_string_lossy(), &["provider", "list", "--json"]) {
+        Some(stdout) => parse_kimi_provider_list(&stdout),
+        None => Vec::new(),
+    }
+}
+
+/// The `models` map's keys, in the order kimi prints them: each key is an
+/// alias `-m` takes (`kimi-code/kimi-for-coding`), and the map values
+/// carry the display name, the efforts and the default. The KEYS rather
+/// than any `model` field inside: the alias is what a launch command
+/// spells, and the value's `model` is the upstream id behind it.
+///
+/// Defensive, like every parser here: a `models` that is not an object,
+/// or output that is not JSON at all, is an empty list rather than a
+/// guessed name in somebody's argv. Verified against kimi 2.1.1's real
+/// output (2026-10-05).
+pub fn parse_kimi_provider_list(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(models) = value.get("models").and_then(|m| m.as_object()) else {
+        return Vec::new();
+    };
+    models.keys().map(|k| k.to_string()).collect()
 }
 
 // ---- running one -----------------------------------------------------------
@@ -372,7 +408,50 @@ mod tests {
             .filter(|p| p.model_catalog.is_some())
             .map(|p| p.id)
             .collect();
-        assert_eq!(routed, vec!["codex", "opencode"]);
+        assert_eq!(routed, vec!["codex", "opencode", "kimi-code"]);
+    }
+
+    /// A real slice of kimi 2.1.1's `kimi provider list --json`: the
+    /// providers map, the models map keyed by alias, and a defaultModel.
+    /// Only the keys are the answer.
+    const KIMI_PROVIDER_LIST: &str = r#"{
+      "providers": {
+        "managed:kimi-code": { "baseUrl": "https://api.kimi.ai/coding/v1", "type": "kimi" }
+      },
+      "models": {
+        "kimi-code/kimi-for-coding": {
+          "provider": "managed:kimi-code",
+          "model": "kimi-for-coding",
+          "displayName": "K2.8 Preview",
+          "supportEfforts": ["low", "high", "max"],
+          "defaultEffort": "max"
+        },
+        "kimi-code/kimi-for-coding-highspeed": {
+          "provider": "managed:kimi-code",
+          "model": "kimi-for-coding-highspeed",
+          "displayName": "K2.8 Preview Highspeed",
+          "supportEfforts": ["low", "high"],
+          "defaultEffort": "high"
+        }
+      },
+      "defaultModel": "kimi-code/kimi-for-coding"
+    }"#;
+
+    #[test]
+    fn kimi_provider_list_yields_the_model_aliases() {
+        let mut models = parse_kimi_provider_list(KIMI_PROVIDER_LIST);
+        models.sort();
+        assert_eq!(models, vec!["kimi-code/kimi-for-coding", "kimi-code/kimi-for-coding-highspeed"]);
+    }
+
+    /// The same posture as the codex and opencode parsers: an unexpected
+    /// shape costs the LIST, never produces a name for somebody's argv.
+    #[test]
+    fn kimi_provider_list_answers_nothing_for_anything_unexpected() {
+        assert!(parse_kimi_provider_list("").is_empty());
+        assert!(parse_kimi_provider_list("not json at all").is_empty());
+        assert!(parse_kimi_provider_list(r#"{"models": ["kimi-code/k3"]}"#).is_empty());
+        assert!(parse_kimi_provider_list(r#"{"data": {"models": {}}}"#).is_empty());
     }
 
     /// A route only makes sense where gavin can put the answer on a

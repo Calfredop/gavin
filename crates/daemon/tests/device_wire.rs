@@ -27,11 +27,11 @@ use protocol::device_wire::{ConnectRefusal, PairingVerdict};
 use protocol::relay::{rendezvous_id, RefusalReason, RelayHello, PURPOSE_CONNECT, PURPOSE_PAIR};
 use protocol::transport::{Endpoint, Stream};
 use protocol::{
-    read_message, write_message, ConnectionKind, DeviceInfo, HelloAuth, PairingQr, Request,
-    Response,
+    read_message, write_message, ConnectionKind, DeviceInfo, DirectState, HelloAuth, PairingQr,
+    Request, Response,
 };
 use std::io::{BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -89,17 +89,44 @@ impl LocalRelay {
 struct Desk {
     stream: Stream,
     reader: BufReader<Stream>,
+    /// Refusals pushed (v62) that a test reading something else went
+    /// past. `heard_refusal` takes them back out.
+    refusals: std::collections::VecDeque<(String, protocol::DeviceRefusal)>,
+    /// Presence pushes (v63) likewise, for `heard_presence`. Every
+    /// forwarded command that names a workspace can send one, so a test
+    /// that is about something else must be able to read past them.
+    presences: std::collections::VecDeque<(String, protocol::DevicePresence)>,
+    /// Ownership pushes (v68) likewise, for `ownership_of`: a Device's
+    /// input or start can send one.
+    owners: std::collections::VecDeque<protocol::SessionOwnership>,
 }
 
 impl Desk {
     fn connect(endpoint: &Endpoint, daemon_token: &str, kind: ConnectionKind) -> Self {
+        Self::connect_speaking(endpoint, daemon_token, kind, protocol::PROTOCOL_VERSION)
+    }
+
+    /// An app that says it speaks `version`, for the app older than a bump.
+    fn connect_speaking(
+        endpoint: &Endpoint,
+        daemon_token: &str,
+        kind: ConnectionKind,
+        version: u32,
+    ) -> Self {
         let stream = Stream::connect(endpoint.clone()).unwrap();
         stream.set_read_timeout(Some(SOON)).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        let mut desk = Self { stream, reader };
+        let mut desk =
+            Self {
+                stream,
+                reader,
+                refusals: Default::default(),
+                presences: Default::default(),
+                owners: Default::default(),
+            };
         match desk.request(&Request::Hello {
             client: "app".into(),
-            protocol_version: protocol::PROTOCOL_VERSION,
+            protocol_version: version,
             auth: HelloAuth::DaemonToken { token: daemon_token.to_string() },
             nonce: "seam-one".into(),
             connection: Some(kind),
@@ -115,17 +142,178 @@ impl Desk {
         self.next()
     }
 
-    fn next(&mut self) -> Response {
+    /// The next message, whatever it is.
+    fn next_raw(&mut self) -> Response {
         read_message(&mut self.reader)
             .expect("the daemon did not answer in time")
             .expect("the daemon closed the connection")
+    }
+
+    /// The next message that is not the dial's state changing, which
+    /// arrives whenever the Relay is dialled and is asserted on by the
+    /// tests that are about it.
+    fn next(&mut self) -> Response {
+        loop {
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    self.presences.push_back((device_id, presence))
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                other => return other,
+            }
+        }
+    }
+
+    /// The next presence the daemon pushes, whether it has already gone
+    /// past or is still to come.
+    fn heard_presence(&mut self) -> (String, protocol::DevicePresence) {
+        loop {
+            if let Some(heard) = self.presences.pop_front() {
+                return heard;
+            }
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    return (device_id, presence)
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                other => panic!("expected DevicePresenceChanged, got {other:?}"),
+            }
+        }
+    }
+
+    /// Reads presence pushes until `device_id`'s satisfies `check`, and
+    /// returns it. Each push is the whole presence, so the one that
+    /// satisfies is the one to assert on; the ones before it are the
+    /// steps that led there.
+    ///
+    /// Another Device's pushes are kept for a later call: two Devices'
+    /// commands are answered on two connections, and whose push the daemon
+    /// writes first is not the test's to decide.
+    fn presence_of(
+        &mut self,
+        device_id: &str,
+        check: impl Fn(&protocol::DevicePresence) -> bool,
+    ) -> protocol::DevicePresence {
+        let deadline = Instant::now() + SOON;
+        loop {
+            let found = self.presences.iter().position(|(id, p)| id == device_id && check(p));
+            if let Some(at) = found {
+                return self.presences.remove(at).unwrap().1;
+            }
+            assert!(Instant::now() < deadline, "no presence push for {device_id} came true");
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    self.presences.push_back((device_id, presence))
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                other => panic!("expected DevicePresenceChanged, got {other:?}"),
+            }
+        }
+    }
+
+    /// Whether any presence push arrives within `within`, including one
+    /// that already went past. Everything else is read and set aside.
+    fn hears_no_presence_for(&mut self, within: Duration) -> bool {
+        if !self.presences.is_empty() {
+            return false;
+        }
+        self.stream.set_read_timeout(Some(within)).unwrap();
+        let heard = loop {
+            match read_message::<_, Response>(&mut self.reader) {
+                Ok(Some(Response::DevicePresenceChanged { .. })) => break true,
+                Ok(Some(_)) => continue,
+                _ => break false,
+            }
+        };
+        self.stream.set_read_timeout(Some(SOON)).unwrap();
+        !heard
+    }
+
+    /// The next refusal the daemon pushes, whether it has already gone
+    /// past or is still to come.
+    fn heard_refusal(&mut self) -> (String, protocol::DeviceRefusal) {
+        loop {
+            if let Some(heard) = self.refusals.pop_front() {
+                return heard;
+            }
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    return (device_id, refusal)
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                other => panic!("expected DeviceRefusalChanged, got {other:?}"),
+            }
+        }
+    }
+
+    /// Reads ownership pushes (v68) until one for `session_id` satisfies
+    /// `check`, and returns it; like `presence_of`, the ones before it are
+    /// the steps that led there, and other sessions' are kept.
+    fn ownership_of(
+        &mut self,
+        session_id: &str,
+        check: impl Fn(&protocol::SessionOwnership) -> bool,
+    ) -> protocol::SessionOwnership {
+        let deadline = Instant::now() + SOON;
+        loop {
+            let found = self.owners.iter().position(|o| o.session_id == session_id && check(o));
+            if let Some(at) = found {
+                let heard = self.owners.remove(at).unwrap();
+                // What came before it for this session is spent.
+                self.owners.retain(|o| o.session_id != session_id);
+                return heard;
+            }
+            assert!(Instant::now() < deadline, "no ownership push for {session_id} came true");
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    self.presences.push_back((device_id, presence))
+                }
+                Response::SessionOwnerChanged { ownership } => self.owners.push_back(ownership),
+                // A Device connecting or hanging up is what moves an owner
+                // into and out of its grace, so those pushes come between.
+                Response::DeviceConnected { .. } | Response::DeviceDisconnected { .. } => {}
+                other => panic!("expected SessionOwnerChanged, got {other:?}"),
+            }
+        }
     }
 
     /// Whether anything arrives within `within`. For the pushes that
     /// must not be sent.
     fn hears_nothing_for(&mut self, within: Duration) -> bool {
         self.stream.set_read_timeout(Some(within)).unwrap();
-        let heard = read_message::<_, Response>(&mut self.reader);
+        let heard = loop {
+            match read_message::<_, Response>(&mut self.reader) {
+                Ok(Some(Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. })) => {
+                    continue
+                }
+                Ok(Some(Response::DeviceRefusalChanged { device_id, refusal })) => {
+                    self.refusals.push_back((device_id, refusal));
+                    continue;
+                }
+                Ok(Some(Response::SessionOwnerChanged { ownership })) => {
+                    self.owners.push_back(ownership);
+                    continue;
+                }
+                other => break other,
+            }
+        };
         self.stream.set_read_timeout(Some(SOON)).unwrap();
         heard.is_err()
     }
@@ -150,6 +338,17 @@ impl Workstation {
     }
 
     fn start_trusting(certificate_pem: &str) -> Self {
+        Self::launch(certificate_pem, None)
+    }
+
+    /// Starts a daemon that trusts `relay`'s certificate and launches its
+    /// agents' browsers from `browsers`, this machine's Playwright
+    /// browsers directory.
+    fn start_with_browsers(relay: &LocalRelay, browsers: &std::path::Path) -> Self {
+        Self::launch(&relay.certificate_pem, Some(browsers))
+    }
+
+    fn launch(certificate_pem: &str, browsers: Option<&std::path::Path>) -> Self {
         // Under /tmp on unix, for the reason `tests/shutdown.rs` gives:
         // the default temporary directory is long enough on macOS to
         // overflow a socket path.
@@ -174,7 +373,8 @@ impl Workstation {
         std::fs::write(&roots, certificate_pem).unwrap();
         let log = std::fs::File::create(home.path().join("daemon.log")).unwrap();
 
-        let daemon = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"))
+        let mut daemon = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"));
+        daemon
             .env("HOME", home.path())
             .env("LOCALAPPDATA", home.path())
             .env("USERPROFILE", home.path())
@@ -183,10 +383,19 @@ impl Workstation {
             // concerned. Nothing in the daemon knows it is under test.
             .env("SSL_CERT_FILE", &roots)
             .env_remove("SSL_CERT_DIR")
+            // The direct listener's port, chosen by the system: many of
+            // these daemons run at once, and the developer's own dev
+            // daemon may hold the dev build's port.
+            .env("GAVIN_DIRECT_PORT", "0")
             .stdout(Stdio::null())
-            .stderr(Stdio::from(log))
-            .spawn()
-            .expect("failed to spawn gavin-daemon");
+            .stderr(Stdio::from(log));
+        // The browsers stay where the machine keeps them: the temporary
+        // home has none, and a download is the install step's to make.
+        match browsers {
+            Some(dir) => daemon.env("PLAYWRIGHT_BROWSERS_PATH", dir),
+            None => daemon.env_remove("PLAYWRIGHT_BROWSERS_PATH"),
+        };
+        let daemon = daemon.spawn().expect("failed to spawn gavin-daemon");
 
         let deadline = Instant::now() + SOON;
         while !protocol::transport::is_listening(&endpoint) {
@@ -357,9 +566,21 @@ impl Workstation {
         )))
     }
 
+    /// The desk's push connection, from an app that says it speaks
+    /// `version`.
+    fn push_speaking(&self, version: u32) -> Desk {
+        Desk::connect_speaking(&self.endpoint(), &self.daemon_token, ConnectionKind::Push, version)
+    }
+
     /// Opens the desktop's forwarding connection (v54).
     fn open_forwarding(&self) -> Desk {
         Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Forward)
+    }
+
+    /// A connection of the desk's own for one request that streams, as
+    /// `browser_view.rs` opens one per watch.
+    fn open_command(&self) -> Desk {
+        Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Command)
     }
 }
 
@@ -403,8 +624,28 @@ impl StandIn {
     }
 
     fn start(
-        mut desk: Desk,
+        desk: Desk,
         value: serde_json::Value,
+        items: Vec<protocol::AttentionItem>,
+        bundle: Option<(protocol::BundleManifest, Vec<u8>)>,
+    ) -> Self {
+        Self::spawn(desk, move |_, _| value.clone(), items, bundle)
+    }
+
+    /// Answers each forwarded command with what `answer` makes of its name
+    /// and arguments -- the desktop's `create_session`, say, answering with
+    /// the id of the session it started.
+    fn answering_by(
+        desk: Desk,
+        answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + 'static,
+        items: Vec<protocol::AttentionItem>,
+    ) -> Self {
+        Self::spawn(desk, answer, items, None)
+    }
+
+    fn spawn(
+        mut desk: Desk,
+        answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + 'static,
         items: Vec<protocol::AttentionItem>,
         bundle: Option<(protocol::BundleManifest, Vec<u8>)>,
     ) -> Self {
@@ -422,10 +663,11 @@ impl StandIn {
                 }
                 match read_message::<_, Response>(&mut desk.reader) {
                     Ok(Some(Response::ForwardCommand { call_id, command, args })) => {
+                        let value = answer(&command, &args);
                         received_thread.lock().unwrap().push((command, args));
                         let resp = desk.request(&Request::ForwardResult {
                             call_id,
-                            value: Some(value.clone()),
+                            value: Some(value),
                             error: None,
                         });
                         assert!(matches!(resp, Response::Ok), "{resp:?}");
@@ -768,6 +1010,694 @@ fn desktop_app_not_running_is_answered_when_the_stand_in_is_absent() {
 }
 
 
+// -- an agent's browser on the phone (playwright-companion-view) --------
+
+/// What the desk offers a Device's view as (`browser_view.rs`).
+const FRAME_EVENT: &str = "browser-frame";
+
+/// A `browser-frame` payload, as the desk serialises a frame for the
+/// frontend: `Response::BrowserFrame` in camelCase.
+fn frame_payload(session_id: &str, seq: u64, data: &str, url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "seq": seq,
+        "data": data,
+        "width": 1280,
+        "height": 800,
+        "url": url,
+        "title": "",
+    })
+}
+
+/// The next `browser-frame` the Device hears: its payload.
+fn heard_frame(connection: &mut Connection) -> serde_json::Value {
+    match connection.next(SOON) {
+        Ok(Response::DesktopEvent { event, payload }) => {
+            assert_eq!(event, FRAME_EVENT);
+            payload
+        }
+        other => panic!("expected a {FRAME_EVENT} event, got {other:?}"),
+    }
+}
+
+/// A paired Device, connected, that has asked the desk for a session's
+/// browser the way the Companion's view does: it listens for the frames,
+/// then has the desk run `watch_browser_for_device`.
+fn watching_device(
+    relay: &LocalRelay,
+    workstation: &mut Workstation,
+    session_id: &str,
+) -> (Connection, StandIn) {
+    let phone = device(relay, "Watching iPhone");
+    let paired = workstation.pair(&phone);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let stand_in = StandIn::answering(
+        workstation.open_forwarding(),
+        serde_json::json!({ "frame": null, "leaseMs": 30_000 }),
+    );
+
+    // Not from the daemon: a Device asks it for nothing of its own, and a
+    // stream of the session's screen least of all.
+    assert_refused(
+        &mut connection,
+        &Request::WatchBrowser {
+            session_id: session_id.into(),
+            size: protocol::BrowserViewSize::Phone,
+            max_fps: 2,
+        },
+    );
+    match connection.request(&Request::ListenDesktop { event: FRAME_EVENT.into() }, SOON).unwrap() {
+        Response::Ok => {}
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    let args = serde_json::json!({ "sessionId": session_id, "watcher": "phone-view-1" });
+    let answer = invoked(&mut connection, "watch_browser_for_device", args.clone());
+    assert_eq!(answer, Some(serde_json::json!({ "frame": null, "leaseMs": 30_000 })));
+    assert_eq!(stand_in.received(), vec![("watch_browser_for_device".to_string(), args)]);
+    (connection, stand_in)
+}
+
+/// Seam 1 for the phone's view of an agent's browser: what the desk
+/// offers as `browser-frame` reaches the Device that listens for it,
+/// whole -- a frame at the top of what a phone-size screencast measured
+/// (28 KiB of JPEG, 38 KiB as base64, spec Q4), and one well past a Noise
+/// frame and a Relay message, which the daemon splits on the way.
+#[test]
+fn a_browser_frame_the_desk_offers_reaches_the_listening_device_whole() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let (mut connection, stand_in) = watching_device(&relay, &mut workstation, "s-agent");
+
+    for (seq, size) in [(1, 38 * 1024), (2, 200 * 1024)] {
+        let data = format!("/9j/{}", "A".repeat(size - 4));
+        stand_in.offer_event(FRAME_EVENT, frame_payload("s-agent", seq, &data, "https://example.test/"));
+        let payload = heard_frame(&mut connection);
+        assert_eq!(payload["seq"], seq);
+        assert_eq!(payload["sessionId"], "s-agent");
+        assert!(payload["data"] == data, "frame {seq} ({size} bytes) arrived altered");
+    }
+}
+
+/// This machine's Playwright browsers directory, when it holds a complete
+/// headless shell (`tests/playwright.rs`), read from the real environment.
+fn installed_browsers() -> Option<PathBuf> {
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = PathBuf::from(std::env::var_os(home_var)?);
+    let dir = protocol::playwright::browsers_dir(protocol::HostOs::current(), &home, |k| std::env::var(k).ok());
+    let complete: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join(protocol::playwright::INSTALLATION_COMPLETE).is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    protocol::playwright::pick_revision(complete.iter().map(String::as_str))?;
+    Some(dir)
+}
+
+/// One CDP command through the daemon's proxy, the way the Playwright MCP
+/// drives the browser, read until its reply.
+fn cdp_call(
+    ws: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+    session: Option<&str>,
+) -> serde_json::Value {
+    let mut message = serde_json::json!({ "id": id, "method": method, "params": params });
+    if let Some(session) = session {
+        message["sessionId"] = session.into();
+    }
+    ws.send(tungstenite::Message::Text(message.to_string().into())).unwrap();
+    loop {
+        let tungstenite::Message::Text(text) = ws.read().expect("a CDP reply") else { continue };
+        let reply: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        if reply["id"].as_u64() == Some(id) {
+            assert!(reply.get("error").is_none(), "{method}: {reply}");
+            return reply["result"].clone();
+        }
+    }
+}
+
+/// The width and height a JPEG says it is, from its base64: the start of
+/// it decoded far enough to reach the frame header.
+fn jpeg_size(base64: &str) -> Option<(u16, u16)> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut bytes = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in base64.bytes().take(16 * 1024).take_while(|c| *c != b'=') {
+        acc = ((acc << 6) | ALPHABET.iter().position(|a| *a == c)? as u32) & 0xFFFF;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+        }
+    }
+    // Segment by segment from the start-of-image marker to a start of
+    // frame, whose height then width follow its length and precision.
+    let mut at = 2;
+    while at + 9 < bytes.len() {
+        if bytes[at] != 0xFF {
+            return None;
+        }
+        let marker = bytes[at + 1];
+        let length = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        if matches!(marker, 0xC0..=0xC3) {
+            let height = u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]);
+            let width = u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]);
+            return Some((width, height));
+        }
+        at += 2 + length;
+    }
+    None
+}
+
+/// The same, end to end with a real browser: an agent's page, screencast
+/// by the daemon at the phone's size and rate to a connection of the
+/// desk's, offered on by the desk as `browser_view.rs` does, and received
+/// by the Device through the Relay as the 640x400 JPEG it was sent.
+/// Skips, saying why, where no headless shell is installed.
+#[test]
+fn a_real_agent_browsers_phone_frame_reaches_the_device() {
+    let Some(browsers) = installed_browsers() else {
+        assert!(
+            std::env::var_os("GAVIN_REQUIRE_PLAYWRIGHT").is_none(),
+            "GAVIN_REQUIRE_PLAYWRIGHT is set and no complete Playwright headless shell is installed"
+        );
+        eprintln!(
+            "SKIPPED: no complete Playwright headless shell is installed on this machine -- run `npx {}` to run this test",
+            protocol::playwright::install_args().join(" ")
+        );
+        return;
+    };
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start_with_browsers(&relay, &browsers);
+    workstation.reach(&relay);
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_string_lossy().into_owned();
+    let session_id = match workstation.command.request(&Request::CreateSession {
+        workspace_path: root.clone(),
+        cwd: root,
+        command: None,
+        profile_id: None,
+        api_family: None,
+        without_headroom: true,
+    }) {
+        Response::SessionCreated { id, .. } => id,
+        other => panic!("CreateSession: {other:?}"),
+    };
+    let endpoint = match workstation.command.request(&Request::PlaywrightEndpoint { session_id: session_id.clone() }) {
+        Response::PlaywrightEndpoint { endpoint, .. } => endpoint,
+        other => panic!("PlaywrightEndpoint: {other:?}"),
+    };
+
+    let (mut connection, stand_in) = watching_device(&relay, &mut workstation, &session_id);
+
+    // What the desk does with that call: a stream of its own at the
+    // phone's size and rate (`DEVICE_FPS`).
+    let mut watch = workstation.open_command();
+    write_message(
+        &mut watch.stream,
+        &Request::WatchBrowser { session_id: session_id.clone(), size: protocol::BrowserViewSize::Phone, max_fps: 2 },
+    )
+    .unwrap();
+
+    // The agent's first call launches the browser, and it opens a page.
+    let authority = endpoint.strip_prefix("ws://").unwrap().split('/').next().unwrap().to_string();
+    let tcp = std::net::TcpStream::connect(&authority).unwrap();
+    tcp.set_read_timeout(Some(SOON)).unwrap();
+    let (mut cdp, _) = tungstenite::client::client(endpoint.as_str(), tcp).expect("the proxy's handshake");
+    let targets = cdp_call(&mut cdp, 1, "Target.getTargets", serde_json::json!({}), None);
+    let page = targets["targetInfos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["type"] == "page")
+        .expect("the browser's first tab")["targetId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let attached = cdp_call(&mut cdp, 2, "Target.attachToTarget", serde_json::json!({ "targetId": page, "flatten": true }), None);
+    let cdp_session = attached["sessionId"].as_str().unwrap().to_string();
+    let url = "data:text/html,<body style='background:%23246'><h1 style='color:white'>seen on the phone</h1></body>";
+    cdp_call(&mut cdp, 3, "Page.navigate", serde_json::json!({ "url": url }), Some(&cdp_session));
+
+    // Each frame the desk's stream reads, offered on to the Devices, until
+    // one of that page has crossed.
+    let deadline = Instant::now() + SOON;
+    loop {
+        assert!(Instant::now() < deadline, "no frame of the page reached the Device");
+        let (seq, data, frame_url) = match watch.next() {
+            Response::BrowserFrame { session_id: s, seq, data, url, .. } => {
+                assert_eq!(s, session_id);
+                (seq, data, url)
+            }
+            other => panic!("unexpected on the watch: {other:?}"),
+        };
+        stand_in.offer_event(FRAME_EVENT, frame_payload(&session_id, seq, &data, &frame_url));
+        let payload = heard_frame(&mut connection);
+        assert!(payload["data"] == data, "the frame arrived altered");
+        if !frame_url.starts_with("data:text/html") {
+            continue;
+        }
+        assert!(data.starts_with("/9j/"), "a JPEG, base64");
+        assert_eq!(jpeg_size(&data), Some((640, 400)), "the phone's size");
+        // Under one Noise frame, as the spec measured a phone frame.
+        assert!(data.len() < 64 * 1024, "a phone frame of {} bytes", data.len());
+        break;
+    }
+
+    // The browser ends with its session, not with the daemon: a daemon
+    // shut down under a live session leaves its headless shell running.
+    drop(cdp);
+    assert!(matches!(workstation.command.request(&Request::KillSession { id: session_id.clone() }), Response::Ok));
+    loop {
+        match watch.next() {
+            Response::BrowserGone { session_id: gone } => {
+                assert_eq!(gone, session_id);
+                break;
+            }
+            Response::BrowserFrame { .. } => continue,
+            other => panic!("unexpected on the watch: {other:?}"),
+        }
+    }
+}
+
+// -- presence (companion-16) --------------------------------------------
+
+/// Has the desktop run `command` through `connection`, and hands back what
+/// it answered.
+fn invoked(
+    connection: &mut Connection,
+    command: &str,
+    args: serde_json::Value,
+) -> Option<serde_json::Value> {
+    match connection
+        .request(&Request::InvokeDesktop { command: command.into(), args }, SOON)
+        .unwrap()
+    {
+        Response::DesktopResult { value, error: None } => value,
+        other => panic!("{command} was answered {other:?}"),
+    }
+}
+
+/// The stand-in's desktop: `create_session` answers with the id of the
+/// session it started, named after the cwd so each Device's is its own.
+fn desktop(command: &str, args: &serde_json::Value) -> serde_json::Value {
+    match command {
+        "create_session" => {
+            serde_json::json!(format!("started-in-{}", args["cwd"].as_str().unwrap_or("?")))
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Seam 1: the desk hears where each of two Devices is and what it is
+/// doing, from the commands each has the desktop run, and reads the same
+/// back from the list.
+#[test]
+fn presence_pushes_reflect_what_two_devices_are_doing_at_once() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let tablet = device(&relay, "Seam one iPad");
+    let paired_phone = workstation.pair(&phone);
+    let paired_tablet = workstation.pair(&tablet);
+    let mut phone_conn = phone.connect(&paired_phone).unwrap();
+    assert_eq!(workstation.connected(), paired_phone.device_id);
+    let mut tablet_conn = tablet.connect(&paired_tablet).unwrap();
+    assert_eq!(workstation.connected(), paired_tablet.device_id);
+
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    // The phone works in one workspace and starts a session there. The
+    // tablet is in another, typing into a session the desk started.
+    invoked(&mut phone_conn, "get_board", serde_json::json!({"workspaceId": "w-phone"}));
+    invoked(&mut tablet_conn, "get_board", serde_json::json!({"workspaceId": "w-tablet"}));
+    let started = invoked(
+        &mut phone_conn,
+        "create_session",
+        serde_json::json!({
+            "cwd": "/work/phone",
+            "workspaceRoot": "/work/phone",
+            "command": "claude",
+            "profileId": "claude-code",
+        }),
+    );
+    assert_eq!(started, Some(serde_json::json!("started-in-/work/phone")));
+    invoked(
+        &mut tablet_conn,
+        "write_input",
+        serde_json::json!({"sessionId": "desk-session", "data": "ls\r"}),
+    );
+
+    let phone_now =
+        workstation.push.presence_of(&paired_phone.device_id, |p| !p.started.is_empty());
+    assert_eq!(phone_now.workspace_id.as_deref(), Some("w-phone"));
+    assert_eq!(phone_now.typing, None, "the phone typed nothing");
+    assert_eq!(phone_now.started.len(), 1);
+    assert_eq!(phone_now.started[0].session_id, "started-in-/work/phone");
+    assert_eq!(phone_now.started[0].workspace_root.as_deref(), Some("/work/phone"));
+    assert_eq!(phone_now.started[0].cwd.as_deref(), Some("/work/phone"));
+
+    // A terminal in a workspace with no folder names nothing but the
+    // workspace: no root, and no cwd -- it opens in the home folder.
+    let scratch = invoked(
+        &mut phone_conn,
+        "create_session",
+        serde_json::json!({"workspaceId": "w-scratch"}),
+    );
+    assert_eq!(scratch, Some(serde_json::json!("started-in-?")));
+    let phone_now =
+        workstation.push.presence_of(&paired_phone.device_id, |p| p.started.len() == 2);
+    assert_eq!(phone_now.workspace_id.as_deref(), Some("w-scratch"));
+    assert_eq!(phone_now.started[1].session_id, "started-in-?");
+    assert_eq!(phone_now.started[1].workspace_id.as_deref(), Some("w-scratch"));
+    assert_eq!(phone_now.started[1].workspace_root, None);
+    assert_eq!(phone_now.started[1].cwd, None);
+
+    let tablet_now = workstation.push.presence_of(&paired_tablet.device_id, |p| p.typing.is_some());
+    assert_eq!(tablet_now.workspace_id.as_deref(), Some("w-tablet"));
+    assert_eq!(
+        tablet_now.typing.as_ref().map(|t| t.session_id.as_str()),
+        Some("desk-session")
+    );
+    assert!(tablet_now.started.is_empty(), "the tablet started nothing");
+
+    // The read-back agrees, so a desk that reloads has what it was pushed.
+    let devices = workstation.devices();
+    let presence_of = |id: &str| {
+        devices.iter().find(|d| d.device_id == id).and_then(|d| d.presence.clone())
+    };
+    assert_eq!(presence_of(&paired_phone.device_id), Some(phone_now));
+    assert_eq!(presence_of(&paired_tablet.device_id), Some(tablet_now));
+}
+
+/// A session the desk launches itself names no Device: nothing is pushed
+/// about it, and no Device's account of what it started carries it.
+#[test]
+fn a_session_the_desk_starts_itself_names_no_device() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut connection, "get_board", serde_json::json!({"workspaceId": "w1"}));
+    workstation.push.presence_of(&paired.device_id, |p| p.workspace_id.is_some());
+
+    let home = workstation.home.path().to_string_lossy().to_string();
+    let id = match workstation.command.request(&Request::CreateSession {
+        workspace_path: home.clone(),
+        cwd: home,
+        command: None,
+        profile_id: None,
+        api_family: None,
+        without_headroom: false,
+    }) {
+        Response::SessionCreated { id, .. } => id,
+        other => panic!("expected a session, got {other:?}"),
+    };
+
+    assert!(
+        workstation.push.hears_no_presence_for(QUIET),
+        "the desk was told a Device did something when it launched {id} itself"
+    );
+    let devices = workstation.devices();
+    let presence = devices[0].presence.clone().unwrap();
+    assert!(presence.started.is_empty(), "{presence:?}");
+}
+
+/// A command the Device may not run says nothing about where it is: it
+/// never reached the desktop, and a presence read off it would be a
+/// Device's own say-so.
+#[test]
+fn a_refused_command_says_nothing_about_where_the_device_is() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    let resp = connection
+        .request(
+            &Request::InvokeDesktop {
+                command: "set_board_tabs".into(),
+                args: serde_json::json!({"workspaceId": "w1", "tabs": []}),
+            },
+            SOON,
+        )
+        .unwrap();
+    assert!(matches!(resp, Response::Error { .. }), "{resp:?}");
+
+    assert!(workstation.push.hears_no_presence_for(QUIET), "a refused command moved the Device");
+    assert_eq!(workstation.devices()[0].presence, None);
+}
+
+/// An app older than v63 cannot parse `DevicePresenceChanged` -- it would
+/// read it as the reply to its next request -- so it is not sent one.
+#[test]
+fn an_app_older_than_the_bump_is_not_sent_the_presence_push() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut older = workstation.push_speaking(protocol::DEVICE_PRESENCE_MIN_VERSION - 1);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut connection, "get_board", serde_json::json!({"workspaceId": "w1"}));
+    // The current desk hears it, so the push was made...
+    workstation.push.presence_of(&paired.device_id, |p| p.workspace_id.as_deref() == Some("w1"));
+    // ...and the older one did not.
+    assert!(
+        older.hears_no_presence_for(QUIET),
+        "an app that speaks v62 was sent a v63 push"
+    );
+}
+
+// -- session ownership (v68) --------------------------------------------
+
+/// What `command` was refused with: the owner refusal its error carries.
+fn refused(connection: &mut Connection, command: &str, args: serde_json::Value) -> protocol::OwnerRefusal {
+    match connection
+        .request(&Request::InvokeDesktop { command: command.into(), args }, SOON)
+        .unwrap()
+    {
+        Response::DesktopResult { value: None, error: Some(error) } => protocol::OwnerRefusal::from_error(&error)
+            .unwrap_or_else(|| panic!("{command} was refused, but not by the session's owner: {error}")),
+        other => panic!("expected {command} to be refused, got {other:?}"),
+    }
+}
+
+/// `set_session_owner` as a Device asks it, answered by the daemon.
+fn take(
+    connection: &mut Connection,
+    session_id: &str,
+    to: Option<&str>,
+    expect: Option<&str>,
+) -> protocol::SessionOwnership {
+    let args = serde_json::json!({ "sessionId": session_id, "to": to, "expect": expect, "force": true });
+    serde_json::from_value(invoked(connection, "set_session_owner", args).expect("an ownership")).unwrap()
+}
+
+fn owner_id(ownership: &protocol::SessionOwnership) -> Option<&str> {
+    ownership.owner.as_ref().map(|o| o.device_id.as_str())
+}
+
+/// Seam 1 (v68): two Devices, one session. The one that typed first owns
+/// it and the other is refused, naming it, without the desk ever seeing
+/// the keystroke; a Take over and a Hand over move it, and each time the
+/// one left behind is the one refused. The desk hears every change, and
+/// takes it back as the desk.
+#[test]
+fn one_session_takes_input_from_one_device_at_a_time() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let tablet = device(&relay, "Seam one iPad");
+    let paired_phone = workstation.pair(&phone);
+    let paired_tablet = workstation.pair(&tablet);
+    let (phone_id, tablet_id) = (paired_phone.device_id.clone(), paired_tablet.device_id.clone());
+    let mut phone_conn = phone.connect(&paired_phone).unwrap();
+    assert_eq!(workstation.connected(), phone_id);
+    let mut tablet_conn = tablet.connect(&paired_tablet).unwrap();
+    assert_eq!(workstation.connected(), tablet_id);
+    let stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+    let typed = |data: &str| serde_json::json!({ "sessionId": "s1", "data": data });
+    let keystrokes = |stand_in: &StandIn| stand_in.received().iter().filter(|(c, _)| c == "write_input").count();
+
+    // The phone types into a session nobody owns, and so owns it.
+    invoked(&mut phone_conn, "write_input", typed("ls"));
+    let claimed = workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    assert_eq!(owner_id(&claimed), Some(phone_id.as_str()));
+    assert_eq!(claimed.owner.as_ref().unwrap().name, "Seam one iPhone");
+    assert_eq!(claimed.reason, protocol::OwnerChange::Claimed);
+
+    // The tablet is refused, naming the phone, and the desk sees nothing.
+    match refused(&mut tablet_conn, "write_input", typed("rm")) {
+        protocol::OwnerRefusal::Owned { owner, .. } => assert_eq!(owner.name, "Seam one iPhone"),
+        other => panic!("expected Owned, got {other:?}"),
+    }
+    assert!(matches!(
+        refused(&mut tablet_conn, "queue_input", serde_json::json!({ "sessionId": "s1", "text": "go" })),
+        protocol::OwnerRefusal::Owned { .. }
+    ));
+    assert_eq!(keystrokes(&stand_in), 1, "only the phone's keystroke reached the desk");
+
+    // The tablet takes over: answered by the daemon, as the tablet.
+    let taken = take(&mut tablet_conn, "s1", Some(&tablet_id), Some(&phone_id));
+    assert_eq!(owner_id(&taken), Some(tablet_id.as_str()));
+    assert_eq!(taken.changed_by.as_deref(), Some(tablet_id.as_str()));
+    assert_eq!(taken.reason, protocol::OwnerChange::TookOver);
+    let heard = workstation.push.ownership_of("s1", |o| o.reason == protocol::OwnerChange::TookOver);
+    assert_eq!(heard, taken, "the desk is told the same");
+    assert!(matches!(refused(&mut phone_conn, "write_input", typed("x")), protocol::OwnerRefusal::Owned { .. }));
+    invoked(&mut tablet_conn, "write_input", typed("pwd"));
+    assert_eq!(keystrokes(&stand_in), 2);
+
+    // The phone takes it back, then hands it to the tablet on purpose.
+    take(&mut phone_conn, "s1", Some(&phone_id), Some(&tablet_id));
+    let handed = take(&mut phone_conn, "s1", Some(&tablet_id), Some(&phone_id));
+    assert_eq!(handed.reason, protocol::OwnerChange::HandedOver);
+    assert_eq!(owner_id(&handed), Some(tablet_id.as_str()));
+    assert!(matches!(refused(&mut phone_conn, "write_input", typed("x")), protocol::OwnerRefusal::Owned { .. }));
+
+    // A Device reads back who owns what, who it is, and who it could hand
+    // a session to.
+    let list: protocol::session_owner::SessionOwnersList =
+        serde_json::from_value(invoked(&mut phone_conn, "list_session_owners", serde_json::json!({})).unwrap())
+            .unwrap();
+    assert_eq!(list.you.as_deref(), Some(phone_id.as_str()));
+    assert_eq!(list.owners.iter().map(owner_id).collect::<Vec<_>>(), [Some(tablet_id.as_str())]);
+    let mut live: Vec<&str> = list.devices.iter().map(|d| d.device_id.as_str()).collect();
+    live.sort();
+    let mut both = [phone_id.as_str(), tablet_id.as_str()];
+    both.sort();
+    assert_eq!(live, both);
+
+    // The desk takes it back, as the desk; now neither Device owns it.
+    let back = match workstation.command.request(&Request::SetSessionOwner {
+        id: "s1".into(),
+        to: None,
+        expect: Some(tablet_id.clone()),
+        force: true,
+    }) {
+        Response::SessionOwnership { ownership } => ownership,
+        other => panic!("expected SessionOwnership, got {other:?}"),
+    };
+    assert_eq!((back.owner.as_ref(), back.changed_by.as_ref()), (None, None));
+    // A Take over that still expects the tablet lost the race to the desk.
+    let late = serde_json::json!({ "sessionId": "s1", "to": phone_id, "expect": tablet_id, "force": true });
+    assert!(matches!(
+        refused(&mut phone_conn, "set_session_owner", late),
+        protocol::OwnerRefusal::Changed { owner: None, .. }
+    ));
+}
+
+/// A session a Device started is that Device's, and one whose owner is
+/// revoked goes back to the desk at once rather than after a grace.
+#[test]
+fn a_started_session_is_its_devices_until_the_device_is_revoked() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let tablet = device(&relay, "Seam one iPad");
+    let paired_phone = workstation.pair(&phone);
+    let paired_tablet = workstation.pair(&tablet);
+    let mut phone_conn = phone.connect(&paired_phone).unwrap();
+    assert_eq!(workstation.connected(), paired_phone.device_id);
+    let mut tablet_conn = tablet.connect(&paired_tablet).unwrap();
+    assert_eq!(workstation.connected(), paired_tablet.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    let started = invoked(&mut phone_conn, "create_session", serde_json::json!({ "cwd": "/work/phone" }));
+    let session_id = started.unwrap().as_str().unwrap().to_string();
+    let owned = workstation.push.ownership_of(&session_id, |o| o.owner.is_some());
+    assert_eq!(owned.reason, protocol::OwnerChange::Started);
+    assert_eq!(owner_id(&owned), Some(paired_phone.device_id.as_str()));
+    let typed = serde_json::json!({ "sessionId": session_id, "data": "x" });
+    assert!(matches!(refused(&mut tablet_conn, "write_input", typed.clone()), protocol::OwnerRefusal::Owned { .. }));
+
+    let resp = workstation.command.request(&Request::RevokeDevice { device_id: paired_phone.device_id.clone() });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    let released = workstation.push.ownership_of(&session_id, |o| o.owner.is_none());
+    assert_eq!(released.reason, protocol::OwnerChange::Revoked);
+    // Free for the taking: the tablet's next keystroke claims it.
+    invoked(&mut tablet_conn, "write_input", typed);
+    let claimed = workstation.push.ownership_of(&session_id, |o| o.owner.is_some());
+    assert_eq!(owner_id(&claimed), Some(paired_tablet.device_id.as_str()));
+}
+
+/// An app older than v68 is sent nothing it cannot parse: the owner push
+/// would be read as the reply to its next request. The current desk hears
+/// the same change.
+#[test]
+fn an_app_older_than_the_bump_is_not_sent_the_owner_push() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut older = workstation.push_speaking(protocol::SESSION_OWNERS_MIN_VERSION - 1);
+    let mut connection = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut connection, "write_input", serde_json::json!({ "sessionId": "s1", "data": "x" }));
+    workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    let heard_one = {
+        older.stream.set_read_timeout(Some(QUIET)).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut older.reader) {
+                Ok(Some(Response::SessionOwnerChanged { .. })) => break true,
+                Ok(Some(_)) => continue,
+                _ => break false,
+            }
+        }
+    };
+    assert!(!heard_one, "an app that speaks v67 was sent a v68 push");
+}
+
+/// The owner going away is not the owner losing the session: it keeps it
+/// through the grace, and the desk is told when the grace runs out.
+#[test]
+fn an_owner_that_hangs_up_keeps_its_session_through_the_grace() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&phone);
+    let mut phone_conn = phone.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    let _stand_in = StandIn::answering_by(workstation.open_forwarding(), desktop, vec![]);
+
+    invoked(&mut phone_conn, "write_input", serde_json::json!({ "sessionId": "s1", "data": "x" }));
+    workstation.push.ownership_of("s1", |o| o.owner.is_some());
+    drop(phone_conn);
+    let away = workstation.push.ownership_of("s1", |o| o.owner.as_ref().is_some_and(|o| o.away_since.is_some()));
+    let owner = away.owner.unwrap();
+    assert_eq!(owner.device_id, paired.device_id);
+    assert_eq!(owner.releases_at, owner.away_since.map(|at| at + protocol::session_owner::OWNER_GRACE_SECS));
+
+    // Back inside the grace: its own again.
+    let _phone_conn = phone.connect(&paired).unwrap();
+    let back = workstation.push.ownership_of("s1", |o| o.owner.as_ref().is_some_and(|o| o.away_since.is_none()));
+    assert_eq!(owner_id(&back), Some(paired.device_id.as_str()));
+}
+
 // -- attention request (companion-14) -----------------------------------
 
 /// The test Device gets the items the stand-in reports.
@@ -784,6 +1714,7 @@ fn the_attention_request_returns_the_items_the_stand_in_reports() {
     let items = vec![protocol::AttentionItem {
         id: "waiting:s1".into(),
         workspace: "ws-1".into(),
+        workspace_name: None,
         kind: protocol::AttentionKind::Waiting,
         text: "agent is asking".into(),
         target: protocol::AttentionTarget::Session { id: "s1".into() },
@@ -807,8 +1738,10 @@ fn the_attention_request_returns_the_items_the_stand_in_reports() {
             state,
             items: got,
             version,
+            reason,
         } => {
             assert_eq!(state, protocol::WorkstationState::Ready);
+            assert_eq!(reason, None);
             assert_eq!(version, protocol::ATTENTION_API_VERSION);
             assert_eq!(got, items);
         }
@@ -849,12 +1782,79 @@ fn the_attention_request_reports_desktop_app_not_running_when_the_stand_in_is_ab
             state,
             items,
             version,
+            reason,
         } => {
             assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert_eq!(reason, Some(protocol::NotRunningReason::NotConnected));
             assert!(items.is_empty());
             assert_eq!(version, protocol::ATTENTION_API_VERSION);
         }
         other => panic!("expected Attention, got {other:?}"),
+    }
+}
+
+/// A desk whose forwarding connection drops and comes back -- the app
+/// reconnected, or its forwarding loop redialled -- is Ready again on the
+/// Device's next ask, with nothing restarted. In between, the Device is
+/// told that no desktop app is connected, and the daemon's log says when
+/// each happened.
+#[test]
+fn a_desk_whose_forwarding_connection_dropped_and_came_back_is_ready_again() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+    let mut ask = || {
+        match connection
+            .request(&Request::GetAttention { version: protocol::ATTENTION_API_VERSION }, SOON)
+            .unwrap()
+        {
+            Response::Attention { state, items, reason, .. } => (state, items, reason),
+            other => panic!("expected Attention, got {other:?}"),
+        }
+    };
+    let items = vec![protocol::AttentionItem {
+        id: "waiting:s1".into(),
+        workspace: "ws-1".into(),
+        workspace_name: Some("Gavin".into()),
+        kind: protocol::AttentionKind::Waiting,
+        text: "agent is asking".into(),
+        target: protocol::AttentionTarget::Session { id: "s1".into() },
+    }];
+
+    let first = StandIn::answering_with_attention(workstation.open_forwarding(), serde_json::json!(null), items.clone());
+    assert_eq!(ask(), (protocol::WorkstationState::Ready, items.clone(), None));
+
+    drop(first);
+    // The daemon hears the close on the connection's own thread; an ask
+    // that races it is told the connection was lost, and the next one
+    // that nothing is connected.
+    let deadline = Instant::now() + SOON;
+    loop {
+        let (state, got, reason) = ask();
+        assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+        assert!(got.is_empty());
+        if reason == Some(protocol::NotRunningReason::NotConnected) {
+            break;
+        }
+        assert_eq!(reason, Some(protocol::NotRunningReason::ConnectionLost));
+        assert!(Instant::now() < deadline, "the dropped connection was never noticed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let _second = StandIn::answering_with_attention(workstation.open_forwarding(), serde_json::json!(null), items.clone());
+    assert_eq!(ask(), (protocol::WorkstationState::Ready, items, None));
+
+    let log = workstation.log();
+    for said in [
+        "registered; the desktop app is connected",
+        "closed; no desktop app is connected now",
+        "asked for attention with no desktop app connected",
+    ] {
+        assert_eq!(log.matches(said).count(), if said.starts_with("registered") { 2 } else { 1 }, "{said:?} in:\n{log}");
     }
 }
 
@@ -900,7 +1900,7 @@ fn the_companion_bundle_is_served_in_chunks_and_verifies() {
             )
             .unwrap()
         {
-            Response::CompanionBundle { version, state, manifest, offset, data } => {
+            Response::CompanionBundle { version, state, manifest, offset, data, .. } => {
                 assert_eq!(version, protocol::COMPANION_BUNDLE_API_VERSION);
                 assert_eq!(state, protocol::WorkstationState::Ready);
                 (manifest.expect("a manifest"), offset, companion_bundle::decode_chunk(&data).unwrap())
@@ -979,8 +1979,9 @@ fn the_companion_bundle_says_when_there_is_none_to_serve() {
 
     // No forwarding connection.
     match ask(&mut connection) {
-        Response::CompanionBundle { state, manifest, data, .. } => {
+        Response::CompanionBundle { state, manifest, data, reason, .. } => {
             assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert_eq!(reason, Some(protocol::NotRunningReason::NotConnected));
             assert!(manifest.is_none());
             assert!(data.is_empty());
         }
@@ -1165,6 +2166,103 @@ fn a_daemon_without_the_admission_token_is_not_registered() {
     workstation.reach(&relay);
 }
 
+// -- what the desk is told about the dial --------------------------------
+
+fn relay_state(workstation: &mut Workstation) -> protocol::RelayState {
+    match workstation.command.request(&Request::GetRelayState) {
+        Response::RelayState { state } => state,
+        other => panic!("expected RelayState, got {other:?}"),
+    }
+}
+
+fn eventually_state(
+    workstation: &mut Workstation,
+    what: &str,
+    check: impl Fn(&protocol::RelayState) -> bool,
+) -> protocol::RelayState {
+    let deadline = Instant::now() + SOON;
+    loop {
+        let state = relay_state(workstation);
+        if check(&state) {
+            return state;
+        }
+        assert!(Instant::now() < deadline, "{what}; the state is {state:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The dial's state is what the desk shows beside the Relay URL: off
+/// reads not wanted, a registered daemon reads connected, and a wrong
+/// token reads failed in the Relay's own words -- without the token.
+#[test]
+fn the_desk_is_told_whether_the_daemon_reached_its_relay() {
+    use protocol::RelayState;
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+
+    assert_eq!(relay_state(&mut workstation), RelayState::NotWanted);
+
+    let wrong = "not-the-token-9f3a";
+    workstation.set_remote_access(true, Some(&relay.url()), Some(wrong));
+    let failed = eventually_state(&mut workstation, "the wrong token was not reported", |s| {
+        matches!(s, RelayState::Failed { .. })
+    });
+    match &failed {
+        RelayState::Failed { why } => {
+            assert_eq!(why, &RefusalReason::Admission.to_string());
+        }
+        other => panic!("{other:?}"),
+    }
+    // Neither the state nor the push nor the log carries the token.
+    assert!(!serde_json::to_string(&failed).unwrap().contains(wrong));
+    assert!(!workstation.log().contains(wrong), "the token reached the log");
+
+    // The right token, without a restart: connected, since about now.
+    workstation.set_remote_access(true, Some(&relay.url()), Some(TOKEN));
+    let connected = eventually_state(&mut workstation, "the daemon did not connect", |s| {
+        matches!(s, RelayState::Connected { .. })
+    });
+    match connected {
+        RelayState::Connected { since } => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            assert!((now - since).abs() < 60, "since {since} is not near {now}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!workstation.log().contains(TOKEN), "the token reached the log");
+
+    workstation.set_remote_access(false, Some(&relay.url()), None);
+    eventually_state(&mut workstation, "off did not read as not wanted", |s| {
+        *s == RelayState::NotWanted
+    });
+}
+
+/// The desk hears the change without asking.
+#[test]
+fn a_change_of_the_dials_state_is_pushed_to_the_desk() {
+    use protocol::RelayState;
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    let mut push = Desk::connect(&workstation.endpoint(), &workstation.daemon_token, ConnectionKind::Push);
+
+    workstation.set_remote_access(true, Some(&relay.url()), Some(TOKEN));
+    let mut saw_connected = false;
+    for _ in 0..20 {
+        match push.next_raw() {
+            Response::RelayStateChanged { state: RelayState::Connected { .. } } => {
+                saw_connected = true;
+                break;
+            }
+            Response::RelayStateChanged { .. } => {}
+            other => panic!("unexpected push {other:?}"),
+        }
+    }
+    assert!(saw_connected, "no connected push arrived");
+}
+
 // -- the switch ---------------------------------------------------------
 
 /// A listener that is not a Relay and does not need to be: what is
@@ -1240,7 +2338,7 @@ fn a_daemon_that_was_never_told_has_remote_access_off() {
     let relay = LocalRelay::start();
     let mut workstation = Workstation::start(&relay);
     match workstation.command.request(&Request::ListDevices) {
-        Response::Devices { remote_access_enabled, relay_url, relay_admission_set, devices } => {
+        Response::Devices { remote_access_enabled, relay_url, relay_admission_set, devices, .. } => {
             assert!(!remote_access_enabled);
             assert_eq!(relay_url, None);
             assert!(!relay_admission_set);
@@ -1759,6 +2857,96 @@ fn a_copied_noise_key_on_another_phone_is_refused() {
     );
 }
 
+/// Ticket 34: a connection that completes the handshake with a paired
+/// Device's Noise key and fails its signature is what a copied key looks
+/// like, and the desk is told -- by a push, and by the row the next read of
+/// the Device list returns.
+#[test]
+fn the_desk_is_told_when_a_copied_key_fails_its_proof() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    assert_eq!(workstation.devices()[0].last_refusal.clone(), None, "nothing was refused yet");
+
+    let before = now_seconds();
+    let copy = device.copied_to_another_phone().unwrap();
+    assert!(matches!(
+        copy.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Unlock))
+    ));
+
+    let (device_id, pushed) = workstation.push.heard_refusal();
+    assert_eq!(device_id, paired.device_id);
+    assert_eq!(pushed.reason, ConnectRefusal::Unlock);
+    assert!(pushed.at >= before && pushed.at <= now_seconds(), "{}", pushed.at);
+
+    let devices = workstation.devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].last_refusal, Some(pushed));
+
+    // The real phone connecting afterwards does not wipe the record: a
+    // copy that failed and then the phone that did is the order in which
+    // the alarm would otherwise vanish.
+    let _real = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_eq!(workstation.devices()[0].last_refusal.as_ref().map(|r| r.reason), Some(ConnectRefusal::Unlock));
+}
+
+/// ...and a Device the human revoked, still trying.
+#[test]
+fn the_desk_is_told_when_a_revoked_device_is_refused() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let resp = workstation
+        .command
+        .request(&Request::RevokeDevice { device_id: paired.device_id.clone() });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+
+    assert!(matches!(
+        device.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Revoked))
+    ));
+    let (device_id, pushed) = workstation.push.heard_refusal();
+    assert_eq!(device_id, paired.device_id);
+    assert_eq!(pushed.reason, ConnectRefusal::Revoked);
+    let devices = workstation.devices();
+    assert_eq!(devices[0].last_refusal, Some(pushed));
+    assert!(devices[0].revoked_at.is_some());
+}
+
+/// An app older than v62 is sent nothing it cannot parse: a
+/// `DeviceRefusalChanged` it has never heard of would be read as the reply
+/// to a request. It still reads the row, which carries the new field only
+/// where an older app ignores it.
+#[test]
+fn an_app_older_than_the_bump_is_not_sent_the_refusal_push() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let mut older = workstation.push_speaking(protocol::DEVICE_REFUSALS_MIN_VERSION - 1);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    // Pairing pushes the desk's own dialog to `older` too, which it can
+    // parse; let it go past.
+    assert!(matches!(older.next(), Response::DevicePairingRequested { .. }));
+
+    let copy = device.copied_to_another_phone().unwrap();
+    assert!(matches!(
+        copy.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Unlock))
+    ));
+    // The current app was told, so the daemon did push...
+    workstation.push.heard_refusal();
+    // ...and the older one heard nothing at all.
+    assert!(older.hears_nothing_for(QUIET), "an app that speaks v61 was sent a v62 push");
+    assert!(older.refusals.is_empty());
+}
+
 /// Ticket 33: the six digits cover the pairing they are shown for. A copy
 /// of a Device's Noise key, on a phone with a hardware key of its own,
 /// makes another handshake and so shows other digits -- the owner cannot be
@@ -2110,6 +3298,7 @@ fn meeting(relay: &LocalRelay, key: &[u8]) -> RelayDial {
     RelayDial {
         url: relay.url(),
         hello: RelayHello::device(TOKEN, &rendezvous_id(key), PURPOSE_CONNECT),
+        pin: None,
     }
 }
 
@@ -2567,4 +3756,315 @@ fn turning_remote_access_off_drops_a_connected_device() {
     eventually("the daemon took the Relay up again", || relay.relay.stats().workstations == 1);
     device.connect(&paired).unwrap();
     assert_eq!(workstation.connected(), paired.device_id);
+}
+
+/// v67, over the Device wire: a Device hands this Workstation its send
+/// permission, and the desk's list says that Device -- and only that one
+/// -- can be notified. Taking it back with an empty one says so too.
+#[test]
+fn a_device_hands_over_its_send_permission_over_the_wire() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let phone = device(&relay, "phone");
+    let tablet = device(&relay, "tablet");
+    let phone_paired = workstation.pair(&phone);
+    let _tablet_paired = workstation.pair(&tablet);
+
+    let mut connection = phone.connect(&phone_paired).unwrap();
+    assert_eq!(workstation.connected(), phone_paired.device_id);
+    let notifies = |workstation: &mut Workstation| -> Vec<(String, bool)> {
+        let mut rows: Vec<_> = workstation.devices().into_iter().map(|d| (d.name, d.notifies)).collect();
+        rows.sort();
+        rows
+    };
+
+    let hand = |permission: &str| Request::SetThisDeviceSendPermission { permission: permission.into() };
+    match connection.request(&hand("v1.claims.signature"), SOON) {
+        Ok(Response::Ok) => {}
+        other => panic!("expected the permission to be kept, got {other:?}"),
+    }
+    assert_eq!(notifies(&mut workstation), vec![("phone".into(), true), ("tablet".into(), false)]);
+
+    match connection.request(&hand(""), SOON) {
+        Ok(Response::Ok) => {}
+        other => panic!("expected the permission to be taken back, got {other:?}"),
+    }
+    assert_eq!(notifies(&mut workstation), vec![("phone".into(), false), ("tablet".into(), false)]);
+}
+
+// -- the direct listener (ADR 0009) ------------------------------------------
+
+/// The store's row for a meta key, read the way another daemon sharing
+/// the file would.
+fn stored(workstation: &Workstation, key: &str) -> Vec<u8> {
+    workstation
+        .store()
+        .query_row("SELECT value FROM trust_meta WHERE key = ?1", [key], |row| row.get(0))
+        .unwrap()
+}
+
+impl Workstation {
+    /// Turns direct connection on, and waits until the listener is bound.
+    /// Returns its port. Remote access is the caller's to turn on.
+    fn listen_directly(&mut self) -> u16 {
+        let resp = self.command.request(&Request::SetDirectAccess { enabled: true });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let deadline = Instant::now() + SOON;
+        loop {
+            if let DirectState::Listening { port, .. } = self.direct_state() {
+                return port;
+            }
+            assert!(Instant::now() < deadline, "the listener never bound; its log:\n{}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn direct_state(&mut self) -> DirectState {
+        match self.command.request(&Request::GetDirectState) {
+            Response::DirectState { state } => state,
+            other => panic!("expected DirectState, got {other:?}"),
+        }
+    }
+
+    /// The pin of the certificate the listener serves, from the store.
+    fn direct_pin(&self) -> String {
+        let row = stored(self, "direct_tls");
+        let length = u32::from_be_bytes(row[..4].try_into().unwrap()) as usize;
+        protocol::relay::certificate_pin(&row[4..4 + length])
+    }
+
+    /// This Workstation's static key, from the store -- without drawing a
+    /// QR, which would put a pairing on offer.
+    fn key(&self) -> Vec<u8> {
+        stored(self, "static_public_key")
+    }
+
+    /// Presses "Pair a device" with the listener bound, and hands back the
+    /// QR with its direct addresses pointed at loopback: the ones the
+    /// daemon worked out are this machine's LAN and tailnet, which a test
+    /// cannot count on, and loopback reaches the same listener.
+    fn direct_offer(&mut self, port: u16) -> PairingQr {
+        let mut offer = PairingQr::parse(&self.offer()).unwrap();
+        if let Some(pin) = &offer.direct_pin {
+            assert_eq!(*pin, self.direct_pin(), "the QR pins the certificate the listener serves");
+            for address in &offer.direct {
+                assert!(address.starts_with("wss://") && address.ends_with(&format!(":{port}")), "{address}");
+            }
+        }
+        offer.direct = vec![format!("wss://127.0.0.1:{port}")];
+        offer.direct_pin = Some(self.direct_pin());
+        offer
+    }
+
+    /// Pairs `device` through `offer`: the scan, the six digits, Confirm.
+    fn pair_through(&mut self, device: &TestDevice, offer: &PairingQr) -> PairedWorkstation {
+        let pairing = device.pair_with(offer).unwrap();
+        let (device_id, _, desk_code) = self.asked();
+        assert_eq!(pairing.code, desk_code, "the two screens must show the same code");
+        let resp = self.command.request(&Request::ConfirmPairing { device_id: device_id.clone() });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let paired = pairing.paired(SOON).unwrap();
+        assert_eq!(paired.device_id, device_id);
+        paired
+    }
+}
+
+/// The card's point: with no Relay anywhere, a Device pairs over the
+/// listener, connects over it, and is given the Remote role -- the same
+/// role, through the same loop, as through a Relay.
+#[test]
+fn a_device_pairs_and_connects_directly_with_no_relay() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+
+    let offer = workstation.direct_offer(port);
+    assert!(offer.rendezvous.is_empty(), "no Relay was named: {offer:?}");
+    assert_eq!(offer.relay_admission, None, "there is no Relay to admit to");
+
+    let device = TestDevice::new("Direct iPhone").unwrap();
+    let paired = workstation.pair_through(&device, &offer);
+    assert_eq!(paired.direct, offer.direct);
+    assert_eq!(paired.direct_pin, offer.direct_pin);
+    assert_eq!(workstation.device_names(), vec!["Direct iPhone".to_string()]);
+
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(connection.device_id, paired.device_id);
+    assert_eq!(workstation.connected(), paired.device_id);
+    for request in refused_to_a_device() {
+        assert_refused(&mut connection, &request);
+    }
+    connection.close();
+    assert_eq!(workstation.disconnected(), paired.device_id);
+
+    // A Device connects as often as it likes.
+    let mut again = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_refused(&mut again, &Request::ListSessions);
+}
+
+/// "Refuse anything that is not a Device hello before any state is
+/// touched": every hello but a Device's for THIS Workstation's key is
+/// refused by name, the way a Relay refuses it, and the desk hears
+/// nothing of any of them.
+#[test]
+fn the_direct_listener_refuses_what_is_not_a_device_hello_for_this_workstation() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let url = format!("wss://127.0.0.1:{port}");
+    let options = DialOptions { pin: Some(workstation.direct_pin()), ..DialOptions::default() };
+    let ours = rendezvous_id(&workstation.key());
+    let refused = |hello: RelayHello| match dial(&url, &hello, &options) {
+        Err(DialError::Refused(reason)) => reason,
+        Err(other) => panic!("{hello:?} was not refused by name: {other}"),
+        Ok(_) => panic!("{hello:?} was let in"),
+    };
+
+    // A daemon registering, as it would with a Relay.
+    assert_eq!(refused(RelayHello::workstation(TOKEN, &ours)), RefusalReason::Version);
+    // A Device looking for another Workstation, or for this one under a
+    // key that has since been rotated.
+    assert_eq!(
+        refused(RelayHello::device("", &rendezvous_id(&[9u8; 32]), PURPOSE_CONNECT)),
+        RefusalReason::Offline
+    );
+    // A pairing with no QR on the desk.
+    assert_eq!(refused(RelayHello::device("", &ours, PURPOSE_PAIR)), RefusalReason::Unclaimed);
+    // A purpose this build does not serve.
+    assert_eq!(refused(RelayHello::device("", &ours, "forward")), RefusalReason::Unclaimed);
+
+    assert!(workstation.push.hears_nothing_for(Duration::from_millis(300)));
+    assert_eq!(workstation.devices(), vec![]);
+}
+
+/// A socket that opens and says nothing holds one of the listener's
+/// places only until the hello deadline.
+#[test]
+fn a_peer_that_never_says_hello_is_let_go() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+
+    let mut silent = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    silent.set_read_timeout(Some(SOON)).unwrap();
+    let started = Instant::now();
+    let read = silent.read(&mut [0u8; 1]);
+    let took = started.elapsed();
+    assert!(
+        matches!(&read, Ok(0)) || matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset),
+        "{read:?}"
+    );
+    assert!(took >= Duration::from_secs(4), "let go before the deadline: {took:?}");
+    assert!(took < Duration::from_secs(10), "held past the deadline: {took:?}");
+}
+
+/// The listener holds a fixed number of sockets at once. One over is
+/// closed on before TLS, and the places come back as the others end.
+#[test]
+fn a_connection_over_the_direct_listeners_cap_is_closed_on() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let url = format!("wss://127.0.0.1:{port}");
+    let options = DialOptions {
+        pin: Some(workstation.direct_pin()),
+        hello_timeout: Duration::from_secs(3),
+        ..DialOptions::default()
+    };
+    // A hello the listener refuses by name: proof it was read.
+    let elsewhere = RelayHello::device("", &rendezvous_id(&[9u8; 32]), PURPOSE_CONNECT);
+
+    // Sixteen sockets that say nothing, each holding a place until its
+    // hello deadline.
+    let held: Vec<TcpStream> =
+        (0..16).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    match dial(&url, &elsewhere, &options) {
+        Err(DialError::Refused(reason)) => panic!("a connection over the cap was read: {reason}"),
+        Err(_) => {}
+        Ok(_) => panic!("a connection over the cap was let in"),
+    }
+
+    drop(held);
+    eventually("the places came back", || {
+        matches!(dial(&url, &elsewhere, &options), Err(DialError::Refused(RefusalReason::Offline)))
+    });
+}
+
+/// Turning direct connection off closes the port and lets go of every
+/// Device the listener was carrying.
+#[test]
+fn turning_direct_connection_off_closes_the_port_and_drops_the_device() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    let port = workstation.listen_directly();
+    let offer = workstation.direct_offer(port);
+    let device = TestDevice::new("Direct iPhone").unwrap();
+    let paired = workstation.pair_through(&device, &offer);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: false });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+
+    assert!(connection.is_dropped(SOON), "the Device was still carried");
+    assert_eq!(workstation.disconnected(), paired.device_id);
+    eventually("the port was closed", || TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+}
+
+/// The address a Device kept from pairing is tried first, and when it
+/// does not answer the Relay carries the connection instead.
+#[test]
+fn a_device_whose_direct_address_does_not_answer_falls_back_to_the_relay() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let port = workstation.listen_directly();
+
+    let offer = workstation.direct_offer(port);
+    assert_eq!(offer.rendezvous, vec![relay.url()]);
+    let device = device(&relay, "Direct iPhone");
+    let paired = workstation.pair_through(&device, &offer);
+    assert_eq!(relay.relay.stats().streams, 0, "the pairing went direct");
+
+    // Direct connection off: the address the Device kept answers nothing.
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: false });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    eventually("the port was closed", || TcpStream::connect(("127.0.0.1", port)).is_err());
+
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_eq!(relay.relay.stats().streams, 1, "the connection came through the Relay");
+    assert_refused(&mut connection, &Request::ListSessions);
+}
+
+/// Off unless asked for: remote access on is not enough, and direct
+/// connection on is not enough without it. Nothing listens, and the QR
+/// names no direct address.
+#[test]
+fn nothing_listens_unless_remote_access_and_direct_connection_are_both_on() {
+    let mut workstation = Workstation::start_trusting("");
+    workstation.set_remote_access(true, None, None);
+    std::thread::sleep(QUIET);
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+    let offer = PairingQr::parse(&workstation.offer()).unwrap();
+    assert!(offer.direct.is_empty(), "{offer:?}");
+    assert_eq!(offer.direct_pin, None);
+
+    workstation.set_remote_access(false, None, None);
+    let resp = workstation.command.request(&Request::SetDirectAccess { enabled: true });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    std::thread::sleep(QUIET);
+    assert_eq!(workstation.direct_state(), DirectState::NotWanted);
+    match workstation.command.request(&Request::ListDevices) {
+        Response::Devices { direct_access_enabled, remote_access_enabled, .. } => {
+            assert!(direct_access_enabled, "the switch reads back as set");
+            assert!(!remote_access_enabled);
+        }
+        other => panic!("expected Devices, got {other:?}"),
+    }
 }

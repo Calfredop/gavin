@@ -32,9 +32,9 @@ export interface CompanionWaitingItem {
   target: CompanionNotifyTarget;
 }
 
-export interface CompanionNotifyDiff {
+export interface CompanionNotifyDiff<T = CompanionWaitingItem> {
   /// Newly waiting, or the same id with different text/kind — push these.
-  notify: CompanionWaitingItem[];
+  notify: T[];
   /// Were waiting and are gone — push "resolved" for each id.
   resolve: string[];
 }
@@ -72,15 +72,17 @@ export interface CompanionNotifySignals {
   railStops: readonly RailStopSignal[];
 }
 
-/// Diff the previous waiting set against the current one.
-export function companionNotifyDiff(
-  previous: readonly CompanionWaitingItem[],
-  current: readonly CompanionWaitingItem[],
-): CompanionNotifyDiff {
+/// Diff the previous waiting set against the current one. Any item with an
+/// id, a kind and a text: the live driver diffs the attention answer's
+/// items (`companionNotifyDriver.ts`).
+export function companionNotifyDiff<T extends { id: string; kind: string; text: string } = CompanionWaitingItem>(
+  previous: readonly T[],
+  current: readonly T[],
+): CompanionNotifyDiff<T> {
   const prevById = new Map(previous.map((item) => [item.id, item]));
   const currById = new Map(current.map((item) => [item.id, item]));
 
-  const notify: CompanionWaitingItem[] = [];
+  const notify: T[] = [];
   for (const item of current) {
     const was = prevById.get(item.id);
     if (!was || was.kind !== item.kind || was.text !== item.text) {

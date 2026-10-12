@@ -72,6 +72,9 @@
     z-index: 10;
     display: flex;
     flex-direction: column;
+    /* Fixed, it spans the hub's side insets, so it keeps clear of them
+       itself (Hub.svelte). */
+    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
     background: var(--surface-base);
   }
   .body {
@@ -79,8 +82,7 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 14px;
-    padding: 24px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom))
-      max(16px, env(safe-area-inset-left));
+    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
     overflow-y: auto;
   }
   .lead {

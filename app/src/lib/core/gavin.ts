@@ -112,7 +112,7 @@ export interface AgentConfig {
   profile: string | null;
   file: string | null;
   command: string | null;
-  /// The `custom` profile's MCP config path and dialect; the five stock
+  /// The `custom` profile's MCP config path and dialect; the six stock
   /// profiles carry a verified layout in the Rust table instead. Optional
   /// because an older daemon's tree does not send them.
   mcpFile?: string | null;
@@ -132,6 +132,11 @@ export interface AgentConfig {
   /// over. Optional because a pre-v56 daemon never sends either.
   effort?: string | null;
   effortFlag?: string | null;
+  /// The model the agent consults as its advisor. Never sent by the
+  /// daemon -- config.toml has no such key -- only laid on by a
+  /// complexity row (`agentConfigWithAttribution`), so a launch without
+  /// one runs with no advisor.
+  advisor?: string | null;
 }
 
 export interface GavinContext {
@@ -170,7 +175,7 @@ export interface BoardTab {
 
 /// Which half of a card a card tab shows: the detail panel, or the diff
 /// of what its run did to the checkout.
-export type CardTabView = "plan" | "changes" | "followups";
+export type CardTabView = "plan" | "changes" | "followups" | "browser";
 
 // One persisted view tab: something a terminal tab asked to see beside
 // itself, living in a pane rather than in a modal (mirrors config.rs's
@@ -182,6 +187,8 @@ export type CardTabView = "plan" | "changes" | "followups";
 // "followups" is keyed by `sessionId` and carries an empty `path`: an
 // agent's queue belongs to the SESSION, not to whatever card it happens
 // to be running, and two tabs on one card have two different queues.
+// "browser" -- an agent's browser, live (`browserView.ts`) -- is keyed the
+// same way and for the same reason: the browser belongs to the session.
 // Every walk of this map by path -- retargetCardTabs for a card that
 // moved, closablesForArchive for one leaving the board -- matches
 // against real card paths, so neither ever claims the empty one.

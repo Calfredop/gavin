@@ -2,11 +2,11 @@
   /// Confirm mini-wizard for switching a workspace's agent profile.
   /// Complexity is chosen first; advancing from that step writes the new
   /// profile and the realigned complexity table. Integration and
-  /// Superpowers then set up the new agent. Cancel before the write
+  /// agent skills then set up the new agent. Cancel before the write
   /// leaves config untouched; closing afterwards only skips leftover setup.
   import Modal from "$lib/core/Modal.svelte";
   import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
-  import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import AgentSkillsStep from "$lib/wizardSteps/AgentSkillsStep.svelte";
   import {
     agentDefaultsStore,
     agentModelDefaultsStore,
@@ -21,15 +21,16 @@
     agentConfigWithAttribution,
     recommendedComplexityAction,
     realignComplexityTable,
+    sameComplexityTable,
     type ComplexityRealignAction,
   } from "$lib/cards/complexity";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
   import {
     UNKNOWN_STATUS,
-    type SuperpowersMark,
-    type SuperpowersStatus,
-  } from "$lib/agents/superpowers";
+    type AgentSkillsMark,
+    type AgentSkillsStatus,
+  } from "$lib/agents/agentSkills";
   import {
     AGENT_CHANGE_STEPS,
     agentChangeCommitsOnAdvance,
@@ -57,8 +58,13 @@
     $agentProfilesStore.find((p) => p.id === toProfileId)?.label ?? toProfileId
   );
   const toProfile = $derived($agentProfilesStore.find((p) => p.id === toProfileId) ?? null);
-  const complexityTable = $derived(workspaceComplexityTable(workspaceId));
-  /// Re-run keeps pins by default; a real switch remaps or clears.
+  /// The table of the agent being switched TO: the one that governs this
+  /// workspace after the switch, workspace override else app-wide. Rows
+  /// naming the agent being left are what the wizard offers to remap.
+  const complexityTable = $derived(workspaceComplexityTable(workspaceId, toProfileId));
+  /// Keeping is the default both ways: a switch no longer strands a level
+  /// on a stale agent (tables are per agent), so rewriting is the human's
+  /// call.
   const defaultAction = $derived(
     rerun ? "keep" : recommendedComplexityAction(complexityTable, fromProfileId)
   );
@@ -69,10 +75,10 @@
   let commitError = $state<string | null>(null);
   let committed = $state(false);
 
-  // Superpowers probe for the PENDING agent. Owned here so the step can
+  // agent skills probe for the PENDING agent. Owned here so the step can
   // refresh after Install / Not now without the init wizard's machinery.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
 
   /// Resolve the agent being switched TO: profile overlay drops the
   /// workspace's old command/file/mcp so setup targets the new CLI's
@@ -84,11 +90,7 @@
         model: "",
       }),
       $agentProfilesStore,
-      $agentModelDefaultsStore,
-      {
-        command: $agentDefaultsStore.customCommand,
-        modelFlag: $agentDefaultsStore.customModelFlag,
-      }
+      $agentModelDefaultsStore
     )
   );
 
@@ -98,24 +100,24 @@
   // after a newer one -- the one after Install, or after the command
   // changed. Only the newest may write.
   let spToken = 0;
-  async function refreshSuperpowers(): Promise<void> {
+  async function refreshAgentSkills(): Promise<void> {
     const mine = ++spToken;
     const root = ws?.rootPath;
     if (!root) return;
     const [sp, marks] = await Promise.all([
-      backend.superpowersStatus(root, pendingAgent.command).catch(() => UNKNOWN_STATUS),
-      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+      backend.agentSkillsStatus(root, pendingAgent.command).catch(() => UNKNOWN_STATUS),
+      backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
     ]);
     if (mine !== spToken) return;
-    superpowers = sp;
-    superpowersMark = marks[root];
+    agentSkills = sp;
+    agentSkillsMark = marks[root];
   }
 
   $effect(() => {
-    if (current !== "superpowers") return;
+    if (current !== "agentSkills") return;
     void pendingAgent.command;
     void ws?.rootPath;
-    void refreshSuperpowers();
+    void refreshAgentSkills();
   });
 
   async function commitChange(): Promise<boolean> {
@@ -134,10 +136,20 @@
         fromProfileId,
         toProfileId
       );
+      // "clear" hands the primary back to the app-wide table (the key
+      // goes); anything else writes only when the rows actually changed,
+      // so a "keep" never freezes the inherited table into the workspace.
+      const realign = async (): Promise<void> => {
+        if (chosen === "clear") {
+          await setWorkspaceComplexityTable(workspaceId, toProfileId, null);
+        } else if (!sameComplexityTable(nextTable, complexityTable)) {
+          await setWorkspaceComplexityTable(workspaceId, toProfileId, nextTable);
+        }
+      };
       if (rerun) {
         // Same profile: leave command/file alone and only realign
         // complexity if the human asked to. Setup steps follow.
-        await setWorkspaceComplexityTable(workspaceId, nextTable);
+        await realign();
       } else {
         // A real switch must replace leftover command/file or the new
         // profile id is cosmetic — resolveAgentConfig keeps launching
@@ -147,7 +159,7 @@
           command: toProfile.command,
           file: toProfile.instructionsFile,
         });
-        await setWorkspaceComplexityTable(workspaceId, nextTable);
+        await realign();
       }
       committed = true;
       return true;
@@ -187,7 +199,7 @@
       {#if rerun}
         <h2>Set up {toLabel} again</h2>
         <p class="hint">
-          Re-check MCP, skills and Superpowers for this workspace's agent. Complexity is optional —
+          Re-check MCP, skills and Matt Pocock's skills for this workspace's agent. Complexity is optional —
           leave it on Keep unless you mean to change the table.
         </p>
       {:else}
@@ -195,7 +207,7 @@
         <p class="hint">
           From {fromLabel}. Complexity is realigned first; the new profile's default command and
           agent file replace leftovers so the switch actually launches; then gavin checks MCP,
-          skills and Superpowers.
+          skills and Matt Pocock's skills.
         </p>
       {/if}
     </header>
@@ -218,11 +230,12 @@
         <h3>Complexity</h3>
         <p class="hint">
           {#if rerun}
-            Optional on a re-run. App-level pins still fall through for levels this workspace leaves
-            alone.
+            Optional on a re-run. Complexity is set per agent; {toLabel}'s table is the one that
+            rates cards here.
           {:else}
-            App-level pins still fall through for levels this workspace leaves alone. Choose what to
-            do with this workspace's own complexity rows before the profile is written.
+            Complexity is set per agent, so {toLabel}'s own table — the app-wide one unless this
+            workspace gave it one of its own — rates cards from now on. A row in it may still name
+            {fromLabel}; choose what to do about those before the profile is written.
           {/if}
         </p>
         <fieldset class="choices">
@@ -234,8 +247,9 @@
               onchange={() => (action = "remap")}
             />
             <span>
-              <strong>Remap</strong> — rows that named {fromLabel} now name {toLabel}. Other pins
-              stay.
+              <strong>Remap</strong> — rows in {toLabel}'s table that named {fromLabel} now name
+              {toLabel}. Other rows stay. This workspace then keeps a table of its own for
+              {toLabel}.
               {#if defaultAction === "remap"}
                 <em class="rec">Recommended</em>
               {/if}
@@ -249,8 +263,8 @@
               onchange={() => (action = "clear")}
             />
             <span>
-              <strong>Clear</strong> — drop every workspace override so unset levels mean this
-              workspace's new agent (app pins still apply).
+              <strong>Clear</strong> — this workspace keeps no table of its own for {toLabel}; it
+              follows the app-wide one.
               {#if defaultAction === "clear"}
                 <em class="rec">Recommended</em>
               {/if}
@@ -264,7 +278,10 @@
               onchange={() => (action = "keep")}
             />
             <span>
-              <strong>Keep</strong> — leave workspace complexity rows alone.
+              <strong>Keep</strong> — leave {toLabel}'s table as it is.
+              {#if defaultAction === "keep"}
+                <em class="rec">Recommended</em>
+              {/if}
             </span>
           </label>
         </fieldset>
@@ -291,12 +308,12 @@
           <button type="button" class="ghost" onclick={cancel}>Skip remaining setup</button>
         </div>
       {:else}
-        <SuperpowersStep
+        <AgentSkillsStep
           {workspaceId}
-          status={superpowers}
-          mark={superpowersMark}
+          status={agentSkills}
+          mark={agentSkillsMark}
           agentCommand={pendingAgent.command}
-          onChanged={() => void refreshSuperpowers()}
+          onChanged={() => void refreshAgentSkills()}
           onDone={() => void advance()}
         />
         <div class="actions below">

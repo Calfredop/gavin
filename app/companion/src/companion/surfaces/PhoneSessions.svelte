@@ -3,13 +3,23 @@
   // over sessionList.ts (what each row says) and state/sessions.ts (what
   // opening one does).
   import { onMount } from "svelte";
-  import { Bot, ChevronRight, SquareTerminal } from "@lucide/svelte";
+  import { Bot, ChevronRight, Lock, Play, SquareTerminal } from "@lucide/svelte";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { showAlert } from "$lib/core/dialog";
   import { layoutState } from "$lib/core/layoutState";
+  import { lockBySessionId } from "$lib/core/sessionOwnershipState";
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
-  import { launchTables, loadLaunchTables, startedHere, startSession, type SessionKind } from "$companion/state/sessions";
+  import { onReconnect } from "$companion/state/reachability";
+  import {
+    agentStartedHere,
+    launchTables,
+    loadLaunchTables,
+    startedAt,
+    startedHere,
+    startSession,
+    type SessionKind,
+  } from "$companion/state/sessions";
   import { openTerminal } from "$companion/state/workstation";
   import { sessionGroups } from "$companion/surfaces/sessionList";
 
@@ -17,6 +27,10 @@
     workspace: Workspace;
   }
   let { workspace }: Props = $props();
+
+  /// The clock the started-here group is read against: moved when a start
+  /// runs out of the time the desk has to place it (`placingUntil`).
+  let now = $state(Date.now());
 
   const groups = $derived(
     sessionGroups({
@@ -34,13 +48,27 @@
       startedHere: Object.entries($startedHere)
         .filter(([, workspaceId]) => workspaceId === workspace.id)
         .map(([id]) => id),
+      agentStartedHere: $agentStartedHere[workspace.id],
+      startedAt: $startedAt,
+      now,
+      lockedBy: Object.fromEntries(Object.entries($lockBySessionId).map(([id, owner]) => [id, owner.name])),
     })
   );
+
+  $effect(() => {
+    const until = groups.find((g) => g.placingUntil !== undefined)?.placingUntil;
+    if (until === undefined) return;
+    const timer = setTimeout(() => (now = Date.now()), Math.max(until - Date.now(), 0) + 50);
+    return () => clearTimeout(timer);
+  });
 
   let starting = $state<SessionKind | null>(null);
 
   onMount(() => {
     void loadLaunchTables();
+    // The list itself is the Workstation's sessions, read again by
+    // state/workstation.ts; what starting one needs, if it failed.
+    return onReconnect(() => void loadLaunchTables());
   });
 
   async function start(kind: SessionKind): Promise<void> {
@@ -50,7 +78,7 @@
       openTerminal(await startSession(workspace.id, kind));
     } catch (e) {
       await showAlert({
-        title: kind === "agent" ? "The agent could not be started" : "The terminal could not be opened",
+        title: kind === "terminal" ? "The terminal could not be opened" : "The agent could not be started",
         lines: [e instanceof Error ? e.message : String(e)],
       });
     } finally {
@@ -82,6 +110,23 @@
     {#each groups as group (group.key)}
       <section class="group" aria-label={group.title}>
         <h2 class="group-title">{group.title}</h2>
+        {#if group.unplaced}
+          <p class="unplaced">The desk has not placed these as tabs, so only this phone lists them.</p>
+        {/if}
+        {#if group.startAgent}
+          <button
+            type="button"
+            class="row"
+            disabled={starting !== null || $launchTables !== "ready"}
+            onclick={() => void start("workspace-agent")}
+          >
+            <Play size={16} />
+            <span class="text">
+              <span class="name">{starting === "workspace-agent" ? "Starting…" : "Start workspace agent"}</span>
+              <span class="said">Not running. It works in the workspace's folder, and the desk shows it on Home.</span>
+            </span>
+          </button>
+        {/if}
         <ul class="rows">
           {#each group.rows as row (row.id)}
             <li>
@@ -90,6 +135,9 @@
                 <span class="text">
                   <span class="name">{row.name}</span>
                   <span class="said">{row.said}{#if row.folder}<span class="folder">{` · ${row.folder}`}</span>{/if}</span>
+                  {#if row.lockedBy}
+                    <span class="locked"><Lock size={12} aria-hidden="true" />{row.lockedBy} is working on this</span>
+                  {/if}
                 </span>
                 <ChevronRight size={18} />
               </button>
@@ -108,7 +156,7 @@
   .new {
     display: flex;
     gap: 8px;
-    padding: 12px max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
+    padding: 12px 12px 4px;
   }
   .start {
     display: inline-flex;
@@ -143,12 +191,19 @@
   }
   .group-title {
     margin: 16px 0 4px;
-    padding: 0 max(14px, env(safe-area-inset-left));
+    padding: 0 14px;
     color: var(--text-subtle);
     font-size: 0.6875rem;
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+  .unplaced {
+    margin: 0 0 4px;
+    padding: 0 14px;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    line-height: 1.4;
   }
   .rows {
     margin: 0;
@@ -161,15 +216,18 @@
     gap: 12px;
     width: 100%;
     min-height: 56px;
-    padding: 8px max(12px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+    padding: 8px 12px 8px 14px;
     border: 0;
     border-bottom: 1px solid var(--border);
     background: none;
     color: var(--text-subtle);
     text-align: left;
   }
-  .row:active {
+  .row:active:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .row:disabled {
+    opacity: 0.45;
   }
   .row:focus-visible {
     outline: 2px solid var(--border-focus);
@@ -199,5 +257,16 @@
   }
   .folder {
     color: var(--text-subtle);
+  }
+  .locked {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accent-text);
+    font-size: 0.8125rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

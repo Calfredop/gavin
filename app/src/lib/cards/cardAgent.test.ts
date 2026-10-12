@@ -54,70 +54,74 @@ describe("cardAgentOverride", () => {
 
 describe("cardAgentEntry", () => {
   it("falls through to the complexity level when the card names neither", () => {
-    expect(cardAgentEntry({ complexity: "intricate" }, app, {})).toEqual({
+    expect(cardAgentEntry({ complexity: "intricate" }, app)).toEqual({
       profile: "codex",
       model: "gpt-5.1",
     });
-    expect(cardAgentEntry({ complexity: "moderate" }, app, {})).toBeNull();
-    expect(cardAgentEntry({}, app, {})).toBeNull();
+    expect(cardAgentEntry({ complexity: "moderate" }, app)).toBeNull();
+    expect(cardAgentEntry({}, app)).toBeNull();
   });
 
   it("replaces the level's pair WHOLE rather than merging half by half", () => {
     // The failure this rule prevents: merging would keep the level's
     // `codex` and pair it with the card's `opus`, i.e. `codex --model
     // opus` -- a model name from one CLI in another's argv.
-    expect(cardAgentEntry({ complexity: "intricate", model: "opus" }, app, {})).toEqual({
+    expect(cardAgentEntry({ complexity: "intricate", model: "opus" }, app)).toEqual({
       profile: "",
       model: "opus",
       effort: "",
     });
-    expect(cardAgentEntry({ complexity: "intricate", agent: "gemini" }, app, {})).toEqual({
+    expect(cardAgentEntry({ complexity: "intricate", agent: "gemini" }, app)).toEqual({
       profile: "gemini",
       model: "",
       effort: "",
     });
     // An effort alone replaces the level's pair as well: the card runs
     // the WORKSPACE's agent harder, not the level's codex.
-    expect(cardAgentEntry({ complexity: "intricate", effort: "high" }, app, {})).toEqual({
+    expect(cardAgentEntry({ complexity: "intricate", effort: "high" }, app)).toEqual({
       profile: "",
       model: "",
       effort: "high",
     });
   });
 
-  it("lets the workspace table win under a card that says nothing", () => {
-    const workspace: ComplexityTable = { intricate: { profile: "gemini", model: "" } };
-    expect(cardAgentEntry({ complexity: "intricate" }, app, workspace)).toEqual({
+  /// Which table applies is decided upstream (the effective table of the
+  /// agent the workspace runs: its own override else the app's), so the
+  /// entry reads exactly the table it is handed and nothing underneath.
+  it("reads only the table it is given", () => {
+    const own: ComplexityTable = { intricate: { profile: "gemini", model: "" } };
+    expect(cardAgentEntry({ complexity: "intricate" }, own)).toEqual({
       profile: "gemini",
       model: "",
     });
+    expect(cardAgentEntry({ complexity: "trivial" }, own)).toBeNull();
   });
 });
 
 describe("cardAgentSummary", () => {
   it("says nothing about a card that rates and overrides nothing", () => {
-    expect(cardAgentSummary({}, app, {}, label)).toBeNull();
-    expect(cardAgentSummary(null, app, {}, label)).toBeNull();
+    expect(cardAgentSummary({}, app, label)).toBeNull();
+    expect(cardAgentSummary(null, app, label)).toBeNull();
   });
 
   it("reads a level exactly as the complexity line did before", () => {
-    expect(cardAgentSummary({ complexity: "intricate" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ complexity: "intricate" }, app, label)).toBe(
       "Intricate — runs Codex on gpt-5.1."
     );
-    expect(cardAgentSummary({ complexity: "trivial" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ complexity: "trivial" }, app, label)).toBe(
       "Trivial — runs this workspace's agent on haiku."
     );
-    expect(cardAgentSummary({ complexity: "moderate" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ complexity: "moderate" }, app, label)).toBe(
       "Moderate — runs this workspace's agent."
     );
   });
 
   it("names the override, in each of its three shapes", () => {
-    expect(cardAgentSummary({ agent: "codex", model: "gpt-5.1" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ agent: "codex", model: "gpt-5.1" }, app, label)).toBe(
       "This card runs Codex on gpt-5.1."
     );
-    expect(cardAgentSummary({ agent: "codex" }, app, {}, label)).toBe("This card runs Codex.");
-    expect(cardAgentSummary({ model: "opus" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ agent: "codex" }, app, label)).toBe("This card runs Codex.");
+    expect(cardAgentSummary({ model: "opus" }, app, label)).toBe(
       "This card runs this workspace's agent on opus."
     );
   });
@@ -127,20 +131,20 @@ describe("cardAgentSummary", () => {
     // the line has to name the winner -- otherwise "intricate" beside
     // "Claude Code" is two claims with no way to tell which one runs.
     expect(
-      cardAgentSummary({ complexity: "intricate", agent: "claude-code" }, app, {}, label)
+      cardAgentSummary({ complexity: "intricate", agent: "claude-code" }, app, label)
     ).toBe(
       "This card runs Claude Code — overriding what its intricate level would run (Codex on gpt-5.1)."
     );
   });
 
   it("says what an effort-only card beats", () => {
-    expect(cardAgentSummary({ complexity: "intricate", effort: "max" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ complexity: "intricate", effort: "max" }, app, label)).toBe(
       "This card runs this workspace's agent, at max effort — overriding what its intricate level would run (Codex on gpt-5.1)."
     );
   });
 
   it("claims no fight with a level that attributes nothing", () => {
-    expect(cardAgentSummary({ complexity: "moderate", agent: "codex" }, app, {}, label)).toBe(
+    expect(cardAgentSummary({ complexity: "moderate", agent: "codex" }, app, label)).toBe(
       "This card runs Codex."
     );
   });

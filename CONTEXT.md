@@ -11,7 +11,7 @@ What Gavin writes into an agent's own configuration so the agent can use Gavin: 
 _Avoid_: setup (that is the whole wizard), install
 
 **Agent tooling**:
-A third-party tool Gavin sets up to run alongside the agents, such as Superpowers or Headroom. Gavin can check whether it is there, and when it cannot, it takes the human's word.
+A third-party tool Gavin sets up to run alongside the agents, such as Matt Pocock's skills or Headroom. Gavin can check whether it is there, and when it cannot, it takes the human's word.
 _Avoid_: integration (that is Gavin wiring itself into an agent), plugin, add-on, extension
 
 **Headroom**:
@@ -35,6 +35,30 @@ _Avoid_: mobile client, phone app, mobile app
 **Device**:
 One install of the Companion, identified by its own keys to every Workstation it has paired with. An iPhone and an iPad are two Devices, and a reinstall is a new Device.
 _Avoid_: phone, client, paired phone
+
+**Presence**:
+Where a Device is on a Workstation and what it is doing there: the workspace it last worked in, the session it is typing into, and the sessions it started. The daemon reads it off the commands the Device has the desktop app run, so a Device never reports its own.
+_Avoid_: activity, status (that is a session's), online (that is being connected)
+
+**Owner**:
+The one Device whose input a session takes, or the desk when no Device holds it. A Device becomes the owner of a session it starts, or of a session the desk holds that it sends input to. A courtesy, not a security boundary: anyone who can type can take the session in one tap.
+_Avoid_: holder, controller, lock holder, driver
+
+**Locked**:
+How a session looks to everyone but its owner: they can read and scroll it, but their input is refused until they take it.
+_Avoid_: read-only (the terminal still scrolls and selects), busy, disabled
+
+**Take over**:
+Making yourself a session's owner while someone else owns it. At the desk it is called **Take back**. If the owner typed a moment ago, you are asked to confirm.
+_Avoid_: steal, grab, claim (that is what typing into a session nobody owns does)
+
+**Hand over**:
+The owner passing a session on purpose to another connected Device, or to the desk.
+_Avoid_: transfer, share, give
+
+**Release**:
+The owner giving a session back to the desk. It also happens without being asked: when the session ends, when the owning Device is revoked, and after a short grace once the owning Device has no connection.
+_Avoid_: unlock, drop
 
 **Workstations hub**:
 The Companion's home screen: every paired Workstation with its state, and one attention inbox across all of them.
@@ -67,6 +91,10 @@ _Avoid_: mobile permissions, remote access (as the name of the permission)
 **Relay**:
 The server that carries encrypted traffic between a Workstation and its Devices without being able to read it.
 _Avoid_: proxy, tunnel, server
+
+**Direct connection**:
+A Device reaching its Workstation with no Relay, over the same network or a Tailscale tailnet, through a listener the daemon runs itself. Opt-in, and tried before the Relay.
+_Avoid_: LAN mode, local relay, embedded relay
 
 **Push gateway**:
 The publisher's service that delivers encrypted notifications to Devices through Apple and Google, and the only holder of the publisher's push credentials.

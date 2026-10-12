@@ -10,10 +10,11 @@ import {
 } from "$companion/channel/messages";
 
 describe("the channel's message set", () => {
-  it("is closed: the eight types the spec names and no others", () => {
+  it("is closed: the nine types the spec names and no others", () => {
     expect([...MESSAGE_TYPES].sort()).toEqual(
       [
         "capabilities",
+        "connection",
         "event",
         "invoke",
         "listen",
@@ -94,7 +95,11 @@ describe("what the bundle's end reads", () => {
     { v: CHANNEL_VERSION, type: "result", id: 2, ok: true, value: null },
     { v: CHANNEL_VERSION, type: "result", id: 3, ok: false, error: "no such workspace" },
     { v: CHANNEL_VERSION, type: "result", id: 4, ok: false, error: "share-sheet", code: "unsupported" },
+    { v: CHANNEL_VERSION, type: "result", id: 5, ok: false, error: "gone", code: "unreachable" },
     { v: CHANNEL_VERSION, type: "event", listener: 3, event: "cwd-changed", payload: ["s1", "/tmp"] },
+    { v: CHANNEL_VERSION, type: "connection", state: "up" },
+    { v: CHANNEL_VERSION, type: "connection", state: "down", reason: "asleep" },
+    { v: CHANNEL_VERSION, type: "connection", state: "down", reason: "desktop-app-not-running" },
   ];
 
   it.each(TO_THE_BUNDLE)("round-trips $type", (message) => {
@@ -117,6 +122,24 @@ describe("what the bundle's end reads", () => {
   it("reads a type it has never heard of as unknown", () => {
     const raw = JSON.stringify({ v: 3, type: "presence", devices: [] });
     expect(readWorkstationMessage(raw)).toEqual({ kind: "unknown", type: "presence", id: null });
+  });
+
+  it("reads a connection down for a reason it does not know as down and unreachable", () => {
+    const raw = JSON.stringify({ v: CHANNEL_VERSION, type: "connection", state: "down", reason: "on-a-plane" });
+    expect(readWorkstationMessage(raw)).toEqual({
+      kind: "message",
+      message: { v: CHANNEL_VERSION, type: "connection", state: "down", reason: "unreachable" },
+    });
+  });
+
+  it("reads a connection with no state it knows as malformed, with nothing to answer", () => {
+    const raw = JSON.stringify({ v: CHANNEL_VERSION, type: "connection", state: "sideways" });
+    expect(readWorkstationMessage(raw)).toMatchObject({ kind: "malformed", id: null });
+  });
+
+  it("is a type a bundle cannot send: it is the shell's to say", () => {
+    const raw = JSON.stringify({ v: CHANNEL_VERSION, type: "connection", id: 4, state: "up" });
+    expect(readBundleMessage(raw)).toEqual({ kind: "unknown", type: "connection", id: 4 });
   });
 
   it("drops an error code it does not know and keeps the error", () => {

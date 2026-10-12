@@ -182,11 +182,12 @@ function publishVerdict(sessionId: string, entry: TurnVerdictEntry | null): void
 /// not block, and every failure below is the same null the policy
 /// already treats as "today's answer". Nothing here ever throws at its
 /// caller.
-export function noteQuietTransition(sessionId: string): void {
+export function noteQuietTransition(sessionId: string, opts: { forDevice?: boolean } = {}): void {
   // Another window owns this workspace's rails: it will ask and share.
   // Asking here too is the N-requests-per-turn the duty split exists to
-  // stop.
-  if (turnVerdictRole(sessionId) === false) return;
+  // stop. A Device asks for itself (`forDevice`): the share bus is one
+  // app's windows, and no desk window's answer reaches a phone.
+  if (!opts.forDevice && turnVerdictRole(sessionId) === false) return;
   if (turnVerdictSkip(sessionId) !== null) {
     // Not even a `read` entry: a session nobody asked about must look
     // exactly like one from a build without this feature, so that every
@@ -238,8 +239,8 @@ function settle(sessionId: string, token: number, reading: ReturnType<typeof rea
 /// a question the human has already answered. Bumps the token too, so an
 /// answer still in flight for the turn just ended is dropped rather than
 /// landing on the next one.
-export function clearTurnVerdict(sessionId: string): void {
-  if (turnVerdictRole(sessionId) === false) return;
+export function clearTurnVerdict(sessionId: string, opts: { forDevice?: boolean } = {}): void {
+  if (!opts.forDevice && turnVerdictRole(sessionId) === false) return;
   tokens.set(sessionId, (tokens.get(sessionId) ?? 0) + 1);
   publishVerdict(sessionId, null);
 }

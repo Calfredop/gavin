@@ -3,6 +3,7 @@
     layoutState,
     closeWizard,
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
@@ -10,16 +11,26 @@
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { UNKNOWN_STATUS, type AgentSkillsMark, type AgentSkillsStatus } from "$lib/agents/agentSkills";
   import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
   import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
+  import { loadMemorySkipped, workspaceMemoryReading } from "$lib/cards/memoryIndex";
+  import { ensureMemoryReading, memoryReadings } from "$lib/cards/memoryIndexState";
+  import {
+    loadPlaywrightMark,
+    toPlaywrightReading,
+    workspacePlaywrightReading,
+    type PlaywrightReading,
+  } from "$lib/agents/playwrightSetup";
   import * as backend from "$lib/core/backend";
   import Modal from "$lib/core/Modal.svelte";
   import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
   import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
   import PrdStep from "$lib/wizardSteps/PrdStep.svelte";
-  import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import AgentSkillsStep from "$lib/wizardSteps/AgentSkillsStep.svelte";
   import HeadroomStep from "$lib/wizardSteps/HeadroomStep.svelte";
+  import MemoryStep from "$lib/wizardSteps/MemoryStep.svelte";
+  import PlaywrightStep from "$lib/wizardSteps/PlaywrightStep.svelte";
   import GitStep from "$lib/wizardSteps/GitStep.svelte";
   import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
   import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
@@ -32,8 +43,10 @@
   const STEPS: Array<{ id: SetupStep; label: string }> = [
     { id: "agent", label: "Agent" },
     { id: "integration", label: "Integration" },
-    { id: "superpowers", label: "Superpowers" },
+    { id: "agentSkills", label: "Matt Pocock's skills" },
     { id: "headroom", label: "Headroom" },
+    { id: "memory", label: "Memory" },
+    { id: "playwright", label: "Playwright" },
     { id: "git", label: "Git" },
     { id: "review", label: "Review" },
     { id: "prd", label: "PRD" },
@@ -45,7 +58,15 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agentCfg = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+    resolveAgentConfig(
+      $trustedAgentConfigs(workspaceId),
+      $agentProfilesStore,
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
+    )
   );
   const prdPath = $derived(resolvePrdPath(rootContext));
 
@@ -57,17 +78,40 @@
   // opened the wizard on the wrong one for good.
   let agentFileBody = $state<string | null | undefined>(undefined);
   let prdBody = $state<string | null | undefined>(undefined);
-  // The Superpowers check joins them, undefined for the same reason: a
+  // The agent skills check joins them, undefined for the same reason: a
   // detector still running is not a detector that found nothing.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
   // Headroom's reading is the machine's, shared with Settings, and
   // undefined until the daemon has answered -- the same rule again: a
   // question in flight is not a Headroom that is missing.
   ensureHeadroomReading();
   const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
+  // The memory index is this ROOT's, asked once per root and shared with
+  // the Home tab; undefined until the daemon answers, the same rule. The
+  // "not now" mark is a synchronous read, re-read when the step changes it.
+  const memory = $derived(
+    workspaceMemoryReading(ws?.rootPath ? $memoryReadings[ws.rootPath] : undefined, ws)
+  );
+  let memorySkippedTick = $state(0);
+  const memorySkipped = $derived(
+    (void memorySkippedTick, ws?.rootPath ? loadMemorySkipped(ws.rootPath) : false)
+  );
+  $effect(() => {
+    if (ws?.rootPath && !ws.ssh) ensureMemoryReading(ws.rootPath);
+  });
+  // Playwright's three checks are this root's, asked with the file reads
+  // below and undefined until they answer, the same rule. An ssh
+  // workspace is not asked: the step cannot serve it from here. The
+  // human's answer is a synchronous read, re-read when the step changes it.
+  let playwrightAsked = $state<PlaywrightReading | undefined>(undefined);
+  const playwright = $derived(workspacePlaywrightReading(playwrightAsked, ws));
+  let playwrightMarkTick = $state(0);
+  const playwrightMark = $derived(
+    (void playwrightMarkTick, ws?.rootPath ? loadPlaywrightMark(ws.rootPath) : undefined)
+  );
 
-  // The Superpowers check answers off the main thread, so a reread can
+  // The agent skills check answers off the main thread, so a reread can
   // land after a newer one -- and this one lands as a whole, file bodies
   // and all. Only the newest may write.
   let rereadToken = 0;
@@ -75,20 +119,23 @@
     const mine = ++rereadToken;
     const root = ws?.rootPath;
     if (!root) return;
-    const [agentFile, prd, sp, marks] = await Promise.all([
+    const ssh = Boolean(ws?.ssh);
+    const [agentFile, prd, sp, marks, pw] = await Promise.all([
       backend.readFileForViewer(`${root}/${agentCfg.file}`).catch(() => null),
       backend.readFileForViewer(`${root}/${prdPath}`).catch(() => null),
       // A detector that threw still has to settle the pending flag, or
       // the wizard never renders at all. UNKNOWN_STATUS is the honest
       // stand-in: it offers no button and completes no step.
-      backend.superpowersStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
-      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+      backend.agentSkillsStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
+      backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
+      ssh ? Promise.resolve(undefined) : toPlaywrightReading(backend.playwrightStatus(root)),
     ]);
     if (mine !== rereadToken) return;
     agentFileBody = agentFile?.exists ? agentFile.content : null;
     prdBody = prd?.exists ? prd.content : null;
-    superpowers = sp;
-    superpowersMark = marks[root];
+    agentSkills = sp;
+    agentSkillsMark = marks[root];
+    playwrightAsked = pw;
   }
 
   $effect(() => {
@@ -105,8 +152,8 @@
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
-      superpowers,
-      superpowersMark,
+      agentSkills,
+      agentSkillsMark,
       // Off the workspace record, so this input never joins `pending`:
       // the git step's evidence is a recorded answer, and there is no
       // read in flight that could change it.
@@ -115,6 +162,10 @@
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
       headroomReading: headroom,
       headroomAsked: Boolean(ws?.headroomAsked),
+      memoryReading: memory,
+      memorySkipped,
+      playwright,
+      playwrightMark,
     })
   );
 
@@ -172,16 +223,34 @@
           <AgentStep {workspaceId} onDone={advance} />
         {:else if current === "integration"}
           <IntegrationStep {workspaceId} onDone={advance} />
-        {:else if current === "superpowers"}
-          <SuperpowersStep
+        {:else if current === "agentSkills"}
+          <AgentSkillsStep
             {workspaceId}
-            status={superpowers}
-            mark={superpowersMark}
+            status={agentSkills}
+            mark={agentSkillsMark}
             onChanged={() => void reread()}
             onDone={advance}
           />
         {:else if current === "headroom"}
           <HeadroomStep {workspaceId} reading={headroom} onDone={advance} />
+        {:else if current === "memory"}
+          <MemoryStep
+            {workspaceId}
+            reading={memory}
+            onChanged={() => (memorySkippedTick += 1)}
+            onDone={advance}
+          />
+        {:else if current === "playwright"}
+          <PlaywrightStep
+            {workspaceId}
+            reading={playwright}
+            mark={playwrightMark}
+            onChanged={() => {
+              playwrightMarkTick += 1;
+              void reread();
+            }}
+            onDone={advance}
+          />
         {:else if current === "git"}
           <GitStep {workspaceId} onDone={advance} />
         {:else if current === "review"}

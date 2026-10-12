@@ -53,6 +53,8 @@ export function keepPairing(kept: KeptWorkstation, paired: PairedWorkstation[], 
     workstationKey: kept.workstationKey,
     relays: [...kept.relays],
     relayAdmission: kept.relayAdmission,
+    direct: [...(kept.direct ?? [])],
+    directPin: kept.directPin ?? null,
     deviceId: kept.deviceId,
     notificationKey: kept.notificationKey,
   };
@@ -88,6 +90,9 @@ export function readRecord(json: string): PairedWorkstation | null {
     Array.isArray(r.relays) &&
     r.relays.every((url) => typeof url === "string") &&
     (r.relayAdmission === null || typeof r.relayAdmission === "string") &&
+    // A record kept before v69 has neither; one that has them has them whole.
+    (r.direct === undefined || (Array.isArray(r.direct) && r.direct.every((url) => typeof url === "string"))) &&
+    (r.directPin === undefined || r.directPin === null || typeof r.directPin === "string") &&
     typeof r.deviceId === "string" &&
     r.deviceId.length > 0 &&
     typeof r.notificationKey === "string" &&
@@ -101,6 +106,8 @@ export function readRecord(json: string): PairedWorkstation | null {
     workstationKey: record.workstationKey,
     relays: record.relays,
     relayAdmission: record.relayAdmission,
+    direct: record.direct ?? [],
+    directPin: record.directPin ?? null,
     deviceId: record.deviceId,
     notificationKey: record.notificationKey,
   };

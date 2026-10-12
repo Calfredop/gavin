@@ -15,19 +15,27 @@ describe("fallback agent surfaces", () => {
     const wizard = source("AgentArmWizard.svelte");
     expect(wizard).toContain("does not change the workspace's agent");
     expect(wizard).toContain("IntegrationStep");
-    expect(wizard).toContain("SuperpowersStep");
+    expect(wizard).toContain("AgentSkillsStep");
     expect(wizard).not.toContain("switchWorkspaceAgentProfile");
     expect(wizard).not.toContain("setWorkspaceComplexityTable");
-    expect(wizard).toMatch(/SuperpowersStep[\s\S]*\{profileId\}/);
+    expect(wizard).toMatch(/AgentSkillsStep[\s\S]*\{profileId\}/);
     expect(source("agentArm.ts")).toContain("integration");
     expect(source("agentArm.ts")).not.toContain("complexity");
   });
 
   it("edits the chain in app settings, workspace settings, and the init wizard", () => {
-    expect(source("GlobalSettingsView.svelte")).toContain("Fallback agent");
-    expect(source("GlobalSettingsView.svelte")).toContain("FallbackChainEditor");
-    expect(source("SettingsHubView.svelte")).toContain("Fallback agent");
-    expect(source("SettingsHubView.svelte")).toContain("setWorkspaceFallback");
+    // Per-primary since the chains became a map keyed by primary profile
+    // id. One panel draws a primary's chain for both scopes -- General
+    // points it at the default (app) or the resolved (workspace) agent,
+    // every agent tab at its own -- so neither settings page carries a
+    // copy of the editor.
+    const panel = source("AgentPrimaryPanel.svelte");
+    expect(panel).toContain("withFallbackChainForPrimary");
+    expect(panel).toContain("FallbackChainEditor");
+    expect(panel).toContain("chainForPrimary");
+    expect(panel).toContain("setWorkspaceFallback");
+    expect(source("GlobalSettingsView.svelte")).toContain('<AgentPrimaryPanel\n          scope="app"');
+    expect(source("SettingsHubView.svelte")).toContain('scope="workspace"');
     expect(source("AgentStep.svelte")).toContain("FallbackChainEditor");
   });
 
@@ -38,8 +46,8 @@ describe("fallback agent surfaces", () => {
     expect(source("SettingsHubView.svelte")).toContain("fallbackThresholds");
     expect(source("AgentStep.svelte")).toContain("Walk at");
     expect(source("AgentStep.svelte")).toContain("fallbackThresholds");
-    expect(source("GlobalSettingsView.svelte")).toContain("onThresholdChange");
-    expect(source("GlobalSettingsView.svelte")).toContain("fallbackThresholds");
+    expect(source("AgentPrimaryPanel.svelte")).toContain("onThresholdChange");
+    expect(source("AgentPrimaryPanel.svelte")).toContain("fallbackThresholds");
   });
 
   it("forces the arming wizard from a launch rather than skipping or launching degraded", () => {

@@ -27,7 +27,14 @@ const MAX_SEQUENCE_SCAN_LEN: usize = 65536;
 /// in a chunk of raw PTY output, in the order they occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusEvent {
-    Idle,
+    /// A marker the emitter uses for its PROMPT (OSC 133 A/D) when
+    /// `prompt` is true, or its mid-output line framing (B) when false.
+    /// The distinction is what tells a full shell-integration speaker
+    /// from a partial one: kimi frames tool results in `B;C` pairs but
+    /// never marks a prompt, and trusting either marker with the
+    /// permanent OSC-133 switch leaves it `working` forever -- see
+    /// `server.rs`'s seen_osc133 gate.
+    Idle { prompt: bool },
     Working,
     WaitingForInput,
     /// Claude Code's `Claude is waiting for your input`: sent on a timer,
@@ -212,9 +219,13 @@ impl StatusScanner {
             b"133" => {
                 let Some(&command) = payload.first() else { return };
                 match command {
-                    b'A' | b'B' => found.push(StatusEvent::Idle),
+                    // A and D bracket the prompt itself; B marks output
+                    // having ended (which partial emitters like kimi use
+                    // to frame individual tool-result lines, mid-turn --
+                    // see the enum's `prompt` flag).
+                    b'A' | b'D' => found.push(StatusEvent::Idle { prompt: true }),
+                    b'B' => found.push(StatusEvent::Idle { prompt: false }),
                     b'C' => found.push(StatusEvent::Working),
-                    b'D' => found.push(StatusEvent::Idle),
                     _ => {}
                 }
             }
@@ -322,13 +333,13 @@ mod tests {
     #[test]
     fn prompt_start_a_maps_to_idle() {
         let mut scanner = StatusScanner::new();
-        assert_eq!(scanner.feed(&osc133("A")), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&osc133("A")), vec![StatusEvent::Idle { prompt: true }]);
     }
 
     #[test]
     fn command_start_b_maps_to_idle() {
         let mut scanner = StatusScanner::new();
-        assert_eq!(scanner.feed(&osc133("B")), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&osc133("B")), vec![StatusEvent::Idle { prompt: false }]);
     }
 
     #[test]
@@ -340,13 +351,13 @@ mod tests {
     #[test]
     fn command_finished_d_without_exit_code_maps_to_idle() {
         let mut scanner = StatusScanner::new();
-        assert_eq!(scanner.feed(&osc133("D")), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&osc133("D")), vec![StatusEvent::Idle { prompt: true }]);
     }
 
     #[test]
     fn command_finished_d_with_exit_code_still_maps_to_idle() {
         let mut scanner = StatusScanner::new();
-        assert_eq!(scanner.feed(&osc133("D;42")), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&osc133("D;42")), vec![StatusEvent::Idle { prompt: true }]);
     }
 
     #[test]
@@ -588,7 +599,7 @@ mod tests {
     fn finds_multiple_sequences_across_separate_feed_calls() {
         let mut scanner = StatusScanner::new();
         assert_eq!(scanner.feed(&osc133("C")), vec![StatusEvent::Working]);
-        assert_eq!(scanner.feed(&osc133("D")), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&osc133("D")), vec![StatusEvent::Idle { prompt: true }]);
     }
 
     #[test]
@@ -657,7 +668,7 @@ mod tests {
         let mut bytes = b"some shell output before\r\n".to_vec();
         bytes.extend(osc133("D"));
         bytes.extend_from_slice(b"more output after\r\n");
-        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::Idle]);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::Idle { prompt: true }]);
     }
 }
 

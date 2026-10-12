@@ -63,7 +63,7 @@
     background: var(--surface-base);
     color: var(--text);
     font-family: monospace;
-    font-size: 16px;
+    font-size: max(16px, 1rem);
   }
   /* A name or a choice takes the row; a count is a few digits wide. */
   .control :global(select),

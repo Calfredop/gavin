@@ -1,5 +1,5 @@
 ---
-order: 8192
+order: 7168
 title: Headroom agent tooling
 status: To Do
 labels: ready-for-agent

@@ -149,6 +149,13 @@ export function sshSyncBlocked(ws: Workspace | null | undefined, links: SshLinks
   return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshGitSync, "to use them there");
 }
 
+/// Whether an agent's browser on this workspace's host can be shown now
+/// (`browserView.ts`): its frames come from the HOST's daemon, so the
+/// host's version is the one that counts, never the local daemon's.
+export function sshBrowserBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.playwrightBrowser, "to see its browser");
+}
+
 /// The hosts whose link is up -- what `staleLayoutTabIds` needs to know
 /// which ssh workspaces' tabs the baselines can vouch for.
 export function readyHosts(links: SshLinks): Set<string> {

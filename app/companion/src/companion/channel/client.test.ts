@@ -325,6 +325,44 @@ describe("returning to the hub", () => {
   });
 });
 
+describe("the connection to the Workstation", () => {
+  it("is heard going down and coming back up, by everyone hearing it", () => {
+    const end = scriptedEnd();
+    const client = createChannelClient(end.port);
+    const first = vi.fn();
+    const second = vi.fn();
+    client.onConnection(first);
+    const stop = client.onConnection(second);
+
+    end.say({ v: CHANNEL_VERSION, type: "connection", state: "down", reason: "asleep" });
+    stop();
+    end.say({ v: CHANNEL_VERSION, type: "connection", state: "up" });
+
+    expect(first.mock.calls).toEqual([[{ state: "down", reason: "asleep" }], [{ state: "up" }]]);
+    expect(second.mock.calls).toEqual([[{ state: "down", reason: "asleep" }]]);
+  });
+
+  it("keeps an unreachable refusal's code, for the surface to tell it from the Workstation's own", async () => {
+    const end = scriptedEnd();
+    const client = createChannelClient(end.port);
+    const answer = client.invoke("git_status");
+    end.fail(end.posted[0].id, "The Workstation cannot be reached right now.", "unreachable");
+    const error = await answer.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ChannelError);
+    expect((error as ChannelError).code).toBe("unreachable");
+  });
+
+  it("is not heard after the channel closes", () => {
+    const end = scriptedEnd();
+    const client = createChannelClient(end.port);
+    const heard = vi.fn();
+    client.onConnection(heard);
+    client.close();
+    end.say({ v: CHANNEL_VERSION, type: "connection", state: "up" });
+    expect(heard).not.toHaveBeenCalled();
+  });
+});
+
 describe("closing", () => {
   it("rejects what was still waiting, and hears nothing afterwards", async () => {
     const end = scriptedEnd();

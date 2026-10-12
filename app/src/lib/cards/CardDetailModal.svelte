@@ -29,6 +29,7 @@
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
     NO_COMPLEXITY,
+    effectiveComplexityTable,
   } from "$lib/cards/complexity";
   import CardAgentControls from "$lib/cards/CardAgentControls.svelte";
   import { cardAgentSummary } from "$lib/cards/cardAgent";
@@ -82,6 +83,7 @@
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
   import { adoptBlockedReason, adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
+  import { syncAfterAdopt } from "$lib/cards/memoryIndexState";
   import {
     orchestrations,
     sendCardToRailAction,
@@ -399,11 +401,17 @@
   /// The effort line's own gate: a v55 daemon keeps `agent:`/`model:` but
   /// refuses, and never parses, `effort:` (daemonCompat.ts, agentEffort).
   const cardEffortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
-  /// Read off `layoutState` rather than through `workspaceComplexityTable`,
-  /// which is a one-shot `get()`: this is a component, and a table read
-  /// once at mount would keep whatever the workspace said then.
-  const workspaceTable = $derived(
-    $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+  /// The table of the agent this workspace runs, workspace override else
+  /// app-wide. Read off the stores rather than through
+  /// `workspaceComplexityTable`, which is a one-shot `get()`: this is a
+  /// component, and a table read once at mount would keep whatever the
+  /// workspace said then.
+  const effectiveTable = $derived(
+    effectiveComplexityTable(
+      $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityTables,
+      $agentDefaultsStore.complexityTables,
+      $resolvedAgents(workspaceId).profileId
+    )
   );
   /// The complexity select's LIVE value, not the card's stored one, so
   /// the line below follows a level the human is still choosing.
@@ -423,8 +431,7 @@
   const cardAgentLine = $derived(
     cardAgentSummary(
       agentFields,
-      $agentDefaultsStore.complexity,
-      workspaceTable,
+      effectiveTable,
       (id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id
     )
   );
@@ -744,7 +751,7 @@
   // gated: it replays the command the first launch stored, and never
   // builds one.
   const runBlocked = $derived(
-    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label, $resolvedAgents(workspaceId).promptInjection)
   );
 
   async function handleDevelop(): Promise<void> {
@@ -910,6 +917,10 @@
       // watcher gets round to it -- and the file moved under the modal.
       patchPlanField(workspaceId, card.id, "status", done.name);
       followMove(result.movedTo);
+      // The search index, after the file: the fact is adopted whatever
+      // this says, and a miss here heals on the next search -- so it is
+      // a note on the modal, not a failed adopt.
+      errorMessage = await syncAfterAdopt(adoptRoot);
       // Opens nothing, deliberately: adopting is a filing gesture, and
       // dropping the human into an editor would make them close it
       // again. The modal stays put so the card's new column is visible.

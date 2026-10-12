@@ -40,6 +40,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // The launching profile, as the real one names it against a daemon
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
+  promptExtrasFor: vi.fn((): string[] => []),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
     profileId: c.profileId,
     label: c.profileId === "custom" ? "Custom" : "Claude Code",

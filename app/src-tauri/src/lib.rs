@@ -1,13 +1,17 @@
 mod agent_models;
+mod agent_playwright;
 mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
+mod browser_view;
+mod changes_only;
 mod command_lane;
 mod commands;
 mod companion_bundle;
 mod config;
 mod confirm_gate;
 mod daemon;
+mod device_commit;
 mod edge_expand;
 mod fileviewer;
 mod forwarding;
@@ -21,8 +25,9 @@ mod program;
 mod pull_request;
 mod remote;
 mod session;
+mod single_instance;
 mod stream_writer;
-mod superpowers;
+mod agent_skills;
 mod trash;
 mod typesafe;
 mod updater;
@@ -47,6 +52,10 @@ fn daemon_compat(app_handle: AppHandle) -> Option<session::DaemonCompat> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything is built: a second Gavin.exe on Windows hands off
+    // to the running one and exits here (single_instance.rs).
+    single_instance::claim_or_exit();
+
     // The context is built first because one registration decision reads
     // it. `tauri_plugin_updater`'s Config makes `pubkey` REQUIRED, and
     // tauri hands a plugin whose `plugins.<name>` block is missing a
@@ -88,7 +97,9 @@ pub fn run() {
         .manage(workspace_window::DutyWindow::default())
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
+        .manage(browser_view::BrowserWatches::default())
         .manage(forwarding::Forwarding::default())
+        .manage(device_commit::DeviceCommitRequests::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -135,6 +146,7 @@ pub fn run() {
             typesafe::set_typesafe_change_attribution,
             typesafe::typesafe_attribution,
             session::set_failure_patterns,
+            session::distrust_osc133,
             session::get_workspaces_state,
             session::set_workspaces_state,
             workspace_settings::get_workspace_settings,
@@ -158,6 +170,8 @@ pub fn run() {
             session::headroom_reach,
             session::detect_headroom,
             session::install_headroom,
+            session::get_memory_index,
+            session::ensure_memory_index,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,
@@ -188,9 +202,14 @@ pub fn run() {
             session::confirm_pairing,
             session::reject_pairing,
             session::list_devices,
+            session::get_relay_state,
+            session::get_direct_state,
             session::revoke_device,
             session::revoke_all_devices,
             session::set_remote_access,
+            session::set_direct_access,
+            session::set_push_gateway_url,
+            session::push_companion_notify,
             daemon_compat,
             confirm_gate::open_confirmation,
             confirm_gate::answer_confirmation,
@@ -230,6 +249,8 @@ pub fn run() {
             session::list_queued_inputs,
             session::set_queued_inputs,
             session::send_queued_input,
+            session::set_session_owner,
+            session::list_session_owners,
             session::set_board_tabs,
             session::set_card_tabs,
             session::set_plan_frontmatter_field,
@@ -246,10 +267,21 @@ pub fn run() {
             session::set_root_config_field,
             session::get_agent_model_defaults,
             session::set_agent_model_default,
-            session::get_superpowers_marks,
-            session::set_superpowers_mark,
-            superpowers::superpowers_status,
-            superpowers::superpowers_install,
+            session::get_agent_skills_marks,
+            session::set_agent_skills_mark,
+            agent_skills::agent_skills_farewell,
+            agent_skills::dismiss_agent_skills_farewell,
+            agent_skills::agent_skills_status,
+            agent_skills::agent_skills_install,
+            agent_playwright::playwright_status,
+            agent_playwright::playwright_install,
+            browser_view::watch_browser,
+            browser_view::unwatch_browser,
+            browser_view::watch_browser_for_device,
+            browser_view::unwatch_browser_for_device,
+            browser_view::list_browsers,
+            browser_view::get_playwright_pane_open,
+            browser_view::set_playwright_pane_open,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,
@@ -262,8 +294,6 @@ pub fn run() {
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
             agent_tokens::conversation_log,
-            session::get_agent_pause,
-            session::set_agent_pause,
             session::get_launch_config,
             session::set_launch_config,
             session::get_custom_resume_args,
@@ -301,6 +331,8 @@ pub fn run() {
             git::git_apply_patch,
             git::git_discard_files,
             git::git_commit,
+            device_commit::agent_commit_for_device,
+            device_commit::answer_agent_commit_request,
             git::git_init,
             git::git_watch,
             git::git_unwatch,

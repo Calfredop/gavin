@@ -228,8 +228,11 @@ struct Wire {
 }
 
 impl Wire {
+    /// Dials `dial`: a Relay as the machine trusts it, and a direct
+    /// listener by the pin the dial carries and nothing else.
     fn dial(dial: &RelayDial, options: &DialOptions, meddling: &Meddling) -> Result<Self, TestDeviceError> {
-        let stream = client::dial(&dial.url, &dial.hello, options)?.into_stream();
+        let options = DialOptions { pin: dial.pin.clone(), ..options.clone() };
+        let stream = client::dial(&dial.url, &dial.hello, &options)?.into_stream();
         Ok(Self {
             stream,
             meddling: meddling.clone(),
@@ -305,6 +308,14 @@ impl TestDevice {
         self
     }
 
+    /// From now on, gives up on an address that has not answered in
+    /// `within`, and tries the next: what a phone does with a direct
+    /// address it was given at pairing and that has since gone quiet.
+    pub fn waiting_at_most(mut self, within: Duration) -> Self {
+        self.options.connect_timeout = within;
+        self
+    }
+
     /// From now on, proves itself this way.
     pub fn proving(mut self, how: Proving) -> Self {
         self.proving = how;
@@ -354,8 +365,7 @@ impl TestDevice {
     /// The Device is not paired when this returns: the desk has not
     /// ruled. `Pairing::verdict` is the wait for that.
     pub fn pair_with(&self, offer: &PairingQr) -> Result<Pairing, TestDeviceError> {
-        let dial = relay_dials(offer)?.into_iter().next().ok_or(TestDeviceError::NoRelay)?;
-        let mut wire = Wire::dial(&dial, &self.options, &self.meddling)?;
+        let mut wire = self.dial_first(&relay_dials(offer)?)?;
 
         let (mut client, first) = PairingClient::start(
             offer,
@@ -393,9 +403,22 @@ impl TestDevice {
     /// Connects to a Workstation this Device has paired with, and
     /// returns once the Workstation has said it is connected.
     pub fn connect(&self, workstation: &PairedWorkstation) -> Result<Connection, TestDeviceError> {
-        let dial =
-            workstation.relay_dials().into_iter().next().ok_or(TestDeviceError::NoRelay)?;
-        self.connect_at(workstation, &dial)
+        let wire = self.dial_first(&workstation.relay_dials())?;
+        self.connect_over(workstation, wire)
+    }
+
+    /// The first of `dials` that answers, in order: the direct
+    /// addresses, then the Relays (ADR 0009). What the last one said, if
+    /// none did.
+    fn dial_first(&self, dials: &[RelayDial]) -> Result<Wire, TestDeviceError> {
+        let mut last = TestDeviceError::NoRelay;
+        for dial in dials {
+            match Wire::dial(dial, &self.options, &self.meddling) {
+                Ok(wire) => return Ok(wire),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     /// `connect`, meeting the Workstation where `dial` says and not
@@ -407,7 +430,15 @@ impl TestDevice {
         workstation: &PairedWorkstation,
         dial: &RelayDial,
     ) -> Result<Connection, TestDeviceError> {
-        let mut wire = Wire::dial(dial, &self.options, &self.meddling)?;
+        let wire = Wire::dial(dial, &self.options, &self.meddling)?;
+        self.connect_over(workstation, wire)
+    }
+
+    fn connect_over(
+        &self,
+        workstation: &PairedWorkstation,
+        mut wire: Wire,
+    ) -> Result<Connection, TestDeviceError> {
         let (mut client, first) = ConnectClient::start(
             &workstation.workstation_key,
             &self.keys,

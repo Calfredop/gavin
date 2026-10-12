@@ -362,12 +362,16 @@ describe("everything above, at the wire", () => {
     expect(sent.filter((cmd) => (LAYOUT_SAVING_COMMANDS as readonly string[]).includes(cmd))).toEqual([]);
     expect([...new Set(sent)].sort()).toEqual(
       [
+        // The daemon's verdict, and who owns each session (v68): reads.
+        "daemon_compat",
+        "list_session_owners",
         "get_board",
         "get_gavin_tree",
         "get_session_baselines",
         "get_session_names",
         "get_theme_pref",
         "get_workspaces_state",
+        "list_browsers",
         "worktree_setup",
       ].sort()
     );

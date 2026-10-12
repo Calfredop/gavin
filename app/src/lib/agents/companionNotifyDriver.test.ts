@@ -1,46 +1,86 @@
 import { describe, it, expect } from "vitest";
 import {
   companionNotifyBlocked,
-  eventsFromWaitingSets,
+  eventsFromAttention,
+  notifyWanted,
 } from "$lib/agents/companionNotifyDriver";
-import type { CompanionWaitingItem } from "$lib/agents/companionNotify";
+import type { AttentionItem } from "$lib/companion/attentionAnswer";
 import type { DaemonCompat } from "$lib/core/daemonCompat";
+import type { DeviceList } from "$lib/core/remoteAccess";
 
-function item(id: string, text = `${id} text`): CompanionWaitingItem {
-  return {
-    id,
-    workspaceId: "ws",
-    kind: "asking",
-    text,
-    target: { type: "session", sessionId: id },
-  };
+function item(id: string, text = `${id} text`): AttentionItem {
+  return { id, workspace: "ws", kind: "waiting", text, target: { kind: "session", id } };
 }
 
-describe("eventsFromWaitingSets", () => {
-  it("emits notify and resolve events the daemon can seal", () => {
-    const events = eventsFromWaitingSets(
-      [item("a"), item("b")],
-      [item("a", "changed"), item("c")],
-    );
+describe("eventsFromAttention", () => {
+  it("emits notify and resolve events spelled as protocol::CompanionNotifyEvent", () => {
+    const events = eventsFromAttention([item("a"), item("b")], [item("a", "changed"), item("c")]);
     expect(events).toEqual([
       {
         op: "notify",
         id: "a",
-        kind: "asking",
+        kind: "waiting",
         text: "changed",
-        workspaceId: "ws",
-        target: { type: "session", sessionId: "a" },
+        workspace_id: "ws",
+        target: { type: "session", session_id: "a" },
       },
       {
         op: "notify",
         id: "c",
-        kind: "asking",
+        kind: "waiting",
         text: "c text",
-        workspaceId: "ws",
-        target: { type: "session", sessionId: "c" },
+        workspace_id: "ws",
+        target: { type: "session", session_id: "c" },
       },
       { op: "resolve", id: "b" },
     ]);
+  });
+
+  it("points a card's item at the card", () => {
+    const test: AttentionItem = {
+      id: "human-test:plans/a.md:3",
+      workspace: "ws",
+      kind: "human-test",
+      text: "Check it",
+      target: { kind: "card", path: "plans/a.md" },
+    };
+    expect(eventsFromAttention([], [test])).toEqual([
+      {
+        op: "notify",
+        id: "human-test:plans/a.md:3",
+        kind: "human-test",
+        text: "Check it",
+        workspace_id: "ws",
+        target: { type: "card", path: "plans/a.md" },
+      },
+    ]);
+  });
+
+  it("notifies nothing of what already waited when the desk opened", () => {
+    expect(eventsFromAttention(null, [item("a"), item("b")])).toEqual([]);
+  });
+
+  it("stays quiet when nothing changed", () => {
+    expect(eventsFromAttention([item("a")], [item("a")])).toEqual([]);
+  });
+});
+
+describe("notifyWanted", () => {
+  const list = (over: Partial<DeviceList>): DeviceList => ({
+    devices: [],
+    remoteAccessEnabled: true,
+    relayUrl: "wss://relay.example",
+    relayAdmissionSet: false,
+    pushGatewayUrl: "https://push.example",
+    ...over,
+  });
+
+  it("wants remote access on and a gateway to post to", () => {
+    expect(notifyWanted(list({}))).toBe(true);
+    expect(notifyWanted(list({ remoteAccessEnabled: false }))).toBe(false);
+    expect(notifyWanted(list({ pushGatewayUrl: null }))).toBe(false);
+    expect(notifyWanted(list({ pushGatewayUrl: undefined }))).toBe(false);
+    expect(notifyWanted(null)).toBe(false);
   });
 });
 

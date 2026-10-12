@@ -6,6 +6,7 @@ import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/core/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agents/agentPause";
+import { withPauseCycleForPrimary } from "$lib/agents/agentPause";
 import type { LaunchProfile } from "$lib/agents/compression";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/core/hotState";
@@ -42,12 +43,17 @@ import { retargetPath } from "$lib/files/fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,
+  mergeAgentProfiles,
+  withExtraCliArgs,
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "$lib/core/settings";
 import { mergeDiscoveredModels } from "$lib/agents/agentModel";
 import { noteSessionCompression, seedSessionCompression } from "$lib/agents/headroomMarkState";
+import { effectiveListForPrimary, withListForPrimary } from "$lib/agents/promptParams";
+import { workspacePatchWithoutProfile } from "$lib/agents/agentsHub";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
+import { normalizePaneOpen, type PaneOpenSetting } from "$lib/panes/browserView";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/core/gavin";
@@ -66,9 +72,12 @@ import { indexQueued, type QueuedInput } from "$lib/agents/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
+  effectiveComplexityTable,
+  withComplexityTableForPrimary,
   EMPTY_AGENT_DEFAULTS,
   type AgentDefaults,
   type ComplexityTable,
+  type CustomProfile,
 } from "$lib/cards/complexity";
 import { cardAgentEntry, type CardAgentFields } from "$lib/cards/cardAgent";
 import {
@@ -100,6 +109,7 @@ import {
   isMainWindow,
 } from "$lib/shell/appWindowState";
 import { initAppDuty, whileHoldingAppDuties } from "$lib/shell/appDuty";
+import { placeDeviceSession } from "$lib/core/devicePresence";
 import {
   adoptSettingsRecord,
   normalizeSettingsPatch,
@@ -1461,6 +1471,11 @@ export async function bootstrap(): Promise<void> {
   // itself, and `fetchTools` is a load-once that would never refetch.
   const { initToolListeners } = await import("$lib/orchestration/toolsState");
   unlisteners.push(await initToolListeners());
+  // An agent's browser: the tab's chip, the pane's auto-open and its
+  // frames (`browserViewState.ts`). Dynamically imported for the cycle
+  // reason above: it opens its panes through this module.
+  const { initBrowserViews } = await import("$lib/panes/browserViewState");
+  unlisteners.push(await initBrowserViews());
   // Action-prompt overrides persist on the workspace record; bind the
   // writer so the Tools explorer can save without importing this module
   // at load time (cycle with actionPromptsState ↔ layoutState).
@@ -1494,6 +1509,12 @@ export async function bootstrap(): Promise<void> {
   );
   unlisteners.push(await initCompression());
   unlisteners.push(whileHoldingAppDuties(startCompressionSwitch));
+  // The adopted-memory index: a workspace opened with memories the index
+  // does not match is brought up without anyone opening the wizard. One
+  // window, so two do not race the same model download. Dynamically
+  // imported for the cycle reason above.
+  const { startMemoryBackfill } = await import("$lib/cards/memoryIndexState");
+  unlisteners.push(whileHoldingAppDuties(startMemoryBackfill));
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
   // presses Run, with no panel open and possibly in a window showing a
@@ -1616,11 +1637,8 @@ export async function bootstrap(): Promise<void> {
 /// runs when another writer changed a setting, and what a Companion runs
 /// to draw its settings.
 export async function reloadAppSettings(): Promise<void> {
-  const [{ loadAgentPause }, { loadLaunchConfig }] = await Promise.all([
-    import("$lib/agents/agentPauseState"),
-    import("$lib/agents/launchQueue"),
-  ]);
-  await Promise.all([loadAppSettings(), loadAgentPause(), loadLaunchConfig(), themeState.reload()]);
+  const [{ loadLaunchConfig }] = await Promise.all([import("$lib/agents/launchQueue")]);
+  await Promise.all([loadAppSettings(), loadLaunchConfig(), themeState.reload()]);
 }
 
 export function teardown(): void {
@@ -1996,6 +2014,15 @@ export const headroomDefault = writable<boolean | null>(null);
 /// would stop the Headroom every running agent is talking through.
 export const headroomDefaultKnown = writable(false);
 
+/// The app-wide browser pane setting from config.json (`browserView.ts`),
+/// or null when nobody has chosen -- the same three-state as
+/// `terminalFontSizeDefault`: a workspace with no word of its own falls all
+/// the way through to gavin's default, opening the pane automatically.
+///
+/// Re-fetched on every bootstrap like the others, so it is deliberately not
+/// parked across an HMR remount.
+export const playwrightPaneOpenDefault = writable<PaneOpenSetting | null>(null);
+
 /// The agent profile table: static Rust data, so one fetch is enough.
 /// Best-effort like the rest -- resolveAgentConfig falls back to
 /// claude-code's defaults if this never arrives.
@@ -2051,6 +2078,13 @@ export async function loadAppSettings(): Promise<void> {
       .then((args) => customResumeArgsDefault.set(args))
       .catch(() => {}),
 
+    // Normalized on the way in, like the font size: a word this build does
+    // not know reads as "no setting", so a workspace still inherits.
+    backend
+      .getPlaywrightPaneOpen()
+      .then((value) => playwrightPaneOpenDefault.set(normalizePaneOpen(value)))
+      .catch(() => {}),
+
     // Normalized on the way in for the same reason: config.json is a file
     // a user can edit, and anything that is not a boolean has to read as
     // "no setting" so a workspace still falls through to gavin's default.
@@ -2104,16 +2138,32 @@ export const newCardAutoCommit = derived(
 /// Agent sessions only. A `command` tool step is a shell whose verdict is
 /// its exit code (tools spec T5), and arming it would let a build log
 /// that happens to print an agent's error text stall a rail.
+///
+/// The `untrustedOsc133` half is the agent profile's word that this
+/// agent's OSC 133 markers lie (kimi-code: its last marker is always C,
+/// even at a prompt). Sent on the same best-effort footing -- a daemon
+/// older than v64 refuses it and the agent keeps the old OSC 133
+/// behaviour, stuck-in-working for kimi.
 export async function armFailureDetection(
   sessionId: string,
-  patterns: string[]
+  patterns: string[],
+  untrustedOsc133 = false
 ): Promise<void> {
-  if (patterns.length === 0) return;
-  try {
-    await backend.setFailurePatterns(sessionId, patterns);
-  } catch {
-    // A daemon older than v21 refuses the request; a quiet agent then
-    // reads as idle exactly as it did before any of this existed.
+  if (patterns.length > 0) {
+    try {
+      await backend.setFailurePatterns(sessionId, patterns);
+    } catch {
+      // A daemon older than v21 refuses the request; a quiet agent then
+      // reads as idle exactly as it did before any of this existed.
+    }
+  }
+  if (untrustedOsc133) {
+    try {
+      await backend.distrustOsc133(sessionId);
+    } catch {
+      // A daemon older than v64 refuses the request; the agent's markers
+      // are then trusted the way they always were.
+    }
   }
 }
 
@@ -2196,14 +2246,14 @@ function createDaemonSession(
     : backend.createSession(cwd, command, workspaceRoot, profileId);
 }
 
-/// The app-wide custom agent, in the shape `resolveAgentConfig` takes.
-/// One spelling so a launcher, a settings panel and a derived store
-/// cannot each unpack the struct slightly differently.
+/// Legacy shape for Settings UI that still edits a single custom agent.
+/// Prefer `defaults.customProfiles` once that UI lands.
 function customAgentDefault(defaults: AgentDefaults) {
+  const first = defaults.customProfiles?.[0];
   return {
-    command: defaults.customCommand,
-    modelFlag: defaults.customModelFlag,
-    effortFlag: defaults.customEffortFlag ?? "",
+    command: first?.command ?? defaults.customCommand ?? "",
+    modelFlag: first?.modelFlag ?? defaults.customModelFlag ?? "",
+    effortFlag: first?.effortFlag ?? defaults.customEffortFlag ?? "",
   };
 }
 
@@ -2378,25 +2428,68 @@ export async function recordMcpForeignChoice(workspaceId: string, choice: McpFor
 }
 
 
-/// The workspace's resolved agent settings, from config.toml's [agent]
-/// block on the root context plus the profile table.
-export function resolvedAgentFor(workspaceId: string) {
-  return resolveAgentConfig(
-    trustedAgentConfigFor(workspaceId),
+/// Profiles a workspace may resolve against: built-ins ∪ app customs ∪
+/// that workspace's locals. Locals win on id collision.
+function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return mergeAgentProfiles(
     get(agentProfilesStore),
-    get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
-    get(agentDefaultsStore).agentEfforts
+    get(agentDefaultsStore).customProfiles ?? [],
+    ws?.customProfiles ?? []
   );
 }
 
-/// This workspace's own complexity overrides, defaulted to empty. Empty
-/// means "inherit every level", which is what a workspace that has never
-/// opened the table looks like.
-export function workspaceComplexityTable(workspaceId: string): ComplexityTable {
+/// The workspace's resolved agent settings, from config.toml's [agent]
+/// block on the root context plus the (merged) profile table.
+export function resolvedAgentFor(workspaceId: string) {
+  const agent = resolveAgentConfig(
+    trustedAgentConfigFor(workspaceId),
+    profilesForWorkspace(workspaceId),
+    get(agentModelDefaultsStore),
+    undefined,
+    undefined,
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
+  );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
+}
+
+/// The effective extra CLI arguments for a launch on `profileId` in this
+/// workspace: its own list under that key, else the app-wide one.
+function extraCliArgsFor(workspaceId: string, profileId: string): string[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return effectiveListForPrimary(
+    ws?.extraCliArgs,
+    get(agentDefaultsStore).extraCliArgs,
+    profileId
+  );
+}
+
+/// The effective extra prompt lines for a launch on `profileId` in this
+/// workspace: its own list under that key, else the app-wide one. What
+/// every card-run composer appends (`withPromptExtras`) and what the
+/// wizard's host-composed prompts are handed.
+export function promptExtrasFor(workspaceId: string, profileId: string): string[] {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return effectiveListForPrimary(
+    ws?.promptExtras,
+    get(agentDefaultsStore).promptExtras,
+    profileId
+  );
+}
+
+/// This workspace's effective complexity table FOR ONE PRIMARY: its own
+/// map's entry under that key, else the app-wide table for it. The empty
+/// answer means "no attribution at any level", which is what a workspace
+/// that has never opened the table looks like.
+export function workspaceComplexityTable(workspaceId: string, primaryId: string): ComplexityTable {
   const state = get(layoutState);
-  return state.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {};
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  return effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    primaryId
+  );
 }
 
 /// The agent that should execute THIS card: the workspace's own, unless
@@ -2419,38 +2512,48 @@ export function agentForCard(
   workspaceId: string,
   card: CardAgentFields | null | undefined
 ) {
-  const entry = cardAgentEntry(
-    card,
-    get(agentDefaultsStore).complexity,
-    workspaceComplexityTable(workspaceId)
+  const base = resolvedAgentFor(workspaceId);
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  // The table keyed by the agent this workspace resolves to: an
+  // attributed card may still switch profile, but the RATING that picks
+  // it is a statement about running here, on this agent's terms.
+  const table = effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    base.profileId
   );
-  if (!entry) return resolvedAgentFor(workspaceId);
-  return resolveAgentConfig(
+  const entry = cardAgentEntry(card, table);
+  if (!entry) return base;
+  const agent = resolveAgentConfig(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
-    get(agentDefaultsStore).agentEfforts
+    undefined,
+    undefined,
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// Resolve a specific profile in this workspace without changing the
 /// stored agent. Fallback launches use this so the chain can run Codex
 /// while `[agent] profile` still names Claude.
 export function agentForProfile(workspaceId: string, profileId: string) {
-  return resolveAgentConfig(
+  const agent = resolveAgentConfig(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
       profile: profileId,
       model: "",
       effort: "",
     }),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
-    get(agentDefaultsStore).agentEfforts
+    undefined,
+    undefined,
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// The workspace's own `[agent]` block, unresolved. What a per-run
@@ -2473,14 +2576,16 @@ export function workspaceAgentConfig(workspaceId: string) {
 /// conversation argv as a board Run, and a second resolution path here
 /// is how those four quietly stop matching.
 export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
-  return resolveAgentConfig(
+  const agent = resolveAgentConfig(
     candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
-    get(agentProfilesStore),
+    profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore)),
-    customResumeArgsFor(workspaceId),
-    get(agentDefaultsStore).agentEfforts
+    undefined,
+    undefined,
+    get(agentDefaultsStore).agentEfforts,
+    get(agentDefaultsStore).defaultAgent
   );
+  return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
 
 /// The same answer, reactively: `$resolvedAgents(workspaceId)`.
@@ -2497,20 +2602,24 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
-  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
-    (workspaceId: string) =>
-      resolveAgentConfig(
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $layout, $profiles, $models, $defaults]) =>
+    (workspaceId: string) => {
+      const ws = $layout.workspaces.find((w) => w.id === workspaceId);
+      const agent = resolveAgentConfig(
         $configs(workspaceId),
-        $profiles,
+        mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []),
         $models,
-        customAgentDefault($defaults),
-        {
-          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
-          app: $customResumeArgs ?? undefined,
-        },
-        $defaults.agentEfforts
-      )
+        undefined,
+        undefined,
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
+      );
+      return withExtraCliArgs(
+        agent,
+        effectiveListForPrimary(ws?.extraCliArgs, $defaults.extraCliArgs, agent.profileId)
+      );
+    }
 );
 
 /// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
@@ -2524,25 +2633,41 @@ export const resolvedAgents = derived(
 /// model flag for a card the human pointed at codex, and would go on
 /// showing it for the life of the modal.
 export const cardAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
-  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $layout, $profiles, $models, $defaults]) =>
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
       const base = $configs(workspaceId);
-      const entry = cardAgentEntry(
-        card,
-        $defaults.complexity,
-        $layout.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
-      );
-      return resolveAgentConfig(
-        agentConfigWithAttribution(base, entry),
-        $profiles,
+      const ws = $layout.workspaces.find((w) => w.id === workspaceId);
+      const merged = mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []);
+      // Which table answers is keyed by the agent the workspace resolves
+      // to, so resolve the bare config first.
+      const baseAgent = resolveAgentConfig(
+        base,
+        merged,
         $models,
-        customAgentDefault($defaults),
-        {
-          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
-          app: $customResumeArgs ?? undefined,
-        },
-        $defaults.agentEfforts
+        undefined,
+        undefined,
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
+      );
+      const table = effectiveComplexityTable(
+        ws?.complexityTables,
+        $defaults.complexityTables,
+        baseAgent.profileId
+      );
+      const entry = cardAgentEntry(card, table);
+      const agent = resolveAgentConfig(
+        agentConfigWithAttribution(base, entry),
+        merged,
+        $models,
+        undefined,
+        undefined,
+        $defaults.agentEfforts,
+        $defaults.defaultAgent
+      );
+      return withExtraCliArgs(
+        agent,
+        effectiveListForPrimary(ws?.extraCliArgs, $defaults.extraCliArgs, agent.profileId)
       );
     }
 );
@@ -2567,7 +2692,7 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
     setError(String(e));
     return;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -2624,7 +2749,7 @@ export async function startMainAgentWithPrompt(
     setError(String(e));
     return;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -2788,6 +2913,32 @@ export async function setWorkspaceFontSize(
   await saveWorkspaceSettings(workspaceId, { terminalFontSize: normalized });
 }
 
+/// The app-wide browser pane setting (`browserView.ts`). Machine-local like
+/// the font size, so it goes straight to config.json through Tauri and
+/// never touches the daemon. Live: every workspace that inherits resolves
+/// against it when its next browser launches.
+///
+/// Null clears the setting rather than storing "auto", which is what puts
+/// every workspace that inherits back on gavin's default.
+export async function setPlaywrightPaneOpenDefault(value: PaneOpenSetting | null): Promise<void> {
+  try {
+    await backend.setPlaywrightPaneOpen(value);
+    playwrightPaneOpenDefault.set(value);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's own browser pane setting, or null to inherit the
+/// app-wide one. A workspace setting like the font size, written through
+/// `set_workspace_settings` and never the layout save.
+export async function setWorkspacePlaywrightPaneOpen(
+  workspaceId: string,
+  value: PaneOpenSetting | null
+): Promise<void> {
+  await saveWorkspaceSettings(workspaceId, { playwrightPaneOpen: value });
+}
+
 /// The app-wide `custom` resume flag. Null clears it back to "no resume
 /// for custom", the same shape `setTerminalFontSizeDefault` takes.
 export async function setCustomResumeArgsDefault(args: string | null): Promise<void> {
@@ -2901,7 +3052,7 @@ export async function setGitTrackingDefault(tracked: boolean | null): Promise<vo
 /// why the complexity TABLE needs no protocol bump and no compat gate,
 /// even though the card field it reads does.
 ///
-/// Wholesale rather than per key, matching `setAgentPause`: the panel
+/// Wholesale rather than per key, matching `setLaunchConfig`: the panel
 /// holds every field already, and a per-key command is how one of them
 /// ends up saved while another is dropped.
 export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
@@ -2919,21 +3070,39 @@ export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
   }
 }
 
-/// One workspace's complexity overrides. Rides the workspace record
-/// (config.json) like the accent colour, the font size and the pause
-/// cycle, rather than config.toml: which model tier THIS human spends on
-/// a hard card is a habit and a subscription fact about this machine,
-/// not something to hand everyone who clones the repo.
+/// One workspace's complexity table FOR ONE PRIMARY. Rides the workspace
+/// record (config.json) like the accent colour, the font size and the
+/// pause cycles, rather than config.toml: which model tier THIS human
+/// spends on a hard card is a habit and a subscription fact about this
+/// machine, not something to hand everyone who clones the repo.
 ///
-/// An empty table is stored as ABSENT, so a workspace that clears its
-/// last override goes back to inheriting rather than to shadowing the
-/// app table with nothing.
+/// `null` REMOVES the key so that primary inherits the app-wide table
+/// again. An empty table is a real answer here — "no routing for this
+/// agent in this workspace" — and is kept, so clearing the last row does
+/// not quietly hand the primary back to the app-wide table.
 export async function setWorkspaceComplexityTable(
   workspaceId: string,
-  table: ComplexityTable
+  primaryId: string,
+  table: ComplexityTable | null
+): Promise<void> {
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = withComplexityTableForPrimary(workspace.complexityTables, id, table, true);
+  await saveWorkspaceSettings(workspaceId, {
+    complexityTables: Object.keys(map).length > 0 ? map : null,
+  });
+}
+
+/// This workspace's local custom profiles (`local:` ids). Empty clears
+/// the key so the workspace inherits app-wide customs only.
+export async function setWorkspaceCustomProfiles(
+  workspaceId: string,
+  profiles: CustomProfile[]
 ): Promise<void> {
   await saveWorkspaceSettings(workspaceId, {
-    complexityAgents: Object.keys(table).length > 0 ? table : null,
+    customProfiles: profiles.length > 0 ? profiles : null,
   });
 }
 
@@ -3088,27 +3257,92 @@ export async function setHomeAgentShare(
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
-/// This workspace's own pause cycle. `null` REMOVES the override, which
-/// puts the workspace back to inheriting the app-wide one -- not to no
-/// pause at all. Turning the cycle off here while the app has one stores
-/// a cycle with `enabled: false`, which is why clearing and disabling are
-/// two different calls.
+/// This workspace's own pause cycle FOR ONE PRIMARY. `null` REMOVES the
+/// key, which puts that primary back to inheriting the app-wide cycle --
+/// not to no pause at all. Turning the cycle off here while the app has
+/// one stores a cycle with `enabled: false`, which is why clearing and
+/// disabling are two different calls. A fresh cycle without an anchor is
+/// stamped now, so the phase survives restarts (`saveAgentPauseFor` is
+/// the app-wide twin).
 export async function setWorkspacePause(
   workspaceId: string,
+  primaryId: string,
   cycle: PauseCycle | null
 ): Promise<void> {
-  await saveWorkspaceSettings(workspaceId, { agentPause: cycle });
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const stamped = cycle && !cycle.anchorMs ? { ...cycle, anchorMs: Date.now() } : cycle;
+  const map = withPauseCycleForPrimary(workspace.pauseCycles, id, stamped);
+  await saveWorkspaceSettings(workspaceId, {
+    pauseCycles: Object.keys(map).length > 0 ? map : null,
+  });
 }
 
-/// This workspace's own fallback chain. `null` REMOVES the override
-/// (inherit the app-wide chain). An empty array is an explicit "no
-/// fallback" override — the same inherit-vs-off split `setWorkspacePause`
-/// uses.
+/// This workspace's extra prompt lines / CLI args FOR ONE PRIMARY.
+/// `null` removes the key so the primary inherits the app-wide list
+/// again; a present empty list is an explicit "nothing extra" override.
+export async function setWorkspacePromptParams(
+  workspaceId: string,
+  primaryId: string,
+  kind: "promptExtras" | "extraCliArgs",
+  list: string[] | null
+): Promise<void> {
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = withListForPrimary(workspace[kind], id, list);
+  await saveWorkspaceSettings(workspaceId, {
+    [kind]: Object.keys(map).length > 0 ? map : null,
+  });
+}
+
+/// Clears everything a workspace keeps per agent for a profile that no
+/// longer exists (a deleted workspace-local custom): its fallback chain
+/// and any chain naming it, its complexity table and the rows routing to
+/// it, its pause cycle, prompt lines and CLI arguments -- in ONE settings
+/// write, so a half-cleaned workspace is never what another window sees.
+export async function dropWorkspaceProfileRefs(workspaceId: string, profileId: string): Promise<void> {
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const patch = workspacePatchWithoutProfile(workspace, profileId);
+  if (Object.keys(patch).length === 0) return;
+  await saveWorkspaceSettings(workspaceId, patch);
+}
+
+/// The same cleanup in EVERY workspace this window holds, for an app-wide
+/// custom that was just deleted: its workspaces' own tables, cycles, lines
+/// and chains would otherwise survive under its slug and come back to life
+/// the day another custom is given the same name.
+export async function dropProfileRefsFromWorkspaces(profileId: string): Promise<void> {
+  for (const workspace of get(layoutState).workspaces) {
+    await dropWorkspaceProfileRefs(workspace.id, profileId);
+  }
+}
+
+/// This workspace's own fallback chain FOR ONE PRIMARY profile. `null`
+/// REMOVES the key, so that primary inherits the app-wide chain again; an
+/// empty array is an explicit "no fallback" override for it — the same
+/// inherit-vs-off split `setWorkspacePause` uses, per primary. When the
+/// last key goes the map itself is stored as absent, so a workspace that
+/// never chose keeps no trace.
 export async function setWorkspaceFallback(
   workspaceId: string,
+  primaryId: string,
   chain: string[] | null
 ): Promise<void> {
-  await saveWorkspaceSettings(workspaceId, { agentFallback: chain });
+  const id = primaryId.trim();
+  if (!id) return;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!workspace) return;
+  const map = { ...(workspace.fallbackChains ?? {}) };
+  if (chain == null) delete map[id];
+  else map[id] = chain.map((s) => s.trim()).filter(Boolean);
+  await saveWorkspaceSettings(workspaceId, {
+    fallbackChains: Object.keys(map).length > 0 ? map : null,
+  });
 }
 
 /// Record that this profile's setup-only arming finished in this
@@ -3208,6 +3442,7 @@ function clearMainSession(workspaceId: string): void {
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   terminalRegistry.destroyTerminal(sessionId);
+  hideMainBrowser(sessionId);
   void persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
@@ -3338,6 +3573,107 @@ export function openFollowUpsInSplit(
   });
 }
 
+/// The main agents whose Home cell shows their browser under the terminal
+/// (`MainAgentPanel`), by session: a restarted agent is a new session, so
+/// it starts with its browser hidden rather than inheriting the last one's.
+///
+/// Not persisted. A page's browser pane is a tab, and the layout keeps it;
+/// this is a property of a cell that has no layout to keep it in. After a
+/// relaunch the chip still lights from the read-back, and one press brings
+/// the browser back.
+export const mainBrowserOpen = hotState(
+  "mainBrowserOpen",
+  () => writable<ReadonlySet<string>>(new Set()),
+  hotBag
+);
+
+/// Where the divider between a main agent's terminal and its browser
+/// sits, as the terminal's share of the cell (`homeSplit.ts`). Per
+/// workspace rather than per session, so a restarted agent keeps the split
+/// the human dragged; in memory, like the browser it divides.
+export const mainBrowserShare = hotState(
+  "mainBrowserShare",
+  () => writable<Readonly<Record<string, number>>>({}),
+  hotBag
+);
+
+/// `undefined` clears it, which puts the divider back where it ships.
+export function setMainBrowserShare(workspaceId: string, share: number | undefined): void {
+  mainBrowserShare.update((all) => {
+    const next = { ...all };
+    if (share === undefined) delete next[workspaceId];
+    else next[workspaceId] = share;
+    return next;
+  });
+}
+
+/// Hides a main agent's browser: the cell gives the terminal its full
+/// height back. The chip shows it again.
+export function hideMainBrowser(sessionId: string): void {
+  mainBrowserOpen.update((open) => {
+    if (!open.has(sessionId)) return open;
+    const next = new Set(open);
+    next.delete(sessionId);
+    return next;
+  });
+}
+
+/// An agent's browser, live, split beside the terminal it belongs to
+/// (`browserView.ts`). Keyed by the session like the follow-up queue, and
+/// deduped the same way: one browser pane per session per page.
+///
+/// Unlike the chips' opens it is also reached with nobody pressing
+/// anything -- the browser's first frame, in a workspace set to open it
+/// automatically -- so it finds the page that HOLDS the session rather than
+/// assuming the active one, and takes the focus only when `focus` says a
+/// human asked: a pane appearing must not take the keyboard from someone
+/// typing in another one. Resolves whether a pane is open beside the
+/// session now: false when nothing in this window holds the session.
+///
+/// A workspace's main agent lives outside every page tree, in its Home
+/// cell, which has no tab bar to add a tab to: its browser opens as that
+/// cell's lower half instead (`mainBrowserOpen`).
+export async function openBrowserInSplit(sessionId: string, focus: boolean): Promise<boolean> {
+  const state = get(layoutState);
+  if (state.workspaces.some((w) => w.mainSessionId === sessionId)) {
+    mainBrowserOpen.update((open) => (open.has(sessionId) ? open : new Set(open).add(sessionId)));
+    return true;
+  }
+  const found = workspace.findSessionLocation(state, sessionId);
+  const page = found
+    ? state.workspaces.find((w) => w.id === found.workspaceId)?.pages.find((p) => p.id === found.pageId)
+    : undefined;
+  if (!found || !page) return false;
+  const existing = Object.entries(state.cardTabsById).find(
+    ([id, tab]) =>
+      tab.view === "browser" && tab.sessionId === sessionId && layout.findLeafPath(page.layout, id) !== null
+  );
+  if (existing) {
+    if (focus) await switchToTab(existing[0]);
+    return true;
+  }
+  const tabId = crypto.randomUUID();
+  const tab: CardTab = { workspaceId: found.workspaceId, path: "", view: "browser", sessionId };
+  const newTree = layout.splitLeaf(page.layout, sessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree);
+  const data = focus ? workspace.setPageFocus(withTree, found.workspaceId, found.pageId, tabId) : withTree;
+  const cardTabsById = { ...state.cardTabsById, [tabId]: tab };
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    cardTabsById,
+    ...(focus ? { focusedSessionId: tabId } : {}),
+  }));
+  try {
+    await backend.setCardTabs(cardTabsById);
+  } catch (e) {
+    setError(String(e));
+    return false;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return true;
+}
+
 /// The body both of those share: dedupe, split, record, persist.
 async function openViewTabInSplit(anchorSessionId: string, tab: CardTab): Promise<void> {
   const state = get(layoutState);
@@ -3430,7 +3766,17 @@ export async function closeSession(sessionId: string): Promise<void> {
   // force: a shell tool run opts into retainTabOnExit so its scrollback
   // survives the PTY dying; the human closing the tab is the moment that
   // retention ends.
-  handleSessionExited(sessionId, { force: true });
+  //
+  // freeScreen only for an id that was a session: a file, board or card
+  // tab has no PTY and no kept screen, so there is nothing for
+  // KillSession to free -- sending one would ask the daemon to kill an id
+  // it has never heard of, which is the mistake endTabs exists not to
+  // make.
+  const isSession =
+    !closed.fileTabIds.includes(sessionId) &&
+    !closed.boardTabIds.includes(sessionId) &&
+    !closed.cardTabIds.includes(sessionId);
+  handleSessionExited(sessionId, { force: true, freeScreen: isSession });
   await pruneClosedTabs(closed);
 }
 
@@ -3511,7 +3857,7 @@ function settleExitedStatus(sessionId: string): void {
 
 export function handleSessionExited(
   sessionId: string,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; freeScreen?: boolean } = {}
 ): void {
   // Cleared here rather than left standing like cwd and status, and the
   // difference is what the entry IS. Those are facts about a session
@@ -3522,15 +3868,18 @@ export function handleSessionExited(
   // sides agreeing without needing a push the daemon has no writer left
   // to send on.
   handleQueuedInputsChanged(sessionId, []);
-  // And the pane that was showing it, for the same reason: a follow-up
-  // queue tab is the one view tab whose subject is a SESSION, so once
-  // that session is gone the pane has nothing left to be about -- an
-  // empty list and a compose box that would write into a session id the
-  // daemon no longer knows. Fired rather than awaited so this function
-  // keeps its synchronous contract; closeSession re-reads the store, so
-  // it sees the tree this call is about to leave behind.
+  // And the panes that were showing it, for the same reason: a follow-up
+  // queue tab and a browser tab are the view tabs whose subject is a
+  // SESSION, so once that session is gone the pane has nothing left to be
+  // about -- an empty list and a compose box that would write into a
+  // session id the daemon no longer knows, or a browser that died with
+  // it. Fired rather than awaited so this function keeps its synchronous
+  // contract; closeSession re-reads the store, so it sees the tree this
+  // call is about to leave behind.
   for (const [tabId, tab] of Object.entries(get(layoutState).cardTabsById)) {
-    if (tab.view === "followups" && tab.sessionId === sessionId) void closeSession(tabId);
+    if ((tab.view === "followups" || tab.view === "browser") && tab.sessionId === sessionId) {
+      void closeSession(tabId);
+    }
   }
   if (!opts.force && retainedOnExit.has(sessionId)) {
     // Leave the tab and its xterm alone. The exit code is already in
@@ -3591,8 +3940,10 @@ export function handleSessionExited(
   // retained tool tab can still Snapshot it. A non-retained exit never
   // needed that, and without this call the screen would leak for the
   // daemon's lifetime -- KillSession is the free, and forget_session
-  // already ran in the pump so this is screen cleanup only.
-  void backend.killSession(sessionId).catch(() => {});
+  // already ran in the pump so this is screen cleanup only. closeSession
+  // passes freeScreen:false for a file/board/card tab: those have no
+  // screen to free, and the daemon has never heard of their id.
+  if (opts.freeScreen ?? true) void backend.killSession(sessionId).catch(() => {});
   void persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
@@ -3610,23 +3961,28 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
     return;
   }
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
-  const agentsPage = ws.pages.find((p) => p.name === "Agents");
-  let data: WorkspacesData;
-  if (agentsPage) {
-    const anchor = layout.allSessionIds(agentsPage.layout)[0];
-    const newTree = layout.addTab(agentsPage.layout, anchor, sessionId);
-    data = workspace.updatePageLayout(base, workspaceId, agentsPage.id, newTree);
-  } else {
-    const previousActive = ws.activePageId;
-    data = workspace.createPage(base, workspaceId, crypto.randomUUID(), "Agents", {
-      type: "leaf",
-      tabs: [sessionId],
-      activeTabIndex: 0,
-    });
-    if (previousActive) data = workspace.switchPage(data, workspaceId, previousActive);
-  }
+  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID());
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+// A session a Device started (companion-16), placed where a card run at the
+// desk lands -- the workspace's Agents page -- unless it is already showing
+// somewhere, or is the workspace agent the Device asked for, which goes to
+// the Home tab. `devicePresence.ts` decides; this applies and saves. Unlike
+// handleAgentSessionSpawned, a session this window cannot place is left
+// alone rather than killed: it belongs to the Device, where a human is
+// watching it.
+//
+// Answers whether it placed it, so the caller can say why not.
+export function placeDeviceStartedSession(workspaceId: string, sessionId: string, asWorkspaceAgent = false): boolean {
+  const state = get(layoutState);
+  const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
+  const data = placeDeviceSession(base, workspaceId, sessionId, crypto.randomUUID(), asWorkspaceAgent);
+  if (!data) return false;
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return true;
 }
 
 // Shared by the "cwd-changed" event listener in bootstrap() and this
@@ -4429,7 +4785,7 @@ export async function createPage(
     setError(String(e));
     return null;
   }
-  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns);
+  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns, agent.untrustedOsc133);
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
   const created = workspace.createPage(state, workspaceId, pageId, name, tree);

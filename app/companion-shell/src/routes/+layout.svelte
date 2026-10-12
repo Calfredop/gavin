@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import "$lib/ui/theme.css";
   import "$companion/surfaces/phone.css";
+  import { followTextScale } from "$companion/surfaces/textScale";
 
   let { children } = $props();
 
@@ -17,6 +18,9 @@
     light.addEventListener("change", apply);
     return () => light.removeEventListener("change", apply);
   });
+
+  // The phone's text size, live, as the bundle follows it too.
+  onMount(() => followTextScale());
 </script>
 
 {@render children()}

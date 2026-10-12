@@ -11,15 +11,31 @@
 // its own scheduler launches the steps -- which the phone then hears the
 // same way, and draws.
 import { get } from "svelte/store";
-import { fetchBoard } from "$lib/board/kanbanState";
+import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
 import { askConfirm } from "$lib/core/dialog";
 import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
-import { cardIndex, findStage, type Orchestration, type StageMode } from "$lib/orchestration/orchestration";
+import { layoutState } from "$lib/core/layoutState";
+import { gitStore } from "$lib/git/gitState";
+import {
+  availableCards,
+  cardIndex,
+  conflictsForRail,
+  conflictSummaryLines,
+  detectConflicts,
+  findStage,
+  numberConflicts,
+  planIndex,
+  unfinishedCards,
+  type Orchestration,
+  type StageMode,
+} from "$lib/orchestration/orchestration";
+import type { OrchestrationAgentAction } from "$lib/orchestration/orchestrationAgent";
 import {
   addRailAction,
   addStepAsStageAction,
   addStepToStageAction,
   deleteRailAction,
+  dismissSaveError,
   fetchOrchestration,
   moveStageToIndexAction,
   orchestrations,
@@ -28,12 +44,19 @@ import {
   removeStageAction,
   removeStepAction,
   renameRailAction,
+  requestOrganize,
+  requestRailReorganize,
   resetRail,
   resumeRail,
+  saveErrors,
   setStageModeAction,
   startRail,
 } from "$lib/orchestration/orchestrationState";
+import { fetchTools, renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { groupRemoveConfirm, railDeleteConfirm } from "$lib/orchestration/railConfirm";
+import { DEVICE_AGENT_HOST, readyToLaunch } from "$companion/state/cards";
+import { isReachabilityError } from "$companion/state/reachability";
+import { openTerminal } from "$companion/state/workstation";
 import type { RailPress } from "$companion/surfaces/phoneRails";
 
 function planOf(workspaceId: string): Orchestration | null {
@@ -49,6 +72,15 @@ export async function loadRails(workspaceId: string): Promise<void> {
   if (!(workspaceId in get(gavinTrees))) reads.push(refreshGavinTree(workspaceId));
   reads.push(planOf(workspaceId) ? refreshOrchestration(workspaceId) : fetchOrchestration(workspaceId));
   await Promise.all(reads);
+}
+
+/// What the Rails surface does when the connection comes back: a save that
+/// failed only for want of a connection stops saying so, and the plan and
+/// its cards are read again -- what the desk ran meanwhile was pushed to
+/// nobody.
+export function recoverRails(workspaceId: string): Promise<void> {
+  if (isReachabilityError(get(saveErrors)[workspaceId])) dismissSaveError(workspaceId);
+  return loadRails(workspaceId);
 }
 
 /// A rail's one press. Start and Resume ARM the rail; the desk runs it.
@@ -149,4 +181,78 @@ export function moveStage(workspaceId: string, railId: string, stageId: string, 
   if (at < 0 || to < 0 || to >= stages.length) return Promise.resolve(null);
   // The index counts the rail's stages with this one taken out.
   return moveStageToIndexAction(workspaceId, stageId, railId, to);
+}
+
+// ---- Organize and Reorganize -----------------------------------------
+
+/// What the desk's Orchestration tab hands either agent, read from the
+/// same stores: the cards, the tool library -- the built-ins until the
+/// workspace's own have arrived -- and the conflicts numbered as the
+/// tab numbers them. Worktrees and branches the phone has not read stay
+/// unknown, which leaves out the two conflicts that need them rather
+/// than reporting every worktree gone.
+async function agentBrief(workspaceId: string, orch: Orchestration) {
+  await fetchTools(workspaceId);
+  const tree = get(gavinTrees)[workspaceId];
+  const refs = get(gitStore)[workspaceId]?.refs;
+  const cards = cardIndex(tree);
+  const tools = renderLibraryFor(get(toolRecords), workspaceId);
+  const numbered = numberConflicts(
+    detectConflicts(orch, tree, refs?.worktrees ?? null, refs?.branches.map((b) => b.name) ?? null)
+  );
+  return { cards, tools, numbered };
+}
+
+/// A press on Organize or Reorganize, by what the desk's own rule says it
+/// does (`organizeAction`, `reorganizeAction`). A run holding the slot is
+/// shown; a blocked press says why, since a phone has no tooltip to; a
+/// start launches. Resolves with what to tell the human, or null.
+async function pressAgent(
+  workspaceId: string,
+  action: OrchestrationAgentAction,
+  start: () => Promise<string | null>
+): Promise<string | null> {
+  if (action.kind === "blocked") return action.tip;
+  if (action.kind === "jump") {
+    const run = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.orchestrationAgent;
+    if (run) openTerminal(run.sessionId);
+    return null;
+  }
+  const notReady = await readyToLaunch();
+  if (notReady) return notReady;
+  try {
+    return await start();
+  } catch (e) {
+    return `Couldn't start the agent: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/// The whole tab's Organize: every unplaced, unfinished card handed to a
+/// new agent, which spreads them across rails.
+export function organizeRails(workspaceId: string, action: OrchestrationAgentAction): Promise<string | null> {
+  return pressAgent(workspaceId, action, async () => {
+    const orch = planOf(workspaceId);
+    if (!orch) return "The rails are still being read";
+    const { cards, tools, numbered } = await agentBrief(workspaceId, orch);
+    const placed = new Set(orch.rails.flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))));
+    const board = get(kanbanState)[workspaceId] ?? null;
+    const unplaced = unfinishedCards(availableCards(cards, placed), planIndex(cards), board);
+    return requestOrganize(workspaceId, unplaced, conflictSummaryLines(numbered, cards, orch, tools), DEVICE_AGENT_HOST);
+  });
+}
+
+/// One rail's Reorganize, handed only the conflicts that concern it.
+export function reorganizeRail(
+  workspaceId: string,
+  railId: string,
+  action: OrchestrationAgentAction
+): Promise<string | null> {
+  return pressAgent(workspaceId, action, async () => {
+    const orch = planOf(workspaceId);
+    const rail = orch?.rails.find((r) => r.id === railId);
+    if (!orch || !rail) return "That rail is gone";
+    const { cards, tools, numbered } = await agentBrief(workspaceId, orch);
+    const summary = conflictSummaryLines(conflictsForRail(numbered, rail), cards, orch, tools);
+    return requestRailReorganize(workspaceId, railId, cards, tools, summary, DEVICE_AGENT_HOST);
+  });
 }

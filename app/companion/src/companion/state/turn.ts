@@ -38,7 +38,10 @@ export function watchTurn(sessionId: string): () => void {
     settings ??= loadTypesafeSettings();
     await settings;
     // Re-read after the wait: the agent may have started again.
-    if (!stopped && quiet(get(layoutState).sessionStatusById[sessionId])) noteQuietTransition(sessionId);
+    // forDevice: the duty split is about desk windows sharing one app;
+    // nobody's answer reaches a phone, so it asks for itself.
+    if (!stopped && quiet(get(layoutState).sessionStatusById[sessionId]))
+      noteQuietTransition(sessionId, { forDevice: true });
   }
 
   const unsubscribe = layoutState.subscribe((state) => {
@@ -56,12 +59,13 @@ export function watchTurn(sessionId: string): () => void {
 /// A session's status, as the Workstation just said it. Anything but
 /// quiet ends the turn a verdict was about.
 export function turnMovedOn(sessionId: string, rawStatus: string): void {
-  if (!quiet(parseSessionStatus(rawStatus))) clearTurnVerdict(sessionId);
+  if (!quiet(parseSessionStatus(rawStatus))) clearTurnVerdict(sessionId, { forDevice: true });
 }
 
 /// What a visit to one Workstation knew about its turns. Through the
 /// driver's own clear, so an answer still in flight lands nowhere.
 export function resetTurns(): void {
   settings = null;
-  for (const sessionId of Object.keys(get(turnVerdictById))) clearTurnVerdict(sessionId);
+  for (const sessionId of Object.keys(get(turnVerdictById)))
+    clearTurnVerdict(sessionId, { forDevice: true });
 }

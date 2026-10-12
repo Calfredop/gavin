@@ -59,8 +59,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships eighteen tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(18);
+  it("ships nineteen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(19);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -86,6 +86,25 @@ describe("the built-in set", () => {
     ]) {
       expect(ids).toContain(wanted);
     }
+  });
+
+  // Playwright's browser test sits beside Chrome's rather than replacing
+  // it: the Chrome one drives the human's own signed-in browser, which
+  // the per-session headless one cannot reach. Same params, so a step
+  // can be switched between them without retyping its checklist.
+  it("ships a Playwright browser test beside the untouched Chrome one", () => {
+    const chrome = builtin("builtin:browser-test");
+    const playwright = builtin("builtin:browser-test-playwright");
+    expect(playwright.name).toBe("Browser test (Playwright)");
+    expect(playwright.kind).toBe("agent");
+    expect(playwright.params).toEqual(chrome.params);
+    expect(playwright.body).toContain("{{url}}");
+    expect(playwright.body).toContain("{{checks}}");
+    expect(playwright.body).toContain("browser_navigate");
+    expect(playwright.body).toContain("browser_console_messages");
+    expect(playwright.body).not.toContain("Claude-in-Chrome");
+    expect(chrome.name).toBe("Browser test (Chrome)");
+    expect(chrome.body).toContain("Claude-in-Chrome");
   });
 
   // Both merge DIRECTIONS ship, and the names say which is which. A tool

@@ -16,8 +16,10 @@
 // - **Ends it:** the app going to the background (Home, the app switcher,
 //   another app, answering a call) and the phone locking.
 // - **Does not:** Control Center, the notification shade, a call banner,
-//   the Unlock's own prompt. None of them sends the app to the background;
-//   they are `interrupted` here, and change nothing.
+//   the Unlock's own prompt. They are `interrupted` here, and change
+//   nothing. On iOS the shade does send the app to the background, for as
+//   long as it is down; the native side does not report a background that
+//   is over within two seconds, so a glance at it never reaches this layer.
 // - **While the prompt is up**, the app's lifecycle is not believed: on
 //   older Android the passcode screen is an activity of its own, which
 //   stops ours. A prompt the owner really walked away from is cancelled by
@@ -76,6 +78,9 @@ export type UnlockAction =
   | "prompt"
   /// Connect every paired Workstation that is not connected.
   | "connect"
+  /// Try every Workstation now, rather than when its backoff says: the
+  /// owner is looking.
+  | "refresh"
   /// Drop every connection, and end the native Unlock if it is held.
   | "disconnect";
 
@@ -116,9 +121,11 @@ export function stepUnlock(state: UnlockState, event: UnlockEvent, context: Unlo
 
     case "foreground":
       // Launch, or back from the background: each foreground stretch
-      // asks once. Already unlocked (a foreground the native side sent
-      // twice) or already asking, nothing more.
-      return state.state === "locked" ? ask(false) : stay;
+      // asks once, and a fresh Unlock connects everything at once. Back
+      // with one still held, nothing is asked, but what was waiting out
+      // a backoff is tried now: the owner is looking at it.
+      if (state.state === "locked") return ask(false);
+      return state.state === "unlocked" ? { state, actions: ["refresh"] } : stay;
 
     case "unlock-requested":
       return state.state === "locked" ? ask(false) : stay;

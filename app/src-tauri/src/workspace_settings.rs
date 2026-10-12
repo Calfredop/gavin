@@ -63,11 +63,13 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "terminalFontSize",
     "autoCommit",
     "autoResumeRuns",
-    "agentPause",
-    "agentFallback",
+    "pauseCycles",
+    "fallbackChains",
     "armedAgents",
     "declinedAgents",
-    "complexityAgents",
+    "complexityTables",
+    "promptExtras",
+    "extraCliArgs",
     "gitTrackingAsked",
     "trustedConfigHash",
     "mcpForeignServersChoice",
@@ -76,7 +78,9 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "requireReviewAsked",
     "headroom",
     "headroomAsked",
+    "playwrightPaneOpen",
     "customResumeArgs",
+    "customProfiles",
     "actionPromptOverrides",
     // Runs in flight are not layout: a Generate or a Develop started from
     // the phone has to be able to claim its slot as well.
@@ -379,19 +383,28 @@ mod tests {
                 }),
             }),
             last_active_at: Some(n),
-            agent_pause: Some(AgentPauseConfig {
+            agent_pause: None,
+            pause_cycles: HashMap::from([(s("claude-code"), AgentPauseConfig {
                 enabled: flavour == "a",
                 period_minutes: 300,
                 pause_minutes: 10 * n as u32,
                 anchor_ms: n,
                 limit_percent: 95.0,
                 limit_enabled: flavour == "a",
-            }),
+            })]),
+            prompt_extras: HashMap::from([(s("claude-code"), vec![s("prompt-line")])]),
+            extra_cli_args: HashMap::from([(s("claude-code"), vec![s("--flag")])]),
             pinned_at: Some(10 * n),
-            complexity_agents: HashMap::from([(
+            complexity_agents: HashMap::new(),
+            complexity_tables: HashMap::from([(s("claude-code"), HashMap::from([(
                 "complex".to_string(),
-                ComplexityAgent { profile: s("profile"), model: s("model"), effort: s("effort") },
-            )]),
+                ComplexityAgent {
+                    profile: s("profile"),
+                    model: s("model"),
+                    effort: s("effort"),
+                    advisor: s("advisor"),
+                },
+            )]))]),
             git_tracking_asked: flavour == "a",
             trusted_config_hash: Some(s("hash")),
             mcp_foreign_servers_choice: Some(McpForeignServersChoice {
@@ -403,8 +416,19 @@ mod tests {
             headroom: Some(flavour == "a"),
             require_review_asked: flavour == "a",
             headroom_asked: flavour == "a",
+            playwright_pane_open: Some(if flavour == "a" { "auto" } else { "chip" }.to_string()),
             custom_resume_args: Some(s("--resume")),
-            agent_fallback: Some(vec![s("fallback")]),
+            custom_profiles: vec![crate::config::CustomProfile {
+                id: format!("local:{}", s("bot")),
+                label: s("Bot"),
+                command: s("agent"),
+                model_flag: s("--m"),
+                effort_flag: String::new(),
+                api_family: String::new(),
+                resume_args: None,
+            }],
+            agent_fallback: None,
+            fallback_chains: HashMap::from([(s("claude-code"), vec![s("fallback")])]),
             armed_agents: vec![s("armed")],
             declined_agents: vec![s("declined")],
             action_prompt_overrides: HashMap::from([("action:run-task".to_string(), s("prompt"))]),
@@ -523,14 +547,14 @@ mod tests {
         let after = apply_settings_patch(
             &before,
             &patch(serde_json::json!({
-                "agentPause": null,
+                "pauseCycles": null,
                 "requireReview": null,
                 "notifyNeedsInput": null,
                 "armedAgents": null,
             })),
         )
         .unwrap();
-        assert_eq!(after.agent_pause, None, "absent means inherit the app-wide cycle");
+        assert!(after.pause_cycles.is_empty(), "absent means inherit the app-wide cycle");
         assert_eq!(after.require_review, None);
         assert!(after.notify_needs_input, "a cleared notification toggle is back on");
         assert!(after.armed_agents.is_empty());
@@ -714,17 +738,23 @@ mod tests {
                 "agentCommit": { "sessionId": "commit-1", "cwd": "/Users/me/gavin", "retries": 1, "startedAt": 1700000000001 }
               },
               "lastActiveAt": 1700000000002,
-              "agentPause": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 1700000000003, "limitPercent": 95.0, "limitEnabled": true },
+              "pauseCycles": { "claude-code": { "enabled": true, "periodMinutes": 300, "pauseMinutes": 10, "anchorMs": 1700000000003, "limitPercent": 95.0, "limitEnabled": true } },
               "pinnedAt": 1700000000004,
-              "complexityAgents": { "complex": { "profile": "claude-code", "model": "opus" } },
+              "complexityTables": { "claude-code": { "complex": { "profile": "claude-code", "model": "opus" } } },
               "gitTrackingAsked": true,
               "trustedConfigHash": "abc123",
               "mcpForeignServersChoice": { "hash": "def456", "action": "keep" },
               "reviewedCards": { "/Users/me/gavin/.gavin-root/plans/x.md": "digest" },
               "requireReview": false,
               "requireReviewAsked": true,
-              "customResumeArgs": "--resume",
-              "agentFallback": ["codex"],
+              "customProfiles": [{
+                "id": "local:custom-agent",
+                "label": "Custom",
+                "command": "claude",
+                "modelFlag": "--model",
+                "resumeArgs": "--resume"
+              }],
+              "fallbackChains": { "claude-code": ["codex"] },
               "armedAgents": ["codex"],
               "declinedAgents": ["opencode"],
               "actionPromptOverrides": { "action:run-task": "Do it." }
@@ -758,13 +788,18 @@ mod tests {
           "terminal_font_size": 13,
           "auto_commit": false,
           "removed_workspaces": [{ "id": "ws-old", "name": "Old", "rootPath": "/Users/me/old", "removedAt": 1690000000000 }],
-          "agent_pause": null,
           "superpowers": { "/Users/me/gavin": "installed" },
-          "agent_defaults": { "customCommand": "claude", "customModelFlag": "--model", "complexity": {} },
+          "agent_defaults": {
+            "customProfiles": [{
+              "id": "custom-agent",
+              "label": "Custom",
+              "command": "claude",
+              "modelFlag": "--model"
+            }]
+          },
           "git_tracking": null,
           "require_review": null,
-          "launch": null,
-          "custom_resume_args": null
+          "launch": null
         }"##;
         let original: Value = serde_json::from_str(old_shape).unwrap();
         let dir = tempfile::tempdir().unwrap();

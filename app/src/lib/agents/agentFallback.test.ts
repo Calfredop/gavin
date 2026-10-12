@@ -51,17 +51,27 @@ describe("sanitizeChain", () => {
 });
 
 describe("effectiveFallbackChain", () => {
-  it("inherits the app chain when the workspace has none", () => {
-    expect(effectiveFallbackChain(undefined, ["codex"])).toEqual(["codex"]);
-    expect(effectiveFallbackChain(null, ["codex"])).toEqual(["codex"]);
+  const app = { "claude-code": ["codex"], codex: ["gemini"] };
+
+  it("inherits the app chain for the primary when the workspace has no key", () => {
+    expect(effectiveFallbackChain(undefined, app, "claude-code")).toEqual(["codex"]);
+    expect(effectiveFallbackChain({}, app, "claude-code")).toEqual(["codex"]);
+    expect(effectiveFallbackChain({ codex: ["gemini"] }, app, "claude-code")).toEqual(["codex"]);
   });
 
-  it("treats an empty workspace array as an override to no fallback", () => {
-    expect(effectiveFallbackChain([], ["codex"])).toEqual([]);
+  it("treats a present workspace key as an override, including empty", () => {
+    expect(effectiveFallbackChain({ "claude-code": [] }, app, "claude-code")).toEqual([]);
   });
 
-  it("uses the workspace chain when present", () => {
-    expect(effectiveFallbackChain(["gemini"], ["codex"])).toEqual(["gemini"]);
+  it("uses the workspace chain for that primary when present", () => {
+    expect(effectiveFallbackChain({ "claude-code": ["gemini"] }, app, "claude-code")).toEqual([
+      "gemini",
+    ]);
+  });
+
+  it("keys by the primary profile id", () => {
+    expect(effectiveFallbackChain(undefined, app, "codex")).toEqual(["gemini"]);
+    expect(effectiveFallbackChain(undefined, app, "gemini")).toEqual([]);
   });
 });
 
@@ -135,6 +145,41 @@ describe("decideLaunch", () => {
         usageByProfile: { "claude-code": atLimit(99) },
       })
     ).toEqual({ kind: "pause", why: "cycle" });
+  });
+
+  /// Cycles are per agent: a spent primary must not be walked onto an
+  /// agent whose own schedule says to sit out right now.
+  it("walks past a chain agent that is inside its own pause window", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        usageByProfile: { "claude-code": atLimit(99), codex: atLimit(10), gemini: atLimit(10) },
+        armed: new Set(["codex", "gemini"]),
+        cyclePausedFor: (id) => id === "codex",
+      })
+    ).toEqual({ kind: "use", profileId: "gemini", viaFallback: true });
+  });
+
+  it("pauses when every other agent is spent or in its own pause window", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        usageByProfile: { "claude-code": atLimit(99), codex: atLimit(10), gemini: atLimit(99) },
+        armed: new Set(["codex", "gemini"]),
+        cyclePausedFor: (id) => id === "codex",
+      })
+    ).toEqual({ kind: "pause", why: "usage-limit" });
+  });
+
+  it("does not consult a candidate's cycle when the primary itself is under its limit", () => {
+    expect(
+      decide({
+        chain: ["codex"],
+        usageByProfile: { "claude-code": atLimit(10) },
+        armed: new Set(["codex"]),
+        cyclePausedFor: () => true,
+      })
+    ).toEqual({ kind: "use", profileId: "claude-code", viaFallback: false });
   });
 
   it("uses the resolved agent when it is not spent", () => {

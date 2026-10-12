@@ -18,6 +18,7 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { daemonCompat, queuedInputsById, handleQueuedInputsChanged } from "$lib/core/layoutState";
+import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import {
   composeRefusal,
   moveQueued,
@@ -79,6 +80,11 @@ export async function queueFollowUp(
 ): Promise<string | null> {
   const refusal = composeRefusal(target, text);
   if (refusal) return refusal;
+  // A session another Device owns (v68) says who has it rather than
+  // taking the message: at a Device the daemon would refuse it anyway, and
+  // at the desk nothing else would.
+  const locked = inputLockedReason(sessionId);
+  if (locked) return locked;
   try {
     // Trimmed on the way in: a message the human sees as blank-padded is
     // still the message, but the trailing newline would be a submit the
@@ -144,6 +150,8 @@ export async function sendFollowUpNow(
 ): Promise<string | null> {
   const blocked = queueBlockedReason(target);
   if (blocked) return blocked;
+  const locked = inputLockedReason(sessionId);
+  if (locked) return locked;
   try {
     handleQueuedInputsChanged(sessionId, await backend.sendQueuedInput(sessionId, id));
   } catch (e) {

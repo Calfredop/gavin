@@ -179,6 +179,7 @@ public class BundleActivity extends AppCompatActivity {
         // With multiple windows on, `window.open` asks onCreateWindow, which
         // refuses; off, it would load the link in this view instead.
         settings.setSupportMultipleWindows(true);
+        SystemTextSize.apply(webView, getResources().getConfiguration());
         boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(debuggable);
 
@@ -294,6 +295,7 @@ public class BundleActivity extends AppCompatActivity {
     public void onConfigurationChanged(@NonNull Configuration configuration) {
         super.onConfigurationChanged(configuration);
         if (webView != null) paint();
+        SystemTextSize.apply(webView, configuration);
     }
 
     /** Tells the shell's process, which decides whether the app is in front ({@link AppForeground}). */

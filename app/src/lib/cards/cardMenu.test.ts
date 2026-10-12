@@ -61,13 +61,14 @@ vi.mock("$lib/core/layoutState", () => ({
   // The launching profile, as the real one names it against a daemon
   // new enough to read it (`compressedLaunch`).
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
+  promptExtrasFor: vi.fn((): string[] => []),
   resolvedAgentFor: agentMock,
   agentForProfile: agentMock,
   agentDefaultsStore: writable({
     customCommand: "",
     customModelFlag: "",
     complexity: {},
-    agentFallback: [] as string[],
+    fallbackChains: {},
   }),
   // The SAME function object, deliberately: no fixture in here carries a
   // level or an `agent:`/`model:` line, so the card's own resolver lands

@@ -4,6 +4,7 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     agentDefaultsStore,
+    dropProfileRefsFromWorkspaces,
     setAgentModelDefault,
     setAgentDefaults,
     terminalFontSizeDefault,
@@ -18,13 +19,36 @@
     daemonCompat,
     headroomDefault,
     setHeadroomDefault,
+    playwrightPaneOpenDefault,
+    setPlaywrightPaneOpenDefault,
   } from "$lib/core/layoutState";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
-  import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
-  import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
+  import { DEFAULT_PANE_OPEN, paneOpenFromSelect, paneOpenOptions } from "$lib/panes/browserView";
+  import AgentPrimaryPanel from "$lib/agents/AgentPrimaryPanel.svelte";
+  import { effectiveDefaultAgent } from "$lib/cards/complexity";
+  import { withAgentEffort } from "$lib/cards/complexity";
   import { effortOptions, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
-  import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
+  import {
+    ADD_TAB,
+    ADD_TAB_HINT,
+    AGENTS_SECTION,
+    GENERAL_TAB,
+    addCustomProfile,
+    agentsHubTabs,
+    agentsTabForQuery,
+    isCustomProfileId,
+    validAgentsTab,
+    type AgentsHubTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import {
+    agentDefaultsWithoutCustom,
+    renameCustomProfile,
+    updateCustomProfile,
+  } from "$lib/agents/agentsHub";
+  import { API_FAMILIES, type ApiFamily } from "$lib/agents/apiFamily";
+  import { askConfirm } from "$lib/core/dialog";
+  import type { CustomProfile } from "$lib/cards/complexity";
+  import { mergeAgentProfiles } from "$lib/core/settings";
   import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
   import { DEFAULT_HEADROOM } from "$lib/agents/compression";
   import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
@@ -55,6 +79,8 @@
     setScratchpadEnabled,
     sidebarPeekOnHover,
     setSidebarPeekOnHover,
+    dimInactiveWorkspaces,
+    setDimInactiveWorkspaces,
   } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
@@ -70,10 +96,10 @@
     type ClosestMatch,
   } from "$lib/core/settingsSearchFallback";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
-  import { grantForAnsweredPrompt, pairingSubject, DAEMON_SUBJECT } from "$lib/core/confirmGate";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
+  import { refreshDeviceList } from "$lib/core/devicesState";
   import { typesafeSettings } from "$lib/agents/turnVerdictState";
   import { tooltip } from "$lib/core/tooltip";
   import {
@@ -94,43 +120,36 @@
     type UpdatePrompt,
   } from "$lib/shell/updates";
   import { onMount } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { askConfirm } from "$lib/core/dialog";
+  import { listen } from "@tauri-apps/api/event";
   import {
     ADMISSION_CLEAR,
     ADMISSION_NOTE,
+    PUSH_GATEWAY_NOTE,
+    pushGatewayBlocked,
+    pushGatewayUrlToSave,
     KEEP_RUNNING_NOTE,
-    NO_DEVICES,
-    PAIRING_IDLE,
     RELAY_NOTE,
     admissionAfterSave,
     admissionPlaceholder,
     admissionToSave,
-    countdownLabel,
-    deviceRows,
-    pairingClosed,
-    pairingConfirmCopy,
-    knownDevice,
-    pairingConfirmed,
-    pairingOffered,
-    pairingOpen,
-    pairingRejected,
-    pairingRequested,
-    pairingTick,
-    pairingUnavailable,
-    qrDraw,
     relayAdmissionBlocked,
+    relayStateBlocked,
+    relayStatus,
+    DIRECT_NOTE,
+    directAccessBlocked,
+    directStatus,
+    type DirectState,
     relayUrlHint,
     relayUrlToSave,
     remoteAccessBlocked,
-    revokeAllCopy,
-    revokeDeviceCopy,
     transportNote,
     type DeviceList,
-    type PairingRequest,
-    type PairingState,
+    type RelayState,
   } from "$lib/core/remoteAccess";
-  import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { DEVICES_LABEL } from "$lib/core/devicesPanel";
+  import { directIndicator, relayIndicator } from "$lib/ui/indicators";
+  import { profilesInUse } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
@@ -148,15 +167,12 @@
     { pref: "dark", label: "Dark", icon: Moon },
   ];
 
-  /// Only profiles gavin knows how to put a model on. A row for `cursor`
-  /// or `custom` would be a control that cannot reach the agent.
-  const profiles = $derived($agentProfilesStore.filter((p) => p.modelFlag));
-
-  /// The app-wide cycle, or the shipped default while there is none --
-  /// an editor needs fields on screen, and `saveAgentPause` is what turns
-  /// the default into a stored cycle.
-  const cycle = $derived($agentPauseStore ?? { ...DEFAULT_CYCLE, anchorMs: 0 });
-  const cycleError = $derived(cycle.enabled ? validateCycle(cycle) : null);
+  /// Built-ins ∪ app-wide customs. Defaults is where model/effort rows
+  /// for those customs live; the Rust table alone has no named customs.
+  const allProfiles = $derived(
+    mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
+  );
+  const profiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
 
   /// Whether any agent in use can actually be asked about its limits. The
   /// limit gate is offered either way -- a workspace may switch agents --
@@ -165,25 +181,12 @@
     $agentProfilesStore.some((p) => p.usageProbe && profilesInUse().includes(p.id))
   );
 
-  /// Writes through on every change, refusing an invalid cycle rather
-  /// than storing one gavin would then have to ignore at read time.
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
   const launch = $derived($launchConfigStore);
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveLaunchConfig({ ...launch, ...patch });
-  }
-
-  function edit(patch: Partial<PauseCycle>): void {
-    const next = { ...cycle, ...patch };
-    if (next.enabled && validateCycle(next)) {
-      // Keep it on screen so the message can explain itself; nothing is
-      // saved until it is usable again.
-      agentPauseStore.set(next);
-      return;
-    }
-    void saveAgentPause(next);
   }
 
   /// Which rows have their custom box open. A row whose stored value is
@@ -232,31 +235,12 @@
     void setAgentModelDefault(profileId, value);
   }
 
-  /// The custom agent's text fields, saved on blur rather than per
-  /// keystroke: a half-typed command written through would be launched
-  /// by anything that started an agent mid-edit.
-  function commitCustomAgent(patch: {
-    customCommand?: string;
-    customModelFlag?: string;
-    customEffortFlag?: string;
-  }): void {
-    const next = { ...$agentDefaultsStore, ...patch };
-    if (
-      next.customCommand === $agentDefaultsStore.customCommand &&
-      next.customModelFlag === $agentDefaultsStore.customModelFlag &&
-      (next.customEffortFlag ?? "") === ($agentDefaultsStore.customEffortFlag ?? "")
-    ) {
-      return;
-    }
-    void setAgentDefaults(next);
-  }
-
   // --- default effort, per profile ----------------------------------------
   //
   // The model rows' machinery again, over `agentDefaults.agentEfforts`:
   // a picker of the CLI's levels, and a box for a level it does not list.
-  /// Only profiles gavin knows how to put an effort on.
-  const effortProfiles = $derived($agentProfilesStore.filter((p) => p.effortFlag));
+  /// Built-ins with an effort flag, plus every named custom in scope.
+  const effortProfiles = $derived(allProfiles.filter((p) => p.effortFlag || isCustomProfileId(p.id)));
   let effortCustomOpen = $state<Record<string, boolean>>({});
   let effortDrafts = $state<Record<string, string>>({});
 
@@ -285,24 +269,8 @@
     void setAgentDefaults(withAgentEffort($agentDefaultsStore, profileId, value));
   }
 
-  /// The custom agent's API family: what lets Headroom compress it. A
-  /// select commits on change -- there is no half-chosen family to guard
-  /// against. Dark on a daemon that would drop the family it is sent.
+  /// Named customs' API family: dark on a daemon that would drop it.
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
-
-  function commitApiFamily(family: ApiFamily): void {
-    if (family === apiFamilyOf($agentDefaultsStore)) return;
-    void setAgentDefaults(withApiFamily($agentDefaultsStore, family));
-  }
-
-  /// One complexity row. `null` clears it, which is what "no agent for
-  /// this level" means -- the card then runs the workspace's own.
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const complexity = { ...$agentDefaultsStore.complexity };
-    if (entry) complexity[level] = entry;
-    else delete complexity[level];
-    void setAgentDefaults({ ...$agentDefaultsStore, complexity });
-  }
 
   // --- headroom --------------------------------------------------------
   //
@@ -471,7 +439,7 @@
     }
   }
 
-  // --- remote access: the Relay, pairing, devices, revocation --------
+  // --- remote access: the switch, the Relay, the admission token ------
   //
   // The template below is the ONE consumer of
   // `FEATURE_MIN_VERSION.remoteAccess`, which the handshake task added
@@ -494,25 +462,83 @@
 
   let devices = $state<DeviceList | null>(null);
   let devicesError = $state<string | null>(null);
-  let devicesBusy = $state(false);
   let relayDraft = $state("");
   let relayFocused = false;
+  /// The Push gateway field (v67): what the daemon posts to, and what is
+  /// wrong with what was typed, in the daemon's words.
+  const pushGatewayGate = $derived(pushGatewayBlocked($daemonCompat));
+  let pushGatewayDraft = $state("");
+  let pushGatewayFocused = false;
+  let pushGatewayError = $state<string | null>(null);
   /// What is being typed into the admission field, and nothing else: the
   /// field is write-only, so this is empty again the moment it is saved.
   let admissionDraft = $state("");
-  let pairing = $state<PairingState>(PAIRING_IDLE);
-  let pairingError = $state<string | null>(null);
-  /// Re-read once a second while the pairing panel is open, so the
-  /// countdown and the list's ages come off a clock rather than off
-  /// whenever the panel last happened to re-render.
+  /// Read once a second is not needed here: the relay line's age only has
+  /// to be right when it is drawn, and every push re-stamps it.
   let nowMs = $state(Date.now());
 
-  const deviceList = $derived(devices ? deviceRows(devices.devices, nowMs) : []);
+  /// Whether the daemon reached its Relay: read once on open, then
+  /// followed by the daemon's `relay-state-changed` push. Null until read,
+  /// and for good against a daemon too old to be asked.
+  let relayState = $state<RelayState | null>(null);
+
   const relayHint = $derived(relayUrlHint(relayDraft));
-  /// Why a QR drawn now could pair nothing, or null. Read from what the
-  /// DAEMON holds rather than from the drafts: a URL still being typed
-  /// is not one it is dialling.
-  const pairingGate = $derived(pairingUnavailable(devices, $daemonCompat));
+  const relayGate = $derived(relayStateBlocked($daemonCompat));
+  const relayLine = $derived(relayStatus(relayState, nowMs));
+  const relayBadge = $derived(
+    relayLine.badge === null
+      ? null
+      : relayIndicator(
+          relayLine.badge,
+          relayState?.state === "failed" ? `${relayState.why}` : null
+        )
+  );
+
+  /// The direct listener (ADR 0009): its switch rides in the device list,
+  /// and where it stands is read once and then followed by the daemon's
+  /// `direct-state-changed` push, as the Relay's is. Null until read, and
+  /// for good against a daemon too old to have one.
+  const directGate = $derived(directAccessBlocked($daemonCompat));
+  let directState = $state<DirectState | null>(null);
+  const directLine = $derived(directStatus(directState));
+  const directBadge = $derived(
+    directLine.badge === null
+      ? null
+      : directIndicator(directLine.badge, directState?.state === "failed" ? directState.why : null)
+  );
+
+  async function refreshDirectState(): Promise<void> {
+    if (remoteAccessGate !== null || directGate !== null) return;
+    try {
+      directState = await backend.getDirectState();
+    } catch {
+      directState = null;
+    }
+  }
+
+  /// The Direct connection switch. Optimistic like the Remote access
+  /// switch, and rolled back the same way when the write fails.
+  async function saveDirectAccess(enabled: boolean): Promise<void> {
+    const before = devices;
+    devicesError = null;
+    if (devices) devices = { ...devices, directAccessEnabled: enabled };
+    try {
+      await backend.setDirectAccess(enabled);
+    } catch (e) {
+      devices = before;
+      devicesError = String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  async function refreshRelayState(): Promise<void> {
+    if (remoteAccessGate !== null || relayGate !== null) return;
+    try {
+      relayState = await backend.getRelayState();
+    } catch {
+      // Not knowing is not a failure to connect.
+      relayState = null;
+    }
+  }
 
   async function refreshDevices(): Promise<void> {
     if (remoteAccessGate !== null) return;
@@ -524,6 +550,7 @@
       // Same rule as the update endpoint's field: never clobber what the
       // human is in the middle of typing.
       if (!relayFocused) relayDraft = list.relayUrl ?? "";
+      if (!pushGatewayFocused) pushGatewayDraft = list.pushGatewayUrl ?? "";
     } catch (e) {
       devicesError = String(e instanceof Error ? e.message : e);
     }
@@ -539,111 +566,30 @@
     if (remoteAccessGate !== null || devices !== null) return;
     void refreshDevices();
   });
+  $effect(() => {
+    if (remoteAccessGate !== null || relayGate !== null || relayState !== null) return;
+    void refreshRelayState();
+  });
+  $effect(() => {
+    if (remoteAccessGate !== null || directGate !== null || directState !== null) return;
+    void refreshDirectState();
+  });
 
-  // The device pushes. Component-local rather than in layoutState's
-  // bootstrap listeners on purpose: this section is the only thing in
-  // gavin that can answer one, it is mounted only while the human is
-  // looking at it, and `DevicePairingRequested` is a question -- a
-  // question nobody is being asked is not a notification, it is a
-  // dialog waiting to fire over some other screen.
-  //
-  // What is lost while Settings is closed is nothing that matters: the
-  // daemon refuses a pairing outright when no `app` connection is live,
-  // and connect/disconnect only change a list this re-reads on open.
+  // The Relay's state is the one push this section still hears: pairing
+  // and the connect pushes moved to the Devices panel with the list.
   onMount(() => {
-    const stop: Promise<UnlistenFn>[] = [
-      listen<[string, string, string]>("device-pairing-requested", (event) => {
-        const [deviceId, name, sas] = event.payload;
-        const next = pairingRequested(pairing, { deviceId, name, sas });
-        if (next === pairing) return; // a second phone, or no offer on screen
-        pairing = next;
-        void askPairing({ deviceId, name, sas });
-      }),
-      // A Device's connection opening and closing. Pairing opens none --
-      // a pairing stream is not a connection -- so these arrive once
-      // Devices connect; the list they change is drawn here.
-      listen<string>("device-connected", () => void refreshDevices()),
-      listen<string>("device-disconnected", () => void refreshDevices()),
-    ];
+    const stop = listen<RelayState>("relay-state-changed", (event) => {
+      relayState = event.payload;
+      nowMs = Date.now();
+    });
+    const stopDirect = listen<DirectState>("direct-state-changed", (event) => {
+      directState = event.payload;
+    });
     return () => {
-      for (const p of stop) void p.then((off) => off());
+      void stop.then((off) => off());
+      void stopDirect.then((off) => off());
     };
   });
-
-  $effect(() => {
-    if (!pairingOpen(pairing)) return;
-    const timer = setInterval(() => {
-      nowMs = Date.now();
-      pairing = pairingTick(pairing, nowMs);
-    }, 1000);
-    return () => clearInterval(timer);
-  });
-
-  async function startPairing(): Promise<void> {
-    pairingError = null;
-    try {
-      pairing = pairingOffered(await backend.beginPairing());
-      nowMs = Date.now();
-    } catch (e) {
-      pairing = PAIRING_IDLE;
-      pairingError = String(e instanceof Error ? e.message : e);
-    }
-  }
-
-  /// The six-digit comparison. `askConfirm` rather than an inline panel
-  /// because this is a question with two named answers and no third: the
-  /// prompt keeps focus on Reject (`danger`), so Enter cannot confirm a
-  /// code nobody compared.
-  async function askPairing(request: PairingRequest): Promise<void> {
-    const said = await askConfirm(pairingConfirmCopy(request, knownDevice(request, devices)));
-    pairingError = null;
-    try {
-      if (said) {
-        const token = await grantForAnsweredPrompt("confirm_pairing", [
-          pairingSubject(request.deviceId, request.sas),
-        ]);
-        await backend.confirmPairing(request.deviceId, request.sas, token);
-        pairing = pairingConfirmed(pairing);
-      } else {
-        await backend.rejectPairing(request.deviceId);
-        pairing = pairingRejected(pairing);
-      }
-    } catch (e) {
-      pairingError = String(e instanceof Error ? e.message : e);
-    }
-    await refreshDevices();
-  }
-
-  async function revokeOne(row: { deviceId: string; name: string }): Promise<void> {
-    if (!(await askConfirm(revokeDeviceCopy(row)))) return;
-    devicesBusy = true;
-    devicesError = null;
-    try {
-      await backend.revokeDevice(row.deviceId);
-    } catch (e) {
-      devicesError = String(e instanceof Error ? e.message : e);
-    } finally {
-      devicesBusy = false;
-    }
-    await refreshDevices();
-  }
-
-  async function revokeAll(): Promise<void> {
-    if (!(await askConfirm(revokeAllCopy()))) return;
-    devicesBusy = true;
-    devicesError = null;
-    try {
-      await backend.revokeAllDevices();
-      // The offer on screen was minted under the OLD key, so a phone
-      // that scanned it would pin a key the daemon no longer has.
-      pairing = pairingClosed();
-    } catch (e) {
-      devicesError = String(e instanceof Error ? e.message : e);
-    } finally {
-      devicesBusy = false;
-    }
-    await refreshDevices();
-  }
 
   /// The switch and the relay go together: the request carries both, so
   /// sending one without the other would write the stale value of
@@ -676,6 +622,25 @@
     }
   }
 
+  /// The Push gateway field lost focus. Saved only when it changed; the
+  /// daemon is the one that checks it, and the shared list is read again
+  /// so the desk's notify driver sees where it now posts.
+  async function savePushGateway(): Promise<void> {
+    const url = pushGatewayUrlToSave(pushGatewayDraft);
+    if (!devices || url === (devices.pushGatewayUrl ?? null)) {
+      pushGatewayError = null;
+      return;
+    }
+    try {
+      await backend.setPushGatewayUrl(url);
+      pushGatewayError = null;
+      devices = { ...devices, pushGatewayUrl: url };
+      void refreshDeviceList();
+    } catch (e) {
+      pushGatewayError = String(e instanceof Error ? e.message : e);
+    }
+  }
+
   /// The admission field lost focus. Nothing typed is nothing to save.
   async function saveAdmission(): Promise<void> {
     const token = admissionToSave(admissionDraft);
@@ -695,10 +660,15 @@
   /// One entry per section below, in the same order -- see
   /// SettingsHubView's own SECTIONS for why whole sections, not rows.
   ///
-  /// Agent defaults and Custom agent sit above Complexity (the table
-  /// names which agent runs each level). Updates / Daemon / Remote
-  /// access are app-wide infrastructure that used to live on each
-  /// workspace's Settings tab by mistake.
+  /// Agents is one section with inner tabs (General, one per agent, and a
+  /// trailing "+" to add a custom). Headroom, Tools and TypeSafe stay
+  /// top-level. Updates / Daemon / Remote access are app-wide
+  /// infrastructure that used to live on each workspace's Settings tab
+  /// by mistake.
+  ///
+  /// Agents is `AGENTS_SECTION` from agentsHub.ts — one keyword table for
+  /// both panels. The settingsSearch surface greps splice it in when they
+  /// see the bare reference (string literals alone cannot stay in lockstep).
   const SECTIONS: SettingsSection[] = [
     {
       id: "appearance",
@@ -708,6 +678,20 @@
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
     {
+      id: "browser",
+      keywords: [
+        "Agent browser",
+        "Browser",
+        "Playwright",
+        "live view",
+        "pane",
+        "Open automatically",
+        "Open from the tab chip",
+        "tab chip",
+        "screencast",
+      ],
+    },
+    {
       id: "cards",
       keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
     },
@@ -715,22 +699,7 @@
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
     },
-    {
-      id: "agent-defaults",
-      keywords: ["Agent defaults", "model", "effort", "reasoning", "thinking", "Claude Code", "Codex"],
-    },
-    {
-      id: "custom-agent",
-      keywords: [
-        "Custom agent",
-        "Command",
-        "Model flag",
-        "Effort flag",
-        "API family",
-        "Headroom",
-        "compression",
-      ],
-    },
+    AGENTS_SECTION,
     {
       id: "headroom",
       keywords: [
@@ -757,15 +726,6 @@
         "critical review",
         "prompt overrides",
       ],
-    },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model", "effort"] },
-    {
-      id: "fallback-agent",
-      keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
-    },
-    {
-      id: "agent-pause",
-      keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage", "quota", "rate limit"],
     },
     {
       id: "typesafe",
@@ -826,18 +786,17 @@
         "Remote access",
         "token",
         "local access",
-        "pairing",
-        "phone",
-        "device",
-        "Pair a device",
-        "QR",
         "Relay URL",
         "relay",
         "Admission token",
-        "Revoke",
-        "Revoke all devices",
-        "lost phone",
-        "trust store",
+        "Direct connection",
+        "Tailscale",
+        "Push gateway",
+        "notifications",
+        "push",
+        "phone",
+        "device",
+        "Devices",
       ],
     },
   ];
@@ -871,6 +830,75 @@
   });
   function sectionLabel(section: SettingsSection): string {
     return section.keywords[0] ?? section.id;
+  }
+
+  // --- Agents hub --------------------------------------------------------
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
+  let agentsQuerySeen = $state("");
+  let newCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(allProfiles, ADD_TAB_HINT.app));
+  /// The agent General is about: the app-wide default, and what its label
+  /// reads as in the heading over the block.
+  const defaultAgentId = $derived(effectiveDefaultAgent($agentDefaultsStore));
+  const defaultAgentLabel = $derived(
+    allProfiles.find((p) => p.id === defaultAgentId)?.label ?? defaultAgentId
+  );
+  $effect(() => {
+    const q = settingsQuery;
+    if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
+    agentsQuerySeen = q;
+    agentsTab = agentsTabForQuery("app", q, allProfiles);
+  });
+  $effect(() => {
+    const valid = validAgentsTab(agentsTab, allProfiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
+  });
+
+  const activeAgentProfile = $derived(allProfiles.find((p) => p.id === agentsTab) ?? null);
+  const activeCustom = $derived(
+    ($agentDefaultsStore.customProfiles ?? []).find((p) => p.id === agentsTab) ?? null
+  );
+
+  async function addAppCustom(): Promise<void> {
+    const next = addCustomProfile($agentDefaultsStore.customProfiles ?? [], newCustomName.trim() || "Custom");
+    const added = next.find((p) => !($agentDefaultsStore.customProfiles ?? []).some((o) => o.id === p.id));
+    await setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next });
+    newCustomName = "";
+    if (added) agentsTab = added.id;
+  }
+
+  async function patchActiveCustom(partial: Partial<Omit<CustomProfile, "id">>): Promise<void> {
+    if (!activeCustom) return;
+    await setAgentDefaults({
+      ...$agentDefaultsStore,
+      customProfiles: updateCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, partial),
+    });
+  }
+
+  async function renameActiveCustom(label: string): Promise<void> {
+    if (!activeCustom) return;
+    await setAgentDefaults({
+      ...$agentDefaultsStore,
+      customProfiles: renameCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, label),
+    });
+  }
+
+  async function deleteActiveCustom(): Promise<void> {
+    if (!activeCustom) return;
+    const ok = await askConfirm({
+      title: `Delete “${activeCustom.label}”?`,
+      lines: [
+        "Workspaces still pointing at this custom will fall back to the default agent until they pick another.",
+      ],
+      confirmLabel: "Delete custom",
+      danger: true,
+    });
+    if (!ok) return;
+    const id = activeCustom.id;
+    await setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, id));
+    // And every workspace's own per-agent keys for it.
+    await dropProfileRefsFromWorkspaces(id);
+    agentsTab = GENERAL_TAB;
   }
 </script>
 
@@ -920,6 +948,17 @@
             />
           {/each}
         </div>
+      </div>
+      <div class="row">
+        <span>Sidebar</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$dimInactiveWorkspaces}
+            onchange={(e) => setDimInactiveWorkspaces(e.currentTarget.checked)}
+          />
+          <span>Dim workspaces that are not current</span>
+        </label>
       </div>
     </section>
 
@@ -995,6 +1034,27 @@
       </p>
     </section>
 
+    <section hidden={!settingsFilter.visible("browser") || selectedSection !== "browser"}>
+      <h3>Agent browser</h3>
+      <div class="row">
+        <span>Live view</span>
+        <select
+          value={$playwrightPaneOpenDefault ?? ""}
+          onchange={(e) => void setPlaywrightPaneOpenDefault(paneOpenFromSelect(e.currentTarget.value))}
+        >
+          {#each paneOpenOptions(DEFAULT_PANE_OPEN) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        When an agent drives its browser through Playwright, the pane beside its tab shows that
+        browser live. Open automatically puts the pane up on the browser's first frame; Open from the
+        tab chip waits until you press the tab's browser chip. Either way, closing the pane only hides
+        it — the chip brings it back. Every workspace follows this unless it sets its own.
+      </p>
+    </section>
+
     <section hidden={!settingsFilter.visible("cards") || selectedSection !== "cards"}>
       <h3>Cards</h3>
       <div class="row">
@@ -1056,150 +1116,188 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-defaults") || selectedSection !== "agent-defaults"}>
-      <h3>Agent defaults</h3>
-      {#if profiles.length === 0}
-        <p class="hint">Waiting for the agent profile table…</p>
-      {:else}
-        {#each profiles as profile (profile.id)}
-          <div class="row">
-            <span>{profile.label}</span>
+    <section hidden={!settingsFilter.visible("agents") || selectedSection !== "agents"}>
+      <h3>Agents</h3>
+      <AgentsHubTabs tabs={agentsTabs} tab={agentsTab} onTab={(t) => (agentsTab = t)} />
+
+      {#if agentsTab === GENERAL_TAB}
+        <label class="row">
+          <span>Default agent</span>
+          <select
+            value={effectiveDefaultAgent($agentDefaultsStore)}
+            onchange={(e) =>
+              void setAgentDefaults({
+                ...$agentDefaultsStore,
+                defaultAgent: e.currentTarget.value,
+              })}
+          >
+            {#each allProfiles as profile (profile.id)}
+              <option value={profile.id}>{profile.label}</option>
+            {/each}
+          </select>
+        </label>
+        <p class="hint">
+          Used when a workspace has not chosen its own agent. Today that silent fallback was Claude
+          Code; this setting makes it explicit. Everything below is that agent's own configuration —
+          the same settings its tab shows.
+        </p>
+
+        <!-- General edits the SELECTED default agent's own settings: the same
+             data its tab shows, so switching the default above just points
+             this block at another agent. -->
+        <h3 class="sub">{defaultAgentLabel}</h3>
+        <AgentPrimaryPanel
+          scope="app"
+          primaryId={defaultAgentId}
+          label={defaultAgentLabel}
+          profiles={allProfiles}
+          limitsProbed={probed}
+        />
+      {:else if activeAgentProfile}
+        {#if activeCustom}
+          <label class="row">
+            <span>Name</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.label}
+              onblur={(e) => void renameActiveCustom(e.currentTarget.value)}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Command</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.command}
+              onblur={(e) => void patchActiveCustom({ command: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Model flag</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.modelFlag}
+              onblur={(e) => void patchActiveCustom({ modelFlag: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>Effort flag</span>
+            <input
+              spellcheck="false"
+              value={activeCustom.effortFlag ?? ""}
+              onblur={(e) => void patchActiveCustom({ effortFlag: e.currentTarget.value.trim() })}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <label class="row">
+            <span>API family</span>
             <select
-              value={selectValue(profile)}
-              onchange={(e) => pick(profile.id, e.currentTarget.value)}
+              value={activeCustom.apiFamily ?? ""}
+              disabled={Boolean(apiFamilyBlocked)}
+              title={apiFamilyBlocked ?? ""}
+              onchange={(e) =>
+                void patchActiveCustom({ apiFamily: e.currentTarget.value as ApiFamily | "" })}
             >
-              {#each modelOptions(profile, "") as opt (opt.value)}
+              <option value="">—</option>
+              {#each API_FAMILIES as family (family.value)}
+                <option value={family.value}>{family.label}</option>
+              {/each}
+            </select>
+          </label>
+          {#if apiFamilyBlocked}
+            <p class="hint warn">{apiFamilyBlocked}</p>
+          {/if}
+          <p class="row-actions">
+            <button type="button" class="danger" onclick={() => void deleteActiveCustom()}>Delete</button>
+          </p>
+        {/if}
+
+        {#if activeAgentProfile.modelFlag || isCustomProfileId(activeAgentProfile.id)}
+          <div class="row">
+            <span>Default model</span>
+            <select
+              value={selectValue(activeAgentProfile)}
+              onchange={(e) => pick(activeAgentProfile.id, e.currentTarget.value)}
+            >
+              {#each modelOptions(activeAgentProfile, "") as opt (opt.value)}
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
-            {#if isCustom(profile)}
+            {#if isCustom(activeAgentProfile)}
               <input
                 class="custom"
                 spellcheck="false"
                 placeholder="model name"
-                value={drafts[profile.id] ?? stored(profile.id)}
-                oninput={(e) => (drafts = { ...drafts, [profile.id]: e.currentTarget.value })}
-                onblur={() => commitCustom(profile.id)}
+                value={drafts[activeAgentProfile.id] ?? stored(activeAgentProfile.id)}
+                oninput={(e) => (drafts = { ...drafts, [activeAgentProfile.id]: e.currentTarget.value })}
+                onblur={() => commitCustom(activeAgentProfile.id)}
                 onkeydown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}
               />
             {/if}
           </div>
-        {/each}
-        <p class="hint">
-          Used by any workspace that sets no model of its own. Only Claude Code publishes stable
-          aliases — for the rest, type the model name your CLI expects.
-        </p>
-      {/if}
-      {#if effortProfiles.length > 0}
-        <h3 class="sub">Effort</h3>
-        {#each effortProfiles as profile (profile.id)}
+        {/if}
+        {#if activeAgentProfile.effortFlag || isCustomProfileId(activeAgentProfile.id)}
           <div class="row">
-            <span>{profile.label}</span>
+            <span>Default effort</span>
             <select
-              value={effortIsCustom(profile) ? CUSTOM_MODEL : storedEffort(profile.id)}
-              onchange={(e) => pickEffort(profile.id, e.currentTarget.value)}
+              value={effortIsCustom(activeAgentProfile) ? CUSTOM_MODEL : storedEffort(activeAgentProfile.id)}
+              onchange={(e) => pickEffort(activeAgentProfile.id, e.currentTarget.value)}
             >
-              {#each effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "") as opt (opt.value)}
+              {#each effortOptions({ effortFlag: activeAgentProfile.effortFlag ?? "", efforts: activeAgentProfile.efforts ?? [] }, "") as opt (opt.value)}
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
-            {#if effortIsCustom(profile)}
+            {#if effortIsCustom(activeAgentProfile)}
               <input
                 class="custom"
                 spellcheck="false"
                 placeholder="effort"
-                value={effortDrafts[profile.id] ?? storedEffort(profile.id)}
-                oninput={(e) => (effortDrafts = { ...effortDrafts, [profile.id]: e.currentTarget.value })}
-                onblur={() => commitCustomEffort(profile.id)}
+                value={effortDrafts[activeAgentProfile.id] ?? storedEffort(activeAgentProfile.id)}
+                oninput={(e) =>
+                  (effortDrafts = { ...effortDrafts, [activeAgentProfile.id]: e.currentTarget.value })}
+                onblur={() => commitCustomEffort(activeAgentProfile.id)}
                 onkeydown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}
               />
             {/if}
           </div>
-        {/each}
-        <p class="hint">
-          How hard each agent thinks, for any workspace that sets no effort of its own — the
-          fallback chain launches each agent at this too. Higher levels are slower and spend more of
-          the subscription. The levels are the ones each CLI documents; Custom… takes one it adds
-          later. Gemini, Cursor and opencode take no effort flag gavin can pass.
-        </p>
-      {/if}
-    </section>
+        {/if}
 
-    <section hidden={!settingsFilter.visible("custom-agent") || selectedSection !== "custom-agent"}>
-      <h3>Custom agent</h3>
-      <div class="row">
-        <span>Command</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="my-agent --flags"
-          value={$agentDefaultsStore.customCommand}
-          onchange={(e) => commitCustomAgent({ customCommand: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
+        <AgentPrimaryPanel
+          scope="app"
+          primaryId={activeAgentProfile.id}
+          label={activeAgentProfile.label}
+          profiles={allProfiles}
+          limitsProbed={probed}
         />
-      </div>
-      <div class="row">
-        <span>Model flag</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="--model"
-          value={$agentDefaultsStore.customModelFlag}
-          onchange={(e) => commitCustomAgent({ customModelFlag: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      </div>
-      <div class="row">
-        <span>Effort flag</span>
-        <input
-          class="custom"
-          spellcheck="false"
-          placeholder="--effort"
-          value={$agentDefaultsStore.customEffortFlag ?? ""}
-          onchange={(e) => commitCustomAgent({ customEffortFlag: e.currentTarget.value.trim() })}
-          onkeydown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-      </div>
-      <div class="row">
-        <label for="custom-api-family">API family</label>
-        <select
-          id="custom-api-family"
-          value={apiFamilyOf($agentDefaultsStore)}
-          disabled={apiFamilyBlocked !== null}
-          onchange={(e) => commitApiFamily(e.currentTarget.value as ApiFamily)}
-        >
-          {#each API_FAMILIES as family (family.value)}
-            <option value={family.value}>{family.label}</option>
-          {/each}
-        </select>
-      </div>
-      {#if apiFamilyBlocked}
-        <p class="hint warn">{apiFamilyBlocked}</p>
+      {:else if agentsTab === ADD_TAB}
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New custom name"
+            aria-label="New custom agent name"
+            bind:value={newCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addAppCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addAppCustom()}>Add custom</button>
+        </div>
       {/if}
-      <p class="hint">
-        The agent behind the <strong>Custom…</strong> profile — your own CLI, launched as written.
-        Any workspace on that profile that names no command of its own uses this one. The model flag
-        is how gavin puts a model on it: without one it has no way to, so every model control for a
-        custom agent stays dark rather than guessing a flag. The effort flag does the same for how
-        hard it thinks; end it with <code>=</code> when the level goes straight after it
-        (<code>--think=high</code>). A workspace can override all three on its own Settings tab.
-      </p>
-      <p class="hint">
-        The API family is the API your agent talks to, and it is how a workspace with compression
-        on can send it through Headroom: Anthropic points <code>ANTHROPIC_BASE_URL</code> at
-        Headroom, OpenAI-compatible points <code>OPENAI_BASE_URL</code>. None leaves the agent
-        uncompressed.
-      </p>
     </section>
 
     <section hidden={!settingsFilter.visible("headroom") || selectedSection !== "headroom"}>
@@ -1237,7 +1335,7 @@
       <p class="hint">
         Every workspace that sets nothing of its own follows this. It starts off, so installing
         Headroom never changes how a workspace already talks to its model; a workspace can switch it
-        either way on its own Settings tab, under Agent.
+        either way on its own Settings tab, under Headroom.
       </p>
       <p class="hint">{HEADROOM_RESIDUAL_NOTE}</p>
     </section>
@@ -1251,119 +1349,6 @@
       <div class="tools-explorer">
         <ToolsExplorerView scope="app" />
       </div>
-    </section>
-
-    <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
-      <h3>Complexity</h3>
-      <p class="hint">
-        A card can say how hard its work is, and each level can run a different agent — so a rename
-        need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
-        workspace runs; a model or an effort on its own keeps that agent and changes only that.
-        Every workspace can override any level on its own Settings tab.
-      </p>
-      <ComplexityTable
-        profiles={$agentProfilesStore}
-        table={$agentDefaultsStore.complexity}
-        onChange={setComplexity}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("fallback-agent") || selectedSection !== "fallback-agent"}>
-      <h3>Fallback agent</h3>
-      <p class="hint">
-        When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
-        workspace can override the chain; workspaces that inherit it are asked to set each agent up
-        on focus. Does not rewrite the workspace's active agent.
-      </p>
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={$agentDefaultsStore.agentFallback ?? []}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) =>
-          void setAgentDefaults({
-            ...$agentDefaultsStore,
-            agentFallback: chain ?? [],
-          })}
-        onThresholdChange={(profileId, percent) =>
-          void setAgentDefaults({
-            ...$agentDefaultsStore,
-            fallbackThresholds: {
-              ...($agentDefaultsStore.fallbackThresholds ?? {}),
-              [profileId]: sanitizeFallbackThreshold(percent),
-            },
-          })}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("agent-pause") || selectedSection !== "agent-pause"}>
-      <h3>Agent pause</h3>
-      <p class="hint">
-        Sit out part of every window so a rail does not spend a subscription limit
-        while nobody is watching. Nothing already running is interrupted — only
-        new starts wait.
-      </p>
-      <div class="row">
-        <span>Scheduled</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.enabled}
-            onchange={(e) => edit({ enabled: e.currentTarget.checked })}
-          />
-          <span>Pause on a cycle</span>
-        </label>
-      </div>
-      <div class="row">
-        <span>Pause for</span>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          disabled={!cycle.enabled}
-          value={cycle.pauseMinutes}
-          onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes every</span>
-        <input
-          class="num"
-          type="number"
-          min={MIN_PERIOD_MINUTES}
-          disabled={!cycle.enabled}
-          value={cycle.periodMinutes}
-          onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes</span>
-      </div>
-      <div class="row">
-        <span>At the limit</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.limitEnabled}
-            onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
-          />
-          <span>Hold when a window is</span>
-        </label>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          max="100"
-          disabled={!cycle.limitEnabled}
-          value={cycle.limitPercent}
-          onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">% used</span>
-      </div>
-      {#if cycleError}
-        <p class="hint error">{cycleError}</p>
-      {:else if !probed}
-        <p class="hint">
-          Holding at a limit needs an agent whose limits gavin can read — today
-          Claude Code and Codex. No workspace here runs one, so only the schedule
-          applies.
-        </p>
-      {/if}
     </section>
 
     <section hidden={!settingsFilter.visible("typesafe") || selectedSection !== "typesafe"}>
@@ -1643,12 +1628,12 @@
         {/if}
       </p>
 
-      <!-- The Relay, pairing, the device list, revocation. Everything from
+      <!-- The switch, the Relay and the admission token. Everything from
            here down is greyed together when the daemon is too old, and
            the reason names the version it needs. The reason hangs on
            WRAPPING spans, never on the disabled control: a disabled
            element fires no mouseenter, so a tooltip on it never opens. -->
-      <h3 class="sub">Devices</h3>
+      <h3 class="sub">Relay</h3>
       {#if remoteAccessGate}
         <p class="hint warn">{remoteAccessGate}</p>
       {/if}
@@ -1683,6 +1668,14 @@
           />
         </span>
       </div>
+      {#if relayBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={relayBadge} text={relayLine.text} />
+          {#if relayLine.detail}
+            <span class="detail">{relayLine.detail}</span>
+          {/if}
+        </p>
+      {/if}
       <p class="hint">
         {RELAY_NOTE}
         {#if relayHint}
@@ -1723,112 +1716,66 @@
         {/if}
       </p>
 
-      <div class="row">
-        <span use:tooltip={remoteAccessGate ?? pairingGate ?? ""}>
-          <button
-            type="button"
-            class="manage"
-            disabled={remoteAccessGate !== null || pairingGate !== null}
-            onclick={() => void startPairing()}
-          >
-            Pair a device
-          </button>
-        </span>
-        <span use:tooltip={remoteAccessGate ?? ""}>
-          <button
-            type="button"
-            class="manage danger"
-            disabled={remoteAccessGate !== null || devicesBusy || deviceList.length === 0}
-            onclick={() => void revokeAll()}
-          >
-            Revoke all devices
-          </button>
+      <div class="row endpoint-row">
+        <span>Push gateway</span>
+        <span class="grow" use:tooltip={remoteAccessGate ?? pushGatewayGate ?? ""}>
+          <input
+            type="text"
+            placeholder="https://push.example"
+            disabled={remoteAccessGate !== null || pushGatewayGate !== null || devices === null}
+            bind:value={pushGatewayDraft}
+            onfocus={() => (pushGatewayFocused = true)}
+            onblur={() => {
+              pushGatewayFocused = false;
+              void savePushGateway();
+            }}
+          />
         </span>
       </div>
-      {#if pairingError}
-        <p class="hint warn">Pairing failed: {pairingError}</p>
-      {/if}
+      <p class="hint">
+        {PUSH_GATEWAY_NOTE}
+        {#if pushGatewayError}
+          <span class="warn">{pushGatewayError}</span>
+        {:else if pushGatewayGate && remoteAccessGate === null}
+          <span class="warn">{pushGatewayGate}</span>
+        {/if}
+      </p>
 
-      {#if pairingOpen(pairing)}
-        <div class="pairing">
-          {#if pairing.phase === "offer" || pairing.phase === "requested"}
-            {@const drawn = qrDraw(pairing.qr)}
-            {#if drawn.error}
-              <p class="hint warn">Couldn't draw the QR: {drawn.error}</p>
-            {:else}
-              <!-- Inline SVG, drawn from the payload by qr.ts. No image
-                   service, no CDN, and no dependency: the thing being
-                   drawn is a pairing secret. -->
-              <svg
-                class="qr"
-                viewBox="0 0 {drawn.size} {drawn.size}"
-                role="img"
-                aria-label="Pairing QR code"
-              >
-                <rect width={drawn.size} height={drawn.size} fill="#fff" />
-                <path d={drawn.path} fill="#000" />
-              </svg>
-            {/if}
-            <div class="pairing-text">
-              {#if pairing.phase === "requested"}
-                <p>Waiting for your answer on the prompt.</p>
-              {:else}
-                <p>Scan this with the phone you want to pair.</p>
-              {/if}
-              <p class="hint">
-                This code expires in {countdownLabel(pairing.expiresAt, nowMs)}. It is one use
-                only, and scanning it is not enough on its own — you confirm a six-digit code
-                here, on the desktop, before the device exists.
-              </p>
-            </div>
-          {:else if pairing.phase === "confirmed"}
-            <p>“{pairing.request.name}” is paired.</p>
-          {:else if pairing.phase === "rejected"}
-            <p>“{pairing.request.name}” was rejected. Nothing was written.</p>
-          {:else}
-            <p>That pairing code expired. Press Pair a device for a new one.</p>
+      <!-- The direct listener (ADR 0009). Its own gate on top of the
+           section's: a daemon older than v69 has no switch to set. -->
+      <h3 class="sub">Direct connection</h3>
+      <span use:tooltip={remoteAccessGate ?? directGate ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={remoteAccessGate !== null || directGate !== null || devices === null}
+            checked={devices?.directAccessEnabled ?? false}
+            onchange={(e) => void saveDirectAccess(e.currentTarget.checked)}
+          />
+          Direct connection
+        </label>
+      </span>
+      {#if directBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={directBadge} text={directLine.text} />
+          {#if directLine.detail}
+            <span class="detail">{directLine.detail}</span>
           {/if}
-          <button type="button" class="manage" onclick={() => (pairing = pairingClosed())}>
-            Close
-          </button>
-        </div>
+        </p>
       {/if}
+      <p class="hint">
+        {DIRECT_NOTE}
+        {#if directGate && remoteAccessGate === null}
+          <span class="warn">{directGate}</span>
+        {/if}
+      </p>
 
+      <p class="hint">
+        Pairing a phone and the list of paired Devices are in the sidebar's
+        {DEVICES_LABEL} panel.
+      </p>
       {#if devicesError}
         <p class="hint warn">{devicesError}</p>
-      {/if}
-      <!-- Nothing at all about the list against a daemon that was never
-           asked: "no devices are paired" would be an assertion about a
-           store this build could not read, and the human would take it
-           for an answer. The gate's own line above is the answer. -->
-      {#if remoteAccessGate === null}
-        {#if deviceList.length === 0}
-          <p class="hint">{NO_DEVICES}</p>
-        {:else}
-          <ul class="devices">
-            {#each deviceList as row (row.deviceId)}
-              <li class:dimmed={row.dimmed}>
-                <span class="device-name">{row.name}</span>
-                <span class="device-role">{row.role}</span>
-                <span class="device-age" title={row.pairedAtTitle}>paired {row.pairedAt}</span>
-                <span class="device-age" title={row.lastSeenTitle}>seen {row.lastSeen}</span>
-                {#if row.note}
-                  <span class="warn">{row.note}</span>
-                {/if}
-                <span use:tooltip={remoteAccessGate ?? ""}>
-                  <button
-                    type="button"
-                    class="manage danger"
-                    disabled={remoteAccessGate !== null || devicesBusy || !row.revocable}
-                    onclick={() => void revokeOne(row)}
-                  >
-                    Revoke
-                  </button>
-                </span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
       {/if}
     </section>
 
@@ -2071,86 +2018,5 @@
   .row span.grow input {
     flex: 1 1 auto;
     min-width: 0;
-  }
-  /* The per-row Revoke sits in a <li>, not a .row, so it needs the
-     button styling spelled out rather than inherited from the shared
-     rule above. */
-  .devices li button.manage {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-family: monospace;
-    font-size: 1em;
-  }
-  .devices li button.manage:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .row button.manage.danger,
-  .devices li button.manage.danger {
-    color: var(--danger-text);
-  }
-  .pairing {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    margin: 10px 0;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  /* A fixed box rather than one sized by the symbol: a version-10 code
-     and a version-4 code have to be the same size on screen, or the
-     panel jumps every time the relay URL changes length. White ground
-     always, in both themes -- a dark-on-dark QR is one no camera
-     reads. */
-  .pairing svg.qr {
-    flex: 0 0 auto;
-    width: 168px;
-    height: 168px;
-    border-radius: 4px;
-  }
-  .pairing-text {
-    min-width: 0;
-  }
-  .pairing p {
-    margin: 0 0 6px;
-  }
-  .devices {
-    list-style: none;
-    margin: 8px 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .devices li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 0;
-    border-top: 1px solid var(--border);
-  }
-  /* Greyed, not hidden: a revoked row is the record that the revocation
-     happened, and a device the daemon will refuse until it re-pairs has
-     to be visible to be re-paired. */
-  .devices li.dimmed .device-name,
-  .devices li.dimmed .device-role,
-  .devices li.dimmed .device-age {
-    opacity: 0.5;
-  }
-  .device-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .device-role,
-  .device-age {
-    flex: 0 0 auto;
-    color: var(--text-subtle);
   }
 </style>

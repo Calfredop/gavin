@@ -4,8 +4,7 @@
     renameWorkspace,
     setWorkspaceColor,
     setWorkspaceFlag,
-    setWorkspacePause,
-    setWorkspaceFallback,
+    dropWorkspaceProfileRefs,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -14,22 +13,39 @@
     daemonCompat,
     terminalFontSizeDefault,
     setWorkspaceFontSize,
+    playwrightPaneOpenDefault,
+    setWorkspacePlaywrightPaneOpen,
     autoCommitDefault,
     setWorkspaceAutoCommit,
     requireReviewDefault,
     setWorkspaceRequireReview,
     agentDefaultsStore,
     setAgentDefaults,
-    setWorkspaceComplexityTable,
+    setWorkspaceCustomProfiles,
     markGitTrackingAsked,
     trustedAgentConfigs,
     headroomDefault,
     setWorkspaceHeadroom,
     markHeadroomAsked,
   } from "$lib/core/layoutState";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
+  import AgentPrimaryPanel from "$lib/agents/AgentPrimaryPanel.svelte";
+  import {
+    ADD_TAB,
+    ADD_TAB_HINT,
+    AGENTS_SECTION,
+    GENERAL_TAB,
+    addCustomProfile,
+    agentsHubTabs,
+    agentsTabForQuery,
+    isCustomProfileId,
+    profileOptionLabel,
+    validAgentsTab,
+    type AgentsHubTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import CustomsEditor from "$lib/agents/CustomsEditor.svelte";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
+  import { normalizePaneOpen, paneOpenFromSelect, paneOpenOptions, resolvePaneOpen } from "$lib/panes/browserView";
   import {
     autoCommitFromSelect,
     autoCommitOptions,
@@ -60,6 +76,7 @@
   } from "$lib/agents/agentModel";
   import {
     resolveAgentConfig,
+    mergeAgentProfiles,
     validateAgentFileName,
     validateMcpConfigPath,
     validatePrdPath,
@@ -74,7 +91,7 @@
   } from "$lib/core/settings";
   import { pickPath } from "$lib/workspace/picker";
   import * as backend from "$lib/core/backend";
-  import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
+  import AgentSkillsControls from "$lib/agents/AgentSkillsControls.svelte";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import ColourPicker from "$lib/core/ColourPicker.svelte";
@@ -90,18 +107,18 @@
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
-  import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
-  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
-  import { armNewlyAdded, askAgainToArm } from "$lib/agents/agentFallbackState";
+  import { nowStore, pauseFor } from "$lib/agents/agentPauseState";
+  import { askAgainToArm } from "$lib/agents/agentFallbackState";
+  import { fallbackThresholdFor, sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import {
-    effectiveFallbackChain,
-    fallbackThresholdFor,
-    sanitizeFallbackThreshold,
-  } from "$lib/agents/agentFallback";
-  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+    AGENT_SKILLS_NAME,
+    FAREWELL_NOTE,
+    agentSkillsLabel,
+    type AgentSkillsMark,
+    type AgentSkillsStatus,
+  } from "$lib/agents/agentSkills";
   import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
   import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
   import { apiFamilyOf } from "$lib/agents/apiFamily";
@@ -128,58 +145,74 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
 
-  /// What this workspace would inherit, and what an override starts from.
-  const appCycle = $derived($agentPauseStore);
-  const inheritedCycle = $derived(editableCycle(null));
   /// Recomputed on every clock tick, so the "right now" line below is a
   /// live countdown rather than whatever was true when the tab mounted.
   const pauseNow = $derived(pauseFor(workspaceId, $nowStore));
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
+  const profiles = $derived(
+    mergeAgentProfiles(
+      $agentProfilesStore,
+      $agentDefaultsStore.customProfiles ?? [],
+      ws?.customProfiles ?? []
+    )
+  );
   const agent = $derived(
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
-      $agentProfilesStore,
+      profiles,
       $agentModelDefaultsStore,
-      {
-        command: $agentDefaultsStore.customCommand,
-        modelFlag: $agentDefaultsStore.customModelFlag,
-        effortFlag: $agentDefaultsStore.customEffortFlag,
-      },
-      {},
-      $agentDefaultsStore.agentEfforts
+      undefined,
+      undefined,
+      $agentDefaultsStore.agentEfforts,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const configWarning = $derived(Boolean(rootContext?.configWarning));
   const hasRoot = $derived(Boolean(ws?.rootPath));
-  const profileLabel = $derived(
-    $agentProfilesStore.find((p) => p.id === agent.profileId)?.label ?? agent.profileId
-  );
+  const profileLabel = $derived(profiles.find((p) => p.id === agent.profileId)?.label ?? agent.profileId);
 
-  // The Superpowers row's two inputs. Re-read on demand rather than
+  // The agent skills row's two inputs. Re-read on demand rather than
   // watched: this is a settings panel, not a live view, and the only
   // things that change either value are the controls right below.
   // undefined until the first read lands, so the row can say "checking"
   // instead of drawing an Install button for an unknown state.
-  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
-  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let agentSkills = $state<AgentSkillsStatus | undefined>(undefined);
+  let agentSkillsMark = $state<AgentSkillsMark | undefined>(undefined);
+  /// Whether this root is owed the one-time note about the plugin gavin
+  /// used to recommend. Read with the row and under the same token, so a
+  /// workspace switch cannot carry one root's note onto another.
+  let farewellDue = $state(false);
   let spToken = 0;
-  async function readSuperpowers(): Promise<void> {
+  async function readAgentSkills(): Promise<void> {
     const root = ws?.rootPath;
     // Cleared first, and the token bumped in the same breath: a switch to
     // another workspace must not leave the previous one's answer on
     // screen, nor let its in-flight read land here.
-    superpowers = undefined;
-    superpowersMark = undefined;
+    agentSkills = undefined;
+    agentSkillsMark = undefined;
+    farewellDue = false;
     const mine = ++spToken;
     if (!root) return;
-    const [status, marks] = await Promise.all([
-      backend.superpowersStatus(root, agent.command).catch(() => undefined),
-      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+    const [status, marks, farewell] = await Promise.all([
+      backend.agentSkillsStatus(root, agent.command).catch(() => undefined),
+      backend.getAgentSkillsMarks().catch(() => ({}) as Record<string, AgentSkillsMark>),
+      // A failed read is no note: it is a courtesy, never worth an error.
+      backend.agentSkillsFarewell(root).catch(() => false),
     ]);
     if (mine !== spToken) return;
-    superpowers = status;
-    superpowersMark = marks[root];
+    agentSkills = status;
+    agentSkillsMark = marks[root];
+    farewellDue = farewell;
+  }
+
+  /// Hidden at once, recorded for good. A write that fails only means the
+  /// note comes back on the next visit.
+  async function dismissFarewell(): Promise<void> {
+    const root = ws?.rootPath;
+    if (!root) return;
+    farewellDue = false;
+    await backend.dismissAgentSkillsFarewell(root).catch(() => {});
   }
   $effect(() => {
     void ws?.rootPath;
@@ -187,7 +220,7 @@
     // re-ask -- otherwise the row keeps answering for the agent that was
     // selected a moment ago.
     void agent.profileId;
-    void readSuperpowers();
+    void readAgentSkills();
   });
 
   // --- compression --------------------------------------------------------
@@ -203,7 +236,12 @@
       reading: workspaceHeadroomReading($headroomReading, ws),
       switchBlocked: compressionSwitchBlocked($daemonCompat),
       profileId: agent.profileId,
-      customApiFamily: apiFamilyOf($agentDefaultsStore),
+      customApiFamily: apiFamilyOf(
+        agent.profileId.startsWith("local:")
+          ? { customProfiles: ws?.customProfiles }
+          : $agentDefaultsStore,
+        agent.profileId
+      ),
     })
   );
 
@@ -240,46 +278,37 @@
   /// words a human would type for it: the title, its row labels, and a
   /// few of its own nouns, not the connecting prose around them.
   ///
-  /// Agent before Complexity: the table names which agent runs each
-  /// level, so the profile/command that feed it have to sit above it.
+  /// Agents is one section with inner tabs; Headroom stays top-level.
   /// App-wide controls (Updates, Daemon, Remote access) live in the
   /// sidebar Settings page — this panel is per-workspace only.
+  /// `AGENTS_SECTION` is shared with GlobalSettingsView (see agentsHub.ts).
   const SECTIONS: SettingsSection[] = [
     { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
     {
+      id: "browser",
+      keywords: [
+        "Agent browser",
+        "Browser",
+        "Playwright",
+        "live view",
+        "pane",
+        "Open automatically",
+        "Open from the tab chip",
+        "tab chip",
+        "screencast",
+      ],
+    },
+    {
       id: "cards",
       keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
     },
     { id: "git", keywords: ["Git", "Track", "tracking", "gitignore", "repository"] },
+    AGENTS_SECTION,
     {
-      id: "agent",
-      keywords: [
-        "Agent",
-        "Profile",
-        "Command",
-        "Model flag",
-        "Model",
-        "Effort",
-        "Effort flag",
-        "Agent file",
-        "PRD file",
-        "MCP config",
-        "MCP format",
-        "Superpowers",
-        "Headroom",
-        "compression",
-      ],
-    },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model", "effort"] },
-    {
-      id: "agent-pause",
-      keywords: ["Agent pause", "pause", "cycle", "limit", "usage", "quota", "rate limit"],
-    },
-    {
-      id: "fallback-agent",
-      keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
+      id: "headroom",
+      keywords: ["Headroom", "compression", "compress", "tokens saved", "savings", "proxy"],
     },
     {
       id: "unattended-recovery",
@@ -326,12 +355,44 @@
     return section.keywords[0] ?? section.id;
   }
 
+  // --- Agents hub --------------------------------------------------------
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
+  let agentsQuerySeen = $state("");
+  let newLocalCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(profiles, ADD_TAB_HINT.workspace));
+  $effect(() => {
+    const q = settingsQuery;
+    if (selectedSection !== "agents" || !q.trim() || q === agentsQuerySeen) return;
+    agentsQuerySeen = q;
+    agentsTab = agentsTabForQuery("workspace", q, profiles);
+  });
+  $effect(() => {
+    const valid = validAgentsTab(agentsTab, profiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
+  });
+  const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
+
+  async function addLocalCustom(): Promise<void> {
+    const next = addCustomProfile(ws?.customProfiles ?? [], newLocalCustomName.trim() || "Custom", {
+      local: true,
+    });
+    const added = next.find((p) => !(ws?.customProfiles ?? []).some((o) => o.id === p.id));
+    await setWorkspaceCustomProfiles(workspaceId, next);
+    newLocalCustomName = "";
+    if (added) agentsTab = added.id;
+  }
+
   // --- terminal ---------------------------------------------------------
   /// What this workspace inherits when it sets no size of its own: the
   /// app-wide setting, or gavin's default when there isn't one. Named in
   /// the picker's first row so "Default" is never a number the panel
   /// leaves the reader to guess.
   const inheritedFontSize = $derived(resolveTerminalFontSize(undefined, $terminalFontSizeDefault));
+
+  // --- agent browser ----------------------------------------------------
+  /// What this workspace inherits when it sets nothing of its own, named in
+  /// the picker's first row for the font size's reason.
+  const inheritedPaneOpen = $derived(resolvePaneOpen(undefined, $playwrightPaneOpenDefault));
 
   // --- cards ------------------------------------------------------------
   /// What this workspace inherits when it sets nothing of its own: the
@@ -344,7 +405,7 @@
 
   // --- git --------------------------------------------------------------
   /// What git says about gavin's files in THIS root. Read on demand, like
-  /// the Superpowers row above and for the same reason -- the answer lives
+  /// the agent skills row above and for the same reason -- the answer lives
   /// in a `.gitignore` the human may have edited in another window, so a
   /// value cached at mount would be a claim rather than a reading.
   ///
@@ -358,7 +419,7 @@
   let trackToken = 0;
   async function readTracking(): Promise<void> {
     const root = ws?.rootPath;
-    // Cleared before the token bumps, exactly as readSuperpowers does: a
+    // Cleared before the token bumps, exactly as readAgentSkills does: a
     // workspace switch must not leave the last root's answer on screen,
     // nor let its in-flight read land under the new one.
     tracking = null;
@@ -452,16 +513,15 @@
     if (focused !== "mcpFile") mcpFileDraft = mcpFile;
   });
 
-  /// Only `custom` gets these: every other profile's layout is verified
-  /// in the Rust table, and a box that could override it would be a box
-  /// for writing gavin's config to the wrong place.
-  const isCustom = $derived(agent.profileId === "custom");
+  /// Named customs (app-wide or local) get MCP path/format boxes: stock
+  /// profiles' layout is verified in the Rust table.
+  const isCustom = $derived(isCustomProfileId(agent.profileId));
   const mcpFormat = $derived(rootContext?.agent?.mcpFormat ?? $mcpFormatsStore[0]?.id ?? "");
 
   // --- model ------------------------------------------------------------
   /// The profile row itself, for its flag and presets. `agent` above is
   /// the RESOLVED config, which carries neither.
-  const profileInfo = $derived($agentProfilesStore.find((p) => p.id === agent.profileId) ?? null);
+  const profileInfo = $derived(profiles.find((p) => p.id === agent.profileId) ?? null);
   /// What this workspace has set of its OWN, which is not agent.model:
   /// that one has already fallen back to the app-wide default, and the
   /// picker has to be able to tell "inheriting" from "chose the same
@@ -500,12 +560,6 @@
   /// is verified in the table -- but a workspace that already holds one
   /// keeps the row, so the value can be seen and cleared.
   const showEffortFlag = $derived(isCustom || ownEffortFlag !== "");
-
-  // --- complexity -------------------------------------------------------
-  /// This workspace's own overrides. Per LEVEL: a level absent here runs
-  /// whatever the app-wide table says, which is what the picker's first
-  /// option spells out.
-  const complexityTable = $derived(ws?.complexityAgents ?? {});
 
   // --- the lead document ------------------------------------------------
   /// Which file leads this workspace. Not an agent key: it lives at the
@@ -650,13 +704,6 @@
   function commitModelFlag(): void {
     const commit = fieldCommit(modelFlagDraft, ownModelFlag, { empty: "clear" });
     if (commit.kind === "write") void setAgentField(workspaceId, "model_flag", commit.value);
-  }
-
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const next = { ...complexityTable };
-    if (entry) next[level] = entry;
-    else delete next[level];
-    void setWorkspaceComplexityTable(workspaceId, next);
   }
 
   /// "" is a real value here, not a no-op: it removes the key and puts
@@ -839,6 +886,26 @@
       </p>
     </section>
 
+    <section hidden={!settingsFilter.visible("browser") || selectedSection !== "browser"}>
+      <h3>Agent browser</h3>
+      <div class="row">
+        <span>Live view</span>
+        <select
+          value={normalizePaneOpen(ws.playwrightPaneOpen) ?? ""}
+          onchange={(e) =>
+            void setWorkspacePlaywrightPaneOpen(workspaceId, paneOpenFromSelect(e.currentTarget.value))}
+        >
+          {#each paneOpenOptions(inheritedPaneOpen) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        When this workspace's agents open their browser pane beside their tab: on the browser's first
+        frame, or only from the tab's browser chip. Default follows the app-wide setting in Settings.
+      </p>
+    </section>
+
     <section hidden={!settingsFilter.visible("cards") || selectedSection !== "cards"}>
       <h3>Cards</h3>
       <div class="row">
@@ -905,8 +972,15 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("agent") || selectedSection !== "agent"}>
-      <h3>Agent</h3>
+    <section hidden={!settingsFilter.visible("agents") || selectedSection !== "agents"}>
+      <h3>Agents</h3>
+      <AgentsHubTabs
+        tabs={agentsTabs}
+        tab={agentsTab}
+        onTab={(t) => (agentsTab = t)}
+      />
+
+      {#if agentsTab === GENERAL_TAB}
       <!-- Above the Command field it gates: the field shows the RESOLVED
            command, so without this the panel would silently answer with
            the profile's while config.toml said something else. -->
@@ -930,8 +1004,8 @@
               if (next && next !== agent.profileId) pendingProfileChange = next;
             }}
           >
-            {#each $agentProfilesStore as profile (profile.id)}
-              <option value={profile.id}>{profile.label}</option>
+            {#each profiles as profile (profile.id)}
+              <option value={profile.id}>{profileOptionLabel(profile)}</option>
             {/each}
           </select>
         </label>
@@ -943,9 +1017,39 @@
           >
             Set up {profileLabel} again…
           </button>
-          — re-run MCP, skills and Superpowers for this agent without changing the profile.
+          — re-run MCP, skills and Matt Pocock's skills for this agent without changing the profile.
+          Per-agent setup (command, file, MCP) lives on that agent’s tab.
         </p>
-        {#if profileInfo?.usageProbe}
+      {/if}
+
+        <!-- General edits the agent THIS workspace runs: the same data that
+             agent's own tab shows, so choosing another profile above just
+             points this block at it. A key the workspace has not set
+             follows the app-wide value, and each block says so. -->
+        <h3 class="sub">{profileLabel}</h3>
+        <AgentPrimaryPanel
+          scope="workspace"
+          {workspaceId}
+          primaryId={agent.profileId}
+          label={profileLabel}
+          {profiles}
+        />
+        <p class="hint">
+          A pause stops gavin STARTING work — a rail's next step, a card run, an automatic resume. An
+          agent already mid-turn finishes, and your own Run button always works.
+          {#if pauseNow.paused}
+            Right now: {pauseNow.why}.
+          {/if}
+        </p>
+      {:else if agentsTab === agent.profileId}
+        {#if !hasRoot}
+          <p class="hint">Bind a root folder to configure the agent.</p>
+        {:else if configWarning}
+          <p class="hint warn">
+            This root's config.toml can't be parsed — fix it to edit these settings.
+          </p>
+        {:else}
+          {#if profileInfo?.usageProbe}
           <label class="row">
             <span>Walk at</span>
             <span class="pct-row">
@@ -970,7 +1074,7 @@
             New launches walk the fallback chain at this percent, so a tenth of the window stays
             free. Resume of a conversation already on this agent still uses the pause threshold.
           </p>
-        {/if}
+          {/if}
         <label class="row">
           <span>Command</span>
           <input
@@ -1078,7 +1182,7 @@
             <p class="hint">
               How gavin tells a custom agent how hard to think. End it with <code>=</code> when the
               level goes straight after it (<code>--think=high</code>). Empty uses the app-wide
-              custom agent's flag.
+              custom's flag from Customs.
             </p>
           {/if}
         {/if}
@@ -1229,239 +1333,141 @@
 
         <div class="sp-row">
           <span class="sp-title">
-            {superpowers ? superpowersLabel(superpowers.state) : "Superpowers plugin"}
+            {agentSkills ? agentSkillsLabel(agentSkills.state) : AGENT_SKILLS_NAME}
           </span>
-          {#if superpowers}
-            <SuperpowersControls
+          {#if farewellDue}
+            <div class="farewell">
+              <p class="hint">{FAREWELL_NOTE}</p>
+              <button type="button" class="linkish" onclick={() => void dismissFarewell()}>
+                Dismiss
+              </button>
+            </div>
+          {/if}
+          {#if agentSkills}
+            <AgentSkillsControls
               rootPath={ws?.rootPath ?? null}
               agentCommand={agent.command}
-              status={superpowers}
-              mark={superpowersMark}
-              onChanged={() => void readSuperpowers()}
+              status={agentSkills}
+              mark={agentSkillsMark}
+              onChanged={() => void readAgentSkills()}
               allowClear
             />
           {:else}
             <p class="hint">Checking…</p>
           {/if}
           <p class="hint">
-            Process skills for {profileLabel} — brainstorm before building, plan before coding,
-            debug by narrowing. It is what makes gavin's plan and debug flows deep rather than
-            nominal.
-          </p>
-        </div>
-
-        <div class="sp-row">
-          <span class="sp-title">Headroom</span>
-          <div class="row">
-            <label for="workspace-headroom">Compression</label>
-            <!-- The reason hangs on the wrapping span, not the select: a
-                 disabled element fires no mouseenter. -->
-            <span use:tooltip={headroomSwitch.disabled ? (headroomSwitch.notes[0] ?? "") : ""}>
-              <select
-                id="workspace-headroom"
-                value={headroomSwitch.unavailable ? "unavailable" : headroomToSelect(ownHeadroom(ws))}
-                disabled={headroomSwitch.disabled}
-                onchange={(e) => void pickHeadroom(e.currentTarget.value)}
-              >
-                {#if headroomSwitch.unavailable}
-                  <option value="unavailable">Unavailable</option>
-                {:else}
-                  {#each headroomOptions(inheritedHeadroom) as opt (opt.value)}
-                    <option value={opt.value}>{opt.label}</option>
-                  {/each}
-                {/if}
-              </select>
-            </span>
-          </div>
-          {#each headroomSwitch.notes as note (note)}
-            <p class="hint warn">{note}</p>
-          {/each}
-          <p class="hint">
-            Whether the agents gavin launches here talk to their model through Headroom, which
-            compresses what they send. Your own terminal tabs never do. Headroom itself — installing
-            it, its state, what it has saved — is in the app's Settings.
+            Engineering skills for {profileLabel}, grilling first — <code>/grill-with-docs</code>,
+            <code>/tdd</code>, <code>/diagnosing-bugs</code>; <code>/ask-matt</code> picks one.
+            <code>/setup-matt-pocock-skills</code> is optional and yours to run in the agent.
           </p>
         </div>
       {/if}
-    </section>
 
-    <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
-      <h3>Complexity</h3>
-      <p class="hint">
-        Which agent runs a card of each difficulty, in this workspace only. A level left on its
-        default follows the app-wide table in Settings, so leaving one alone is how this workspace
-        tracks that; naming an agent, a model or an effort here overrides that level and nothing
-        else.
-      </p>
-      <ComplexityTable
-        profiles={$agentProfilesStore}
-        table={complexityTable}
-        inherited={$agentDefaultsStore.complexity}
-        onChange={setComplexity}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("agent-pause") || selectedSection !== "agent-pause"}>
-      <h3>Agent pause</h3>
-      <!-- Absent means INHERIT, which is not the same as off: a
-           workspace that wants no pause while the app has one stores a
-           cycle with enabled:false, so clearing and disabling are two
-           different controls. -->
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={ws.agentPause != null}
-          onchange={(e) =>
-            void setWorkspacePause(
-              workspaceId,
-              e.currentTarget.checked ? { ...inheritedCycle } : null
-            )}
+        <AgentPrimaryPanel
+          scope="workspace"
+          {workspaceId}
+          primaryId={agent.profileId}
+          label={profileLabel}
+          {profiles}
         />
-        Give this workspace its own pause settings
-      </label>
-      {#if ws.agentPause == null}
-        <p class="hint">
-          {#if appCycle?.enabled}
-            Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
-            {appCycle.periodMinutes} minutes.
-          {:else}
-            Following the app-wide setting, which is off. Settings → Agent pause
-            changes it for every workspace.
-          {/if}
-        </p>
+        {#if (ws.declinedAgents ?? []).length > 0}
+          <div class="sp-row">
+            <span class="sp-title">Not set up here, by your choice</span>
+            {#each ws.declinedAgents ?? [] as id (id)}
+              <div class="row">
+                <span>{profiles.find((p) => p.id === id)?.label ?? id}</span>
+                <button type="button" onclick={() => void askAgainToArm(workspaceId, id)}>Ask again</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {:else if agentsTab === ADD_TAB}
+        <div class="row">
+          <input
+            class="custom"
+            spellcheck="false"
+            placeholder="New local custom name"
+            aria-label="New local custom agent name"
+            bind:value={newLocalCustomName}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void addLocalCustom();
+            }}
+          />
+          <button type="button" onclick={() => void addLocalCustom()}>Add local custom</button>
+        </div>
       {:else}
-        {@const own = ws.agentPause}
-        <div class="pause-row">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={own.enabled}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
-            />
-            Pause on a cycle
-          </label>
-        </div>
-        <div class="pause-row">
-          <span>Pause for</span>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            disabled={!own.enabled}
-            value={own.pauseMinutes}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                pauseMinutes: Number(e.currentTarget.value),
-              })}
+        {#if (ws.customProfiles ?? []).some((p) => p.id === agentsTab)}
+          <CustomsEditor
+            local
+            profiles={(ws.customProfiles ?? []).filter((p) => p.id === agentsTab)}
+            apiFamilyBlocked={apiFamilyBlocked}
+            onChange={(next) => {
+              const before = (ws.customProfiles ?? []).filter((p) => p.id === agentsTab);
+              const others = (ws.customProfiles ?? []).filter((p) => p.id !== agentsTab);
+              void setWorkspaceCustomProfiles(workspaceId, [...others, ...next]);
+              // A deleted local leaves everything keyed by it dangling —
+              // its fallback chain (and any chain naming it), complexity
+              // table (and rows routing to it), pause cycle, prompt lines
+              // and CLI args, plus its walk-at threshold. Clean all of it,
+              // exactly as the app-wide delete does.
+              for (const p of before.filter((p) => !next.some((n) => n.id === p.id))) {
+                void dropWorkspaceProfileRefs(workspaceId, p.id);
+                if (($agentDefaultsStore.fallbackThresholds ?? {})[p.id] != null) {
+                  const fallbackThresholds = { ...$agentDefaultsStore.fallbackThresholds };
+                  delete fallbackThresholds[p.id];
+                  void setAgentDefaults({ ...$agentDefaultsStore, fallbackThresholds });
+                }
+              }
+            }}
           />
-          <span>minutes every</span>
-          <input
-            class="num"
-            type="number"
-            min={MIN_PERIOD_MINUTES}
-            disabled={!own.enabled}
-            value={own.periodMinutes}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                periodMinutes: Number(e.currentTarget.value),
-              })}
+        {/if}
+        {@const tabProfile = profiles.find((p) => p.id === agentsTab)}
+        {#if tabProfile}
+          <AgentPrimaryPanel
+            scope="workspace"
+            {workspaceId}
+            primaryId={tabProfile.id}
+            label={tabProfile.label}
+            {profiles}
           />
-          <span>minutes</span>
-        </div>
-        <div class="pause-row">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={own.limitEnabled}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  limitEnabled: e.currentTarget.checked,
-                })}
-            />
-            Hold when a window is
-          </label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="100"
-            disabled={!own.limitEnabled}
-            value={own.limitPercent}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                limitPercent: Number(e.currentTarget.value),
-              })}
-          />
-          <span>% used</span>
-        </div>
-        {#if own.enabled && validateCycle(own)}
-          <p class="hint error">{validateCycle(own)}</p>
         {/if}
       {/if}
-      <p class="hint">
-        A pause stops gavin STARTING work — a rail's next step, a card run, an
-        automatic resume. An agent already mid-turn finishes, and your own Run
-        button always works.
-        {#if pauseNow.paused}
-          Right now: {pauseNow.why}.
-        {/if}
-      </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("fallback-agent") || selectedSection !== "fallback-agent"}>
-      <h3>Fallback agent</h3>
-      <p class="hint">
-        When this workspace's agent is over its usage threshold, new launches walk this chain
-        instead of pausing. The workspace agent is not rewritten. An agent that is not set up yet
-        opens a setup wizard rather than launching degraded.
-      </p>
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={ws.agentFallback ?? []}
-        inherited={$agentDefaultsStore.agentFallback ?? []}
-        inheriting={ws.agentFallback == null}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) => {
-          const before = effectiveFallbackChain(
-            ws.agentFallback,
-            $agentDefaultsStore.agentFallback
-          );
-          void setWorkspaceFallback(workspaceId, chain).then(() => {
-            if (chain) void armNewlyAdded(workspaceId, before, chain);
-          });
-        }}
-        onThresholdChange={(profileId, percent) =>
-          void setAgentDefaults({
-            ...$agentDefaultsStore,
-            fallbackThresholds: {
-              ...($agentDefaultsStore.fallbackThresholds ?? {}),
-              [profileId]: sanitizeFallbackThreshold(percent),
-            },
-          })}
-      />
-      {#if (ws.declinedAgents ?? []).length > 0}
-        <!-- The one way back from the arming wizard's "Don't ask again":
-             without it the answer could only be undone by hand-editing
-             config.json. -->
-        <div class="sp-row">
-          <span class="sp-title">Not set up here, by your choice</span>
-          {#each ws.declinedAgents ?? [] as id (id)}
-            <div class="row">
-              <span>{$agentProfilesStore.find((p) => p.id === id)?.label ?? id}</span>
-              <button type="button" onclick={() => void askAgainToArm(workspaceId, id)}>Ask again</button>
-            </div>
-          {/each}
-          <p class="hint">
-            You chose "Don't ask again" when gavin offered to set these up, so launches here skip
-            them in the chain.
-          </p>
+    <section hidden={!settingsFilter.visible("headroom") || selectedSection !== "headroom"}>
+      <h3>Headroom</h3>
+      <div class="sp-row">
+        <div class="row">
+          <label for="workspace-headroom">Compression</label>
+          <!-- The reason hangs on the wrapping span, not the select: a
+               disabled element fires no mouseenter. -->
+          <span use:tooltip={headroomSwitch.disabled ? (headroomSwitch.notes[0] ?? "") : ""}>
+            <select
+              id="workspace-headroom"
+              value={headroomSwitch.unavailable ? "unavailable" : headroomToSelect(ownHeadroom(ws))}
+              disabled={headroomSwitch.disabled}
+              onchange={(e) => void pickHeadroom(e.currentTarget.value)}
+            >
+              {#if headroomSwitch.unavailable}
+                <option value="unavailable">Unavailable</option>
+              {:else}
+                {#each headroomOptions(inheritedHeadroom) as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              {/if}
+            </select>
+          </span>
         </div>
-      {/if}
+        {#each headroomSwitch.notes as note (note)}
+          <p class="hint warn">{note}</p>
+        {/each}
+        <p class="hint">
+          Whether the agents gavin launches here talk to their model through Headroom, which
+          compresses what they send. Your own terminal tabs never do. Headroom itself — installing
+          it, its state, what it has saved — is in the app's Settings. Set a custom's API family
+          under Agents → Customs so compression can reach it.
+        </p>
+      </div>
     </section>
 
     <section hidden={!settingsFilter.visible("unattended-recovery") || selectedSection !== "unattended-recovery"}>
@@ -1784,6 +1790,15 @@
     display: block;
     margin-bottom: 8px;
     color: var(--text-normal, #ddd);
+  }
+  .farewell {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle, #333);
+    border-radius: 4px;
+  }
+  .farewell .hint {
+    margin: 0 0 4px;
   }
   .hint.warn {
     color: var(--warning-text);

@@ -6,6 +6,7 @@
 //! A gitignored path never counts (`IgnoreFilter`): it is a change `git
 //! status` never shows, so a refresh for it has nothing new to show.
 
+use crate::changes_only::ChangesOnly;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::Match;
 use notify_debouncer_mini::{Debouncer, DebouncedEvent};
@@ -147,7 +148,7 @@ fn is_top_level_watch_target(entry_name: &std::ffi::OsStr) -> bool {
 /// running anyway.
 pub struct WorktreeWatch {
     root: PathBuf,
-    debouncer: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
+    debouncer: Mutex<Option<Debouncer<ChangesOnly>>>,
     armed: Mutex<HashSet<PathBuf>>,
 }
 
@@ -522,6 +523,10 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     (out.code == 0).then_some(out.stdout)
 }
 
+fn new_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(on_batch: F) -> notify::Result<Debouncer<ChangesOnly>> {
+    crate::changes_only::new_debouncer(GIT_WATCH_DEBOUNCE, on_batch)
+}
+
 fn spawn_worktree_watcher<F>(root: &str, on_change: F) -> anyhow::Result<Arc<WorktreeWatch>>
 where
     F: Fn() + Send + 'static,
@@ -542,8 +547,7 @@ where
     });
     let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
 
-    let debouncer = notify_debouncer_mini::new_debouncer(
-        GIT_WATCH_DEBOUNCE,
+    let debouncer = new_debouncer(
         move |res: notify_debouncer_mini::DebounceEventResult| {
             let Ok(events) = res else { return };
             // After the last strong Arc<WorktreeWatch> is dropped,
@@ -897,8 +901,7 @@ mod tests {
         });
         let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
         let filter_root = root.clone();
-        let debouncer = notify_debouncer_mini::new_debouncer(
-            GIT_WATCH_DEBOUNCE,
+        let debouncer = new_debouncer(
             move |res: notify_debouncer_mini::DebounceEventResult| {
                 let Ok(events) = res else { return };
                 let Some(watch) = weak.upgrade() else { return };

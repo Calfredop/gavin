@@ -29,7 +29,7 @@ use protocol::device_wire::{
     self, ConnectRefusal, ConnectVerdict, PairingVerdict, UnlockProof, MAX_PAYLOAD,
     NOTIFICATION_KEY_BYTES,
 };
-use protocol::relay::{self, RelayHello, RelayUrl};
+use protocol::relay;
 use protocol::PairingQr;
 
 /// The longest message the core will put together out of frames: the
@@ -50,6 +50,12 @@ pub struct PairedWorkstation {
     /// The Relays the QR named, in the order to try them.
     pub relays: Vec<String>,
     pub relay_admission: Option<String>,
+    /// The direct listener's addresses the QR named (ADR 0009), tried
+    /// before the Relays, and the pin its certificate is trusted by.
+    /// Kept as they were at pairing: a LAN address that has since
+    /// changed costs one try, and the Relay is still there after it.
+    pub direct: Vec<String>,
+    pub direct_pin: Option<String>,
     /// What the Workstation calls this Device.
     pub device_id: String,
     /// What the Workstation seals this Device's notifications with.
@@ -79,38 +85,46 @@ impl PairedWorkstation {
             workstation_key: workstation_key(&offer.daemon_public_key)?,
             relays: offer.rendezvous.clone(),
             relay_admission: offer.relay_admission.clone(),
+            direct: offer.direct.clone(),
+            direct_pin: offer.direct_pin.clone(),
             device_id: device_id.clone(),
             notification_key,
         }))
     }
 
-    /// Where to dial to connect, in the order to try. An entry that is
-    /// not a Relay this build may dial is left out, as `relay_dials`
-    /// leaves it out for a pairing.
+    /// Where to dial to connect, in the order to try: the direct
+    /// addresses, then the Relays. An entry this build may not dial is
+    /// left out, as `relay_dials` leaves it out for a pairing.
     pub fn relay_dials(&self) -> Vec<RelayDial> {
-        connect_dials(&self.workstation_key, &self.relays, self.relay_admission.as_deref())
+        connect_dials(
+            &self.workstation_key,
+            &self.direct,
+            self.direct_pin.as_deref(),
+            &self.relays,
+            self.relay_admission.as_deref(),
+        )
     }
 }
 
 /// Where to dial to connect to the Workstation holding `workstation_key`,
-/// through the Relays it named at pairing, in the order to try: what
+/// through what it named at pairing, in the order to try: what
 /// `PairedWorkstation::relay_dials` answers, for a caller that keeps the
 /// Workstation its own way (the shell keeps a record, not this type).
 pub fn connect_dials(
     workstation_key: &[u8],
+    direct: &[String],
+    direct_pin: Option<&str>,
     relays: &[String],
     relay_admission: Option<&str>,
 ) -> Vec<RelayDial> {
-    let rendezvous = relay::rendezvous_id(workstation_key);
-    let token = relay_admission.unwrap_or("");
-    relays
-        .iter()
-        .filter_map(|url| RelayUrl::parse(url).ok())
-        .map(|url| RelayDial {
-            url: url.url,
-            hello: RelayHello::device(token, &rendezvous, relay::PURPOSE_CONNECT),
-        })
-        .collect()
+    crate::pairing::dials(
+        workstation_key,
+        direct,
+        direct_pin,
+        relays,
+        relay_admission,
+        relay::PURPOSE_CONNECT,
+    )
 }
 
 /// Never the notification key.
@@ -119,6 +133,7 @@ impl std::fmt::Debug for PairedWorkstation {
         f.debug_struct("PairedWorkstation")
             .field("workstation_key", &protocol::hex_encode(&self.workstation_key))
             .field("relays", &self.relays)
+            .field("direct", &self.direct)
             .field("device_id", &self.device_id)
             .finish_non_exhaustive()
     }
@@ -433,6 +448,7 @@ mod tests {
     use super::*;
     use crate::channel::testing::{unframe, unframe_all};
     use protocol::device_wire::FRAME_BUCKET;
+    use protocol::relay::RelayHello;
 
     /// The Workstation's half, written out with `snow` so the client is
     /// tested against the handshake the daemon runs and not against
@@ -917,6 +933,8 @@ mod tests {
             ],
             protocol_version: protocol::PROTOCOL_VERSION,
             relay_admission: Some("let-me-in".into()),
+            direct: Vec::new(),
+            direct_pin: None,
         }
     }
 
@@ -947,6 +965,55 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A Workstation that offered its direct listener (ADR 0009) is
+    /// dialled there first, with the pin and with no admission token --
+    /// the token is the Relay's -- and through its Relays after.
+    #[test]
+    fn a_workstation_with_a_direct_listener_is_dialled_there_first() {
+        let mut offer = offer();
+        offer.direct = vec!["wss://100.79.93.51:8445".into(), "wss://192.168.1.20:8445".into()];
+        offer.direct_pin = Some("ab".repeat(32));
+        let workstation = PairedWorkstation::from_pairing(&offer, &paired()).unwrap().unwrap();
+        assert_eq!(workstation.direct, offer.direct);
+
+        let dials = workstation.relay_dials();
+        let urls: Vec<&str> = dials.iter().map(|d| d.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "wss://100.79.93.51:8445",
+                "wss://192.168.1.20:8445",
+                "wss://relay.example/gavin",
+                "ws://127.0.0.1:9000"
+            ]
+        );
+        let rendezvous = relay::rendezvous_id(&workstation.workstation_key);
+        for direct in &dials[..2] {
+            assert_eq!(direct.pin.as_deref(), Some("ab".repeat(32).as_str()));
+            assert_eq!(direct.hello, RelayHello::device("", &rendezvous, relay::PURPOSE_CONNECT));
+        }
+        for relay in &dials[2..] {
+            assert_eq!(relay.pin, None);
+            assert_eq!(relay.hello.admission().unwrap().1, "let-me-in");
+        }
+    }
+
+    /// A direct address is trusted by its pin and nothing else, so one
+    /// with no pin, or a plain one a pin cannot be checked on, is not
+    /// dialled at all.
+    #[test]
+    fn a_direct_address_with_nothing_to_trust_it_by_is_left_out() {
+        let key = Workstation::new(0x33).keys.public.clone();
+        let direct = vec!["wss://10.0.0.4:8445".to_string(), "ws://10.0.0.5:8445".to_string()];
+        let relays = vec!["wss://relay.example".to_string()];
+        let urls = |pin: Option<&str>| -> Vec<String> {
+            connect_dials(&key, &direct, pin, &relays, None).into_iter().map(|d| d.url).collect()
+        };
+        assert_eq!(urls(None), vec!["wss://relay.example"]);
+        assert_eq!(urls(Some("not a pin")), vec!["wss://relay.example"]);
+        assert_eq!(urls(Some(&"AB".repeat(32))), vec!["wss://10.0.0.4:8445", "wss://relay.example"]);
     }
 
     #[test]

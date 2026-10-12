@@ -35,6 +35,15 @@ export default defineConfig(async () => ({
     // The scripted pairing against a real daemon runs only when asked
     // for (`scripts/pair.sh node`): it needs the daemon and the Relay built.
     include: e2e ? ["src/**/*.e2e.ts"] : ["src/**/*.{test,spec}.ts"],
+    // Compiled, not handed to Node: a test that draws the hub draws the
+    // bundle's header, and its icons are `.svelte` files. The desktop's
+    // suites find the library in their own package.json; this folder's
+    // lists only Capacitor.
+    server: { deps: { inline: [/@lucide\/svelte/] } },
+    // Vitest empties every stylesheet it is not told to process, `?raw`
+    // too: the spacing scale in phone.css is a guard's subject
+    // (surfaces/spacing.test.ts), as it is in the bundle's suites.
+    css: { include: [/\.css\?raw$/] },
   },
   clearScreen: false,
   server: {

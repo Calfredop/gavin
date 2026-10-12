@@ -1,0 +1,266 @@
+{
+  "workstation": "ws-0123456789abcdef",
+  "cases": [
+    {
+      "name": "a session waiting on the owner opens on that session",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000001",
+        "counter": 3,
+        "issued_at": 1700000000,
+        "body": {
+          "op": "notify",
+          "id": "session:s1",
+          "kind": "asking",
+          "text": "feat-x: which migration?",
+          "workspace_id": "ws",
+          "target": {
+            "type": "session",
+            "session_id": "s1"
+          }
+        }
+      },
+      "c": "AAAAAAAAAAAAAAAB4xuZB5LRMz0E9N731aWeY/jP71uMxLnGSkzYHTsoBo+MLJ3yrjHyx896bLBV2mUaNqllRCe9VRuZLjiDZa/pT+sRgn7hqJ/+wOuamxxq+TPlxlooF5lMMAeFCdoEyxPk73aNdHN4DJm795f1wYqnnYyzD8jkszprNTMneIYhUGaL56jXHkNVk1t3v1q5E5Mtdz3OTCSXXBvKjc6NmSkiTMcQXhZEXq1AIBGyCuFUC2os2PZVoOx61gIAW96gXpHbmU1mtl6LfGxGbnfOSoka8I7M1NrgDMyTYqZ1mkmSJolDKpa5vH/o40lyjYbFU2b1rtrOjmIuOPV2qg+qI6cNzlsM/bBnbZ8d+bqJDXaKG94=",
+      "opens": {
+        "counter": 3,
+        "issued_at": 1700000000,
+        "body": {
+          "op": "notify",
+          "id": "session:s1",
+          "kind": "asking",
+          "text": "feat-x: which migration?",
+          "workspace_id": "ws",
+          "target": {
+            "type": "session",
+            "session_id": "s1"
+          }
+        }
+      },
+      "link": "gavin://ws/ws-0123456789abcdef/session/s1?workspace=ws"
+    },
+    {
+      "name": "a human test opens on its card, the path escaped",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000002",
+        "counter": 4,
+        "issued_at": 1700000060,
+        "body": {
+          "op": "notify",
+          "id": "test:plans/feat x/üñí & co?#.md:0",
+          "kind": "human-test",
+          "text": "Prüfen: does the 🚀 banner fit?",
+          "workspace_id": "ws-2",
+          "target": {
+            "type": "card",
+            "path": "plans/feat x/üñí & co?#.md"
+          }
+        }
+      },
+      "c": "AAAAAAAAAAAAAAAC7kh5XlGH707GBRoK1O5v2Em1ILGj95mFjNEqCYtk/pvV4GfoMlyClL/xsxc1PXVfOAa59n10PzMEQ+se6q6Zlr1jVriJW4lhpU3x/PefP1Nh85y94+Xiy/m/JO/Dysl00Z5U3yBLDEHZvkH/iUn5zrZZ4OSoLW5y6fS0swCoAxq6qihenhqBFNlwxwImGKo3xu3JaLv/W1QFm25byIcfcFWNS0Ij2hbbf2U7Uyyidzf6UvxG+6sXSXslZJ7E2oIQP81iiS5h8vi644ZhDiwyUfZ3nsmEfLYmxABCDDFkjfSkk8+teTXGcufNSCT54KyoTWQZS/F7LWsS7wdBUdhagFz7LQAeCV6I1bK8/xhUakE=",
+      "opens": {
+        "counter": 4,
+        "issued_at": 1700000060,
+        "body": {
+          "op": "notify",
+          "id": "test:plans/feat x/üñí & co?#.md:0",
+          "kind": "human-test",
+          "text": "Prüfen: does the 🚀 banner fit?",
+          "workspace_id": "ws-2",
+          "target": {
+            "type": "card",
+            "path": "plans/feat x/üñí & co?#.md"
+          }
+        }
+      },
+      "link": "gavin://ws/ws-0123456789abcdef/card?path=plans%2Ffeat%20x%2F%C3%BC%C3%B1%C3%AD%20%26%20co%3F%23.md&workspace=ws-2"
+    },
+    {
+      "name": "an item dealt with at the desk resolves, and carries only its id",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000003",
+        "counter": 5,
+        "issued_at": 1700000120,
+        "body": {
+          "op": "resolve",
+          "id": "session:s1"
+        }
+      },
+      "c": "AAAAAAAAAAAAAAADvKLM/aasZJFqx0PCCYZNM2ot4+ZnQ6NzrEMoYfigIv4B1kUVoxnyykAXXGLF3nIMj/b8psjNIHGDa2HvZ01Rs+WrNU4NwQJAtEbONWhPmcP4rGWicfzi3KueNKvRCc0/lYTNh0DQ04Ryvr5GkRI/Af3M2LJOP5RbZVnPISpOPXAqfuFePANOmBD5HKp/jaFWCb+vOJdwx+Jic89kaNhW3KdH5bOrLl71z26CFaT2kW/AGh6KHUSYwjVHoUjcwm8JCVr+KVE+PS/pFjyWjBnUV6rwnDsOj5iuImNZebKSDrOnBZF2z2rlbo5KdVzgfe1c23DXbQJvZedoiiLl3LBymcbgvD3nGuY1EGZ1ASTowcc=",
+      "opens": {
+        "counter": 5,
+        "issued_at": 1700000120,
+        "body": {
+          "op": "resolve",
+          "id": "session:s1"
+        }
+      },
+      "link": "gavin://hub"
+    },
+    {
+      "name": "a notify with no target opens its Workstation, on its workspace",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000004",
+        "counter": 6,
+        "issued_at": 1700000180,
+        "body": {
+          "op": "notify",
+          "id": "rail:r1",
+          "kind": "rail-stopped",
+          "text": "Backend rail stopped",
+          "workspace_id": "ws"
+        }
+      },
+      "c": "AAAAAAAAAAAAAAAEVx1/m4tAONYiHELdfSr3tnznO+aB3cSQxfj89lFpACv2hP7wg8IgNtG590oClyOCRMlU0xIh+aIVOc05JszkKdSIb6968p4+2NVV8M7U77Rl+cZwRavd5bJa2DZjmK9Z2/rbWSFqQYE9zKJB1acQGJnwbb1IZLayVo8qtpDaPeNXiuGp9qSvK9HDaW54pmqc131bJQUDKVWQKcTzjNMqYXAaMY48zmjnlDvZl+ct2jMNoZc1+9Bg+R9i5deYoyJtpAJQ5e9Az6uvkKqe4/EocnsZBFk8XHoMteoR3NgkKLegeWW3cVygQxPoSr9UTbOBYpw6SplAgSVHtjf+Y0oXXrz6/n6DePVlnWpcY+/N5gQ=",
+      "opens": {
+        "counter": 6,
+        "issued_at": 1700000180,
+        "body": {
+          "op": "notify",
+          "id": "rail:r1",
+          "kind": "rail-stopped",
+          "text": "Backend rail stopped",
+          "workspace_id": "ws"
+        }
+      },
+      "link": "gavin://ws/ws-0123456789abcdef?workspace=ws"
+    },
+    {
+      "name": "a plaintext that fills its bucket exactly gets a whole bucket of padding, written as 0",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "fills_its_bucket": true,
+      "sealed_from": {
+        "nonce": "000000000000000000000005",
+        "counter": 7,
+        "issued_at": 1700000240,
+        "body": {
+          "op": "notify",
+          "id": "session:s2",
+          "kind": "asking",
+          "text": "atlas: the agent asks whether to keep the old migration or squash both into one, it has waited since before lunch.",
+          "workspace_id": "ws",
+          "target": {
+            "type": "session",
+            "session_id": "s2"
+          }
+        }
+      },
+      "c": "AAAAAAAAAAAAAAAFfFYiXyjWmudN1R/J7+ve9EyKL1BYQG+k43XubzT0f0UuXA+sG9dT5P3BB0ou24uw2H8X4oiwdtoeIX2/PYSaNR64gqKgE1b6BB8QePx0iXtRCvGTlWuHcU4XwwS4npNMx4whLhQzJGJzVxhJ2W3M7NEnlqX9P8Jby9oYCUzK1VQf0XsWFd/b+9+6++rFy4ICn+5czAN8cvRptFX705EXjFF9QKlbb3e1h7k37Ogbym7Bddl8WOvFUVYnR+u+o9iMTWkMNA/FGDs+tWO41PgCXaVx1OkU1mtM+VjTTJkV3O34gzp/dKYblqHyJtxK0j9v460O6FtXHlY6tIfE858lAtglTd5cLxqKv7oROYbtK554FN2gY73qri3N3V1t000jtpoKtrkHH/NLaUUsUpPiwqHyeF9jiUO6fgieAeS0/BUMqBfTyy5zEURZg2/fgg2ufBUwALe2jIlVM6h5SP94qL6DnOpHOP/+4oWfEj+Kd2MUGOKzaIrxyIkpMQ39hVtOOmryZ8Tj4lv4CnlPO1AKWd/Kj+x4idmx6bGYTlDwmZPXK1pJRf4UPtbf+FRdjPTkgSGhFRvgy2q4Kx5vFcPf01QMvNWSsSejhd0/KDtwr04ec4YwyqmGdCvTSctVZ1KWqgwFvqY375jElW9oNB24Dq1SR9zoeFO32B0NxTx3I25iWBLefceW4XoBr7fyAjkK",
+      "opens": {
+        "counter": 7,
+        "issued_at": 1700000240,
+        "body": {
+          "op": "notify",
+          "id": "session:s2",
+          "kind": "asking",
+          "text": "atlas: the agent asks whether to keep the old migration or squash both into one, it has waited since before lunch.",
+          "workspace_id": "ws",
+          "target": {
+            "type": "session",
+            "session_id": "s2"
+          }
+        }
+      },
+      "link": "gavin://ws/ws-0123456789abcdef/session/s2?workspace=ws"
+    },
+    {
+      "name": "a field this build does not know is passed over",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000006",
+        "counter": 8,
+        "issued_at": 1700000300,
+        "json": "{\"op\":\"notify\",\"id\":\"session:s3\",\"kind\":\"failed\",\"text\":\"api: the agent failed\",\"workspace_id\":\"ws\",\"target\":{\"type\":\"session\",\"session_id\":\"s3\"},\"urgency\":\"high\"}"
+      },
+      "c": "AAAAAAAAAAAAAAAG79DnDvF5U2tQUNfSSQysk9ScdBspH7g3Sk1++vl4QvU+y97t9jByxi0hjNajB+0uScRWC5JYfN1nzEtu7A5Eh2JnZrFVwgMz85EinT2LYYkAQ2mdDWmnWX18f/2x9GnuxnscNO0tTCkgHgl53rEYDE0H99PpIisfKnaGXvSRBx00QjESXgNqrrteTFml9aCCL13vbpvBAYzYndXn3xo1YdhEcoFmAcQ+LRki3FF/11mxe+rZjlmtFvd0nxCyp5Yh8YAm7tzKUjudjD+eUOJsdxmlsFT3fGo36ezgka3hOrjzDMvirlO/pEkmimC9bLMRwPwBYfUbe5NSk8IbuFtEoPODJDahJ828oztwdAZd9Mw=",
+      "opens": {
+        "counter": 8,
+        "issued_at": 1700000300,
+        "body": {
+          "op": "notify",
+          "id": "session:s3",
+          "kind": "failed",
+          "text": "api: the agent failed",
+          "workspace_id": "ws",
+          "target": {
+            "type": "session",
+            "session_id": "s3"
+          }
+        }
+      },
+      "link": "gavin://ws/ws-0123456789abcdef/session/s3?workspace=ws"
+    },
+    {
+      "name": "another Workstation's key does not open it",
+      "key": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "c": "AAAAAAAAAAAAAAAB4xuZB5LRMz0E9N731aWeY/jP71uMxLnGSkzYHTsoBo+MLJ3yrjHyx896bLBV2mUaNqllRCe9VRuZLjiDZa/pT+sRgn7hqJ/+wOuamxxq+TPlxlooF5lMMAeFCdoEyxPk73aNdHN4DJm795f1wYqnnYyzD8jkszprNTMneIYhUGaL56jXHkNVk1t3v1q5E5Mtdz3OTCSXXBvKjc6NmSkiTMcQXhZEXq1AIBGyCuFUC2os2PZVoOx61gIAW96gXpHbmU1mtl6LfGxGbnfOSoka8I7M1NrgDMyTYqZ1mkmSJolDKpa5vH/o40lyjYbFU2b1rtrOjmIuOPV2qg+qI6cNzlsM/bBnbZ8d+bqJDXaKG94=",
+      "refuse": "decrypt",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "a ciphertext changed in transit does not open",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "c": "AAAAAAAAAAAAAAAB4xuZB5LRMz0F9N731aWeY/jP71uMxLnGSkzYHTsoBo+MLJ3yrjHyx896bLBV2mUaNqllRCe9VRuZLjiDZa/pT+sRgn7hqJ/+wOuamxxq+TPlxlooF5lMMAeFCdoEyxPk73aNdHN4DJm795f1wYqnnYyzD8jkszprNTMneIYhUGaL56jXHkNVk1t3v1q5E5Mtdz3OTCSXXBvKjc6NmSkiTMcQXhZEXq1AIBGyCuFUC2os2PZVoOx61gIAW96gXpHbmU1mtl6LfGxGbnfOSoka8I7M1NrgDMyTYqZ1mkmSJolDKpa5vH/o40lyjYbFU2b1rtrOjmIuOPV2qg+qI6cNzlsM/bBnbZ8d+bqJDXaKG94=",
+      "refuse": "decrypt",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "a payload version this build does not read is refused",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "000000000000000000000009",
+        "counter": 9,
+        "issued_at": 1700000360,
+        "version": 2,
+        "json": "{\"op\":\"notify\",\"id\":\"session:s1\"}"
+      },
+      "c": "AAAAAAAAAAAAAAAJwhOzRqrRLy2yStbBSANx6SOPzJamAzXkwrg/vBN7jfnCi+koUkV6/Y3VmmpepUg/+mfNMNSCXK6x2cZJBFg8npUjJl2U+Or05txk9vMHTQH6T65/I6PrDIc/rYaihte6cVYybzC6MRzXmwQFEz7l9fWe6z+StgPYzabBEkTBc8/e+YYJ5vF788Dk5z6g44bPqPzjeml4ueGt/bP1xMfPJ0vsHKqFgqHlAzxfch2Kie9vhgwopyU5symsJucg0gAXF4nM8MLf9IUuWozIO7JudXAW2EhYWdMuH1rW6YnaKmUAVTaTUhKxqopZ4KT5rjfUR8vcHbaDuKXEwp2BBCdMUmkACh2082Fw/RBGCS8HRCM=",
+      "refuse": "version",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "a plaintext too short for its header is refused",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "00000000000000000000000a",
+        "plaintext_hex": "01000000000000000a"
+      },
+      "c": "AAAAAAAAAAAAAAAKI8uJ/P3XOiLLAsxQAKN9HPar7Lp+2pOH0w==",
+      "refuse": "truncated",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "a ciphertext no longer than its nonce is refused",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "c": "AAAAAAAAAAAAAAAA",
+      "refuse": "truncated",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "padding that does not say its own length is refused",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "00000000000000000000000c",
+        "plaintext_hex": "01000000000000000a00000000000000647b7d050505"
+      },
+      "c": "AAAAAAAAAAAAAAAMLQqqRbeA6b/gfH+VGN9dFOCpHgxE/OyICCc7NoaBca0yCNdTncM=",
+      "refuse": "malformed",
+      "link": "gavin://hub"
+    },
+    {
+      "name": "JSON that is not a notification is refused",
+      "key": "0700000000000000000000000000000000000000000000000000000000000009",
+      "sealed_from": {
+        "nonce": "00000000000000000000000d",
+        "counter": 10,
+        "issued_at": 1700000420,
+        "json": "{\"op\":\"notify\"}"
+      },
+      "c": "AAAAAAAAAAAAAAANL4kq9NnXZgCrDUQ+oZO+kDl3uIk8nC+P7W5RuW50eMHv7lqTtLoTw68VEEdJl2KCJMea0cm0UMBS5YJTogZM0hiOL7n4GvE1cWRP+3P6pZz1YRAsznktThXMBHhGBQvAqzemCTCKIGuHRFGAwDAZdE8I28mZ8ga8afhEDyyfrt62MzlVMI/XoO32FykL0PjHCmJE234lMtgAb3nb6CS6qksktMHUj92rxpdEFpBY+BULfWM8b9jKccr9QAFuAqO21WDxlo6pX45apbhJOVQpF2AQUI4MDA5+oxxwhBr4dxcE0Mz4d+ZurODNNVAJa/OU7IK949C1XX7O3WHfBp5fCHnrSIRiszU0Bzn/exBrz8A=",
+      "refuse": "malformed",
+      "link": "gavin://hub"
+    }
+  ]
+}

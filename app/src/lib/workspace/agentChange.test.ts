@@ -11,20 +11,20 @@ describe("agentChange steps", () => {
     expect(AGENT_CHANGE_STEPS.map((s) => s.id)).toEqual([
       "complexity",
       "integration",
-      "superpowers",
+      "agentSkills",
     ]);
   });
 
   it("commits only when leaving the complexity step", () => {
     expect(agentChangeCommitsOnAdvance("complexity")).toBe(true);
     expect(agentChangeCommitsOnAdvance("integration")).toBe(false);
-    expect(agentChangeCommitsOnAdvance("superpowers")).toBe(false);
+    expect(agentChangeCommitsOnAdvance("agentSkills")).toBe(false);
   });
 
-  it("advances through the list and ends after Superpowers", () => {
+  it("advances through the list and ends after agent skills", () => {
     expect(nextAgentChangeStep("complexity")).toBe("integration");
-    expect(nextAgentChangeStep("integration")).toBe("superpowers");
-    expect(nextAgentChangeStep("superpowers")).toBeNull();
+    expect(nextAgentChangeStep("integration")).toBe("agentSkills");
+    expect(nextAgentChangeStep("agentSkills")).toBeNull();
   });
 
   it("treats the same profile as a re-run of setup, not a switch", () => {

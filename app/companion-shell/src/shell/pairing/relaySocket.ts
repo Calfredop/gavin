@@ -31,8 +31,29 @@ export interface RelaySocket {
   close(): void;
 }
 
-/// Opens a socket to `url`, resolving once it is open.
-export type OpenRelaySocket = (url: string, timeoutMs: number) => Promise<RelaySocket>;
+/// Opens a socket to `url`, resolving once it is open. `pin`, for a
+/// Workstation's direct listener (ADR 0009), is the SHA-256 (hex) of the
+/// one certificate to trust there; null or absent for a Relay.
+export type OpenRelaySocket = (url: string, timeoutMs: number, pin?: string | null) => Promise<RelaySocket>;
+
+/// How long a Workstation's direct address (ADR 0009) has to open and say
+/// `ready`. Short, because it was written down at pairing: a LAN address
+/// the Mac has since given up, or a network the phone has left, answers
+/// nothing, and every second spent on it is a second before the Relay is
+/// tried. A listener that is there answers at once -- it matches nothing.
+export const DIRECT_DIAL_MS = 4_000;
+
+/// How long a dial may take, given the caller's budget for a Relay.
+export function dialTimeout(pin: string | null | undefined, relayMs: number): number {
+  return pin ? Math.min(relayMs, DIRECT_DIAL_MS) : relayMs;
+}
+
+/// Has the platform accept `pin`'s certificate -- and only it -- at
+/// `url`'s host and port, for the socket about to be opened. The webview's
+/// own WebSocket cannot be told which certificate to trust and refuses a
+/// self-signed one; the shell's native side can be. Rejects when it
+/// cannot, and then nothing is dialled.
+export type TrustPinned = (url: string, pin: string) => Promise<void>;
 
 /// What the shell needs of a WebSocket: the browser's, or Node's for the
 /// scripted pairing.
@@ -48,7 +69,27 @@ export interface WebSocketLike {
 
 export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
-export function webSocketOpener(Socket: WebSocketConstructor): OpenRelaySocket {
+/// The opener over `Socket`. A dial that carries a pin goes through
+/// `trustPinned` first; with none given, it is refused as unreachable, and
+/// the caller moves on to the next dial -- the Relay.
+export function webSocketOpener(Socket: WebSocketConstructor, trustPinned?: TrustPinned): OpenRelaySocket {
+  const opening = openSocket(Socket);
+  return async (url, timeoutMs, pin) => {
+    if (pin) {
+      if (!trustPinned) {
+        throw new RelayLegError("unreachable", `this Companion cannot yet trust the Workstation's own certificate at ${url}`);
+      }
+      try {
+        await trustPinned(url, pin);
+      } catch (e) {
+        throw new RelayLegError("unreachable", `could not trust the Workstation's certificate at ${url}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return opening(url, timeoutMs);
+  };
+}
+
+function openSocket(Socket: WebSocketConstructor): (url: string, timeoutMs: number) => Promise<RelaySocket> {
   return (url, timeoutMs) =>
     new Promise((resolve, reject) => {
       let ws: WebSocketLike;

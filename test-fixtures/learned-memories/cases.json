@@ -1,0 +1,125 @@
+{
+  "parse": [
+    {
+      "name": "an empty section",
+      "section": "### Learned\n",
+      "memories": []
+    },
+    {
+      "name": "a bare fact",
+      "section": "### Learned\n\n- Never pkill gavin-daemon.\n",
+      "memories": [{ "fact": "Never pkill gavin-daemon.", "topics": [], "why": null }]
+    },
+    {
+      "name": "a fact with topics and a why",
+      "section": "### Learned\n\n- Never pkill gavin-daemon. (topics: daemon, pty)\n  Why: every other session loses its PTYs.\n",
+      "memories": [
+        { "fact": "Never pkill gavin-daemon.", "topics": ["daemon", "pty"], "why": "every other session loses its PTYs." }
+      ]
+    },
+    {
+      "name": "several memories, legacy and tagged side by side",
+      "section": "### Learned\n\n- daemon shared; never pkill it.\n  Why: other session loses its PTYs.\n- `cargo test -p daemon` flaky in parallel. (topics: tests)\n- Line endings are LF. (topics: git, Windows , git)\n",
+      "memories": [
+        { "fact": "daemon shared; never pkill it.", "topics": [], "why": "other session loses its PTYs." },
+        { "fact": "`cargo test -p daemon` flaky in parallel.", "topics": ["tests"], "why": null },
+        { "fact": "Line endings are LF.", "topics": ["git", "windows"], "why": null }
+      ]
+    },
+    {
+      "name": "a legacy multi-line why joins into one",
+      "section": "### Learned\n\n- A fact.\n  Why: because the first half\n  and the second half.\n",
+      "memories": [{ "fact": "A fact.", "topics": [], "why": "because the first half and the second half." }]
+    },
+    {
+      "name": "a hand-wrapped fact joins into one",
+      "section": "### Learned\n\n- A fact that the human\n  wrapped by hand.\n",
+      "memories": [{ "fact": "A fact that the human wrapped by hand.", "topics": [], "why": null }]
+    },
+    {
+      "name": "star bullets and blank lines between memories",
+      "section": "### Learned\n\n* One.\n\n* Two. (topics: b)\n",
+      "memories": [
+        { "fact": "One.", "topics": [], "why": null },
+        { "fact": "Two.", "topics": ["b"], "why": null }
+      ]
+    },
+    {
+      "name": "prose under the heading is not a memory",
+      "section": "### Learned\n\nFacts adopted from memory cards.\n\n- One.\n",
+      "memories": [{ "fact": "One.", "topics": [], "why": null }]
+    },
+    {
+      "name": "parentheses that are not a topics suffix stay in the fact",
+      "section": "### Learned\n\n- Use `git ls-files --eol` (not `file`) to find CRLF.\n",
+      "memories": [{ "fact": "Use `git ls-files --eol` (not `file`) to find CRLF.", "topics": [], "why": null }]
+    },
+    {
+      "name": "an empty topics suffix is no topics",
+      "section": "### Learned\n\n- One. (topics: )\n",
+      "memories": [{ "fact": "One.", "topics": [], "why": null }]
+    }
+  ],
+  "bullet": [
+    {
+      "name": "a fact alone",
+      "body": "Never pkill gavin-daemon.\n",
+      "topics": null,
+      "bullet": "- Never pkill gavin-daemon."
+    },
+    {
+      "name": "a fact, its why and its topics",
+      "body": "Never pkill gavin-daemon.\n\nWhy: every other session loses its PTYs.\n",
+      "topics": "daemon, PTY",
+      "bullet": "- Never pkill gavin-daemon. (topics: daemon, pty)\n  Why: every other session loses its PTYs."
+    },
+    {
+      "name": "a body written as a bullet",
+      "body": "- Never pkill gavin-daemon.\n",
+      "topics": "",
+      "bullet": "- Never pkill gavin-daemon."
+    },
+    {
+      "name": "a topics list in brackets",
+      "body": "One.\n",
+      "topics": "[a, b]",
+      "bullet": "- One. (topics: a, b)"
+    },
+    {
+      "name": "no body",
+      "body": "\n   \n",
+      "topics": null,
+      "refuse": "empty"
+    },
+    {
+      "name": "a why and no fact",
+      "body": "Why: because.\n",
+      "topics": null,
+      "refuse": "no-fact"
+    },
+    {
+      "name": "two facts",
+      "body": "Never pkill gavin-daemon.\nLine endings are LF.\n",
+      "topics": null,
+      "refuse": "multi-fact"
+    },
+    {
+      "name": "a fact after the why",
+      "body": "One.\nWhy: because.\nTwo.\n",
+      "topics": null,
+      "refuse": "multi-fact"
+    },
+    {
+      "name": "two whys",
+      "body": "One.\nWhy: because.\nWhy: and because.\n",
+      "topics": null,
+      "refuse": "multi-fact"
+    },
+    {
+      "name": "a fact too long to be one fact",
+      "body": "This fact runs on and on, well past anything a single sentence-sized memory should hold, because it tries to explain the whole history of the daemon, why it is shared, which sockets it binds, where its token lives, how the release and dev builds split their files, and what to do when a protocol bump lands while sessions are open.\n",
+      "topics": null,
+      "refuse": "too-long"
+    }
+  ]
+}

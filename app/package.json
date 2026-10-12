@@ -12,8 +12,8 @@
     "tauri": "tauri",
     "bundle": "tauri build --config src-tauri/tauri.bundle.conf.json -- --locked",
     "test": "vitest run",
-    "companion:dev": "svelte-kit sync && cd companion && vite dev",
-    "companion:build": "svelte-kit sync && cd companion && vite build",
+    "companion:dev": "node companion/check-install.mjs && svelte-kit sync && cd companion && vite dev",
+    "companion:build": "node companion/check-install.mjs && svelte-kit sync && cd companion && vite build",
     "companion:preview": "cd companion && vite preview",
     "companion:check": "svelte-kit sync && cd companion && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "companion:test": "svelte-kit sync && cd companion && svelte-kit sync && vitest run",
@@ -48,7 +48,7 @@
     "@xterm/addon-fit": "0.12.0-beta.301",
     "@xterm/addon-web-links": "0.13.0-beta.301",
     "@xterm/xterm": "6.1.0-beta.304",
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.16",
     "marked": "^18.0.9"
   },
   "devDependencies": {

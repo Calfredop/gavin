@@ -25,12 +25,25 @@ pub mod companion_bundle;
 pub mod device_wire;
 pub mod relay;
 pub mod remote_commands;
+pub mod session_owner;
+
+// Where agent CLIs install themselves. Pure -- the home directory is
+// handed in rather than read -- so it needs no `os` feature either.
+pub mod bin_dirs;
+
+// The pinned `@playwright/mcp` and where its headless shell lives. Pure
+// for the same reason.
+pub mod playwright;
 
 pub use attention::{
-    AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
+    AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
+    ATTENTION_API_VERSION,
 };
 pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
+pub use session_owner::{
+    LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, SESSION_OWNERS_MIN_VERSION,
+};
 
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
@@ -57,6 +70,103 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v69 is the direct listener (ADR 0009, `companion-direct-listener`): a
+/// Device reaches its Workstation over the same network or tailnet with
+/// no Relay, through a TLS WebSocket the daemon answers itself. Two new
+/// request TYPES -- `SetDirectAccess` (the switch) and `GetDirectState`
+/// (where the listener stands) -- gated by `min_version_for`, and one
+/// push, `DirectStateChanged`, sent only to an app whose `Hello` speaks 69
+/// (`DIRECT_ACCESS_MIN_VERSION`). `Response::Devices` widens with
+/// `direct_access_enabled`, defaulted, which an older daemon never sends
+/// and which reads as off. The pairing QR gains `direct` and `directPin`,
+/// which an older Device ignores. No request widened, so
+/// `MIN_COMPATIBLE_VERSION` stands; the Settings switch owes
+/// `FEATURE_MIN_VERSION.directAccess` for the copy against an older
+/// daemon, which would answer the new type `Unsupported`.
+///
+/// v68 is session ownership (`2026-10-09-session-ownership.md`, ADR 0008):
+/// a session takes input from one Owner at a time, a Device or the desk,
+/// and the daemon refuses a Device's input into a session another holds.
+/// Two new request TYPES -- `SetSessionOwner` (take over, hand over,
+/// release) and `ListSessionOwners` (the read-back, with the Devices a
+/// session can be handed to) -- gated by `min_version_for`, and one push,
+/// `SessionOwnerChanged`, sent only to an app whose `Hello` speaks 68
+/// (`SESSION_OWNERS_MIN_VERSION`). No payload widened, so
+/// `MIN_COMPATIBLE_VERSION` stands. A Device reaches both through
+/// `InvokeDesktop`, as commands the daemon answers itself
+/// (`RemoteAllowance::Daemon`): forwarded, the desk would apply them as
+/// the desk. An older daemon locks nothing, and the surfaces that would
+/// show the lock say why it is missing (`FEATURE_MIN_VERSION.sessionOwnership`).
+///
+/// v67 is Companion notifications reaching a phone (`companion-ios-push-is-
+/// not-wired-end-to-end.md`). A Device hands this Workstation the send
+/// permission it minted for it at the Push gateway with
+/// `SetThisDeviceSendPermission`, which names no Device: the permission is
+/// stored on the row of the Device whose connection it arrived on, as
+/// `RemoveThisDevice` removes only that row. One new TYPE, gated by
+/// `min_version_for`; the shell, which sends it, reads an older daemon's
+/// refusal as a Workstation too old to notify. Two replies widen with it:
+/// `Response::Devices.push_gateway_url` and `DeviceInfo.notifies`, which
+/// the desk's Settings reads behind `FEATURE_MIN_VERSION.pushGateway` --
+/// an older daemon sends neither, and "no gateway, notifies nobody" is a
+/// claim it cannot back.
+///
+/// v66 is Playwright's browser installed on an ssh host by the host's own
+/// daemon (`PlaywrightMachineStatus`, `InstallPlaywrightBrowser`), which
+/// the desktop cannot do from its side of the link. Two new request
+/// TYPES, so `min_version_for` is the gate for each, and the setup step
+/// falls back to naming the command for the human against an older host.
+///
+/// v65 is a browser per agent session (`playwright-browser-broker`). The
+/// daemon runs a CDP proxy that `gavin-mcp playwright` points the pinned
+/// `@playwright/mcp` at (`PlaywrightEndpoint`), launches the session's
+/// headless shell on the MCP's first connection, and screencasts the tab
+/// the agent is acting on to whoever asks (`WatchBrowser`, answered with
+/// `BrowserFrame`/`BrowserGone` pushes on that connection), with
+/// `BrowserChanged` to every app that speaks 65 (`BROWSER_MIN_VERSION`)
+/// and `ListBrowsers` to read it back. Three new request TYPES, so
+/// `min_version_for` is the gate for each; no existing payload widened.
+/// The pane and the chip owe `FEATURE_MIN_VERSION.playwrightBrowser`.
+///
+/// v63 is the desk seeing where each Device is and what it is doing
+/// (`companion-16`). The daemon reads a Device's presence off the commands
+/// it has the desktop run -- the workspace it last named, the session it is
+/// typing into, the sessions it started -- and carries it on
+/// `DeviceInfo::presence`, pushing `DevicePresenceChanged` when it changes.
+/// Like v62's push, a new `Response` variant, so it goes only to an app
+/// whose `Hello` said it speaks 63 or more (`DEVICE_PRESENCE_MIN_VERSION`);
+/// the field is defaulted and skipped when absent. No new request. The
+/// Devices panel owes `FEATURE_MIN_VERSION.devicePresence`.
+///
+/// v62 is the desk hearing of a Device that was refused
+/// (`companion-34`). `DeviceInfo` gains `last_refusal`, and the
+/// `DeviceRefusalChanged` push says when one changes. The push is a new
+/// `Response` variant, which an app older than v62 cannot parse, so the
+/// daemon sends it only to an app connection whose `Hello` said it speaks
+/// 62 or more (`DEVICE_REFUSALS_MIN_VERSION`). The read needs no such
+/// care: `last_refusal` is a defaulted field an older app ignores. The
+/// Devices panel owes `FEATURE_MIN_VERSION.deviceRefusals`.
+///
+/// v61 is the desk knowing whether the daemon reached its Relay
+/// (`companion-32`). It adds `GetRelayState`, answered by
+/// `Response::RelayState`, and the `RelayStateChanged` push that follows
+/// every change -- one new TYPE and one push, no widened payload, so
+/// `min_version_for` is the whole wire gate. The Settings section owes
+/// `FEATURE_MIN_VERSION.relayState`, for the copy against an older daemon.
+/// The state carries the words `DialError` and `RefusalReason` already
+/// have and never the admission token.
+///
+/// v61-v63 were built at 56-58 on `companion/wire` and moved past
+/// main's 56-60 when the two met.
+///
+/// v60 is adopted-memory retrieval (`feat-vectorized-memory.md`): the
+/// daemon keeps a local vector index over each workspace's `### Learned`
+/// section and answers searches against it. Three new TYPES --
+/// `GetMemoryIndex`, `EnsureMemoryIndex`, `SearchMemories` -- so
+/// `min_version_for` is their whole wire gate; the app still owes
+/// `FEATURE_MIN_VERSION.memoryIndex` for the COPY, so the setup step says
+/// "restart gavin" rather than "the memory model is missing".
 ///
 /// v59 keeps an exited session's screen until `KillSession`, so a
 /// kept-open shell tool tab can still `Snapshot` what the run printed
@@ -748,7 +858,21 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 59;
+pub const PROTOCOL_VERSION: u32 = 69;
+
+/// The first version that pushes `BrowserChanged`. The daemon compares an
+/// app's `Hello` version with this before it writes the push (v65).
+pub const BROWSER_MIN_VERSION: u32 = 65;
+
+/// The first version that pushes `DevicePresenceChanged` and carries
+/// `DeviceInfo::presence`. The daemon compares an app's `Hello` version
+/// with this before it writes the push (v63).
+pub const DEVICE_PRESENCE_MIN_VERSION: u32 = 63;
+
+/// The first version that pushes `DeviceRefusalChanged` and carries
+/// `DeviceInfo::last_refusal`. The daemon compares an app's `Hello`
+/// version with this before it writes the push (v62).
+pub const DEVICE_REFUSALS_MIN_VERSION: u32 = 62;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -778,6 +902,56 @@ pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 /// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
 /// the app, and the host's `create_agent_session` behind it).
 pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
+
+/// Where the daemon's dial to the Relay stands (v61).
+///
+/// `Failed.why` is a sentence the dial already has -- `DialError`'s or
+/// `RefusalReason`'s Display -- and never carries the admission token: the
+/// token is presented in the first frame and appears in no error.
+/// `Connected.since` is wall-clock epoch seconds, like `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RelayState {
+    /// Remote access is off, or there is no Relay URL to dial.
+    NotWanted,
+    /// The dial is being made, for the first time or after the settings
+    /// changed.
+    Dialling,
+    /// Registered with the Relay and holding the connection.
+    Connected { since: i64 },
+    /// The last dial failed or the held connection was lost, and another
+    /// is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where the daemon's direct listener stands (v69, ADR 0009).
+///
+/// `Listening.addresses` are the URLs the next pairing QR would carry --
+/// what a Device is told to dial -- and are worked out again every few
+/// seconds, since a LAN address can change under a listener that stays
+/// bound. `Failed.why` is a sentence, like `RelayState::Failed`'s.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DirectState {
+    /// Remote access or direct connection is off: no port is open.
+    NotWanted,
+    /// Bound, and answering Devices on `port`.
+    Listening { port: u16, addresses: Vec<String> },
+    /// The port could not be bound, and another try is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The first version that has a direct listener: `SetDirectAccess`,
+/// `GetDirectState`, the `DirectStateChanged` push, and the pairing QR's
+/// `direct` and `directPin`. The daemon compares an app's `Hello` version
+/// with this before it writes the push.
+pub const DIRECT_ACCESS_MIN_VERSION: u32 = 69;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -974,6 +1148,21 @@ pub enum Request {
         id: String,
         patterns: Vec<String>,
     },
+    /// The agent profile's word that this session's OSC 133 markers are not
+    /// to be believed -- its last marker is `C` (Working) even at a prompt,
+    /// so arming OSC-133-only detection on one strands the session in
+    /// `working` forever. Per SESSION, supplied by the caller at spawn,
+    /// exactly like `SetFailurePatterns` -- the flag belongs to the agent
+    /// PROFILE (`agent_setup.rs`'s `AGENT_PROFILES`) and the daemon hosts
+    /// whatever it is told to. One-way: the daemon never re-trusts a
+    /// session it was told to distrust. Under distrust every OSC 133 marker
+    /// is dropped before it can touch status, the quiet-timer heuristic
+    /// stays the authority, and the bare-BEL attention signal is
+    /// untouched. A daemon that is never sent this trusts OSC 133 exactly
+    /// as it always did.
+    DistrustOsc133 {
+        id: String,
+    },
     GetBoard {
         workspace_id: String,
     },
@@ -1046,6 +1235,35 @@ pub enum Request {
     },
     ReadPrd {
         root_path: String,
+    },
+    /// Where a workspace's adopted-memory index stands (v60): whether the
+    /// embedding model is on disk, how many memories `### Learned` holds
+    /// and whether the index matches them. Reads files and the index;
+    /// embeds nothing and downloads nothing.
+    GetMemoryIndex {
+        root_path: String,
+    },
+    /// Bring a workspace's memory index up to `### Learned` (v60). With
+    /// `download`, a missing model is fetched first -- on the daemon's own
+    /// thread, so the answer comes back at once saying `downloading` and
+    /// the caller polls `GetMemoryIndex`. Without it, a missing model is
+    /// an error: Adopt asks this way, and must not start a download the
+    /// human declined at setup.
+    EnsureMemoryIndex {
+        root_path: String,
+        download: bool,
+    },
+    /// Adopted memories nearest `query` in meaning (v60), gavin-mcp's
+    /// `gavin_search_memories`. Heals the index from `### Learned` first
+    /// when the two disagree. `topics` narrows to memories carrying any
+    /// of them; `limit` defaults to 5.
+    SearchMemories {
+        root_path: String,
+        query: String,
+        #[serde(default)]
+        topics: Vec<String>,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     /// A file under a watched root, for a desktop driving this daemon from
     /// another machine (ssh workspaces, v39,
@@ -1644,6 +1862,10 @@ pub enum Request {
     /// settings `SetRemoteAccess` wrote. See `Response::Devices` for why
     /// the settings ride along.
     ListDevices,
+    /// Where the daemon's dial to the Relay stands (v61). Answered with
+    /// `Response::RelayState`; every change after is pushed as
+    /// `RelayStateChanged`.
+    GetRelayState,
     /// Revoke one device: mark the row and drop every live connection
     /// carrying its id (§3, "Revocation").
     RevokeDevice {
@@ -1682,6 +1904,22 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_admission: Option<String>,
     },
+    /// Whether this daemon listens for Devices directly (v69, ADR 0009),
+    /// beside or instead of the Relay. Takes effect only while remote
+    /// access is on; the listener binds within moments of the switch and
+    /// lets go of the port, and of every connection it carried, when
+    /// either switch goes off.
+    ///
+    /// A request of its own rather than a field on `SetRemoteAccess`:
+    /// an older daemon would parse the widened request and drop the
+    /// field, and `min_version_for` could not see it.
+    SetDirectAccess {
+        enabled: bool,
+    },
+    /// Where the direct listener stands (v69). Answered with
+    /// `Response::DirectState`; every change after is pushed as
+    /// `DirectStateChanged`.
+    GetDirectState,
 
     /// A Device removes itself from this Workstation (v53): its row is
     /// deleted and every connection it holds is dropped.
@@ -1694,6 +1932,47 @@ pub enum Request {
     /// the one exception the spec makes, and it only ever takes trust
     /// away.
     RemoveThisDevice,
+
+    /// A Device hands this Workstation the send permission it minted for
+    /// it at the Push gateway (v67), or takes it back with an empty one.
+    ///
+    /// It names no Device, for `RemoveThisDevice`'s reason: whose row
+    /// holds the permission is decided by the connection it arrived on,
+    /// so a Device sets its own and nobody else's, and a connection that
+    /// is no Device's is refused. `SetDeviceSendPermission` is the desk's
+    /// way to the same column.
+    SetThisDeviceSendPermission {
+        permission: String,
+    },
+
+    /// Makes `to` the owner of session `id` (v68): a Device's id, or
+    /// `None` for the desk. Take over is `to` naming the caller (or `None`
+    /// from the desk), Hand over names another Device, Release is `None`
+    /// from the owner. Answered with `SessionOwnership`, or an `Error`
+    /// carrying an `OwnerRefusal` (`session_owner`).
+    ///
+    /// `expect` is the owner the caller saw when it decided, `None` for
+    /// the desk: if it has changed since, the answer is `Changed`, which
+    /// is how two Devices racing a Take over get exactly one winner.
+    /// `force` passes the `Busy` question once the caller has asked its
+    /// human. A Device sends it as the `set_session_owner` desktop
+    /// command, which the daemon answers itself with the Device's
+    /// identity; the desk sends it on its own connection, as the desk.
+    SetSessionOwner {
+        id: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        expect: Option<String>,
+        #[serde(default)]
+        force: bool,
+    },
+
+    /// Every session a Device owns, the Devices a session can be handed
+    /// to, and which Device is asking (v68). Answered with
+    /// `SessionOwners`. The read-back for a window that reloaded, or a
+    /// Device that connected, after the pushes went by.
+    ListSessionOwners,
 
     /// A Device asks the daemon to invoke a desktop Tauri command (v54).
     ///
@@ -1883,6 +2162,58 @@ pub enum Request {
     HeadroomReach {
         session_id: String,
     },
+
+    /// Where this session's Playwright MCP points its `--cdp-endpoint`
+    /// (v65), asked by `gavin-mcp playwright` before it execs the pinned
+    /// `@playwright/mcp`. Answered with `Response::PlaywrightEndpoint`: a
+    /// stable websocket on the daemon's CDP proxy, secret per session, and
+    /// the folder the MCP writes its snapshot files to.
+    ///
+    /// Nothing launches here. The session's headless shell starts when
+    /// the MCP first connects to the endpoint -- its first `browser_*`
+    /// call -- and is launched again on the next connection after it
+    /// dies. Refused with the reason when no headless shell is installed.
+    /// See `docs/superpowers/specs/2026-10-08-playwright-integration-design.md`.
+    PlaywrightEndpoint {
+        session_id: String,
+    },
+    /// Streams the session's browser as `Response::BrowserFrame` pushes
+    /// on THIS connection (v65), until the session ends
+    /// (`Response::BrowserGone`) or the connection closes -- there is no
+    /// unwatch. Intercepted in the connection loop like
+    /// `WatchGitWorktree`: nothing is replied on success, and a session
+    /// the daemon does not host is answered `Error`.
+    ///
+    /// A session whose browser has not launched yet is watched all the
+    /// same; the first frame arrives once it does. `size` picks the
+    /// stream (`desk` 1280x800, `phone` 640x400) and `max_fps` is clamped
+    /// to that size's cap.
+    WatchBrowser {
+        session_id: String,
+        size: BrowserViewSize,
+        max_fps: u32,
+    },
+    /// Every session whose browser is running now (v65), answered with
+    /// `Response::Browsers`: the read-back for `BrowserChanged`, so a
+    /// reload does not hide a live browser until its next navigation.
+    ListBrowsers,
+    /// Playwright on the machine this daemon runs on (v66): whether `npx`
+    /// resolves for it, whether the pinned headless shell is installed
+    /// where its own environment puts Playwright's cache, and how its
+    /// install is going. Answered with `Response::PlaywrightMachine`.
+    ///
+    /// The ssh workspace's half of the Playwright setup step: an agent
+    /// there runs on the host, so the host's daemon is the one that can
+    /// answer -- the desktop cannot look a program up there, or read the
+    /// environment that may have moved the cache.
+    PlaywrightMachineStatus,
+    /// Starts the pinned headless shell's install on this daemon's machine
+    /// (v66), and answers at once, like `InstallHeadroom`, with the status
+    /// marked installing: the download can take minutes, and the reply
+    /// must not hold the one command connection an ssh host has. Poll
+    /// `PlaywrightMachineStatus` until it is not installing. One at a time;
+    /// asked again while one runs, it answers with that one.
+    InstallPlaywrightBrowser,
 
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
@@ -2131,6 +2462,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         // blow the line.
         Request::RunGitCapped { .. } => 58,
 
+        // Adopted-memory retrieval (v60). Three new TYPES, so this match
+        // is their whole wire gate; FEATURE_MIN_VERSION.memoryIndex is
+        // the app's copy for the setup step, not a second gate.
+        Request::GetMemoryIndex { .. }
+        | Request::EnsureMemoryIndex { .. }
+        | Request::SearchMemories { .. } => 60,
+
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
         // and the other half is the one that bites: the same version
@@ -2216,6 +2554,19 @@ pub fn min_version_for(req: &Request) -> u32 {
         // and the handler refuses a connection that carries no Device.
         Request::RemoveThisDevice => 53,
 
+        // A Device handing over its send permission (v67). Sent by a
+        // Device over the Device wire and by nothing in the desktop app;
+        // the shell reads an older daemon's refusal as a Workstation too
+        // old to notify. The gate that matters besides is the role, as
+        // for `RemoveThisDevice`.
+        Request::SetThisDeviceSendPermission { .. } => 67,
+
+        // Session ownership (v68). Two new TYPES, so this match is the
+        // whole wire gate: an older daemon is never asked, and locks
+        // nothing. FEATURE_MIN_VERSION.sessionOwnership is what makes the
+        // surfaces say so rather than draw a lock that is not there.
+        Request::SetSessionOwner { .. } | Request::ListSessionOwners => 68,
+
         // Forwarding gated desktop commands (v54). Five new TYPES: three
         // a Device sends, two the desktop's forwarding connection sends.
         // companion-13 is the surface that opens the forwarding
@@ -2238,6 +2589,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // payload's own `COMPANION_BUNDLE_API_VERSION` is the compat gate
         // for fields, so no FEATURE_MIN_VERSION entry is owed.
         Request::GetCompanionBundle { .. } | Request::BundleResult { .. } => 57,
+        // Whether the daemon reached its Relay (v61 / companion-32). One
+        // new TYPE, so this arm is its whole wire gate; the Settings
+        // section owes FEATURE_MIN_VERSION.relayState for the copy.
+        Request::GetRelayState => 61,
+        // The direct listener (v69, ADR 0009). Two new TYPES, so these
+        // arms are the wire gate; the Settings switch owes
+        // FEATURE_MIN_VERSION.directAccess for its copy.
+        Request::SetDirectAccess { .. } | Request::GetDirectState => 69,
 
         Request::Shutdown => 12,
 
@@ -2344,6 +2703,25 @@ pub fn min_version_for(req: &Request) -> u32 {
         // LinkCardSession payloads, which this match structurally cannot
         // see.
         Request::SetFailurePatterns { .. } => 21,
+
+        // OSC 133 distrust (v64). A new request TYPE, so this match is the
+        // whole gate: a daemon older than 64 never receives it and keeps
+        // trusting OSC 133 for that session -- which for kimi means the old
+        // stuck-in-working behaviour, the honest degraded mode.
+        Request::DistrustOsc133 { .. } => 64,
+
+        // A browser per agent session (v65). Three new request TYPES, so
+        // this match is the whole gate: gavin-mcp's shim is told the
+        // daemon is too old rather than handed an endpoint nobody serves,
+        // and an app never asks an older daemon for frames it cannot send.
+        Request::PlaywrightEndpoint { .. }
+        | Request::WatchBrowser { .. }
+        | Request::ListBrowsers => 65,
+
+        // Playwright's browser on this daemon's machine (v66). New request
+        // TYPES: against an older host the lane refuses them, and the
+        // Playwright step names the install for the human instead.
+        Request::PlaywrightMachineStatus | Request::InstallPlaywrightBrowser => 66,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -2906,7 +3284,66 @@ pub enum Response {
         relay_url: Option<String>,
         #[serde(default)]
         relay_admission_set: bool,
+        /// Where this daemon posts Companion notifications (v67), or
+        /// `None` when it posts none. Not a secret: a gateway's URL
+        /// authenticates nobody.
+        #[serde(default)]
+        push_gateway_url: Option<String>,
+        /// Whether direct connection is switched on (v69). Absent from an
+        /// older daemon's reply, which reads as off -- and that daemon
+        /// listens for nobody.
+        #[serde(default)]
+        direct_access_enabled: bool,
     },
+    /// The answer to `GetRelayState` (v61).
+    RelayState { state: RelayState },
+    /// The answer to `GetDirectState` (v69).
+    DirectState { state: DirectState },
+    /// Push (v62): a paired Device was refused a connection, and this is
+    /// its new last refusal. Not cleared by the Device connecting later:
+    /// a copied key that failed its proof and then the real phone
+    /// connecting is exactly the order that must not hide the first.
+    /// Sent only to an `app` connection that reads
+    /// pushes and whose `Hello` said it speaks
+    /// `DEVICE_REFUSALS_MIN_VERSION` or more: an older app cannot parse a
+    /// variant it has never heard of.
+    DeviceRefusalChanged { device_id: String, refusal: DeviceRefusal },
+    /// Push (v63): a Device's presence changed, and this is the whole of
+    /// it -- never a delta, so a desk that missed one cannot drift. Sent
+    /// only to an `app` connection that reads pushes and whose `Hello`
+    /// said it speaks `DEVICE_PRESENCE_MIN_VERSION` or more, for the
+    /// reason `DeviceRefusalChanged` is.
+    ///
+    /// A session appearing in `presence.started` is how the desk learns a
+    /// Device started it, and places it as a tab labelled with the Device.
+    DevicePresenceChanged { device_id: String, presence: DevicePresence },
+    /// `SetSessionOwner`'s answer (v68): the session's ownership after
+    /// the change, or as it already stood when nothing changed.
+    SessionOwnership { ownership: SessionOwnership },
+    /// `ListSessionOwners`'s answer (v68). `owners` holds only sessions a
+    /// Device owns -- a session not listed is the desk's. `devices` are
+    /// the Devices with a live connection, and `you` the asking Device
+    /// (`None` at the desk).
+    SessionOwners {
+        owners: Vec<SessionOwnership>,
+        devices: Vec<LiveDevice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        you: Option<String>,
+    },
+    /// Push (v68): a session's ownership changed, whole. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` said it speaks
+    /// `SESSION_OWNERS_MIN_VERSION` or more; the desk offers it on to the
+    /// Devices that listen (`session-owner-changed`).
+    SessionOwnerChanged { ownership: SessionOwnership },
+    /// Push to every live `app` connection (v61): the dial's state
+    /// changed. Only to a connection that reads pushes, like the device
+    /// pushes -- see `ConnectionKind`.
+    RelayStateChanged { state: RelayState },
+    /// Push (v69): the direct listener's state changed. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` said it
+    /// speaks `DIRECT_ACCESS_MIN_VERSION` or more, for the reason
+    /// `DeviceRefusalChanged` is.
+    DirectStateChanged { state: DirectState },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -2961,10 +3398,15 @@ pub enum Response {
     /// `version` is the attention API version of this answer. New optional
     /// fields may be added later; an older reader ignores ones it has
     /// never heard of.
+    ///
+    /// `reason` says why, beside `DesktopAppNotRunning`, and is absent
+    /// beside `Ready` -- and from a daemon older than it.
     Attention {
         state: WorkstationState,
         items: Vec<AttentionItem>,
         version: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<NotRunningReason>,
     },
 
     /// Push to the desktop's forwarding connection (v55): build the
@@ -2992,6 +3434,10 @@ pub enum Response {
         offset: u64,
         #[serde(default)]
         data: String,
+        /// Why nothing can serve it, beside `DesktopAppNotRunning`; as on
+        /// `Attention`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<NotRunningReason>,
     },
 
     /// Push to the desktop's forwarding connection (v56): answer with
@@ -3008,6 +3454,12 @@ pub enum Response {
     /// whatever the request did, so a caller never has to ask twice to
     /// see what its own press changed.
     Headroom { status: HeadroomStatus },
+    /// The answer to `GetMemoryIndex` and `EnsureMemoryIndex` (v60): the
+    /// state AFTER the request, like `Headroom`.
+    MemoryIndex { status: MemoryIndexStatus },
+    /// The answer to `SearchMemories` (v60), best first. Empty for a
+    /// workspace with nothing adopted -- not an error.
+    MemoryHits { hits: Vec<MemoryHit> },
     /// The answer to `HeadroomSavings` (v49), oldest first.
     HeadroomSavings { runs: Vec<RunSavings> },
     /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
@@ -3019,6 +3471,111 @@ pub enum Response {
     /// app as written, and the app reads a word it does not know as
     /// `unknown`.
     HeadroomReach { session_id: String, reach: String },
+
+    /// The answer to `PlaywrightEndpoint` (v65).
+    PlaywrightEndpoint { endpoint: String, output_dir: String },
+    /// Push on a `WatchBrowser` connection (v65): one screencast frame of
+    /// the tab the session's agent is acting on. `data` is the JPEG,
+    /// base64, exactly as Chromium sent it; `seq` rises per frame across
+    /// every browser this session launches, so a watcher that sees it go
+    /// backwards is reading two streams. `url` and `title` are that tab's
+    /// at the moment of the frame.
+    BrowserFrame {
+        session_id: String,
+        seq: u64,
+        data: String,
+        width: u32,
+        height: u32,
+        url: String,
+        title: String,
+    },
+    /// Push on a `WatchBrowser` connection (v65): the session ended, and
+    /// with it the watch. The last thing written for that session.
+    BrowserGone { session_id: String },
+    /// Push to every live `app` connection whose `Hello` said it speaks
+    /// `BROWSER_MIN_VERSION` or more (v65): a session's browser launched,
+    /// its agent's tab navigated or changed, or (`None`) it stopped. Whole,
+    /// never a delta. This is what lights a tab's browser chip.
+    BrowserChanged {
+        session_id: String,
+        #[serde(default)]
+        browser: Option<BrowserInfo>,
+    },
+    /// The answer to `ListBrowsers` (v65).
+    Browsers { browsers: Vec<LiveBrowser> },
+    /// The answer to `PlaywrightMachineStatus` and
+    /// `InstallPlaywrightBrowser` (v66): the state AFTER the request.
+    PlaywrightMachine { status: PlaywrightMachineStatus },
+}
+
+/// Playwright on one daemon's machine, as that daemon sees it (v66).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightMachineStatus {
+    /// Whether `npx` resolves for this daemon, on its PATH or in the
+    /// well-known install directories (`bin_dirs`).
+    pub npx: bool,
+    /// Whether the pinned revision's `INSTALLATION_COMPLETE` is there.
+    pub browser_installed: bool,
+    /// Where that marker is, as this machine spells it.
+    pub marker: String,
+    /// An install is running now.
+    pub installing: bool,
+    /// The last install this daemon ran, once it has finished.
+    #[serde(default)]
+    pub last_install: Option<PlaywrightInstallRun>,
+}
+
+/// One finished browser install: its exit code (`-1` when it could not be
+/// started, was killed at its deadline, or died to a signal) and the end
+/// of what it printed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaywrightInstallRun {
+    pub code: i32,
+    pub output: String,
+}
+
+/// Which screencast a `WatchBrowser` asks for. Two sizes, each its own
+/// CDP screencast, so the phone's stream is small at the source instead
+/// of being shrunk after it has crossed the machine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserViewSize {
+    /// 1280x800, JPEG quality 60: the desktop pane.
+    Desk,
+    /// 640x400, JPEG quality 50: the Companion, through the desktop.
+    Phone,
+}
+
+impl BrowserViewSize {
+    /// The highest rate a watcher of this size may ask for. The defaults
+    /// the spec measured are these caps: 8 for a local desk (4 is what the
+    /// desk asks across ssh), 2 for a phone.
+    pub fn max_fps_cap(self) -> u32 {
+        match self {
+            BrowserViewSize::Desk => 8,
+            BrowserViewSize::Phone => 2,
+        }
+    }
+}
+
+/// What a session's browser is showing: the tab its agent is acting on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserInfo {
+    pub url: String,
+    pub title: String,
+    /// Open tabs, popups included.
+    pub tabs: u32,
+}
+
+/// One running session browser, as `ListBrowsers` reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveBrowser {
+    pub session_id: String,
+    pub browser: BrowserInfo,
 }
 
 /// Headroom on this machine, as the daemon that has to execute it sees
@@ -3027,8 +3584,41 @@ pub enum Response {
 /// `state` is one of `verified`, `too-old`, `absent` and `unavailable`,
 /// kept as a string like `SessionSummary::status` so a word written by a
 /// newer daemon reaches the app as written. There is no "asserted": the
-/// human's word is enough for Superpowers because the agent runs it, and
+/// human's word is enough for agent skills because the agent runs them, and
 /// gavin has to execute Headroom -- a word does not name a file.
+/// One workspace's adopted-memory index (v60).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryIndexStatus {
+    /// The embedding model: `absent`, `downloading`, `ready` or `failed`.
+    /// A string, like `HeadroomStatus::state`, so a word a newer daemon
+    /// writes reaches the app as written.
+    pub model: String,
+    /// What went wrong, for `failed`.
+    pub model_error: Option<String>,
+    /// Memories `### Learned` holds, across the workspace's instructions
+    /// files, once each.
+    pub learned: u32,
+    /// Of those, how many the index holds a vector for.
+    pub indexed: u32,
+    /// The index holds exactly `### Learned`: nothing missing, nothing
+    /// left over from a memory since edited or removed.
+    pub in_sync: bool,
+}
+
+/// One adopted memory a search returned (v60).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryHit {
+    pub fact: String,
+    pub topics: Vec<String>,
+    pub why: Option<String>,
+    /// The instructions file it was adopted into, root-relative.
+    pub source: String,
+    /// Cosine similarity to the query, -1..1.
+    pub score: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadroomStatus {
@@ -3146,6 +3736,112 @@ pub struct DeviceInfo {
     /// Unseen for ninety days: shown greyed with "re-pair to use", and
     /// refused until it is paired again (§3, "How many, for how long").
     pub stale: bool,
+    /// The last time this daemon refused this Device a connection (v62),
+    /// or `None` if it has not since it started. A later successful
+    /// connection does not clear it. In memory on the daemon: a fact about the recent
+    /// past, not the trust store's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refusal: Option<DeviceRefusal>,
+    /// Where this Device is and what it is doing (v63), or `None` if it
+    /// has had the desktop run nothing since this daemon started. In
+    /// memory on the daemon, like `last_refusal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<DevicePresence>,
+    /// Whether this Workstation holds a send permission from this Device
+    /// (v67): whether the desk's notifications can reach it. Absent from
+    /// an older daemon's reply, which reads as `false` and cannot be
+    /// trusted to mean it (`FEATURE_MIN_VERSION.pushGateway`).
+    #[serde(default)]
+    pub notifies: bool,
+}
+
+/// Where a Device is on this Workstation and what it is doing there (v63),
+/// as the daemon read it off the commands the Device had the desktop run.
+///
+/// Only commands the desktop ran without error count: a refused name, a
+/// desktop that is not running and a command that failed tell the desk
+/// nothing about where the Device is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePresence {
+    /// The desk's id of the workspace the Device last named in a command
+    /// (`workspaceId`, the argument most workspace commands take).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The session the Device last sent input to, and when. Whether it is
+    /// typing NOW is the desk's reading of `at` (see `DeviceTyping`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<DeviceTyping>,
+    /// Sessions the Device started, oldest first, the most recent few.
+    #[serde(default)]
+    pub started: Vec<DeviceStartedSession>,
+}
+
+/// A Device's input into one session (v63).
+///
+/// `at` is the latest keystroke the daemon has recorded, and the daemon
+/// pushes it again at most every `DEVICE_TYPING_REPUSH_SECS` while the
+/// Device keeps typing into the same session -- so a desk that reads
+/// "typing" as "`at` within a few seconds of now" has to allow for that
+/// cadence (the app's `TYPING_FRESH_MS`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTyping {
+    pub session_id: String,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
+}
+
+/// How often the daemon re-pushes a Device's presence while it keeps
+/// typing into the same session (v63).
+pub const DEVICE_TYPING_REPUSH_SECS: i64 = 2;
+
+/// A session a Device started (v63): the id the desktop's `create_session`
+/// answered, and where it was asked to start it. The desk places it as a
+/// tab in the workspace `workspace_id` names, else the one `workspace_root`
+/// names, or failing that the one `cwd` is under.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceStartedSession {
+    pub session_id: String,
+    /// The desk's id of the workspace the Device started it in, when it
+    /// said (`workspaceId` on `create_session`). The only thing a session
+    /// started in a workspace with no folder can be placed by: it has no
+    /// root to name and opens in the home folder. Absent from a daemon that
+    /// predates it, and the desk then goes by root and cwd -- so neither
+    /// end needs a version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Started as that workspace's own agent, the one the desk's Home tab
+    /// holds, rather than as one more tab. Only ever a request: the desk
+    /// takes it when the workspace has no agent of its own, and otherwise
+    /// places the session as a tab. Absent from a daemon that predates it,
+    /// which an older desk never reads -- so neither end needs a version.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workspace_agent: bool,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
+}
+
+/// One refused connection from a paired Device, as the desk shows it (v62).
+///
+/// A refusal of a key the store has never seen is not one of these: it
+/// names no Device, and stays in the daemon's log.
+///
+/// `reason` is what the Device was told. `ConnectRefusal::Unlock` on a row
+/// that is otherwise good is the one that matters: the handshake proved
+/// someone holds the Device's Noise key and the signature proved it is not
+/// the phone, which is what a copied key looks like (ADR 0001).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRefusal {
+    pub reason: device_wire::ConnectRefusal,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
 }
 
 /// One Companion notification event the desk asks the daemon to seal and
@@ -3221,6 +3917,23 @@ pub struct PairingQr {
     /// has lapsed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_admission: Option<String>,
+    /// Where this daemon's direct listener answers (v69, ADR 0009):
+    /// `wss://` URLs, in the order to try them, BEFORE the Relays in
+    /// `rendezvous`. Empty, and omitted, unless direct connection is on
+    /// and the listener is bound.
+    ///
+    /// Apart from `rendezvous` rather than mixed into it, because an
+    /// entry here is trusted on another footing: by `direct_pin`, not by
+    /// a certificate authority. A Device older than v69 never sees one,
+    /// and dials its Relays as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct: Vec<String>,
+    /// The SHA-256 of the direct listener's TLS certificate, lowercase
+    /// hex (`relay::certificate_pin`). A Device trusts that certificate
+    /// on the `direct` addresses and nowhere else. Not a secret: the
+    /// certificate is sent to anyone who opens a connection to the port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_pin: Option<String>,
 }
 
 impl PairingQr {
@@ -5126,6 +5839,8 @@ mod tests {
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
             relay_admission: None,
+            direct: Vec::new(),
+            direct_pin: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -5168,6 +5883,8 @@ mod tests {
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
             relay_admission: Some("let-me-in".into()),
+            direct: Vec::new(),
+            direct_pin: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -5185,6 +5902,72 @@ mod tests {
         assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
     }
 
+    /// The two fields the direct listener added (v69, ADR 0009): where it
+    /// answers, and the hash of the certificate it answers with. Neither
+    /// is a credential -- the certificate is handed to anyone who opens
+    /// the port -- and both are omitted when direct connection is off,
+    /// so a QR with no listener is the QR it was before.
+    #[test]
+    fn the_qr_carries_the_direct_listener_when_there_is_one() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: Vec::new(),
+            protocol_version: PROTOCOL_VERSION,
+            relay_admission: None,
+            direct: vec!["wss://100.79.93.51:8445".into(), "wss://192.168.1.20:8445".into()],
+            direct_pin: Some("cc".repeat(32)),
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "direct", "directPin", "protocolVersion", "rendezvous", "secret"]
+        );
+        assert_eq!(v["direct"][0], "wss://100.79.93.51:8445");
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+
+        // A QR drawn by a daemon older than v69 has neither, and still
+        // parses: the Device then has only its Relays.
+        let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":["wss://r.example"],"protocolVersion":68}"#;
+        let parsed = PairingQr::parse(old).unwrap();
+        assert!(parsed.direct.is_empty());
+        assert_eq!(parsed.direct_pin, None);
+    }
+
+    #[test]
+    fn the_direct_listener_requests_are_gated_at_69_and_its_state_round_trips() {
+        assert_eq!(min_version_for(&Request::SetDirectAccess { enabled: true }), 69);
+        assert_eq!(min_version_for(&Request::GetDirectState), 69);
+        assert_eq!(DIRECT_ACCESS_MIN_VERSION, 69);
+        assert!(DIRECT_ACCESS_MIN_VERSION <= PROTOCOL_VERSION);
+        assert_eq!(
+            serde_json::to_string(&Request::SetDirectAccess { enabled: false }).unwrap(),
+            r#"{"type":"SetDirectAccess","enabled":false}"#
+        );
+
+        let listening =
+            DirectState::Listening { port: 8445, addresses: vec!["wss://10.0.0.4:8445".into()] };
+        let v = serde_json::to_value(&listening).unwrap();
+        assert_eq!(v["state"], "listening");
+        assert_eq!(v["port"], 8445);
+        assert_eq!(serde_json::from_value::<DirectState>(v).unwrap(), listening);
+        assert_eq!(
+            serde_json::to_value(DirectState::NotWanted).unwrap(),
+            serde_json::json!({ "state": "not_wanted" })
+        );
+        let newer: DirectState = serde_json::from_str(r#"{"state":"paused"}"#).unwrap();
+        assert_eq!(newer, DirectState::Unknown);
+
+        // An older daemon's `Devices` has no switch, and reads as off.
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices { direct_access_enabled, .. } => assert!(!direct_access_enabled),
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     /// A Device deleting its own row: it names no Device, because the
     /// connection it arrives on already is one.
     #[test]
@@ -5196,6 +5979,37 @@ mod tests {
             serde_json::from_str::<Request>(r#"{"type":"RemoveThisDevice"}"#).unwrap(),
             Request::RemoveThisDevice
         ));
+    }
+
+    /// A Device handing over its send permission names only the
+    /// permission: the connection it arrives on says whose it is. The
+    /// shell writes this JSON by hand (`src/shell/push/handover.ts`).
+    #[test]
+    fn set_this_device_send_permission_names_nobody_and_is_gated_at_67() {
+        let req = Request::SetThisDeviceSendPermission { permission: "v1.a.b".into() };
+        let json = r#"{"type":"SetThisDeviceSendPermission","permission":"v1.a.b"}"#;
+        assert_eq!(serde_json::to_string(&req).unwrap(), json);
+        assert_eq!(min_version_for(&req), 67);
+        assert!(matches!(
+            serde_json::from_str::<Request>(json).unwrap(),
+            Request::SetThisDeviceSendPermission { permission } if permission == "v1.a.b"
+        ));
+    }
+
+    /// A v66 daemon's `Devices` carries neither v67 field: no gateway URL,
+    /// and no Device that notifies.
+    #[test]
+    fn an_older_devices_reply_reads_as_no_gateway_and_nobody_notified() {
+        let older = r#"{"type":"Devices","devices":[{"deviceId":"d1","name":"Phone","role":"remote",
+            "createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}],
+            "remote_access_enabled":true,"relay_url":null,"relay_admission_set":false}"#;
+        match serde_json::from_str::<Response>(older).unwrap() {
+            Response::Devices { devices, push_gateway_url, .. } => {
+                assert_eq!(push_gateway_url, None);
+                assert!(!devices[0].notifies);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
     }
 
     /// Forwarding requests are gated at 54 and round-trip on the wire.
@@ -5269,13 +6083,28 @@ mod tests {
             "priority": "high",
         });
         match serde_json::from_value::<Response>(json).unwrap() {
-            Response::Attention { state, items, version } => {
+            Response::Attention { state, items, version, reason } => {
                 assert_eq!(state, WorkstationState::Ready);
                 assert!(items.is_empty());
                 assert_eq!(version, 1);
+                assert_eq!(reason, None);
             }
             other => panic!("expected Attention, got {other:?}"),
         }
+
+        // Why the desktop could not answer rides beside the state, and
+        // only there: a Ready answer says nothing of it.
+        let absent = Response::Attention {
+            state: WorkstationState::DesktopAppNotRunning,
+            items: vec![],
+            version: 1,
+            reason: Some(NotRunningReason::NotAnswering),
+        };
+        let v = serde_json::to_value(&absent).unwrap();
+        assert_eq!(v["state"], "desktop-app-not-running");
+        assert_eq!(v["reason"], "not-answering");
+        let ready = Response::Attention { state: WorkstationState::Ready, items: vec![], version: 1, reason: None };
+        assert!(serde_json::to_value(&ready).unwrap().get("reason").is_none());
 
         let forward = Response::ForwardAttention {
             call_id: 3,
@@ -5337,13 +6166,15 @@ mod tests {
             }
             other => panic!("expected CompanionBundle, got {other:?}"),
         }
-        // With no desktop: a state, and nothing else.
+        // With no desktop: a state, and nothing else -- the reason too,
+        // from a daemon that says one.
         let json = serde_json::json!({ "type": "CompanionBundle", "version": 1, "state": "desktop-app-not-running" });
         match serde_json::from_value::<Response>(json).unwrap() {
-            Response::CompanionBundle { state, manifest, data, .. } => {
+            Response::CompanionBundle { state, manifest, data, reason, .. } => {
                 assert_eq!(state, WorkstationState::DesktopAppNotRunning);
                 assert_eq!(manifest, None);
                 assert_eq!(data, "");
+                assert_eq!(reason, None);
             }
             other => panic!("expected CompanionBundle, got {other:?}"),
         }
@@ -5368,6 +6199,18 @@ mod tests {
     /// must read that as "leave the token alone" -- so the absence has to
     /// survive the parse as `None`, and a request that names none has to
     /// write the bytes an older daemon has always seen.
+    #[test]
+    fn the_relay_state_has_one_wire_shape_and_a_newer_state_reads_as_unknown() {
+        let connected = serde_json::to_value(RelayState::Connected { since: 7 }).unwrap();
+        assert_eq!(connected, serde_json::json!({"state": "connected", "since": 7}));
+        let failed = RelayState::Failed { why: "no".into() };
+        let back: RelayState = serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+        assert_eq!(back, failed);
+        let newer: RelayState = serde_json::from_str(r#"{"state":"asleep"}"#).unwrap();
+        assert_eq!(newer, RelayState::Unknown);
+        assert_eq!(min_version_for(&Request::GetRelayState), 61);
+    }
+
     #[test]
     fn a_set_remote_access_with_no_token_is_what_an_older_app_sends() {
         let old = r#"{"type":"SetRemoteAccess","enabled":true,"relay_url":"wss://relay.example"}"#;
@@ -5477,6 +6320,9 @@ mod tests {
             last_seen_at: 1_770_000_500,
             revoked_at: None,
             stale: false,
+            last_refusal: None,
+            presence: None,
+            notifies: false,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["deviceId"], "dev-1");
@@ -5486,6 +6332,80 @@ mod tests {
         // The static public key is NOT on the wire, and that is a rule
         // rather than an omission -- see DeviceInfo's doc comment.
         assert!(v.get("publicKey").is_none());
+    }
+
+    /// v62: a row from an older daemon has no `lastRefusal`, and a row
+    /// with none says nothing rather than `null`, so an older app's parse
+    /// of a newer daemon's list is byte-for-byte what it was.
+    #[test]
+    fn device_info_carries_a_refusal_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.last_refusal, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("lastRefusal").is_none());
+
+        let refused = DeviceInfo {
+            last_refusal: Some(DeviceRefusal {
+                reason: device_wire::ConnectRefusal::Unlock,
+                at: 1_770_000_900,
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&refused).unwrap();
+        assert_eq!(v["lastRefusal"]["reason"], "unlock");
+        assert_eq!(v["lastRefusal"]["at"], 1_770_000_900);
+    }
+
+    /// v63: a row from an older daemon has no `presence`, and a Device
+    /// that has done nothing says nothing -- the older app's parse is
+    /// unchanged. A presence crosses in the camelCase the desk reads.
+    #[test]
+    fn device_info_carries_presence_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.presence, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("presence").is_none());
+
+        let present = DeviceInfo {
+            presence: Some(DevicePresence {
+                workspace_id: Some("w1".into()),
+                typing: Some(DeviceTyping { session_id: "s1".into(), at: 1_770_000_950 }),
+                started: vec![DeviceStartedSession {
+                    session_id: "s2".into(),
+                    workspace_id: None,
+                    workspace_root: Some("/work/app".into()),
+                    cwd: None,
+                    workspace_agent: false,
+                    at: 1_770_000_900,
+                }],
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&present).unwrap();
+        assert_eq!(v["presence"]["workspaceId"], "w1");
+        assert_eq!(v["presence"]["typing"]["sessionId"], "s1");
+        assert_eq!(v["presence"]["typing"]["at"], 1_770_000_950);
+        assert_eq!(v["presence"]["started"][0]["sessionId"], "s2");
+        assert_eq!(v["presence"]["started"][0]["workspaceRoot"], "/work/app");
+        assert!(v["presence"]["started"][0].get("cwd").is_none());
+        // Only a workspace agent says so; a plain start says nothing.
+        assert!(v["presence"]["started"][0].get("workspaceAgent").is_none());
+        // Nor does a start that named no workspace, which is every start
+        // an older daemon records.
+        assert!(v["presence"]["started"][0].get("workspaceId").is_none());
+        let named: DeviceStartedSession =
+            serde_json::from_str(r#"{"sessionId":"s4","workspaceId":"w9","at":1}"#).unwrap();
+        assert_eq!(named.workspace_id.as_deref(), Some("w9"));
+        assert_eq!(serde_json::to_value(&named).unwrap()["workspaceId"], "w9");
+        let agent: DeviceStartedSession =
+            serde_json::from_str(r#"{"sessionId":"s3","workspaceAgent":true,"at":1}"#).unwrap();
+        assert!(agent.workspace_agent);
+        assert_eq!(serde_json::to_value(&agent).unwrap()["workspaceAgent"], true);
+
+        // An empty presence from a newer daemon that trims its fields
+        // still parses.
+        let bare: DevicePresence = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, DevicePresence::default());
     }
 
     /// The env-carrying run is a SEPARATE request from `RunGit`, not a
@@ -6957,7 +7877,43 @@ mod tests {
         // under MAX_LINE_BYTES. One new TYPE.
         // v59: exited sessions keep their screen until KillSession --
         // behaviour only, no new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 59);
+        // v60: GetMemoryIndex + EnsureMemoryIndex + SearchMemories --
+        // adopted-memory retrieval. Three new TYPES.
+        // v61: GetRelayState -- one new TYPE (plus the RelayState reply
+        // and RelayStateChanged push).
+        // v62: no new request. DeviceInfo.last_refusal and the
+        // DeviceRefusalChanged push, which is gated by the app's Hello.
+        // v63: no new request. DeviceInfo.presence and the
+        // DevicePresenceChanged push, gated the same way.
+        // v64: Request::DistrustOsc133 -- the agent profile's word that a
+        // session's OSC 133 markers lie (kimi's last marker is always C,
+        // even at a prompt), so the daemon drops every marker for that
+        // session and the quiet-timer heuristic stays the authority. A new
+        // request TYPE, so min_version_for is the whole gate and no
+        // daemonCompat.ts entry is owed: an older daemon simply never
+        // receives it.
+        // v65: Request::PlaywrightEndpoint / WatchBrowser / ListBrowsers
+        // and the BrowserFrame/BrowserGone/BrowserChanged/Browsers
+        // responses -- a headless browser per agent session, screencast
+        // to the desk. New request TYPES, so min_version_for gates each;
+        // BrowserChanged goes only to apps whose Hello speaks 65, and the
+        // pane owes daemonCompat.ts's FEATURE_MIN_VERSION.playwrightBrowser.
+        // v66: Request::PlaywrightMachineStatus / InstallPlaywrightBrowser
+        // and Response::PlaywrightMachine -- the pinned headless shell
+        // checked and installed by an ssh host's own daemon. New request
+        // TYPES; the only sender is the app's Playwright step, which reads
+        // the gate's refusal as "an older host" and names the command.
+        // v67: Request::SetThisDeviceSendPermission -- a Device handing
+        // over its Push gateway permission. One new TYPE.
+        // `Devices.push_gateway_url` and `DeviceInfo.notifies` widen
+        // replies, behind FEATURE_MIN_VERSION.pushGateway.
+        // v68: SetSessionOwner + ListSessionOwners and the
+        // SessionOwnerChanged push -- session ownership. Two new TYPES.
+        // v69: SetDirectAccess + GetDirectState and the DirectStateChanged
+        // push -- the direct listener (ADR 0009). Two new TYPES;
+        // `Devices.direct_access_enabled` widens a reply, behind
+        // FEATURE_MIN_VERSION.directAccess.
+        assert_eq!(PROTOCOL_VERSION, 69);
     }
 
     #[test]
@@ -7277,6 +8233,12 @@ mod tests {
             Request::SetQueuedInputs { id: "s".into(), queued_ids: vec!["q1".into()] },
             Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
             Request::SetFailurePatterns { id: "s".into(), patterns: vec!["API Error:".into()] },
+            Request::DistrustOsc133 { id: "s".into() },
+            Request::PlaywrightEndpoint { session_id: "s".into() },
+            Request::WatchBrowser { session_id: "s".into(), size: BrowserViewSize::Desk, max_fps: 8 },
+            Request::ListBrowsers,
+            Request::PlaywrightMachineStatus,
+            Request::InstallPlaywrightBrowser,
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
             Request::CreateGavinContext { parent_folder: "p".into() },
@@ -7468,6 +8430,11 @@ mod tests {
             Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
             // v53: a Device removing itself.
             Request::RemoveThisDevice,
+            // v67: a Device handing over its send permission.
+            Request::SetThisDeviceSendPermission { permission: "v1.p.s".into() },
+            // v68: session ownership.
+            Request::SetSessionOwner { id: "s".into(), to: Some("d1".into()), expect: None, force: false },
+            Request::ListSessionOwners,
             // v54: forwarding gated desktop commands.
             Request::InvokeDesktop {
                 command: "get_board".into(),
@@ -7504,6 +8471,11 @@ mod tests {
                 offset: 0,
                 data: String::new(),
             },
+            // v61: whether the daemon reached its Relay.
+            Request::GetRelayState,
+            // v69: the direct listener.
+            Request::SetDirectAccess { enabled: true },
+            Request::GetDirectState,
             // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
@@ -7568,7 +8540,8 @@ mod tests {
     /// (SetHeadroomWorkspaces), v49=4 (the three Companion notification
     /// requests and HeadroomSavings), v50=1 (HeadroomReach), v53=1
     /// (RemoveThisDevice), v54=5 (forwarding desktop commands), v55=2 (the
-    /// attention request), plus Unknown.
+    /// attention request), v67=1 (SetThisDeviceSendPermission), v68=2
+    /// (session ownership), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -7650,6 +8623,24 @@ mod tests {
         expected.insert(57, 2);
         // RunGitCapped -- host stdout cap so a GitRun reply fits the line.
         expected.insert(58, 1);
+        // GetRelayState -- whether the daemon reached its Relay.
+        expected.insert(61, 1);
+        // DistrustOsc133 -- the profile's word that this session's OSC 133
+        // markers lie.
+        expected.insert(64, 1);
+        // PlaywrightEndpoint, WatchBrowser, ListBrowsers -- a browser per
+        // agent session.
+        expected.insert(65, 3);
+        // PlaywrightMachineStatus, InstallPlaywrightBrowser -- the browser
+        // installed on an ssh host by its own daemon.
+        expected.insert(66, 2);
+        // SetThisDeviceSendPermission -- a Device handing over its send
+        // permission.
+        expected.insert(67, 1);
+        // SetSessionOwner, ListSessionOwners -- session ownership.
+        expected.insert(68, 2);
+        // SetDirectAccess, GetDirectState -- the direct listener.
+        expected.insert(69, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

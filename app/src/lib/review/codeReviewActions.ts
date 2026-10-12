@@ -20,6 +20,7 @@
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import {
+  promptExtrasFor,
   resolvedAgentFor,
   armFailureDetection,
   handleAgentSessionSpawned,
@@ -30,7 +31,7 @@ import {
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cards/cardRunActions";
-import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
+import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
   composeReviewPrompt,
@@ -270,7 +271,11 @@ async function launchReview(request: {
   // No conversation id, for the same reason a develop run has none: a
   // review binds to nothing, so there is no record for one to outlive
   // and nothing that could ever resume it.
-  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    withPromptExtras(prompt, promptExtrasFor(request.workspaceId, agent.profileId))
+  );
   if (command === null) {
     return reviewBlocker({
       promptArgs: agent.promptArgs,
@@ -291,7 +296,7 @@ async function launchReview(request: {
     return `Couldn't start the review: ${e instanceof Error ? e.message : e}`;
   }
   pending.set(null);
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
   handleAgentSessionSpawned(request.workspaceId, sessionId);
   // A review writes NO status and binds to NO card -- deliberately, and
   // for the reasons develop does: the card is not being worked, and a

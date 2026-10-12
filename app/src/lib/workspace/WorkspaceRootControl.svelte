@@ -10,7 +10,7 @@
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
   import { applyInitTracking } from "$lib/workspace/workspaceOpen";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { agentDefaultsStore, agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
   import { foreignMcpServersHash, integrationNote, runIntegration } from "$lib/workspace/mcpServerTrust";
@@ -58,7 +58,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspace.id),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
 

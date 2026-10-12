@@ -6,16 +6,20 @@
 // the whole of it.
 import table from "../../../../../crates/protocol/src/remote_commands.rs?raw";
 
-const ENTRY = /\("([a-z_]+)",\s*RemoteAllowance::(Allowed|Refused)\)/g;
+const ENTRY = /\("([a-z_]+)",\s*RemoteAllowance::(Allowed|Refused|Daemon)\)/g;
 
-const ALLOWANCES: ReadonlyMap<string, "Allowed" | "Refused"> = new Map(
-  [...table.matchAll(ENTRY)].map((m) => [m[1], m[2] as "Allowed" | "Refused"])
+type Allowance = "Allowed" | "Refused" | "Daemon";
+
+const ALLOWANCES: ReadonlyMap<string, Allowance> = new Map(
+  [...table.matchAll(ENTRY)].map((m) => [m[1], m[2] as Allowance])
 );
 
-/// Whether the table has the command at all, and lets a Device call it.
+/// Whether the table has the command at all, and lets a Device call it --
+/// forwarded to the desk, or answered by the daemon itself (`Daemon`).
 /// A command it does not name is refused, as the daemon refuses it.
 export function allowedToRemoteRole(cmd: string): boolean {
-  return ALLOWANCES.get(cmd) === "Allowed";
+  const allowance = ALLOWANCES.get(cmd);
+  return allowance === "Allowed" || allowance === "Daemon";
 }
 
 /// How many commands the table names: a parse that found none would

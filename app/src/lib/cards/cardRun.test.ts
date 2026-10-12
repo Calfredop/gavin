@@ -10,12 +10,14 @@ import {
   composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
+  withPromptExtras,
   buildResumeCommand,
   unresumableConversationReason,
   mintConversationId,
   withFreshConversationId,
   noPromptReason,
   agentPromptBlocker,
+  usesPromptInjection,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -300,6 +302,32 @@ describe("shellQuote", () => {
   });
 });
 
+describe("withPromptExtras", () => {
+  it("returns the prompt untouched when there are no lines", () => {
+    expect(withPromptExtras("Do it.", [])).toBe("Do it.");
+    expect(withPromptExtras("Do it.", null)).toBe("Do it.");
+    expect(withPromptExtras("Do it.", undefined)).toBe("Do it.");
+    expect(withPromptExtras("Do it.", ["", "   "])).toBe("Do it.");
+  });
+
+  it("puts each line on its own, after a blank line, trimmed, in order", () => {
+    expect(withPromptExtras("Do it.", ["  Be brief. ", "", "Answer in British English."])).toBe(
+      "Do it.\n\nBe brief.\nAnswer in British English."
+    );
+  });
+
+  /// The host appends the same way to the wizard's prompts
+  /// (`append_prompt_extras` in agent_setup.rs): one format everywhere.
+  it("matches the separator the host uses for the setup flows", () => {
+    expect(withPromptExtras("P", ["a", "b"])).toBe("P\n\na\nb");
+  });
+
+  it("survives shell quoting as one argument, newlines and all", () => {
+    const command = buildRunCommand("claude", "", withPromptExtras("Do 'it'.", ["Don't stop."]));
+    expect(command).toBe("claude 'Do '\\''it'\\''.\n\nDon'\\''t stop.'");
+  });
+});
+
 describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
     expect(buildRunCommand("claude", "", "do it")).toBe("claude 'do it'");
@@ -353,6 +381,27 @@ describe("agentPromptBlocker", () => {
     expect(agentPromptBlocker("", "Claude Code")).toBeNull();
     expect(agentPromptBlocker("--prompt=", "opencode")).toBeNull();
     expect(agentPromptBlocker(null, "Cursor")).toBe(noPromptReason("Cursor"));
+  });
+
+  // K3: an injection profile's null promptArgs is a bare launch with the
+  // prompt arriving through the daemon's queue, not a refusal. Cursor's
+  // null -- no flag -- stays one, which is the half of the distinction
+  // the flag exists to keep.
+  it("is null for a prompt-injection profile, and still the reason for a plain no-prompt one", () => {
+    expect(agentPromptBlocker(null, "Kimi Code", true)).toBeNull();
+    expect(agentPromptBlocker(null, "Cursor", false)).toBe(noPromptReason("Cursor"));
+  });
+});
+
+describe("usesPromptInjection", () => {
+  // Both halves: the flag alone is not the answer (an argv profile takes
+  // its prompt on the command line), and null alone is not (cursor
+  // refuses). Only null-with-flag routes a run through the queue.
+  it("is true only for a no-argv profile that said so", () => {
+    expect(usesPromptInjection({ promptArgs: null, promptInjection: true })).toBe(true);
+    expect(usesPromptInjection({ promptArgs: null, promptInjection: false })).toBe(false);
+    expect(usesPromptInjection({ promptArgs: null })).toBe(false);
+    expect(usesPromptInjection({ promptArgs: "", promptInjection: true })).toBe(false);
   });
 });
 

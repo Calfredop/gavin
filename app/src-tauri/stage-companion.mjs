@@ -47,7 +47,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { generateSeed, pack, publicKeyOf, readTree, sha256, sign } from "./companion-bundle.mjs";
@@ -56,6 +56,7 @@ import { generateSeed, pack, publicKeyOf, readTree, sha256, sign } from "./compa
 /// resolve_app_support_dir` spells out, mirrored here because a Node
 /// script cannot ask it. macOS deliberately ignores XDG.
 export function dataDir(env = process.env, platform = process.platform) {
+  const { join } = pathsOf(platform);
   if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Application Support", "gavin");
   if (platform === "win32") {
     const base = env.LOCALAPPDATA ?? join(env.USERPROFILE ?? homedir(), "AppData", "Local");
@@ -64,12 +65,18 @@ export function dataDir(env = process.env, platform = process.platform) {
   return join(env.XDG_DATA_HOME ?? join(env.HOME ?? homedir(), ".local", "share"), "gavin");
 }
 
+/// `platform`'s own path rules, not the host's: asked about one OS from
+/// another, the answer is still that OS's path.
+function pathsOf(platform) {
+  return platform === "win32" ? win32 : posix;
+}
+
 export const DEV_KEY_FILE = "companion-dev-bundle-key.json";
 
 /// The dev key's file, or where it would be. `GAVIN_DEV_BUNDLE_KEY_FILE`
 /// overrides it, for a test or a second machine's key.
 export function devKeyPath(env = process.env, platform = process.platform) {
-  return env.GAVIN_DEV_BUNDLE_KEY_FILE ?? join(dataDir(env, platform), DEV_KEY_FILE);
+  return env.GAVIN_DEV_BUNDLE_KEY_FILE ?? pathsOf(platform).join(dataDir(env, platform), DEV_KEY_FILE);
 }
 
 /// The dev key, made if there is none: `{ seed, publicKey, madeAt }`.

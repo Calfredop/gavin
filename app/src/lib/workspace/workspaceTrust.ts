@@ -19,7 +19,7 @@ import { sha256Hex } from "$lib/core/sha256";
 /// accept "the same keys arriving from a repo the human just cloned" —
 /// and until this module existed both arrived down one code path with no
 /// provenance. A freshly cloned repo could hand its own command to a Run,
-/// to a worktree, and (before the same fix in `superpowers.rs`) to a
+/// to a worktree, and (before the same fix in `agent_skills.rs`) to a
 /// passive tab render.
 ///
 /// The marker is a digest of the three keys, stored per workspace in

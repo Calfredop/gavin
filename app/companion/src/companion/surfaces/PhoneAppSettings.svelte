@@ -5,13 +5,14 @@
   // alone (phoneSettings.ts says which, and why). Every write goes
   // through `saveSetting`, which says on this screen when one failed.
   import { onMount } from "svelte";
-  import { Monitor, Moon, Sun } from "@lucide/svelte";
+  import { Laptop, Monitor, Moon, Smartphone, Sun } from "@lucide/svelte";
   import {
     agentDefaultsStore,
     agentModelDefaultsStore,
     agentProfilesStore,
     autoCommitDefault,
     daemonCompat,
+    dropProfileRefsFromWorkspaces,
     gitTrackingDefault,
     requireReviewDefault,
     setAgentDefaults,
@@ -22,15 +23,27 @@
     setTerminalFontSizeDefault,
     terminalFontSizeDefault,
   } from "$lib/core/layoutState";
-  import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
+  import { effectiveDefaultAgent, withAgentEffort, type CustomProfile } from "$lib/cards/complexity";
+  import {
+    ADD_TAB,
+    ADD_TAB_HINT,
+    GENERAL_TAB,
+    addCustomProfile,
+    agentDefaultsWithoutCustom,
+    agentsHubTabs,
+    isCustomProfileId,
+    renameCustomProfile,
+    updateCustomProfile,
+    validAgentsTab,
+    type AgentsHubTab,
+  } from "$lib/agents/agentsHub";
+  import AgentsHubTabs from "$lib/agents/AgentsHubTabs.svelte";
+  import { API_FAMILIES, type ApiFamily } from "$lib/agents/apiFamily";
   import { effortOptions, modelOptions } from "$lib/agents/agentModel";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, validateCycle, type PauseCycle } from "$lib/agents/agentPause";
-  import { agentPauseStore, saveAgentPause } from "$lib/agents/agentPauseState";
-  import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
+  import { askConfirm } from "$lib/core/dialog";
+  import { mergeAgentProfiles } from "$lib/core/settings";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
-  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
-  import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
   import {
     DEFAULT_REQUIRE_REVIEW,
     requireReviewFromSelect,
@@ -48,8 +61,16 @@
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import type { ThemePref } from "$lib/ui/theme";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
-  import { dismissSaveProblem, loadSettings, saveProblem, saveSetting } from "$companion/state/workstation";
+  import type { Appearance } from "$companion/state/appearance";
+  import {
+    appearance,
+    dismissSaveProblem,
+    loadSettings,
+    saveProblem,
+    saveSetting,
+    setAppearance,
+  } from "$companion/state/workstation";
+  import PhoneAgentPrimary from "$companion/surfaces/PhoneAgentPrimary.svelte";
   import PhoneModelPicker from "$companion/surfaces/PhoneModelPicker.svelte";
   import PhoneSetting from "$companion/surfaces/PhoneSetting.svelte";
   import PhoneSettingsGroup from "$companion/surfaces/PhoneSettingsGroup.svelte";
@@ -65,54 +86,90 @@
     { pref: "dark", label: "Dark", icon: Moon },
   ];
 
-  /// Only the profiles gavin can put a model, or an effort, on: a row for
-  /// one it cannot reach would be a control that changes nothing.
-  const modelProfiles = $derived($agentProfilesStore.filter((p) => p.modelFlag));
-  const effortProfiles = $derived($agentProfilesStore.filter((p) => p.effortFlag));
+  /// This phone's own choice, kept on the phone (`appearance.ts`).
+  const APPEARANCES: { value: Appearance; label: string; icon: typeof Sun }[] = [
+    { value: "workstation", label: "Desk", icon: Laptop },
+    { value: "phone", label: "Phone", icon: Smartphone },
+    { value: "light", label: "Light", icon: Sun },
+    { value: "dark", label: "Dark", icon: Moon },
+  ];
+
+  /// Built-ins ∪ app-wide customs (the Rust table alone has no named customs).
+  const allProfiles = $derived(
+    mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
+  );
   const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
 
-  /// The app-wide cycle, or the shipped default while there is none: the
-  /// fields need values, and saving is what turns the default into one.
-  const cycle = $derived($agentPauseStore ?? { ...DEFAULT_CYCLE, anchorMs: 0 });
-  const cycleError = $derived(cycle.enabled ? validateCycle(cycle) : null);
-  const launch = $derived($launchConfigStore);
+  let agentsTab = $state<AgentsHubTab>(GENERAL_TAB);
+  let newCustomName = $state("");
+  const agentsTabs = $derived(agentsHubTabs(allProfiles, ADD_TAB_HINT.app));
+  const defaultAgentId = $derived(effectiveDefaultAgent($agentDefaultsStore));
+  const defaultAgentLabel = $derived(
+    allProfiles.find((p) => p.id === defaultAgentId)?.label ?? defaultAgentId
+  );
+  $effect(() => {
+    const valid = validAgentsTab(agentsTab, allProfiles, true);
+    if (valid !== agentsTab) agentsTab = valid;
+  });
+  const activeAgentProfile = $derived(allProfiles.find((p) => p.id === agentsTab) ?? null);
+  const activeCustom = $derived(
+    ($agentDefaultsStore.customProfiles ?? []).find((p) => p.id === agentsTab) ?? null
+  );
 
-  function editCycle(patch: Partial<PauseCycle>): void {
-    const next = { ...cycle, ...patch };
-    // An unusable cycle stays on screen, so the message can explain it,
-    // and is not saved until it is usable again -- the desk's rule.
-    if (next.enabled && validateCycle(next)) {
-      agentPauseStore.set(next);
-      return;
-    }
-    void saveSetting(() => saveAgentPause(next));
-  }
+  const launch = $derived($launchConfigStore);
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveSetting(() => saveLaunchConfig({ ...launch, ...patch }));
   }
 
-  /// The custom agent's text fields, written when the field is left: a
-  /// half-typed command written through would be launched by anything
-  /// that started an agent mid-edit.
-  function editCustomAgent(patch: { customCommand?: string; customModelFlag?: string; customEffortFlag?: string }): void {
-    const now = $agentDefaultsStore;
-    const next = { ...now, ...patch };
-    if (
-      next.customCommand === now.customCommand &&
-      next.customModelFlag === now.customModelFlag &&
-      (next.customEffortFlag ?? "") === (now.customEffortFlag ?? "")
-    ) {
-      return;
-    }
-    void saveSetting(() => setAgentDefaults(next));
+  function addAppCustom(): void {
+    const next = addCustomProfile(
+      $agentDefaultsStore.customProfiles ?? [],
+      newCustomName.trim() || "Custom"
+    );
+    const added = next.find((p) => !($agentDefaultsStore.customProfiles ?? []).some((o) => o.id === p.id));
+    void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, customProfiles: next })).then(() => {
+      newCustomName = "";
+      if (added) agentsTab = added.id;
+    });
   }
 
-  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
-    const complexity = { ...$agentDefaultsStore.complexity };
-    if (entry) complexity[level] = entry;
-    else delete complexity[level];
-    void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, complexity }));
+  function patchActiveCustom(partial: Partial<Omit<CustomProfile, "id">>): void {
+    if (!activeCustom) return;
+    void saveSetting(() =>
+      setAgentDefaults({
+        ...$agentDefaultsStore,
+        customProfiles: updateCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, partial),
+      })
+    );
+  }
+
+  function renameActiveCustom(label: string): void {
+    if (!activeCustom) return;
+    void saveSetting(() =>
+      setAgentDefaults({
+        ...$agentDefaultsStore,
+        customProfiles: renameCustomProfile($agentDefaultsStore.customProfiles ?? [], activeCustom.id, label),
+      })
+    );
+  }
+
+  async function deleteActiveCustom(): Promise<void> {
+    if (!activeCustom) return;
+    const ok = await askConfirm({
+      title: `Delete “${activeCustom.label}”?`,
+      lines: [
+        "Workspaces still pointing at this custom will fall back to the default agent until they pick another.",
+      ],
+      confirmLabel: "Delete custom",
+      danger: true,
+    });
+    if (!ok) return;
+    const id = activeCustom.id;
+    await saveSetting(() => setAgentDefaults(agentDefaultsWithoutCustom($agentDefaultsStore, id)));
+    // And every workspace's own per-agent keys for it.
+    await saveSetting(() => dropProfileRefsFromWorkspaces(id));
+    agentsTab = GENERAL_TAB;
   }
 </script>
 
@@ -125,8 +182,30 @@
   {/if}
 
   <PhoneSettingsGroup title="Appearance">
-    <PhoneSetting label="Theme" hint="The Workstation's own theme: the desk and every Device draw it.">
-      <div class="segments" role="group" aria-label="Theme">
+    <PhoneSetting
+      label="On this phone"
+      hint="Desk draws this Workstation in the desk's theme; Phone follows this phone's Light and Dark. Kept on this phone: the desk does not change."
+    >
+      <div class="segments" role="group" aria-label="On this phone">
+        {#each APPEARANCES as option (option.value)}
+          <button
+            type="button"
+            class="segment"
+            class:on={$appearance === option.value}
+            aria-pressed={$appearance === option.value}
+            onclick={() => setAppearance(option.value)}
+          >
+            <option.icon size={16} />
+            <span>{option.label}</span>
+          </button>
+        {/each}
+      </div>
+    </PhoneSetting>
+    <PhoneSetting
+      label="The desk's theme"
+      hint="Changes the desk itself. A phone set to Desk draws it too, with System as that phone's own Light and Dark."
+    >
+      <div class="segments" role="group" aria-label="The desk's theme">
         {#each THEMES as theme (theme.pref)}
           <button
             type="button"
@@ -213,179 +292,152 @@
   </PhoneSettingsGroup>
 
   <PhoneSettingsGroup
-    title="Agent defaults"
-    intro="The model and effort each agent runs at in every workspace that sets none of its own."
+    title="Agents"
+    intro="General settings plus one tab per agent — the same Agents hub as at the desk."
   >
-    {#if modelProfiles.length === 0}
-      <p class="note">Waiting for the agent profile table…</p>
+    <AgentsHubTabs tabs={agentsTabs} tab={agentsTab} onTab={(t) => (agentsTab = t)} />
+
+    {#if agentsTab === GENERAL_TAB}
+      <PhoneSetting label="Default agent" control="app-default-agent" hint="Used when a workspace has not chosen its own agent.">
+        <select
+          id="app-default-agent"
+          value={effectiveDefaultAgent($agentDefaultsStore)}
+          onchange={(e) =>
+            void saveSetting(() =>
+              setAgentDefaults({
+                ...$agentDefaultsStore,
+                defaultAgent: e.currentTarget.value,
+              })
+            )}
+        >
+          {#each allProfiles as profile (profile.id)}
+            <option value={profile.id}>{profile.label}</option>
+          {/each}
+        </select>
+      </PhoneSetting>
+
+      <p class="note">
+        Everything below is {defaultAgentLabel}'s own configuration — the same settings its tab shows.
+      </p>
+      <PhoneAgentPrimary
+        scope="app"
+        primaryId={defaultAgentId}
+        label={defaultAgentLabel}
+        profiles={allProfiles}
+      />
+    {:else if activeAgentProfile}
+      {#if activeCustom}
+        <PhoneSetting label="Name" control="custom-name-{activeCustom.id}">
+          <input
+            id="custom-name-{activeCustom.id}"
+            spellcheck="false"
+            value={activeCustom.label}
+            onblur={(e) => renameActiveCustom(e.currentTarget.value)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </PhoneSetting>
+        <PhoneSetting label="Command" control="custom-command-{activeCustom.id}">
+          <input
+            id="custom-command-{activeCustom.id}"
+            spellcheck="false"
+            value={activeCustom.command}
+            onblur={(e) => patchActiveCustom({ command: e.currentTarget.value.trim() })}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </PhoneSetting>
+        <PhoneSetting label="Model flag" control="custom-model-flag-{activeCustom.id}">
+          <input
+            id="custom-model-flag-{activeCustom.id}"
+            spellcheck="false"
+            value={activeCustom.modelFlag}
+            onblur={(e) => patchActiveCustom({ modelFlag: e.currentTarget.value.trim() })}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </PhoneSetting>
+        <PhoneSetting label="Effort flag" control="custom-effort-flag-{activeCustom.id}">
+          <input
+            id="custom-effort-flag-{activeCustom.id}"
+            spellcheck="false"
+            value={activeCustom.effortFlag ?? ""}
+            onblur={(e) => patchActiveCustom({ effortFlag: e.currentTarget.value.trim() })}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </PhoneSetting>
+        <PhoneSetting label="API family" control="custom-api-{activeCustom.id}" warn={apiFamilyBlocked}>
+          <select
+            id="custom-api-{activeCustom.id}"
+            value={activeCustom.apiFamily ?? ""}
+            disabled={Boolean(apiFamilyBlocked)}
+            title={apiFamilyBlocked ?? ""}
+            onchange={(e) => patchActiveCustom({ apiFamily: e.currentTarget.value as ApiFamily | "" })}
+          >
+            {#each API_FAMILIES as family (family.value)}
+              <option value={family.value}>{family.label}</option>
+            {/each}
+          </select>
+        </PhoneSetting>
+        <button type="button" class="danger" onclick={() => void deleteActiveCustom()}>Delete</button>
+      {/if}
+
+      {#if activeAgentProfile.modelFlag || isCustomProfileId(activeAgentProfile.id)}
+        <PhoneSetting label="Default model" control="model-{activeAgentProfile.id}">
+          <PhoneModelPicker
+            id="model-{activeAgentProfile.id}"
+            options={modelOptions(activeAgentProfile, "")}
+            own={$agentModelDefaultsStore[activeAgentProfile.id] ?? ""}
+            presets={activeAgentProfile.models}
+            placeholder="model name"
+            onPick={(model) => void saveSetting(() => setAgentModelDefault(activeAgentProfile.id, model))}
+          />
+        </PhoneSetting>
+      {/if}
+      {#if activeAgentProfile.effortFlag || isCustomProfileId(activeAgentProfile.id)}
+        <PhoneSetting label="Default effort" control="effort-{activeAgentProfile.id}">
+          <PhoneModelPicker
+            id="effort-{activeAgentProfile.id}"
+            options={effortOptions(
+              { effortFlag: activeAgentProfile.effortFlag ?? "", efforts: activeAgentProfile.efforts ?? [] },
+              ""
+            )}
+            own={$agentDefaultsStore.agentEfforts?.[activeAgentProfile.id] ?? ""}
+            presets={activeAgentProfile.efforts ?? []}
+            placeholder="effort"
+            onPick={(effort) =>
+              void saveSetting(() =>
+                setAgentDefaults(withAgentEffort($agentDefaultsStore, activeAgentProfile.id, effort))
+              )}
+          />
+        </PhoneSetting>
+      {/if}
+
+      <PhoneAgentPrimary
+        scope="app"
+        primaryId={activeAgentProfile.id}
+        label={activeAgentProfile.label}
+        profiles={allProfiles}
+      />
+    {:else if agentsTab === ADD_TAB}
+      <PhoneSetting label="Add custom" control="app-new-custom" hint={ADD_TAB_HINT.app}>
+        <input
+          id="app-new-custom"
+          spellcheck="false"
+          placeholder="New custom name"
+          bind:value={newCustomName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") addAppCustom();
+          }}
+        />
+        <button type="button" class="add-custom" onclick={addAppCustom}>Add custom</button>
+      </PhoneSetting>
     {/if}
-    {#each modelProfiles as profile (profile.id)}
-      <PhoneSetting label="{profile.label} model" control="model-{profile.id}">
-        <PhoneModelPicker
-          id="model-{profile.id}"
-          options={modelOptions(profile, "")}
-          own={$agentModelDefaultsStore[profile.id] ?? ""}
-          presets={profile.models}
-          placeholder="model name"
-          onPick={(model) => void saveSetting(() => setAgentModelDefault(profile.id, model))}
-        />
-      </PhoneSetting>
-    {/each}
-    {#each effortProfiles as profile (profile.id)}
-      <PhoneSetting label="{profile.label} effort" control="effort-{profile.id}">
-        <PhoneModelPicker
-          id="effort-{profile.id}"
-          options={effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "")}
-          own={$agentDefaultsStore.agentEfforts?.[profile.id] ?? ""}
-          presets={profile.efforts ?? []}
-          placeholder="effort"
-          onPick={(effort) =>
-            void saveSetting(() => setAgentDefaults(withAgentEffort($agentDefaultsStore, profile.id, effort)))}
-        />
-      </PhoneSetting>
-    {/each}
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Custom agent"
-    intro="The agent behind the Custom profile: your own CLI, launched as written."
-  >
-    <PhoneSetting label="Command" control="custom-command">
-      <input
-        id="custom-command"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="my-agent --flags"
-        value={$agentDefaultsStore.customCommand}
-        onchange={(e) => editCustomAgent({ customCommand: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting label="Model flag" control="custom-model-flag">
-      <input
-        id="custom-model-flag"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="--model"
-        value={$agentDefaultsStore.customModelFlag}
-        onchange={(e) => editCustomAgent({ customModelFlag: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting label="Effort flag" control="custom-effort-flag">
-      <input
-        id="custom-effort-flag"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        placeholder="--effort"
-        value={$agentDefaultsStore.customEffortFlag ?? ""}
-        onchange={(e) => editCustomAgent({ customEffortFlag: e.currentTarget.value.trim() })}
-      />
-    </PhoneSetting>
-    <PhoneSetting
-      label="API family"
-      control="custom-api-family"
-      warn={apiFamilyBlocked}
-      hint="The API your agent talks to, which is how a workspace with compression on sends it through Headroom."
-    >
-      <select
-        id="custom-api-family"
-        value={apiFamilyOf($agentDefaultsStore)}
-        disabled={apiFamilyBlocked !== null}
-        onchange={(e) => {
-          const family = e.currentTarget.value as ApiFamily;
-          if (family !== apiFamilyOf($agentDefaultsStore)) {
-            void saveSetting(() => setAgentDefaults(withApiFamily($agentDefaultsStore, family)));
-          }
-        }}
-      >
-        {#each API_FAMILIES as family (family.value)}
-          <option value={family.value}>{family.label}</option>
-        {/each}
-      </select>
-    </PhoneSetting>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Complexity"
-    intro="Which agent, model and effort runs a card of each difficulty. A level left alone runs the workspace's own agent."
-  >
-    <div class="desk-part">
-      <ComplexityTable profiles={$agentProfilesStore} table={$agentDefaultsStore.complexity} onChange={setComplexity} />
-    </div>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Fallback agent"
-    intro="When a launch's agent is over its usage threshold, walk this chain instead of pausing."
-  >
-    <div class="desk-part">
-      <FallbackChainEditor
-        profiles={$agentProfilesStore}
-        value={$agentDefaultsStore.agentFallback ?? []}
-        thresholds={$agentDefaultsStore.fallbackThresholds}
-        onChange={(chain) =>
-          void saveSetting(() => setAgentDefaults({ ...$agentDefaultsStore, agentFallback: chain ?? [] }))}
-        onThresholdChange={(profileId, percent) =>
-          void saveSetting(() =>
-            setAgentDefaults({
-              ...$agentDefaultsStore,
-              fallbackThresholds: {
-                ...($agentDefaultsStore.fallbackThresholds ?? {}),
-                [profileId]: sanitizeFallbackThreshold(percent),
-              },
-            })
-          )}
-      />
-    </div>
-  </PhoneSettingsGroup>
-
-  <PhoneSettingsGroup
-    title="Agent pause"
-    intro="Sit out part of every window so a rail does not spend a subscription's limit while nobody is watching. Nothing already running is interrupted."
-  >
-    <PhoneToggle label="Pause on a cycle" checked={cycle.enabled} onChange={(on) => editCycle({ enabled: on })} />
-    <PhoneSetting label="Pause for">
-      <input
-        type="number"
-        inputmode="numeric"
-        min="1"
-        aria-label="Minutes paused"
-        disabled={!cycle.enabled}
-        value={cycle.pauseMinutes}
-        onchange={(e) => editCycle({ pauseMinutes: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">minutes every</span>
-      <input
-        type="number"
-        inputmode="numeric"
-        min={MIN_PERIOD_MINUTES}
-        aria-label="Minutes in a cycle"
-        disabled={!cycle.enabled}
-        value={cycle.periodMinutes}
-        onchange={(e) => editCycle({ periodMinutes: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">minutes</span>
-    </PhoneSetting>
-    <PhoneToggle
-      label="Hold when a usage window is nearly spent"
-      checked={cycle.limitEnabled}
-      onChange={(on) => editCycle({ limitEnabled: on })}
-    />
-    <PhoneSetting label="Hold at" warn={cycleError}>
-      <input
-        type="number"
-        inputmode="numeric"
-        min="1"
-        max="100"
-        aria-label="Percent of the window used"
-        disabled={!cycle.limitEnabled}
-        value={cycle.limitPercent}
-        onchange={(e) => editCycle({ limitPercent: Number(e.currentTarget.value) })}
-      />
-      <span class="unit">% used</span>
-    </PhoneSetting>
   </PhoneSettingsGroup>
 
   <PhoneSettingsGroup
@@ -431,7 +483,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border-danger, var(--border));
     background: var(--surface-danger, var(--surface-sunken));
     color: var(--danger-text);
@@ -444,7 +496,7 @@
   }
   .problem button {
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -484,14 +536,24 @@
     font-size: 0.8125rem;
   }
   .desk-only {
-    padding: 16px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    padding: 16px 14px 0;
     line-height: 1.45;
   }
-  /* The desk's own components size their text in `em`, for a desk panel's
-     smaller type; under a phone's 16px body their hints would read larger
-     than every other hint here. */
-  .desk-part {
-    font-size: 0.8125rem;
+  .add-custom,
+  .danger {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font: inherit;
+  }
+  .danger {
+    margin: 4px 14px 8px 14px;
+    border-color: var(--border-danger, var(--border-strong));
+    color: var(--danger-text, var(--text));
   }
   button:focus-visible {
     outline: 2px solid var(--border-focus);

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { editableCycle, saveAgentPause } from "$lib/agents/agentPauseState";
+  import { editableCycle, saveAgentPauseFor } from "$lib/agents/agentPauseState";
   import {
     foundAgentsSummary,
     isAgentFound,
@@ -23,9 +23,12 @@
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import {
+    chainForPrimary,
     fallbackThresholdFor,
     sanitizeFallbackThreshold,
+    withFallbackChainForPrimary,
   } from "$lib/agents/agentFallback";
+  import { effectiveDefaultAgent } from "$lib/cards/complexity";
 
   interface Props {
     workspaceId: string;
@@ -38,8 +41,16 @@
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      $agentDefaultsStore.agentEfforts,
+      $agentDefaultsStore.defaultAgent
     )
+  );
+  const fallbackPrimary = $derived(agentCfg.profileId || effectiveDefaultAgent($agentDefaultsStore));
+  const appFallbackChain = $derived(
+    chainForPrimary($agentDefaultsStore.fallbackChains, fallbackPrimary)
   );
   /// Explicit `[agent].command` in config.toml — the step-done signal.
   /// Resolved profile defaults do not count; only a written key does.
@@ -67,7 +78,7 @@
   const sweptIds = $derived(detected ? new Set(detected.map((d) => d.id)) : null);
   const missingFallback = $derived(
     detected
-      ? missingFromAppFallback(detected, $agentDefaultsStore.agentFallback)
+      ? missingFromAppFallback(detected, $agentDefaultsStore.fallbackChains, fallbackPrimary)
       : []
   );
 
@@ -97,13 +108,13 @@
     const main = suggestMainProfile({
       detected,
       currentProfileId: agentCfg.profileId,
-      appFallback: $agentDefaultsStore.agentFallback,
+      appChains: $agentDefaultsStore.fallbackChains,
       commandAlreadySet,
     });
     const chain = suggestFallbackChain({
       detected,
       mainProfileId: main,
-      appFallback: $agentDefaultsStore.agentFallback,
+      appChains: $agentDefaultsStore.fallbackChains,
     });
     appliedSweep = true;
     if (!commandAlreadySet && main && main !== agentCfg.profileId) {
@@ -118,7 +129,11 @@
     if (chain && chain.length > 0) {
       void setAgentDefaults({
         ...$agentDefaultsStore,
-        agentFallback: chain,
+        fallbackChains: withFallbackChainForPrimary(
+          $agentDefaultsStore.fallbackChains,
+          main || fallbackPrimary,
+          chain
+        ),
       });
     }
   });
@@ -175,11 +190,12 @@
     onDone();
   }
 
-  /// The app-wide cycle is what the wizard offers: a workspace created
-  /// here has no override, so switching this on sets the app default that
-  /// every workspace then inherits. Turning it off later per workspace is
-  /// Settings' job, not the wizard's.
-  const pauseCycle = $derived(editableCycle(null));
+  /// The app-wide cycle FOR THE AGENT BEING CHOSEN is what the wizard
+  /// offers: cycles are per agent now, and a workspace created here has
+  /// no override, so switching this on sets that agent's app default that
+  /// every workspace on it then inherits. Turning it off later per
+  /// workspace is Settings' job, not the wizard's.
+  const pauseCycle = $derived(editableCycle(null, agentCfg.profileId));
 
   /// Whether the profile being chosen can be asked about its limits, so
   /// the copy does not promise a hold gavin cannot perform.
@@ -188,7 +204,7 @@
   );
 
   async function togglePause(enabled: boolean): Promise<void> {
-    await saveAgentPause({ ...pauseCycle, enabled });
+    await saveAgentPauseFor(agentCfg.profileId, { ...pauseCycle, enabled });
   }
 
   function profileOptionLabel(id: string, label: string): string {
@@ -201,6 +217,7 @@
 <h3>Which agent?</h3>
 <p class="hint">
   gavin writes the integration files for the agent you pick, and starts it with this command.
+  Named customs and per-agent defaults live in Settings → Agents — add more there any time.
 </p>
 
 {#if detected}
@@ -322,14 +339,18 @@
   <div>
     <FallbackChainEditor
       profiles={$agentProfilesStore}
-      value={$agentDefaultsStore.agentFallback ?? []}
+      value={appFallbackChain}
       thresholds={$agentDefaultsStore.fallbackThresholds}
       {foundIds}
       {sweptIds}
       onChange={(chain) =>
         void setAgentDefaults({
           ...$agentDefaultsStore,
-          agentFallback: chain ?? [],
+          fallbackChains: withFallbackChainForPrimary(
+            $agentDefaultsStore.fallbackChains,
+            fallbackPrimary,
+            chain ?? []
+          ),
         })}
       onThresholdChange={(profileId, percent) =>
         void setAgentDefaults({

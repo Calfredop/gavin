@@ -170,6 +170,40 @@ App state lives under `~/Library/Application Support/com.gavin.app/`:
 To force a clean first-launch experience (no saved session), delete that
 directory. To also reset the daemon's own state, see below.
 
+## The Companion dev stack
+
+To develop the Companion end to end -- a Device, a Workstation and the
+notifications between them -- without a public service, one command starts a
+local Relay and a sandboxed Push gateway (needs Docker):
+
+```bash
+docker compose -f compose.dev.yaml up --build
+```
+
+| Service | Address | Notes |
+|---|---|---|
+| Relay | `ws://<this machine>:8443` | Admission token `dev-admission-token`. Plain `ws://`, which is fine here: the traffic inside is end-to-end encrypted, and a dev build may not use `ws://` for anything but a local host anyway. |
+| Push gateway | `http://<this machine>:8080` | `GAVIN_PUSH_DELIVERY=dry-run`. Verifies permissions and spends allowances like the real one, and delivers nothing. |
+
+The sandboxed gateway holds no APNs or FCM credentials, builds no client for
+Apple or Google and makes no outbound request; a test in
+`crates/push-gateway/src/config.rs` holds it to that. A notification to a
+Device shows up as a `dry run: would send N bytes to ios` line in
+`docker compose -f compose.dev.yaml logs push-gateway`.
+
+Point the desktop app at it in Settings -> Remote access: Relay URL
+`ws://localhost:8443` and the token above. A phone or simulator on the same
+network uses this machine's LAN address instead of `localhost`. `docker compose
+-f compose.dev.yaml down -v` removes the stack and the gateway's database.
+
+**A dev build only talks to a local Relay.** A debug build of the desktop app
+may turn remote access on only against a Relay on loopback (`localhost`,
+`127.0.0.0/8`, `::1`) or the LAN (private and link-local addresses, `.local`
+names). Any other URL is refused, and the dev build's daemon does not dial
+one that the shared trust store already holds -- the release build may have
+saved a public Relay there. A release build takes any `wss://` Relay. The rule
+is `protocol::relay::RelayUrl::parse_for`.
+
 ## Run the daemon standalone
 
 Useful for testing/debugging the daemon without the GUI:

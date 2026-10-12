@@ -32,10 +32,17 @@ export const DESK_ONLY_COMMANDS = [
   "confirm_pairing",
   "reject_pairing",
   "list_devices",
+  "get_relay_state",
+  "get_direct_state",
   "revoke_device",
   "revoke_all_devices",
   "set_remote_access",
+  "set_direct_access",
   "set_require_local_token",
+  // Where the desk posts notifications, and what it posts: the desk
+  // decides, from the window holding the app's duties.
+  "set_push_gateway_url",
+  "push_companion_notify",
   // Window management.
   "open_workspace_window",
   "claim_workspace_window",
@@ -59,6 +66,14 @@ export const DESK_ONLY_COMMANDS = [
   // Opening things externally on the desk.
   "open_path_externally",
   "reveal_path_externally",
+  // The desk's own view of an agent's browser, streamed at the desk's
+  // size to the desk window that asked. A phone's view is a stream the
+  // desk opens for it (`watch_browser_for_device`, state/browser.ts).
+  "watch_browser",
+  "unwatch_browser",
+  // A desk window's answer to a Device's "Commit via agent". The Device
+  // asks (`agent_commit_for_device`); only a desk window has an answer.
+  "answer_agent_commit_request",
 ] as const;
 
 const LAYOUT_SAVING: ReadonlySet<string> = new Set(LAYOUT_SAVING_COMMANDS);

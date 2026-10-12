@@ -20,6 +20,8 @@
   import ContextMenu from "$lib/core/ContextMenu.svelte";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
+  import HubNavigator from "$lib/hub/HubNavigator.svelte";
+  import { hubNavigatorSide } from "$lib/hub/hubNavigatorSide";
   import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
   import AppDialog from "$lib/core/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
@@ -30,6 +32,7 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
+    agentDefaultsStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
     wizardWorkspaceId,
@@ -43,6 +46,7 @@
   import { hydrateRuns as hydrateCriticalReviewRuns } from "$lib/review/criticalReviewState";
   import { startFindingsRailAutoBuild } from "$lib/review/criticalReviewFindingsRailActions";
   import { startCompanionAttentionPublisher } from "$lib/companion/attentionPublisher";
+  import { startDeviceCommitRequests } from "$lib/companion/deviceCommit";
   import { showAlert } from "$lib/core/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/core/settings";
@@ -88,6 +92,7 @@
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
   import { decisionsWaitingByWorkspace } from "$lib/decisions/decisionsAttention";
+  import { humanTestsWaitingByWorkspace } from "$lib/review/humanTestsAttention";
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/shell/windowDrag";
@@ -105,6 +110,7 @@
   let unlistenClose: (() => void) | null = null;
   let stopFindingsRailAutoBuild: (() => void) | null = null;
   let stopCompanionAttention: (() => void) | null = null;
+  let stopDeviceCommits: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
@@ -151,6 +157,33 @@
   const drawableView = $derived(
     drawableHubViewId(activeView, Boolean(activeWorkspace?.rootPath), hubTabPrefs)
   );
+  // The hub section the navigator is showing over a page. Bound to the
+  // workspace AND page it was opened on, and cleared the moment either
+  // changes (or the workspace leaves the page for the hub): coming back
+  // to a page with a hub section still up front is confusing.
+  // The tab showing in the page (its focused session): switching it,
+  // from the strip, the sidebar or the keyboard, also leaves the section.
+  const navigatorFocus = $derived(
+    activeWorkspace?.pages.find((p) => p.id === activeWorkspace.activePageId)?.focusedSessionId ?? null
+  );
+  let navigatorView = $state<{ workspaceId: string; pageId: string | null; focus: string | null; view: string } | null>(null);
+  const navigatorViewId = $derived(
+    navigatorView &&
+      activeView === "terminal" &&
+      navigatorView.workspaceId === activeWorkspace?.id &&
+      navigatorView.pageId === (activeWorkspace?.activePageId ?? null) &&
+      navigatorView.focus === navigatorFocus
+      ? navigatorView.view
+      : null
+  );
+  $effect(() => {
+    if (navigatorView && navigatorViewId === null) navigatorView = null;
+  });
+  const navigatorViewDef = $derived(hubViews.find((v) => v.id === navigatorViewId) ?? null);
+  function toggleNavigatorView(id: string): void {
+    if (!activeWorkspace) return;
+    navigatorView = navigatorViewId === id ? null : { workspaceId: activeWorkspace.id, pageId: activeWorkspace.activePageId ?? null, focus: navigatorFocus, view: id };
+  }
   const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
@@ -158,7 +191,11 @@
     resolveAgentConfig(
       $trustedAgentConfigs(activeWorkspace?.id ?? ""),
       $agentProfilesStore,
-      $agentModelDefaultsStore
+      $agentModelDefaultsStore,
+      undefined,
+      undefined,
+      undefined,
+      $agentDefaultsStore.defaultAgent
     )
   );
   const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));
@@ -196,6 +233,11 @@
     // it. See decisionsAttention.ts.
     decisionsWaiting: activeWorkspace
       ? ($decisionsWaitingByWorkspace[activeWorkspace.id] ?? false)
+      : false,
+    // The Review tab, for a human test waiting to be run. The same store
+    // shape, for the same reason (humanTestsAttention.ts).
+    reviewWaiting: activeWorkspace
+      ? ($humanTestsWaitingByWorkspace[activeWorkspace.id] ?? false)
       : false,
   });
 
@@ -351,6 +393,9 @@
     uninstallLineClipboard = installLineClipboard();
     stopFindingsRailAutoBuild = startFindingsRailAutoBuild();
     stopCompanionAttention = startCompanionAttentionPublisher();
+    // A phone's "Commit via agent": the window that runs the workspace
+    // runs it, so every window listens and one answers.
+    void startDeviceCommitRequests().then((stop) => (stopDeviceCommits = stop));
   });
 
   onDestroy(() => {
@@ -360,9 +405,24 @@
     uninstallLineClipboard?.();
     stopFindingsRailAutoBuild?.();
     stopCompanionAttention?.();
+    stopDeviceCommits?.();
     teardown();
   });
 </script>
+
+<!-- Capture, so the sidebar's session and page rows close a hub section
+     that is up over the page even when they select what is already
+     selected -- nothing the section is bound to changes then, so only the
+     click itself can say "show me the page". Buttons inside a row (the
+     chevron, a tab's close) are not a selection. -->
+<svelte:window
+  onclickcapture={(e) => {
+    if (!navigatorView) return;
+    const target = e.target as Element | null;
+    if (target?.closest?.("button")) return;
+    if (target?.closest?.(".tab-row, .page-row")) navigatorView = null;
+  }}
+/>
 
 <!-- The active workspace's accent, read by every tab indicator and drop
      marker inside (Pane.svelte's var(--ws-accent)). On .app rather than
@@ -490,8 +550,39 @@
               <button onclick={createFirstWorkspace}>New Workspace</button>
             </div>
           {:else if activeView === "terminal"}
-            <div class="view">
-              <TerminalView workspaceId={activeWorkspace.id} />
+            <!-- A page is inside the workspace but off the hub: the
+                 navigator is how a person gets back to one of its
+                 sections without going through the sidebar. -->
+            <div class="page-with-navigator" class:navigator-right={$hubNavigatorSide === "right"}>
+              <HubNavigator
+                workspaceId={activeWorkspace.id}
+                open={navigatorViewId}
+                onselect={toggleNavigatorView}
+                hasRoot={Boolean(activeWorkspace.rootPath)}
+                agentFileName={activeAgent.file}
+              />
+              <!-- Capture, so the page's own tab closes the section even when
+                   it is the tab already selected. -->
+              <div
+                class="view"
+                class:navigator-open={navigatorViewDef}
+                role="presentation"
+                onclickcapture={(e) => {
+                  if (navigatorView && (e.target as Element).closest?.(".tab-bar .tab")) navigatorView = null;
+                }}
+              >
+                <TerminalView workspaceId={activeWorkspace.id} />
+                <!-- Over the page, not instead of it: the terminal stays
+                     mounted underneath, and the workspace's view never
+                     changes. Starts under the page's tab bar so its tabs
+                     stay reachable. Pressing the same navigator button
+                     again closes it. -->
+                {#if navigatorViewDef}
+                  <div class="navigator-overlay">
+                    <navigatorViewDef.component workspaceId={activeWorkspace.id} />
+                  </div>
+                {/if}
+              </div>
             </div>
           {:else}
             <div class="content">
@@ -1012,6 +1103,48 @@
     /* The workspace's accent when set; otherwise the original amber, so
        an uncoloured workspace looks exactly as it did before. */
     border-bottom-color: var(--ws-accent, #d9a648);
+  }
+  .page-with-navigator {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: row;
+    min-width: 0;
+    min-height: 0;
+  }
+  .page-with-navigator {
+    position: relative;
+    --hub-nav-width: 37px;
+  }
+  /* The tab bar stays full width; only what is under it makes room for
+     the bar. Every pane touching that edge shifts: one with no row-split
+     ancestor on the far side of it (a column split stacks its panes, so
+     all of them touch the edge). */
+  .page-with-navigator:not(.navigator-right) :global(.tree .pane-wrapper > .content:not(.split.row > .child:not(:first-child) *)),
+  .page-with-navigator:not(.navigator-right) .navigator-overlay {
+    margin-left: var(--hub-nav-width);
+  }
+  .page-with-navigator.navigator-right :global(.tree .pane-wrapper > .content:not(.split.row > .child:not(:last-child) *)),
+  .page-with-navigator.navigator-right .navigator-overlay {
+    margin-right: var(--hub-nav-width);
+  }
+  .page-with-navigator > .view {
+    min-width: 0;
+  }
+  /* The page is not what is showing: its current tab drops the
+     highlight, so only the navigator's open item reads as selected. */
+  .view.navigator-open :global(.tab-bar .tab.active) {
+    color: var(--text-muted);
+  }
+  .view.navigator-open :global(.tab-bar .tab.focused) {
+    border-bottom-color: transparent;
+  }
+  .navigator-overlay {
+    position: absolute;
+    inset: var(--header-height) 0 0 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-base);
   }
   .view {
     flex: 1 1 auto;
