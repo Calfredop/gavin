@@ -3872,7 +3872,14 @@ impl SessionManager {
         let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
         let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
-            weak.upgrade()?.recover_moved_card_paths(workspace_id, tree)
+            let manager = weak.upgrade()?;
+            // Keeps the card index up with the board, so gavin_find_cards
+            // finds it ready. Returns at once: the embedding runs on a
+            // thread of its own, never on this scan's.
+            if let Some(memories) = manager.memories.get() {
+                memories.index_cards_in_background(tree);
+            }
+            manager.recover_moved_card_paths(workspace_id, tree)
         });
         let watcher = crate::gavin::GavinWatcher::start(
             workspace_id.to_string(),
@@ -10458,6 +10465,31 @@ mod tests {
             &Request::GetGavinTree { workspace_id: "never-watched".to_string() },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// Watching a workspace is what keeps its card index ready: the scan
+    /// the watch starts with embeds its cards before any search asks.
+    #[test]
+    fn watching_a_root_indexes_its_cards_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        std::fs::write(ws.path().join(".gavin-root/plans/a.md"), "---\ntitle: Fix the login flow\n---\nRedirect loops.\n")
+            .unwrap();
+        let manager = test_manager(&dir);
+        let (memories, embedded) = crate::memory_index::tests::fake_memories(dir.path());
+        manager.set_memories(memories);
+        let (_ours, theirs) = Stream::pair().unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        crate::memory_index::tests::eventually("the card indexed", || {
+            embedded.load(std::sync::atomic::Ordering::SeqCst) == 1
+        });
+        manager.unwatch_gavin_root("ws-1");
     }
 
     #[test]

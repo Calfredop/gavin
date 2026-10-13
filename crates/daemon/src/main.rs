@@ -1,5 +1,6 @@
 mod bridge;
 mod browser;
+mod card_rank;
 mod changes_only;
 mod connect;
 mod direct;

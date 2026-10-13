@@ -28,14 +28,17 @@
 //! moved -- filed under done/, archived -- keeps its vector, and an edit
 //! is a removal plus an addition, like a memory's. A workspace has
 //! hundreds of cards rather than tens, which is still a brute-force
-//! cosine; the first search of one embeds them all, and every later one
-//! embeds only what changed.
+//! cosine. A workspace the app watches is kept up in the background, a
+//! scan at a time (`index_cards_in_background`), so a search normally
+//! finds every card embedded; one nobody watches embeds what is missing
+//! when it is searched. How the cosine and the card's words are fused
+//! into one order is `card_rank`'s.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use protocol::{CardHit, MemoryHit, MemoryIndexStatus};
+use protocol::{CardHit, GavinTree, MemoryHit, MemoryIndexStatus, PlanFileInfo};
 
 const MARKER_START: &str = "<!-- gavin:start -->";
 const MARKER_END: &str = "<!-- gavin:end -->";
@@ -69,6 +72,23 @@ const MAX_LIMIT: usize = 50;
 /// daemon: 1200 characters took 43 s to embed on the first search and
 /// ranked worse than 600, which took 22 s.
 const CARD_BODY_CHARS: usize = 600;
+
+/// Passages embedded per call to the model. Shortest first, so a batch
+/// pads to a length near its own rather than to the longest card in the
+/// workspace -- the tokenizer pads every passage in a batch to the
+/// longest one. Measured on this repo's 624 cards with the real model:
+/// unsorted in one call of 256 took 35 s, sorted in batches of 256 took
+/// 22 s, of 32 took 16.5 s, and of 8 took 20 s. Small batches also hand
+/// the model back between them, so a memory search waiting on a card
+/// sync waits one batch rather than a whole workspace.
+const EMBED_BATCH: usize = 32;
+
+/// How long the model stays loaded after it was last used. Loaded, it
+/// costs the daemon about 230 MB of footprint, and about 610 MB once it
+/// has embedded a workspace's cards in batches -- for a daemon that is
+/// otherwise a few MB -- while loading it again takes about 0.1 s.
+/// Measured with a release daemon on an M1 Max, on this repo's cards.
+const MODEL_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Most hits one `search_cards` returns, so the answer stays well under
 /// `MAX_LINE_BYTES` even with long paths. gavin-mcp applies its other
@@ -301,10 +321,60 @@ struct Inner {
     index_dir: PathBuf,
     model_dir: PathBuf,
     load: Loader,
-    /// Loaded on first use and kept: loading is the slow part, and a
-    /// daemon that searched once will search again.
+    /// Loaded on first use and dropped again once it has sat idle for
+    /// `idle` (`unload_when_idle`).
     embedder: Mutex<Option<Box<dyn Embedder>>>,
+    /// When the model last finished a call, and whether a thread is
+    /// watching for it to go idle.
+    last_used: Mutex<Option<std::time::Instant>>,
+    unloader: Mutex<bool>,
+    idle: std::time::Duration,
     download: Mutex<Download>,
+    /// One card sync per index at a time. A search arriving while the
+    /// background embeds waits it out and then finds nothing left to
+    /// embed, rather than embedding the same cards beside it. Keyed by
+    /// index file, so two spellings of one root share a lock.
+    card_sync: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// The background card index, per index file.
+    card_jobs: Mutex<HashMap<PathBuf, CardJob>>,
+}
+
+/// One root's background card index: whether a sync is running, the tree
+/// to sync next when it finishes, and which tree was last handed in.
+#[derive(Default)]
+struct CardJob {
+    running: bool,
+    next: Option<GavinTree>,
+    fingerprint: Option<u64>,
+}
+
+/// Which cards a tree holds and when each was last written. Two scans
+/// with the same fingerprint have the same cards to embed, so the second
+/// starts nothing. Whole seconds, like `modified_at`: an edit landing in
+/// the same second as the one before it is caught by the next search's
+/// own sync instead.
+fn tree_fingerprint(tree: &GavinTree) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tree.root_path.hash(&mut h);
+    for plan in tree.contexts.iter().flat_map(|c| &c.plans) {
+        (&plan.path, plan.modified_at, &plan.title).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// (path, id) for each card, and id -> passage once per distinct text:
+/// two cards that say the same thing share a row.
+fn card_rows(cards: &[(PlanFileInfo, String)]) -> (Vec<(String, String)>, HashMap<String, String>) {
+    let mut rows = Vec::with_capacity(cards.len());
+    let mut want = HashMap::new();
+    for (info, body) in cards {
+        let passage = card_passage(&info.title, body);
+        let id = passage_id(&passage);
+        rows.push((info.path.clone(), id.clone()));
+        want.insert(id, passage);
+    }
+    (rows, want)
 }
 
 /// The daemon's memory indexes, one SQLite file per workspace root.
@@ -326,8 +396,57 @@ impl Memories {
             model_dir,
             load,
             embedder: Mutex::new(None),
+            last_used: Mutex::new(None),
+            unloader: Mutex::new(false),
+            idle: MODEL_IDLE,
             download: Mutex::new(Download::Idle),
+            card_sync: Mutex::new(HashMap::new()),
+            card_jobs: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// `with_loader`, with the model dropped after `idle` rather than a
+    /// minute, so a test can watch it go.
+    #[cfg(test)]
+    fn with_idle(mut self, idle: std::time::Duration) -> Self {
+        Arc::get_mut(&mut self.0).expect("not shared yet").idle = idle;
+        self
+    }
+
+    /// Drops the model once nothing has used it for `idle`, on a thread
+    /// that lives only while a model is loaded. `try_lock`, because a
+    /// model in use is not idle whatever the clock says. The flag goes
+    /// down while the model's lock is still held, so a load racing the
+    /// drop always starts a watcher of its own.
+    fn unload_when_idle(&self) {
+        {
+            let mut running = self.0.unloader.lock().unwrap();
+            if *running {
+                return;
+            }
+            *running = true;
+        }
+        let weak = Arc::downgrade(&self.0);
+        let idle = self.0.idle;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(idle / 4);
+            let Some(inner) = weak.upgrade() else { return };
+            let last = *inner.last_used.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < idle) {
+                continue;
+            }
+            let dropped = match inner.embedder.try_lock() {
+                Ok(mut slot) => {
+                    *slot = None;
+                    *inner.unloader.lock().unwrap() = false;
+                    true
+                }
+                Err(_) => false,
+            };
+            if dropped {
+                return;
+            }
+        });
     }
 
     /// `try_lock`, because the lock is held for the whole of a download
@@ -354,8 +473,11 @@ impl Memories {
             let _ = std::fs::create_dir_all(&self.0.model_dir);
             let _ = std::fs::write(self.0.model_dir.join(READY_MARKER), MODEL_ID);
             *slot = Some(loaded);
+            self.unload_when_idle();
         }
-        f(slot.as_mut().expect("loaded above").as_mut())
+        let result = f(slot.as_mut().expect("loaded above").as_mut());
+        *self.0.last_used.lock().unwrap() = Some(std::time::Instant::now());
+        result
     }
 
     fn index_path(&self, root: &Path) -> PathBuf {
@@ -436,24 +558,43 @@ impl Memories {
         if stale.is_empty() && missing.is_empty() {
             return Ok(());
         }
-        let vectors = if missing.is_empty() {
-            Vec::new()
-        } else {
-            let passages: Vec<String> = missing.iter().map(|(_, m)| m.passage()).collect();
-            self.with_embedder(download, |e| e.embed(&passages))?
-        };
         let mut conn = self.open_index(root)?;
         let tx = conn.transaction()?;
         for id in stale {
             tx.execute("DELETE FROM memories WHERE id = ?1", [id])?;
         }
-        for ((id, m), v) in missing.iter().zip(vectors) {
-            tx.execute(
-                "INSERT OR REPLACE INTO memories (id, fact, vector) VALUES (?1, ?2, ?3)",
-                rusqlite::params![id, m.fact, to_blob(&normalized(v))],
-            )?;
-        }
         tx.commit()?;
+        let facts: HashMap<&String, &str> = missing.iter().map(|(id, m)| (*id, m.fact.as_str())).collect();
+        let items = missing.iter().map(|(id, m)| ((*id).clone(), m.passage())).collect();
+        self.embed_batches(items, download, |batch, vectors| {
+            let tx = conn.transaction()?;
+            for ((id, _), v) in batch.iter().zip(vectors) {
+                tx.execute(
+                    "INSERT OR REPLACE INTO memories (id, fact, vector) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, facts[id], to_blob(&normalized(v))],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Embeds `items` (id, passage) shortest first, `EMBED_BATCH` at a
+    /// time, handing each batch's vectors to `write` as they land -- so a
+    /// sync cut short keeps what it finished, and the next one embeds only
+    /// the rest.
+    fn embed_batches(
+        &self,
+        mut items: Vec<(String, String)>,
+        download: bool,
+        mut write: impl FnMut(&[(String, String)], Vec<Vec<f32>>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        items.sort_by_key(|(_, passage)| passage.len());
+        for batch in items.chunks(EMBED_BATCH) {
+            let passages: Vec<String> = batch.iter().map(|(_, p)| p.clone()).collect();
+            let vectors = self.with_embedder(download, |e| e.embed(&passages))?;
+            write(batch, vectors)?;
+        }
         Ok(())
     }
 
@@ -591,51 +732,99 @@ impl Memories {
     /// `sync_with` does for memories: drops what is no longer there,
     /// embeds what is new, and embeds nothing when nothing is.
     fn sync_cards(&self, root: &Path, want: &HashMap<String, String>) -> anyhow::Result<()> {
+        let lock = self.0.card_sync.lock().unwrap().entry(self.index_path(root)).or_default().clone();
+        let _one_at_a_time = lock.lock().map_err(|_| anyhow::anyhow!("card index lock poisoned"))?;
         let have = self.ids_in(root, "cards");
         let stale: Vec<&String> = have.iter().filter(|id| !want.contains_key(*id)).collect();
-        let missing: Vec<(&String, &String)> = want.iter().filter(|(id, _)| !have.contains(*id)).collect();
+        let missing: Vec<(String, String)> =
+            want.iter().filter(|(id, _)| !have.contains(*id)).map(|(id, p)| (id.clone(), p.clone())).collect();
         if stale.is_empty() && missing.is_empty() {
             return Ok(());
         }
-        let vectors = if missing.is_empty() {
-            Vec::new()
-        } else {
-            let passages: Vec<String> = missing.iter().map(|(_, p)| (*p).clone()).collect();
-            self.with_embedder(false, |e| e.embed(&passages))?
-        };
         let mut conn = self.open_index(root)?;
         let tx = conn.transaction()?;
         for id in stale {
             tx.execute("DELETE FROM cards WHERE id = ?1", [id])?;
         }
-        for ((id, _), v) in missing.iter().zip(vectors) {
-            tx.execute(
-                "INSERT OR REPLACE INTO cards (id, vector) VALUES (?1, ?2)",
-                rusqlite::params![id, to_blob(&normalized(v))],
-            )?;
-        }
         tx.commit()?;
-        Ok(())
+        self.embed_batches(missing, false, |batch, vectors| {
+            let tx = conn.transaction()?;
+            for ((id, _), v) in batch.iter().zip(vectors) {
+                tx.execute(
+                    "INSERT OR REPLACE INTO cards (id, vector) VALUES (?1, ?2)",
+                    rusqlite::params![id, to_blob(&normalized(v))],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
-    /// `root`'s cards nearest `query` in meaning, best first -- archived
-    /// ones included, every card when `limit` is None (up to
-    /// `MAX_CARD_HITS`). Brings the cards table up to the files first.
+    /// Brings `tree`'s cards into the index on a thread of its own: what
+    /// a watched workspace's every scan calls, so a search finds its cards
+    /// embedded rather than embedding them while an agent waits.
+    ///
+    /// Never downloads the model -- with none on disk this does nothing.
+    /// A tree whose fingerprint matches the last one handed in starts
+    /// nothing, and one arriving while a sync runs waits for it, replacing
+    /// any tree already waiting: only the newest is worth embedding.
+    pub fn index_cards_in_background(&self, tree: &GavinTree) {
+        if !self.model_present() {
+            return;
+        }
+        let key = self.index_path(Path::new(&tree.root_path));
+        let fingerprint = tree_fingerprint(tree);
+        let mut jobs = self.0.card_jobs.lock().unwrap();
+        let job = jobs.entry(key.clone()).or_default();
+        if job.fingerprint == Some(fingerprint) {
+            return;
+        }
+        job.fingerprint = Some(fingerprint);
+        if job.running {
+            job.next = Some(tree.clone());
+            return;
+        }
+        job.running = true;
+        drop(jobs);
+        let me = self.clone();
+        let tree = tree.clone();
+        std::thread::spawn(move || me.run_card_job(key, tree));
+    }
+
+    fn run_card_job(&self, key: PathBuf, mut tree: GavinTree) {
+        loop {
+            let root = PathBuf::from(&tree.root_path);
+            let (_, want) = card_rows(&crate::gavin::card_bodies(tree));
+            let result = self.sync_cards(&root, &want);
+            let mut jobs = self.0.card_jobs.lock().unwrap();
+            let job = jobs.entry(key.clone()).or_default();
+            if let Err(e) = result {
+                eprintln!("gavin-daemon: card index for {}: {e:#}", root.display());
+                // So the next scan tries again, even of the same tree.
+                job.fingerprint = None;
+            }
+            match job.next.take() {
+                Some(next) => tree = next,
+                None => {
+                    job.running = false;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `root`'s cards best first for `query` -- by meaning and by words,
+    /// fused (`card_rank`) -- archived ones included, every card when
+    /// `limit` is None (up to `MAX_CARD_HITS`). Each hit's score is its
+    /// cosine, so a later hit can carry a higher one. Brings the cards
+    /// table up to the files first.
     pub fn search_cards(&self, root: &Path, query: &str, limit: Option<u32>) -> anyhow::Result<Vec<CardHit>> {
         let query = query.trim();
         if query.is_empty() {
             anyhow::bail!("the query is empty -- say what you are looking for");
         }
-        // (path, id) per card, and id -> passage once per distinct text:
-        // two cards that say the same thing share a row.
-        let mut cards: Vec<(String, String)> = Vec::new();
-        let mut want: HashMap<String, String> = HashMap::new();
-        for (info, body) in crate::gavin::cards_with_bodies(root) {
-            let passage = card_passage(&info.title, &body);
-            let id = passage_id(&passage);
-            cards.push((info.path, id.clone()));
-            want.insert(id, passage);
-        }
+        let cards = crate::gavin::cards_with_bodies(root);
+        let (rows, want) = card_rows(&cards);
         if cards.is_empty() {
             // No cards is an answer, and needs no model -- leftovers from
             // cards since deleted go now, like an emptied `### Learned`.
@@ -648,17 +837,26 @@ impl Memories {
         self.sync_cards(root, &want)?;
         let qv = self.query_vector(query)?;
         let conn = self.open_index(root)?;
-        let mut stmt = conn.prepare("SELECT vector FROM cards WHERE id = ?1")?;
-        let mut hits = Vec::new();
-        for (path, id) in cards {
-            let Ok(blob) = stmt.query_row([&id], |r| r.get::<_, Vec<u8>>(0)) else { continue };
-            let v = from_blob(&blob);
-            if v.len() != qv.len() {
-                continue;
-            }
-            hits.push(CardHit { path, score: v.iter().zip(&qv).map(|(a, b)| a * b).sum() });
+        let vectors: HashMap<String, Vec<f32>> = conn
+            .prepare("SELECT id, vector FROM cards")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, from_blob(&r.get::<_, Vec<u8>>(1)?))))?
+            .filter_map(Result::ok)
+            .filter(|(_, v)| v.len() == qv.len())
+            .collect();
+        // Only cards with a vector take part: after the sync above that is
+        // every card, short of a write racing it.
+        let (mut ranked, mut meaning, mut texts) = (Vec::new(), Vec::new(), Vec::new());
+        for ((path, id), (info, body)) in rows.into_iter().zip(&cards) {
+            let Some(v) = vectors.get(&id) else { continue };
+            meaning.push(v.iter().zip(&qv).map(|(a, b)| a * b).sum::<f32>());
+            texts.push(crate::card_rank::lexical_text(&info.title, &info.file_name, body));
+            ranked.push(path);
         }
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let lexical = crate::card_rank::bm25(query, &texts);
+        let mut hits: Vec<CardHit> = crate::card_rank::fuse(&meaning, &lexical)
+            .into_iter()
+            .map(|i| CardHit { path: ranked[i].clone(), score: meaning[i] })
+            .collect();
         hits.truncate(limit.map(|l| (l as usize).max(1)).unwrap_or(MAX_CARD_HITS).min(MAX_CARD_HITS));
         Ok(hits)
     }
@@ -685,9 +883,35 @@ fn from_blob(b: &[u8]) -> Vec<f32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A `Memories` with the model "downloaded" and a word-hashing
+    /// embedder in its place, for tests outside this module, with the
+    /// number of passages it has embedded.
+    pub(crate) fn fake_memories(dir: &Path) -> (Memories, Arc<AtomicUsize>) {
+        let model_dir = dir.join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join(READY_MARKER), MODEL_ID).unwrap();
+        let embedded = Arc::new(AtomicUsize::new(0));
+        let e = embedded.clone();
+        let memories = Memories::with_loader(
+            dir.join("memory-index"),
+            model_dir,
+            Box::new(move |_| Ok(Box::new(Counting(e.clone())) as Box<dyn Embedder>)),
+        );
+        (memories, embedded)
+    }
+
+    /// Polls until `done` holds, for the background index's thread.
+    pub(crate) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 
     /// Bag of words hashed into a small space: texts that share words
     /// land near each other, which is all ranking needs to be tested --
@@ -1049,6 +1273,141 @@ mod tests {
         let err = f.memories.search_cards(&f.root, "login", None).unwrap_err().to_string();
         assert!(err.contains("Memory step"), "{err}");
         assert_eq!(f.loads.load(Ordering::SeqCst), 0);
+    }
+
+    /// What the model is handed, call by call: each call's passage lengths.
+    struct Recording(Arc<Mutex<Vec<Vec<usize>>>>);
+    impl Embedder for Recording {
+        fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+            self.0.lock().unwrap().push(texts.iter().map(String::len).collect());
+            Words.embed(texts)
+        }
+    }
+
+    #[test]
+    fn cards_are_embedded_shortest_first_in_batches_of_thirty_two() {
+        let dirs = tempfile::tempdir().unwrap();
+        let root = dirs.path().join("ws");
+        let model_dir = dirs.path().join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join(READY_MARKER), MODEL_ID).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let c = calls.clone();
+        let memories = Memories::with_loader(
+            dirs.path().join("memory-index"),
+            model_dir,
+            Box::new(move |_| Ok(Box::new(Recording(c.clone())) as Box<dyn Embedder>)),
+        );
+        // Lengths deliberately out of order on disk.
+        for i in 0..70 {
+            write_card(&root, &format!("c{i}.md"), &format!("Card {i}"), &"word ".repeat((i * 37) % 70));
+        }
+        memories.search_cards(&root, "word", None).unwrap();
+        let calls = calls.lock().unwrap();
+        let cards: Vec<&Vec<usize>> = calls.iter().filter(|c| c.len() > 1).collect();
+        assert_eq!(cards.iter().map(|c| c.len()).collect::<Vec<_>>(), vec![32, 32, 6], "{calls:?}");
+        let lengths: Vec<usize> = cards.iter().flat_map(|c| c.iter().copied()).collect();
+        assert!(lengths.windows(2).all(|w| w[0] <= w[1]), "shortest first: {lengths:?}");
+    }
+
+    #[test]
+    fn a_tree_handed_in_is_indexed_in_the_background_and_a_search_then_embeds_only_the_query() {
+        let f = fixture(true);
+        write_card(&f.root, "a.md", "Fix the login flow", "Redirect loops.");
+        write_card(&f.root, "archive/b.md", "Kanban polish", "Dragging cards.");
+        f.memories.index_cards_in_background(&crate::gavin::scan_root(&f.root));
+        eventually("two cards indexed", || f.memories.ids_in(&f.root, "cards").len() == 2);
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 2);
+        let hits = f.memories.search_cards(&f.root, "login", None).unwrap();
+        assert!(hits[0].path.ends_with("/a.md"), "{hits:?}");
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 3, "only the query");
+    }
+
+    #[test]
+    fn the_same_tree_twice_starts_nothing_and_a_new_card_embeds_only_itself() {
+        let f = fixture(true);
+        write_card(&f.root, "a.md", "Fix the login flow", "Redirect loops.");
+        let tree = crate::gavin::scan_root(&f.root);
+        f.memories.index_cards_in_background(&tree);
+        eventually("one card indexed", || f.memories.ids_in(&f.root, "cards").len() == 1);
+        f.memories.index_cards_in_background(&tree);
+        write_card(&f.root, "b.md", "Kanban polish", "Dragging cards.");
+        f.memories.index_cards_in_background(&crate::gavin::scan_root(&f.root));
+        eventually("two cards indexed", || f.memories.ids_in(&f.root, "cards").len() == 2);
+        // Let a stray second sync of the first tree show itself, if any.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(f.embedded.load(Ordering::SeqCst), 2, "each card once");
+    }
+
+    #[test]
+    fn nothing_is_indexed_in_the_background_without_a_model() {
+        let f = fixture(false);
+        write_card(&f.root, "a.md", "Fix the login flow", "");
+        f.memories.index_cards_in_background(&crate::gavin::scan_root(&f.root));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(f.loads.load(Ordering::SeqCst), 0, "no model loaded, none downloaded");
+        assert!(!f.memories.index_path(&f.root).exists());
+    }
+
+    /// The labelled queries in `test-fixtures/card-search/queries.json`
+    /// against THIS repo's own cards, through the real model and the
+    /// shipped ranking: the yardstick `card_rank`'s weights were chosen
+    /// by. Network for the weights, and it embeds every card in the repo,
+    /// so it runs only when asked -- `cargo test -p gavin-daemon --
+    /// --ignored real_bge_ranks`. A query whose card has since been
+    /// renamed or deleted fails by name; fix the table.
+    #[test]
+    #[ignore]
+    fn real_bge_ranks_this_repo_s_cards_for_the_labelled_queries() {
+        #[derive(serde::Deserialize)]
+        struct Query {
+            q: String,
+            expect: Vec<String>,
+        }
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let queries: Vec<Query> =
+            serde_json::from_str(include_str!("../../../test-fixtures/card-search/queries.json")).unwrap();
+        let dirs = tempfile::tempdir().unwrap();
+        let model_dir = std::env::var_os("GAVIN_TEST_MODEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs.path().join("models"));
+        let memories = Memories::with_loader(dirs.path().join("memory-index"), model_dir, Box::new(load_bge));
+        memories.with_embedder(true, |_| Ok(())).unwrap();
+        let names: HashSet<String> = crate::gavin::cards_with_bodies(&repo).into_iter().map(|(i, _)| i.file_name).collect();
+        let (mut mrr, mut first, mut top5, mut top10) = (0f32, 0, 0, 0);
+        for query in &queries {
+            for name in &query.expect {
+                assert!(names.contains(name), "{name} is no longer a card here -- fix the table");
+            }
+            let hits = memories.search_cards(&repo, &query.q, None).unwrap();
+            let rank = 1 + hits
+                .iter()
+                .position(|h| query.expect.iter().any(|n| h.path.ends_with(&format!("/{n}"))))
+                .unwrap();
+            eprintln!("{rank:>4}  {}", query.q);
+            mrr += 1.0 / rank as f32;
+            first += (rank == 1) as usize;
+            top5 += (rank <= 5) as usize;
+            top10 += (rank <= 10) as usize;
+        }
+        let n = queries.len();
+        mrr /= n as f32;
+        eprintln!("MRR {mrr:.3}  first {first}/{n}  top 5 {top5}/{n}  top 10 {top10}/{n}");
+        assert!(mrr >= 0.85, "MRR {mrr:.3}");
+        assert_eq!(top10, n, "every card a query means is in its top ten");
+    }
+
+    #[test]
+    fn an_idle_model_is_dropped_and_loaded_again_when_next_needed() {
+        let mut f = fixture(true);
+        f.memories = f.memories.with_idle(std::time::Duration::from_millis(40));
+        write_learned(&f.root, "CLAUDE.md", CORPUS);
+        f.memories.search(&f.root, "daemon", &[], None).unwrap();
+        assert_eq!(f.loads.load(Ordering::SeqCst), 1);
+        eventually("the model dropped", || f.memories.0.embedder.lock().unwrap().is_none());
+        assert!(f.memories.model_present(), "dropped is not deleted");
+        f.memories.search(&f.root, "daemon", &[], None).unwrap();
+        assert_eq!(f.loads.load(Ordering::SeqCst), 2);
     }
 
     /// The cards table arrived after the index did. `CREATE TABLE IF NOT

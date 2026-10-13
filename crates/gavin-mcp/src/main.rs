@@ -660,7 +660,7 @@ const NOT_IN_WORKSPACE: &str =
 fn tool_definitions() -> Value {
     json!([
         { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and every card still on its board — the canonical parse (kind, status, parent, checklist counts, complexity, warnings), one card per line, with fields that say nothing left off. Cards a human archived (plans/archive/) are left out and counted per context as archivedCards; gavin_find_cards searches them. To look up a few cards rather than read the whole board, use gavin_find_cards.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "gavin_find_cards", "description": "Find cards anywhere in this workspace, archived ones included, without reading the whole board. A query is ranked by meaning (title and the opening of the body), titles containing its words first, and the best `limit` come back; every other criterion you pass must also hold. The first search in a workspace embeds every card and can take a minute; later ones embed only what changed. Each card comes back on one line in gavin_get_tree's shape, plus archived: true on an archived card and a score when ranked by meaning. Use it to check whether work overlaps a card that exists or was already done, to look a card up by name, or to read back what you just wrote (parent: <plan file> lists a plan's children). Without a query it lists the matching cards newest first.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_find_cards", "description": "Find cards anywhere in this workspace, archived ones included, without reading the whole board. A query is ranked by meaning (title and the opening of the body) and by its words together, titles containing all its words first, and only the cards close to the best match come back (close says how many); every other criterion you pass must also hold. Each card comes back on one line in gavin_get_tree's shape, plus archived: true on an archived card and, when ranked by meaning, score — its similarity to the query, which the order also weighs words against. gavin keeps the index up in the background while the workspace is open in the app; in one that is not, the first search embeds every card and can take a minute. Use it to check whether work overlaps a card that exists or was already done, to look a card up by name, or to read back what you just wrote (parent: <plan file> lists a plan's children). Without a query it lists the matching cards newest first.", "inputSchema": { "type": "object", "properties": {
             "query": { "type": "string", "description": "What the card is about, in your own words" },
             "status": { "type": "string", "description": "Board column name, matched ignoring case and spacing. A nested task (no status of its own) matches its parent's" },
             "kind": { "type": "string", "enum": ["note", "task", "plan"] },
@@ -1250,9 +1250,10 @@ fn find_cards(root: &Path, args: &Value, transport: &mut dyn DaemonTransport) ->
     };
     let ranking = criteria.query.clone().map(|query| {
         match transport.request(&Request::SearchCards { root_path: root_str, query, limit: None }) {
-            Ok(Response::CardHits { hits }) => {
-                cards::Ranking::Meaning(hits.into_iter().map(|h| (h.path, h.score)).collect())
-            }
+            // The hits' order is the ranking; the score is only the cosine.
+            Ok(Response::CardHits { hits }) => cards::Ranking::Meaning(
+                hits.into_iter().enumerate().map(|(i, h)| (h.path, (i, h.score))).collect(),
+            ),
             Ok(Response::Error { message }) => cards::Ranking::Words { why: message },
             Ok(other) => cards::Ranking::Words { why: format!("unexpected response: {other:?}") },
             Err(e) => cards::Ranking::Words { why: gated_tool_error("ranking by meaning", &e) },
@@ -4312,20 +4313,23 @@ mod tests {
         v["cards"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect()
     }
 
+    /// The daemon's order is the ranking -- it fuses the query's words
+    /// in, so a hit can follow one with a lower cosine -- and a card far
+    /// below the best does not come back.
     #[test]
-    fn find_cards_ranks_by_the_daemon_s_scores_when_it_has_them() {
+    fn find_cards_keeps_the_daemon_s_order_and_drops_what_is_far_below_the_best() {
         let mut t = mock(vec![
             Response::GavinTreeScanned { tree: two_card_tree() },
             Response::CardHits {
                 hits: vec![
-                    protocol::CardHit { path: "/ws/.gavin-root/plans/archive/filed.md".into(), score: 0.9 },
-                    protocol::CardHit { path: "/ws/.gavin-root/plans/b.md".into(), score: 0.5 },
-                    protocol::CardHit { path: "/ws/.gavin-root/plans/a.md".into(), score: 0.4 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/b.md".into(), score: 0.74 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/archive/filed.md".into(), score: 0.80 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/a.md".into(), score: 0.60 },
                 ],
             },
         ]);
-        let text = call_with("gavin_find_cards", json!({ "query": "put away", "limit": 2 }), &mut t);
-        assert_eq!(found_titles(&text), vec!["Filed away", "Card B"], "{text}");
+        let text = call_with("gavin_find_cards", json!({ "query": "put away" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card B", "Filed away"], "{text}");
         assert!(text.contains(r#""search": "meaning""#), "{text}");
         match &t.requests[1] {
             Request::SearchCards { root_path, query, limit } => {

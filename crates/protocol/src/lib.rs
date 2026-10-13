@@ -85,7 +85,9 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// v71 ranks a workspace's cards by meaning (`opts-gavin-get-tree-archived-
 /// cards.md`): `SearchCards`, gavin-mcp's `gavin_find_cards`, embeds every
 /// card's title and opening body into the same per-root index the adopted
-/// memories live in and scores them against a query. One new TYPE, so
+/// memories live in, and orders them for a query by that and by the
+/// query's words (`opts-find-cards-background-index-precision.md`). One
+/// new TYPE, so
 /// `min_version_for` is its whole wire gate; its only sender is gavin-mcp,
 /// which reads the gate's refusal as "match words instead", so no
 /// daemonCompat.ts entry is owed.
@@ -1300,12 +1302,14 @@ pub enum Request {
         #[serde(default)]
         limit: Option<u32>,
     },
-    /// The root's cards nearest `query` in meaning (v71), gavin-mcp's
-    /// `gavin_find_cards`. Every card of the tree `ScanGavinRoot` returns,
-    /// archived ones included, best first; `limit` caps the answer, and
-    /// without one it is every card. Embeds whatever card is new or edited
-    /// since the last search first; like `SearchMemories`, it refuses
-    /// rather than download a model the human has not fetched.
+    /// The root's cards ranked for `query` (v71), gavin-mcp's
+    /// `gavin_find_cards`: every card of the tree `ScanGavinRoot` returns,
+    /// archived ones included, best first by meaning and words fused;
+    /// `limit` caps the answer, and without one it is every card. Embeds
+    /// whatever card is new or edited since the index last saw it first
+    /// -- a watched root is kept up in the background, so usually none;
+    /// like `SearchMemories`, it refuses rather than download a model the
+    /// human has not fetched.
     SearchCards {
         root_path: String,
         query: String,
@@ -3703,12 +3707,15 @@ pub struct MemoryHit {
 }
 
 /// One card a `SearchCards` returned (v71): the card's path exactly as
-/// the tree spells it, so the caller joins it back onto the scan.
+/// the tree spells it, so the caller joins it back onto the scan. The
+/// hits' ORDER is the ranking.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CardHit {
     pub path: String,
-    /// Cosine similarity to the query, -1..1.
+    /// Cosine similarity to the query, -1..1. Not the order: the daemon
+    /// fuses the query's words in, so a hit can follow one with a lower
+    /// score.
     pub score: f32,
 }
 

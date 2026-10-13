@@ -12,8 +12,9 @@
 //! - a card is one line, without the fields that say nothing (null,
 //!   false, empty), so a long answer still greps one card per hit;
 //! - `gavin_find_cards` reaches the whole tree, archive included, ranked
-//!   by meaning when the daemon's card index can (v71) and by words when
-//!   it cannot, and returns only what matches.
+//!   by meaning and words when the daemon's card index can (v71) and by
+//!   words alone when it cannot, and returns only the cards close to the
+//!   best match.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,6 +38,15 @@ pub fn is_archived(plan: &PlanFileInfo) -> bool {
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 200;
+
+/// How far below the best card's cosine a card may score and still come
+/// back. Measured on this repo's 624 cards with the labelled queries in
+/// `test-fixtures/card-search/queries.json`: within 0.05 of the best,
+/// 3.3 cards came back on average and the card a query meant was among
+/// them for 37 of 40 queries; within 0.08, 9 cards and 39 of 40; within
+/// 0.10, 17 cards -- most of a default page -- and all 40. The one 0.08
+/// loses was a query whose best card is a near twin of the card it named.
+const CLOSE_TO_BEST: f32 = 0.08;
 
 // ---------- the line shape ----------
 
@@ -325,8 +335,10 @@ impl Criteria {
 
 /// How a query was matched.
 pub enum Ranking {
-    /// The daemon's card index answered: similarity by path.
-    Meaning(HashMap<String, f32>),
+    /// The daemon's card index answered: for each path, its place in the
+    /// daemon's order (meaning and words fused, best first) and its
+    /// cosine to the query.
+    Meaning(HashMap<String, (usize, f32)>),
     /// It could not -- an older daemon, a model never downloaded -- so
     /// the query matched words instead, and `why` says what stopped it.
     Words { why: String },
@@ -347,6 +359,9 @@ struct FoundView<'a> {
     /// How many cards a search by meaning picked its best from.
     #[serde(skip_serializing_if = "Option::is_none")]
     ranked: Option<usize>,
+    /// How many of those were close enough to the best to come back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    close: Option<usize>,
     cards: Vec<CardView<'a>>,
 }
 
@@ -385,7 +400,7 @@ pub fn find(tree: &GavinTree, criteria: &Criteria, ranking: Option<Ranking>) -> 
     let wanted_parent = criteria.parent.as_deref().map(parent_key);
     let wanted_label = criteria.label.as_deref().map(str::to_lowercase);
 
-    let mut found: Vec<(&PlanFileInfo, bool, Option<f32>)> = Vec::new();
+    let mut found: Vec<(&PlanFileInfo, bool, Option<(usize, f32)>)> = Vec::new();
     for ctx in &tree.contexts {
         // Per CONTEXT, on file_name: the key the board nests on.
         let plan_status: HashMap<&str, Option<&str>> = ctx
@@ -430,7 +445,7 @@ pub fn find(tree: &GavinTree, criteria: &Criteria, ranking: Option<Ranking>) -> 
             }
             let literal = !words.is_empty() && words_match(plan, &words);
             let score = match &ranking {
-                Some(Ranking::Meaning(scores)) => scores.get(&plan.path).copied(),
+                Some(Ranking::Meaning(hits)) => hits.get(&plan.path).copied(),
                 _ => None,
             };
             let keep = match &ranking {
@@ -448,10 +463,11 @@ pub fn find(tree: &GavinTree, criteria: &Criteria, ranking: Option<Ranking>) -> 
 
     match &ranking {
         // Words the agent typed beat a near meaning: a title that says
-        // it outright is the card they named.
+        // it outright is the card they named. The rest keep the daemon's
+        // order, which is not the cosine's -- words are fused into it.
         Some(Ranking::Meaning(_)) => found.sort_by(|a, b| {
             b.1.cmp(&a.1)
-                .then(b.2.unwrap_or(f32::MIN).total_cmp(&a.2.unwrap_or(f32::MIN)))
+                .then(a.2.map_or(usize::MAX, |s| s.0).cmp(&b.2.map_or(usize::MAX, |s| s.0)))
                 .then_with(|| a.0.path.cmp(&b.0.path))
         }),
         _ => found.sort_by_key(|(p, _, _)| (Reverse(p.modified_at.unwrap_or(i64::MIN)), p.path.clone())),
@@ -459,9 +475,21 @@ pub fn find(tree: &GavinTree, criteria: &Criteria, ranking: Option<Ranking>) -> 
 
     let matched = found.len();
     let by_meaning = matches!(ranking, Some(Ranking::Meaning(_)));
+    // Only the cards close to the best match, measured against the best of
+    // the cards the other criteria left -- not of the whole workspace -- so
+    // a filter narrows the field before the cut is made. A literal title
+    // match always stays.
+    if by_meaning {
+        let best = found.iter().filter_map(|(_, _, s)| s.map(|s| s.1)).fold(f32::MIN, f32::max);
+        found.retain(|(_, literal, s)| *literal || s.is_some_and(|s| s.1 >= best - CLOSE_TO_BEST));
+    }
+    let close = found.len();
     let mut notes = Vec::new();
     if let Some(Ranking::Words { why }) = &ranking {
         notes.push(format!("matched words in titles and file names, not meaning: {why}"));
+    }
+    if by_meaning && close > criteria.limit {
+        notes.push(format!("showing the best {} of {close} — raise limit (at most {MAX_LIMIT}) for more", criteria.limit));
     }
     if !by_meaning && matched > criteria.limit {
         notes.push(format!(
@@ -477,11 +505,12 @@ pub fn find(tree: &GavinTree, criteria: &Criteria, ranking: Option<Ranking>) -> 
         note: (!notes.is_empty()).then(|| notes.join(" — ")),
         matched: (!by_meaning).then_some(matched),
         ranked: by_meaning.then_some(matched),
+        close: by_meaning.then_some(close),
         cards: found
             .into_iter()
             .take(criteria.limit)
             .map(|(plan, _, score)| CardView {
-                score: score.map(|s| (s * 100.0).round() / 100.0),
+                score: score.map(|s| (s.1 * 100.0).round() / 100.0),
                 ..CardView::of(plan)
             })
             .collect(),
@@ -846,32 +875,60 @@ mod tests {
         assert_eq!(titles(&v), vec!["Kanban drag bug"]);
     }
 
+    /// The daemon's answer: paths in its order, each with its cosine.
+    fn meaning(hits: &[(&str, f32)]) -> Option<Ranking> {
+        Some(Ranking::Meaning(
+            hits.iter().enumerate().map(|(i, (file, cos))| (format!("{P}/{file}"), (i, *cos))).collect(),
+        ))
+    }
+
     #[test]
-    fn by_meaning_a_title_that_says_it_outright_comes_first_then_the_scores() {
-        let scores: HashMap<String, f32> = [
-            (format!("{P}/auth-rework.md"), 0.91),
-            (format!("{P}/login-flow.md"), 0.62),
-            (format!("{P}/kanban-drag.md"), 0.30),
-            (format!("{P}/archive/old-login.md"), 0.84),
+    fn by_meaning_a_title_that_says_it_outright_comes_first_then_the_daemon_s_order() {
+        let ranking = meaning(&[
+            ("auth-rework.md", 0.80),
+            ("archive/old-login.md", 0.84),
+            ("kanban-drag.md", 0.78),
+            ("login-flow.md", 0.79),
             // idea.md has no score: past the index's cap, say.
-        ]
-        .into_iter()
-        .collect();
-        let v = found(&find(
-            &workspace(),
-            &criteria(json!({ "query": "login" })),
-            Some(Ranking::Meaning(scores)),
-        ));
+        ]);
+        let v = found(&find(&workspace(), &criteria(json!({ "query": "login" })), ranking));
         assert_eq!(v["search"], "meaning");
         assert!(v.get("note").is_none());
-        assert_eq!(v["ranked"], 5);
+        assert_eq!((v["ranked"].clone(), v["close"].clone()), (json!(5), json!(5)));
         assert!(v.get("matched").is_none(), "every card is scored, so none 'matched'");
+        // Rework auth before Kanban drag although its cosine is the
+        // lower: the daemon fused words into its order, and that order is
+        // the ranking.
         assert_eq!(
             titles(&v),
             vec!["Old login page", "Fix the login flow", "Login idea", "Rework auth", "Kanban drag bug"]
         );
         assert_eq!(v["cards"][0]["score"], json!(0.84), "rounded to two places");
         assert!(v["cards"][2].get("score").is_none(), "a literal hit with no score is kept");
+    }
+
+    #[test]
+    fn only_the_cards_close_to_the_best_come_back_and_a_literal_title_always_does() {
+        let ranking = || {
+            meaning(&[
+                ("auth-rework.md", 0.70),
+                ("kanban-drag.md", 0.66),
+                ("login-flow.md", 0.50),
+                ("archive/old-login.md", 0.45),
+                ("idea.md", 0.30),
+            ])
+        };
+        let v = found(&find(&workspace(), &criteria(json!({ "query": "login idea" })), ranking()));
+        assert_eq!(titles(&v), vec!["Login idea", "Rework auth", "Kanban drag bug"]);
+        assert_eq!((v["ranked"].clone(), v["close"].clone()), (json!(5), json!(3)));
+        // The best is the best of what the other criteria left: alone in
+        // the archive, a weak card is still the closest one there.
+        let v = found(&find(&workspace(), &criteria(json!({ "query": "page", "archived": "only" })), ranking()));
+        assert_eq!(titles(&v), vec!["Old login page"]);
+        // And a page shorter than the close cards says so.
+        let v = found(&find(&workspace(), &criteria(json!({ "query": "auth", "limit": 1 })), ranking()));
+        assert_eq!(titles(&v), vec!["Rework auth"]);
+        assert!(v["note"].as_str().unwrap().contains("best 1 of 2"), "{v}");
     }
 
     #[test]

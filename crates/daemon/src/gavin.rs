@@ -2189,8 +2189,13 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
 /// the scan to read, or one whose frontmatter never closes, comes back
 /// with an empty body: its title is all anything here knows of it.
 pub fn cards_with_bodies(root: &Path) -> Vec<(PlanFileInfo, String)> {
-    scan_root(root)
-        .contexts
+    card_bodies(scan_root(root))
+}
+
+/// `cards_with_bodies` for a tree already scanned -- what a watcher's
+/// scan hands the background card index, rather than scanning again.
+pub fn card_bodies(tree: GavinTree) -> Vec<(PlanFileInfo, String)> {
+    tree.contexts
         .into_iter()
         .flat_map(|ctx| ctx.plans)
         .map(|info| {
