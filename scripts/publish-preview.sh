@@ -114,7 +114,8 @@ fi
 # mkdir is atomic, so two runs cannot both take it. A lock whose pid is gone
 # was left by a run that was killed, and is taken over rather than obeyed.
 LOCK="$WORKTREE.lock"
-take_lock() { mkdir -p "$(dirname -- "$LOCK")" && mkdir "$LOCK" 2>/dev/null && echo $$ > "$LOCK/pid"; }
+mkdir -p "$(dirname -- "$LOCK")" 2>/dev/null || die "cannot create $(dirname -- "$LOCK") for the lock. Pass --worktree."
+take_lock() { mkdir "$LOCK" 2>/dev/null && echo $$ > "$LOCK/pid"; }
 if ! take_lock; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || true)
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
