@@ -85,6 +85,23 @@ export function tauriArgs(args, build) {
   ];
 }
 
+/// The program Tauri builds the app with when the caller named one
+/// (`--runner cargo-xwin`, `-r cargo-xwin`, `--runner=cargo-xwin`), from the
+/// Tauri half of the arguments. stage-sidecars.mjs builds the sidecars with
+/// the same one, and the CLI does not pass it on to `beforeBuildCommand`
+/// itself -- only the target triple -- so main() hands it over as
+/// `GAVIN_CARGO_RUNNER`.
+export function runnerOf(args) {
+  const split = args.indexOf("--");
+  const forTauri = split === -1 ? args : args.slice(0, split);
+  for (let i = 0; i < forTauri.length; i++) {
+    const a = forTauri[i];
+    if (a === "--runner" || a === "-r") return forTauri[i + 1];
+    if (a.startsWith("--runner=")) return a.slice("--runner=".length);
+  }
+  return undefined;
+}
+
 function runGit(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
@@ -107,10 +124,17 @@ function main() {
   // node_modules/.bin/tauri: on Windows that is a .cmd, which only a shell
   // can start, and a shell would re-parse the JSON overlay's quotes.
   const cli = join(app, "node_modules", "@tauri-apps", "cli", "tauri.js");
-  const res = spawnSync(process.execPath, [cli, ...tauriArgs(process.argv.slice(2), build)], {
+  const args = process.argv.slice(2);
+  const env = { ...process.env, GAVIN_BUILD_NUMBER: build };
+  // Always this build's runner or none, never one left in the caller's
+  // environment by an earlier build.
+  delete env.GAVIN_CARGO_RUNNER;
+  const runner = runnerOf(args);
+  if (runner) env.GAVIN_CARGO_RUNNER = runner;
+  const res = spawnSync(process.execPath, [cli, ...tauriArgs(args, build)], {
     cwd: app,
     stdio: "inherit",
-    env: { ...process.env, GAVIN_BUILD_NUMBER: build },
+    env,
   });
   if (res.error) {
     console.error(`bundle: could not run the Tauri CLI (${res.error.message})`);

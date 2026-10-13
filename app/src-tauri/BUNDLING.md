@@ -118,6 +118,44 @@ A Windows build host needs Git for Windows (which the app requires at
 runtime anyway, see the windows-port card), the MSVC build tools, and
 WebView2 — present on Windows 11 and on any updated Windows 10.
 
+## Cross-compiling the Windows installer on a Mac
+
+The Preview build (`scripts/publish-preview.sh`, docs/RELEASING.md) cuts
+the Windows setup `.exe` on the same Mac as the `.dmg`, by Tauri's
+documented route:
+
+```
+LC_ALL=en_US.UTF-8 node src-tauri/bundle.mjs --runner cargo-xwin --target x86_64-pc-windows-msvc
+```
+
+It needs `cargo install --locked cargo-xwin` (which fetches the MSVC CRT
+and Windows SDK into `~/Library/Caches/cargo-xwin` on first use),
+`brew install llvm makensis`, and `rustup target add
+x86_64-pc-windows-msvc`. Output lands in
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/`, unsigned.
+
+**The sidecars follow the target, not the host.** The CLI hands
+`beforeBuildCommand` the triple it builds for as `TAURI_ENV_TARGET_TRIPLE`,
+and `externalBin` looks the sidecars up under that triple — so
+`stage-sidecars.mjs` stages them under it. When it differs from `rustc
+-vV`'s host it builds them with `--target` (cargo then leaves them in
+`target/<triple>/release/`) and through the same runner as the app:
+`bundle.mjs` passes Tauri's `--runner` on as `GAVIN_CARGO_RUNNER`, because
+the CLI does not, and a plain `cargo` cannot link for msvc on a Mac. A
+native bundle has target == host and builds exactly as before.
+
+**`LC_ALL`.** Homebrew's `makensis` (3.12 and 3.13) aborts with
+`std::bad_alloc` on the first `Exch` or `Pop` it compiles under the C
+locale, which is what a shell with no `LANG` runs in. Under a UTF-8 locale
+it builds the installer normally.
+
+**Checking the result.** `file` reports a *PE32* executable: every NSIS
+installer is a 32-bit stub, whatever it installs. The 64-bit check is on
+the payload — `7zz l` (`brew install sevenzip`) lists `Gavin.exe`,
+`gavin-daemon.exe` and `gavin-mcp.exe`, and each unpacks as PE32+ x86-64.
+`hooks.nsh` is compiled in exactly as on Windows; what it does on install
+is still only provable by installing it there.
+
 ## Windows: the install directory and the daemon
 
 `nsis/hooks.nsh` is merged into Tauri's generated `installer.nsi` through

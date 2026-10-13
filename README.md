@@ -211,17 +211,43 @@ shape it in [`docs/adr/`](docs/adr/).
 
 ## Install
 
-Gavin builds from source. The install scripts build a release from
-`main`'s tip in a worktree of its own, so the installed app never points
-back at your checkout — editing or rebuilding the dev tree leaves it
-alone, and the release daemon keeps its own socket beside a dev one.
+### Download the Preview build
+
+Gavin has no signed release yet. The **Preview build** is the current
+`main`, as unsigned installers on one rolling
+[pre-release](https://github.com/Calfredop/gavin/releases/tag/preview)
+that each publish replaces:
+
+- **macOS (Apple silicon):** [`Gavin-preview-macos-arm64.dmg`](https://github.com/Calfredop/gavin/releases/download/preview/Gavin-preview-macos-arm64.dmg).
+  Open it and drag Gavin into Applications. It is not signed by Apple,
+  so clear the quarantine flag before the first launch:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Gavin.app
+  ```
+
+- **Windows (x64):** [`Gavin-preview-windows-x64-setup.exe`](https://github.com/Calfredop/gavin/releases/download/preview/Gavin-preview-windows-x64-setup.exe).
+  It is not signed either, so SmartScreen stops it: choose **More info**,
+  then **Run anyway**. Gavin on Windows needs Git for Windows and the
+  WebView2 runtime (Windows 11 ships it).
+
+The release notes name the commit and build number each one came from.
+There is no auto-update for a Preview build: download it again for a
+newer one.
+
+### Build from source
+
+The install scripts build a release from `main`'s tip in a worktree of
+its own, so the installed app never points back at your checkout —
+editing or rebuilding the dev tree leaves it alone, and the release
+daemon keeps its own socket beside a dev one.
 
 **Prerequisites:** Rust (stable, via [rustup](https://rustup.rs)) and
 Node.js 22 + npm. On macOS, the Xcode command line tools
 (`xcode-select --install`). On Windows, the MSVC Rust toolchain and the
 WebView2 runtime (Windows 11 ships it).
 
-### macOS
+#### macOS
 
 ```bash
 scripts/install-release-mac.sh --open
@@ -233,7 +259,7 @@ upgrade. Options: `--ref REV` to build another commit, `--dest DIR` to
 install elsewhere, `--worktree DIR` to move the build, `--skip-build` to
 reinstall the last build.
 
-### Windows
+#### Windows
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-windows-installer.ps1 -Release

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildNumber, tauriArgs, versionOverlay } from "./bundle.mjs";
+import { buildNumber, runnerOf, tauriArgs, versionOverlay } from "./bundle.mjs";
 
 const OVERLAY = JSON.stringify(versionOverlay("42"));
 
@@ -78,5 +78,18 @@ describe("tauriArgs", () => {
       "--offline",
     ]);
     expect(tauriArgs(["--", "--offline"], "42").slice(5)).toEqual(["--", "--locked", "--offline"]);
+  });
+});
+
+describe("runnerOf", () => {
+  it("is Tauri's --runner in each spelling", () => {
+    expect(runnerOf(["--runner", "cargo-xwin", "--target", "x86_64-pc-windows-msvc"])).toBe("cargo-xwin");
+    expect(runnerOf(["-r", "cargo-xwin"])).toBe("cargo-xwin");
+    expect(runnerOf(["--runner=cargo-xwin"])).toBe("cargo-xwin");
+  });
+
+  it("is nothing when no runner was named, or only cargo's half names one", () => {
+    expect(runnerOf(["--bundles", "app"])).toBeUndefined();
+    expect(runnerOf(["--", "--runner", "x"])).toBeUndefined();
   });
 });

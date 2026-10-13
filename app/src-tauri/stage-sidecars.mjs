@@ -30,57 +30,90 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, chmodSync, mkdirSync, renameSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const release = process.argv.includes("--release");
-const profileDir = release ? "release" : "debug";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..", "..");
-const targetDir = process.env.CARGO_TARGET_DIR ?? join(root, "target");
-
-// `rustc -vV`'s host line is the triple Tauri appends; asking rustc rather
-// than guessing from the platform is what keeps this right on an Apple
-// Silicon mac (aarch64-apple-darwin), across a glibc/musl split on Linux,
-// and between msvc and gnu on Windows.
-const version = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
-const triple = version.match(/^host: (.+)$/m)?.[1];
-if (!triple) {
-  console.error("stage-sidecars: could not read the host triple from `rustc -vV`");
-  process.exit(1);
+/// The sidecar build for one bundle: which program builds them, with which
+/// arguments, where cargo leaves them and the triple they are staged under.
+///
+/// The triple is Tauri's TARGET, not this machine's: the CLI hands its
+/// `beforeBuildCommand` the triple it is building for as
+/// `TAURI_ENV_TARGET_TRIPLE`, and `externalBin` looks the sidecars up under
+/// that same triple. A native bundle has target == host and builds exactly
+/// as it always did -- no `--target`, out of `target/<profile>/`. A cross
+/// bundle (`--target x86_64-pc-windows-msvc` on a Mac) builds them with
+/// `--target`, so cargo leaves them in `target/<triple>/<profile>/`, and
+/// through the same runner the app itself is built with: Tauri's
+/// `--runner cargo-xwin` reaches this script as `GAVIN_CARGO_RUNNER`
+/// (bundle.mjs sets it), because a plain `cargo` cannot link for msvc here.
+export function sidecarBuild({ host, target, runner, release, root, targetDir }) {
+  const triple = target || host;
+  const cross = triple !== host;
+  const profileDir = release ? "release" : "debug";
+  return {
+    triple,
+    // The extension Windows needs on an executable, which `externalBin`
+    // keeps AFTER the triple it appends. The target's, not the host's.
+    exe: triple.includes("-windows-") ? ".exe" : "",
+    command: runner || "cargo",
+    // `--locked`: the two binaries that ship inside the bundle are built
+    // from exactly the dependency versions Cargo.lock names, or the build
+    // fails. Without it a manifest edit that no longer matches the lockfile
+    // is silently re-resolved, and a release nobody can reproduce from the
+    // tag is a release nobody can audit.
+    args: [
+      "build", "--locked", ...(release ? ["--release"] : []),
+      "--manifest-path", join(root, "Cargo.toml"),
+      ...(cross ? ["--target", triple] : []),
+      "-p", "gavin-daemon", "-p", "gavin-mcp",
+    ],
+    outDir: cross ? join(targetDir, triple, profileDir) : join(targetDir, profileDir),
+  };
 }
 
-// The extension Windows needs on an executable, and which `externalBin`
-// keeps AFTER the triple it appends.
-const exe = process.platform === "win32" ? ".exe" : "";
+function main() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = join(here, "..", "..");
 
-// `--locked`: the two binaries that ship inside the bundle are built from
-// exactly the dependency versions Cargo.lock names, or the build fails.
-// Without it a manifest edit that no longer matches the lockfile is
-// silently re-resolved, and a release nobody can reproduce from the tag is
-// a release nobody can audit.
-execFileSync(
-  "cargo",
-  ["build", "--locked", ...(release ? ["--release"] : []), "--manifest-path", join(root, "Cargo.toml"),
-   "-p", "gavin-daemon", "-p", "gavin-mcp"],
-  { stdio: "inherit" }
-);
-
-const binaries = join(here, "binaries");
-mkdirSync(binaries, { recursive: true });
-
-for (const bin of ["gavin-daemon", "gavin-mcp"]) {
-  const src = join(targetDir, profileDir, `${bin}${exe}`);
-  if (!existsSync(src)) {
-    console.error(`stage-sidecars: ${src} is missing after a successful cargo build`);
+  // `rustc -vV`'s host line, rather than a guess from the platform, is what
+  // keeps this right on an Apple Silicon mac (aarch64-apple-darwin), across
+  // a glibc/musl split on Linux, and between msvc and gnu on Windows.
+  const version = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
+  const host = version.match(/^host: (.+)$/m)?.[1];
+  if (!host) {
+    console.error("stage-sidecars: could not read the host triple from `rustc -vV`");
     process.exit(1);
   }
-  // Copy to a temporary name and move it into place: overwriting a binary
-  // that a previous `tauri dev` still has running is ETXTBSY on Linux and a
-  // sharing violation on Windows, while a rename over it is neither.
-  const staged = join(binaries, `${bin}-${triple}${exe}`);
-  const tmp = `${staged}.tmp`;
-  copyFileSync(src, tmp);
-  if (process.platform !== "win32") chmodSync(tmp, 0o755);
-  renameSync(tmp, staged);
+
+  const build = sidecarBuild({
+    host,
+    target: process.env.TAURI_ENV_TARGET_TRIPLE,
+    runner: process.env.GAVIN_CARGO_RUNNER,
+    release: process.argv.includes("--release"),
+    root,
+    targetDir: process.env.CARGO_TARGET_DIR ?? join(root, "target"),
+  });
+  execFileSync(build.command, build.args, { stdio: "inherit" });
+
+  const binaries = join(here, "binaries");
+  mkdirSync(binaries, { recursive: true });
+
+  for (const bin of ["gavin-daemon", "gavin-mcp"]) {
+    const src = join(build.outDir, `${bin}${build.exe}`);
+    if (!existsSync(src)) {
+      console.error(`stage-sidecars: ${src} is missing after a successful cargo build`);
+      process.exit(1);
+    }
+    // Copy to a temporary name and move it into place: overwriting a binary
+    // that a previous `tauri dev` still has running is ETXTBSY on Linux and a
+    // sharing violation on Windows, while a rename over it is neither.
+    const staged = join(binaries, `${bin}-${build.triple}${build.exe}`);
+    const tmp = `${staged}.tmp`;
+    copyFileSync(src, tmp);
+    if (process.platform !== "win32") chmodSync(tmp, 0o755);
+    renameSync(tmp, staged);
+  }
 }
+
+// Only when run as a program. The tests beside this file import
+// `sidecarBuild`, and importing must not build anything.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
