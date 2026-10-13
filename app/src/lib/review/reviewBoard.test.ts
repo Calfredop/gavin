@@ -70,7 +70,7 @@ function candidate(
   title: string,
   files: string[] | null,
   over: Partial<CardView> = {},
-  measured: Partial<Pick<ReviewCandidate, "checkout" | "baseSha">> = {}
+  measured: Partial<Pick<ReviewCandidate, "checkout" | "baseSha" | "source">> = {}
 ): ReviewCandidate {
   // One checkout and no baseline unless a test says otherwise: the
   // default is the ordinary board, where cards were measured in the same
@@ -365,6 +365,24 @@ describe("groupCandidates", () => {
     expect(groups[0].label).toBe(SAME_BASELINE_LABEL);
     expect(groups[0].hint).toContain("same commit");
     expect(groups[0].files).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("treats files a transcript narrowed as a real collision, baseline or not", () => {
+    // Each card's files are its own agent's edits, so two cards from one
+    // commit that both list a.ts both wrote it.
+    const groups = groupCandidates([
+      candidate("A", ["a.ts"], {}, { checkout: "/repo", baseSha: "same", source: "transcript" }),
+      candidate("B", ["a.ts", "b.ts"], {}, { checkout: "/repo", baseSha: "same", source: "transcript" }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("a.ts, b.ts");
+    expect(groups[0].hint).toBeNull();
+    // ...and a card that edited something else entirely is apart.
+    const apart = groupCandidates([
+      candidate("A", ["a.ts"], {}, { checkout: "/repo", baseSha: "same", source: "transcript" }),
+      candidate("B", ["b.ts"], {}, { checkout: "/repo", baseSha: "same", source: "transcript" }),
+    ]);
+    expect(apart).toHaveLength(2);
   });
 
   it("names files when the group holds more than one baseline", () => {

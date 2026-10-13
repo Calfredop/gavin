@@ -1491,6 +1491,25 @@ export function conversationLog(
   return invoke("conversation_log", { profileId, conversationId });
 }
 
+/// Mirrors `TouchReport` in `agent_edits.rs`.
+export type TouchReport =
+  | { kind: "ready"; paths: string[] }
+  | { kind: "unavailable"; reason: string };
+
+/// Which of `candidates` -- root-relative paths under `root`, the
+/// checkout `gitRunChanges` resolved -- one run's agent touched, read out
+/// of its transcript the way `cardRunTokens` reads its cost. `cwd` is the
+/// run's launch directory, which relative paths in the transcript are
+/// taken against.
+export function cardRunTouchedFiles(
+  conversationId: string | null,
+  cwd: string,
+  root: string,
+  candidates: string[]
+): Promise<TouchReport> {
+  return invoke("card_run_touched_files", { conversationId, cwd, root, candidates });
+}
+
 export function deleteBoard(workspaceId: string): Promise<void> {
   return invoke("delete_board", { workspaceId });
 }

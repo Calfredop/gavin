@@ -1,3 +1,4 @@
+mod agent_edits;
 mod agent_models;
 mod agent_playwright;
 mod agent_setup;
@@ -294,6 +295,7 @@ pub fn run() {
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
             agent_tokens::conversation_log,
+            agent_edits::card_run_touched_files,
             session::get_launch_config,
             session::set_launch_config,
             session::get_custom_resume_args,

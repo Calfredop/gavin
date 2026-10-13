@@ -26,7 +26,12 @@ import { get, writable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { changesProblem } from "$lib/cards/runChanges";
-import { isRailSubjectId, railReviewBaseline, railSubjectId } from "$lib/review/reviewBoard";
+import {
+  isRailSubjectId,
+  railReviewBaseline,
+  railSubjectId,
+  type TouchSource,
+} from "$lib/review/reviewBoard";
 import { attributeRun } from "$lib/cards/changeAttributionState";
 
 /// How many `git diff`s may be in flight at once. Four rather than one
@@ -52,6 +57,12 @@ export interface TouchRequest {
   cwd: string;
   baseSha: string;
   peers: string[];
+  /// The run's conversation id, when its transcript may be read on this
+  /// machine -- see `narrowToTranscript`. Absent for a rail (many runs,
+  /// no one conversation) and for an ssh workspace, whose agent wrote its
+  /// transcript on the host. Not part of the cache key: it changes only
+  /// on a re-launch, which moves the baseline too.
+  conversationId?: string | null;
 }
 
 /// A rail's combined checkout diff as a `TouchRequest`, or null when
@@ -98,6 +109,12 @@ export interface TouchedRun {
   peers: string[];
   changes: RunChanges | null;
   files: string[] | null;
+  /// Where `files` came from. `transcript`: the checkout's changes the
+  /// run's own agent wrote, per its transcript -- the run's work and no
+  /// one else's. `checkout`: everything that moved in the checkout since
+  /// the baseline, which in a shared checkout is every co-tenant's work
+  /// too; the fallback whenever the transcript has no answer.
+  source: TouchSource;
   problem: string | null;
   error: string | null;
 }
@@ -162,16 +179,54 @@ function cached(view: ReviewView, request: TouchRequest): boolean {
   );
 }
 
+/// The checkout's changes cut down to the files the run's agent touched,
+/// or null when the transcript has no answer -- no conversation id, a
+/// transcript gone or unreadable, a host too old to ask -- and the
+/// checkout's own answer has to stand.
+///
+/// The checkout's files are the candidates and the transcript only picks
+/// among them: a file the agent wrote and somebody since reverted is not
+/// a change of this run any more, and the diff under each row has to
+/// exist. What counts as "touched" -- an edit tool, a shell command that
+/// named the file -- and what slips past it is `agent_edits.rs`'s.
+///
+/// `added`, `removed` and `commits` stay the window's: they are per
+/// window, not per file, and nothing on this tab reads them.
+export async function narrowToTranscript(
+  request: TouchRequest,
+  changes: RunChanges
+): Promise<RunChanges | null> {
+  if (!request.conversationId || !changes.root) return null;
+  // A rename is the run's when either end of it is: an agent that moved
+  // a file may have named only the path it moved it from.
+  const candidates = changes.files.flatMap((f) => (f.oldPath ? [f.path, f.oldPath] : [f.path]));
+  let report: backend.TouchReport;
+  try {
+    report = await backend.cardRunTouchedFiles(request.conversationId, request.cwd, changes.root, candidates);
+  } catch {
+    return null;
+  }
+  if (report.kind !== "ready") return null;
+  const touched = new Set(report.paths);
+  return {
+    ...changes,
+    files: changes.files.filter((f) => touched.has(f.path) || (f.oldPath != null && touched.has(f.oldPath))),
+  };
+}
+
 async function fetchOne(workspaceId: string, request: TouchRequest, token: number): Promise<void> {
   try {
-    const changes = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
-    const problem = changesProblem(changes);
+    const measured = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
+    const problem = changesProblem(measured);
+    const narrowed = problem ? null : await narrowToTranscript(request, measured);
+    const changes = narrowed ?? measured;
     store(workspaceId, request, token, {
       cwd: request.cwd,
       baseSha: request.baseSha,
       untilSha: changes.untilSha,
       peers: request.peers,
       changes,
+      source: narrowed ? "transcript" : "checkout",
       // A checkout that cannot be diffed against this baseline has NOT
       // been measured, so its files are null and not `[]`. Reporting it
       // as a card that touched nothing is the one misreading this whole
@@ -185,7 +240,9 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
     // only -- a rail is one checkout as a whole and has no co-tenant
     // question. Fire-and-forget into its own store; the grouper reads
     // it through `ownersOf`, and a failure there is today's grouping.
-    if (!problem && !isRailSubjectId(request.path)) {
+    // Not for a run its transcript already narrowed: those files are the
+    // agent's own, and a guess must not hand one of them to a neighbour.
+    if (!problem && !narrowed && !isRailSubjectId(request.path)) {
       void attributeRun({
         cardPath: request.path,
         cardTitle: request.title ?? request.path.slice(request.path.lastIndexOf("/") + 1),
@@ -202,6 +259,7 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
       peers: request.peers,
       changes: null,
       files: null,
+      source: "checkout",
       problem: null,
       error: `Couldn't read this ${whose} changes: ${errorText(e)}`,
     });

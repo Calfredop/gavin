@@ -4,6 +4,7 @@ import { get } from "svelte/store";
 vi.mock("$lib/core/backend", () => ({
   gitRunChanges: vi.fn(),
   gitDiffSince: vi.fn(),
+  cardRunTouchedFiles: vi.fn(),
 }));
 
 import * as backend from "$lib/core/backend";
@@ -46,11 +47,13 @@ function request(path: string, over: Partial<TouchRequest> = {}): TouchRequest {
 
 const runChanges = vi.mocked(backend.gitRunChanges);
 const diffSince = vi.mocked(backend.gitDiffSince);
+const editedFiles = vi.mocked(backend.cardRunTouchedFiles);
 
 beforeEach(() => {
   reviewStore.set({});
   runChanges.mockReset();
   diffSince.mockReset();
+  editedFiles.mockReset();
 });
 
 describe("loadTouchedFiles", () => {
@@ -231,6 +234,71 @@ describe("loadTouchedFiles", () => {
   });
 });
 
+describe("loadTouchedFiles with the run's transcript", () => {
+  // A shared checkout: this card's agent wrote a.ts, a neighbour's wrote
+  // b.ts, and somebody left c.ts untracked. The checkout diff hands all
+  // three to every card launched from this commit.
+  const shared = changes({
+    files: [
+      { path: "a.ts", status: "M" },
+      { path: "b.ts", status: "M" },
+      { path: "c.ts", status: "?" },
+      { path: "moved.ts", oldPath: "was.ts", status: "R" },
+    ],
+  });
+
+  it("keeps only the files the run's own agent edited", async () => {
+    runChanges.mockResolvedValue(shared);
+    editedFiles.mockResolvedValue({ kind: "ready", paths: ["a.ts"] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    const run = viewFor(WS).runs["/a.md"];
+    // Asked about the checkout's files, rename sources included.
+    expect(editedFiles).toHaveBeenCalledWith("conv-1", "/repo", "/repo", ["a.ts", "b.ts", "c.ts", "moved.ts", "was.ts"]);
+    expect(run.files).toEqual(["a.ts"]);
+    // The diff list under the card is the same cut, so a row never
+    // opens a neighbour's file.
+    expect(run.changes?.files.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(run.source).toBe("transcript");
+  });
+
+  it("keeps a rename whose old path the agent wrote", async () => {
+    runChanges.mockResolvedValue(shared);
+    editedFiles.mockResolvedValue({ kind: "ready", paths: ["was.ts"] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    expect(viewFor(WS).runs["/a.md"].files).toEqual(["moved.ts"]);
+  });
+
+  it("reports an agent that edited nothing as measured and empty", async () => {
+    runChanges.mockResolvedValue(shared);
+    editedFiles.mockResolvedValue({ kind: "ready", paths: [] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    expect(viewFor(WS).runs["/a.md"].files).toEqual([]);
+    expect(viewFor(WS).runs["/a.md"].source).toBe("transcript");
+  });
+
+  it("falls back to the checkout when the transcript has no answer", async () => {
+    runChanges.mockResolvedValue(shared);
+    editedFiles.mockResolvedValueOnce({ kind: "unavailable", reason: "gone" });
+    editedFiles.mockRejectedValueOnce(new Error("unknown command"));
+    await loadTouchedFiles(WS, [request("/gone.md", { conversationId: "conv-1" })]);
+    await loadTouchedFiles(WS, [request("/old-host.md", { conversationId: "conv-2" })]);
+    for (const path of ["/gone.md", "/old-host.md"]) {
+      expect(viewFor(WS).runs[path].files).toEqual(["a.ts", "b.ts", "c.ts", "moved.ts"]);
+      expect(viewFor(WS).runs[path].source).toBe("checkout");
+    }
+  });
+
+  it("does not ask without a conversation id, or about a checkout git could not read", async () => {
+    runChanges.mockResolvedValueOnce(shared);
+    runChanges.mockResolvedValueOnce(changes({ baseMissing: true }));
+    await loadTouchedFiles(WS, [request("/no-id.md")]);
+    await loadTouchedFiles(WS, [request("/gone.md", { conversationId: "conv-1" })]);
+    expect(editedFiles).not.toHaveBeenCalled();
+    expect(viewFor(WS).runs["/no-id.md"].source).toBe("checkout");
+    expect(viewFor(WS).runs["/gone.md"].files).toBeNull();
+  });
+});
+
 describe("selectReviewFile", () => {
   const run: TouchedRun = {
     cwd: "/repo",
@@ -239,6 +307,7 @@ describe("selectReviewFile", () => {
     peers: [],
     changes: changes(),
     files: ["app/src/lib/git.ts"],
+    source: "checkout",
     problem: null,
     error: null,
   };

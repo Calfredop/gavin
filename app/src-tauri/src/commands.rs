@@ -169,6 +169,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "pr_status",
     "card_run_tokens",
     "conversation_log",
+    "card_run_touched_files",
     "get_launch_config",
     "set_launch_config",
     "get_custom_resume_args",

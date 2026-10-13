@@ -347,6 +347,10 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // the same resolver card_run_tokens reads through. It writes nothing and
   // reaches nothing but files the CLI wrote on this machine.
   conversation_log: ["ordinary"],
+  // A read: which of a checkout's changed files one run's transcript
+  // says its agent touched, for the Review tab. Same files
+  // card_run_tokens reads; writes nothing.
+  card_run_touched_files: ["ordinary"],
   get_agent_defaults: ["ordinary"],
   set_agent_defaults: ["ordinary"],
   // The memory wall. A read and a preference write, the same shape as

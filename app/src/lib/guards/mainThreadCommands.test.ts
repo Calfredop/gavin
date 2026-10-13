@@ -133,6 +133,8 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // every resume and review launch, auto-resume included.
   ["agent_tokens.rs", "card_run_tokens", "a whole agent transcript read and parsed, per conversation"],
   ["agent_tokens.rs", "conversation_log", "a readdir of every project directory, on every resume"],
+
+  ["agent_edits.rs", "card_run_touched_files", "a whole agent transcript read and parsed, per listed card"],
   // The delete wizard's scan walks the whole root twelve deep for
   // `.gavin/` folders -- 150k entries in a large repo, 2-7 s cold -- and
   // the remover walks it again before it trashes anything.

@@ -228,6 +228,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("pr_status", RemoteAllowance::Allowed),
     ("card_run_tokens", RemoteAllowance::Allowed),
     ("conversation_log", RemoteAllowance::Allowed),
+    ("card_run_touched_files", RemoteAllowance::Allowed),
     ("get_launch_config", RemoteAllowance::Allowed),
     ("set_launch_config", RemoteAllowance::Allowed),
     ("get_custom_resume_args", RemoteAllowance::Allowed),
