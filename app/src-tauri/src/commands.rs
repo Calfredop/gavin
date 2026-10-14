@@ -91,6 +91,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "get_board",
     "card_session",
     "card_runs",
+    "shell_writes",
     "set_board",
     "get_orchestration",
     "set_orchestration",

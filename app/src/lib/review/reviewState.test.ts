@@ -5,9 +5,16 @@ vi.mock("$lib/core/backend", () => ({
   gitRunChanges: vi.fn(),
   gitDiffSince: vi.fn(),
   cardRunTouchedFiles: vi.fn(),
+  shellWrites: vi.fn(),
 }));
 
+vi.mock("$lib/core/layoutState", async () => {
+  const { writable } = await import("svelte/store");
+  return { daemonCompat: writable(null) };
+});
+
 import * as backend from "$lib/core/backend";
+import { daemonCompat } from "$lib/core/layoutState";
 import {
   FETCH_CONCURRENCY,
   clearReviewFile,
@@ -48,12 +55,17 @@ function request(path: string, over: Partial<TouchRequest> = {}): TouchRequest {
 const runChanges = vi.mocked(backend.gitRunChanges);
 const diffSince = vi.mocked(backend.gitDiffSince);
 const editedFiles = vi.mocked(backend.cardRunTouchedFiles);
+const shellWrites = vi.mocked(backend.shellWrites);
+const NO_RECORDS: backend.ShellWrites = { calls: [], files: [] };
 
 beforeEach(() => {
   reviewStore.set({});
   runChanges.mockReset();
   diffSince.mockReset();
   editedFiles.mockReset();
+  shellWrites.mockReset();
+  shellWrites.mockResolvedValue(NO_RECORDS);
+  daemonCompat.set({ daemonVersion: 72, appVersion: 72, degraded: false });
 });
 
 describe("loadTouchedFiles", () => {
@@ -253,7 +265,13 @@ describe("loadTouchedFiles with the run's transcript", () => {
     await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
     const run = viewFor(WS).runs["/a.md"];
     // Asked about the checkout's files, rename sources included.
-    expect(editedFiles).toHaveBeenCalledWith("conv-1", "/repo", "/repo", ["a.ts", "b.ts", "c.ts", "moved.ts", "was.ts"]);
+    expect(editedFiles).toHaveBeenCalledWith(
+      "conv-1",
+      "/repo",
+      "/repo",
+      ["a.ts", "b.ts", "c.ts", "moved.ts", "was.ts"],
+      NO_RECORDS
+    );
     expect(run.files).toEqual(["a.ts"]);
     // The diff list under the card is the same cut, so a row never
     // opens a neighbour's file.
@@ -288,12 +306,46 @@ describe("loadTouchedFiles with the run's transcript", () => {
     }
   });
 
+  it("hands the transcript reader what the shell-write hook recorded for the run", async () => {
+    const observed: backend.ShellWrites = {
+      calls: ["toolu_1"],
+      files: [{ root: "/repo", paths: ["b.ts"] }],
+    };
+    runChanges.mockResolvedValue(shared);
+    shellWrites.mockResolvedValue(observed);
+    editedFiles.mockResolvedValue({ kind: "ready", paths: ["b.ts"] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    expect(shellWrites).toHaveBeenCalledWith(WS, "conv-1");
+    expect(editedFiles.mock.calls[0][4]).toEqual(observed);
+    expect(viewFor(WS).runs["/a.md"].files).toEqual(["b.ts"]);
+  });
+
+  it("does not ask a daemon older than the records for them, and reads the transcript alone", async () => {
+    daemonCompat.set({ daemonVersion: 71, appVersion: 72, degraded: true });
+    runChanges.mockResolvedValue(shared);
+    editedFiles.mockResolvedValue({ kind: "ready", paths: ["a.ts"] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    expect(shellWrites).not.toHaveBeenCalled();
+    expect(editedFiles.mock.calls[0][4]).toBeNull();
+    expect(viewFor(WS).runs["/a.md"].source).toBe("transcript");
+  });
+
+  it("reads the transcript alone when the records cannot be read", async () => {
+    runChanges.mockResolvedValue(shared);
+    shellWrites.mockRejectedValue(new Error("daemon went away"));
+    editedFiles.mockResolvedValue({ kind: "ready", paths: ["a.ts"] });
+    await loadTouchedFiles(WS, [request("/a.md", { conversationId: "conv-1" })]);
+    expect(editedFiles.mock.calls[0][4]).toBeNull();
+    expect(viewFor(WS).runs["/a.md"].files).toEqual(["a.ts"]);
+  });
+
   it("does not ask without a conversation id, or about a checkout git could not read", async () => {
     runChanges.mockResolvedValueOnce(shared);
     runChanges.mockResolvedValueOnce(changes({ baseMissing: true }));
     await loadTouchedFiles(WS, [request("/no-id.md")]);
     await loadTouchedFiles(WS, [request("/gone.md", { conversationId: "conv-1" })]);
     expect(editedFiles).not.toHaveBeenCalled();
+    expect(shellWrites).not.toHaveBeenCalled();
     expect(viewFor(WS).runs["/no-id.md"].source).toBe("checkout");
     expect(viewFor(WS).runs["/gone.md"].files).toBeNull();
   });

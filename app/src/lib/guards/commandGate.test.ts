@@ -248,6 +248,9 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_board: ["ordinary"],
   card_session: ["ordinary"],
   card_runs: ["ordinary"],
+  // A read: what the shell-write hook recorded of one run's shell calls,
+  // for the Review tab. Writes nothing.
+  shell_writes: ["ordinary"],
   set_board: ["ordinary"],
   get_orchestration: ["ordinary"],
   set_orchestration: ["ordinary"],

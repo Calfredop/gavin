@@ -2716,6 +2716,15 @@ fn grant_kimi_launch_trust(
 ///   (none can block the tool or the turn), and the script consumes its
 ///   stdin and exits 0, so a hook failure can never disturb the agent.
 ///
+/// - The `[[hooks]]` rules that record what each shell call wrote
+///   (`protocol::shell_writes`): `gavin-shell-writes`, a second script of
+///   gavin's in the kimi home, around every `Bash` call. It hands the
+///   call to `$GAVIN_SHELL_WRITES shell-writes`, which only a gavin tab
+///   of a v72 daemon sets, so in a kimi started anywhere else -- or by an
+///   older build sharing this file -- it reads its stdin and exits.
+///   kimi's PreToolUse is the one event that can veto a call; this script
+///   prints nothing and exits 0, which vetoes nothing.
+///
 /// What is never touched: a `default_permission_mode` the human has
 /// already set (to any value, including `manual`), a hook event gavin's
 /// script already has an entry for (the human's edits to it stand), a
@@ -2726,11 +2735,14 @@ fn ensure_kimi_launch_config(fs: &dyn WorkspaceFiles, home: &Path) {
     let kimi_home_dir = kimi_home(fs, home);
     let config = kimi_home_dir.join("config.toml");
     let script = kimi_home_dir.join(GAVIN_HOOK_SCRIPT_FILE);
-    // Rewritten whenever it differs, not only when absent: the file is
-    // gavin's (its header says so), and an install from before the
+    let shell_writes_script = kimi_home_dir.join(GAVIN_SHELL_WRITES_SCRIPT_FILE);
+    // Rewritten whenever they differ, not only when absent: the files are
+    // gavin's (their headers say so), and an install from before the
     // detached-hook fix holds a script that rings nothing.
-    if fs.read_to_string(&script).ok().flatten().as_deref() != Some(GAVIN_HOOK_SCRIPT) {
-        let _ = fs.write_private(&script, GAVIN_HOOK_SCRIPT.as_bytes());
+    for (path, text) in [(&script, GAVIN_HOOK_SCRIPT.to_string()), (&shell_writes_script, gavin_shell_writes_script())] {
+        if fs.read_to_string(path).ok().flatten().as_deref() != Some(text.as_str()) {
+            let _ = fs.write_private(path, text.as_bytes());
+        }
     }
     let text = fs.read_to_string(&config).ok().flatten().unwrap_or_default();
     if !text.trim().is_empty() && toml::from_str::<toml::Value>(&text).is_err() {
@@ -2741,33 +2753,40 @@ fn ensure_kimi_launch_config(fs: &dyn WorkspaceFiles, home: &Path) {
     if doc.get("default_permission_mode").is_none() {
         out = insert_top_level_key(&out, "default_permission_mode = \"yolo\"\n");
     }
-    // Which of gavin's hook events already have an entry running the
-    // gavin script. `None` (the key absent entirely) appends them all;
-    // a `hooks` key of any other shape is left strictly alone.
-    let hooked: Option<std::collections::HashSet<&str>> = match doc.get("hooks") {
-        None => Some(Default::default()),
-        Some(toml::Value::Array(entries)) => Some(
-            entries
-                .iter()
-                .filter_map(|entry| entry.as_table())
-                .filter(|table| {
-                    table
-                        .get("command")
-                        .and_then(toml::Value::as_str)
-                        .is_some_and(|command| command.contains(GAVIN_HOOK_SCRIPT_FILE))
-                })
-                .filter_map(|table| table.get("event").and_then(toml::Value::as_str))
-                .collect(),
-        ),
+    // The entries already there, to tell which of gavin's hook events
+    // already have one running the gavin script it names. `[]` (the key
+    // absent entirely) appends them all; a `hooks` key of any other
+    // shape is left strictly alone.
+    let entries: Option<Vec<&toml::value::Table>> = match doc.get("hooks") {
+        None => Some(Vec::new()),
+        Some(toml::Value::Array(entries)) => Some(entries.iter().filter_map(|entry| entry.as_table()).collect()),
         Some(_) => None,
     };
-    if let Some(hooked) = hooked {
+    if let Some(entries) = entries {
+        let hooked = |script_file: &str, event: &str| {
+            entries.iter().any(|table| {
+                table.get("event").and_then(toml::Value::as_str) == Some(event)
+                    && table
+                        .get("command")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|command| command.contains(script_file))
+            })
+        };
         let mut additions = String::new();
         for (event, matcher) in GAVIN_ATTENTION_HOOKS {
-            if !hooked.contains(event) {
+            if !hooked(GAVIN_HOOK_SCRIPT_FILE, event) {
                 additions.push_str(&format!(
                     "[[hooks]]\nevent = \"{event}\"\nmatcher = \"{matcher}\"\ncommand = \"sh '{script}'\"\ntimeout = 5\n\n",
                     script = script.display(),
+                ));
+            }
+        }
+        for (event, matcher, phase) in GAVIN_SHELL_WRITE_HOOKS {
+            if !hooked(GAVIN_SHELL_WRITES_SCRIPT_FILE, event) {
+                additions.push_str(&format!(
+                    "[[hooks]]\nevent = \"{event}\"\nmatcher = \"{matcher}\"\ncommand = \"sh '{script}' {phase}\"\ntimeout = {timeout}\n\n",
+                    script = shell_writes_script.display(),
+                    timeout = protocol::shell_writes::HOOK_TIMEOUT_SECS,
                 ));
             }
         }
@@ -2824,6 +2843,40 @@ const GAVIN_ATTENTION_HOOKS: &[(&str, &str)] = &[
     ("TaskStarted", "question"),
 ];
 
+/// The file name of gavin's shell-write hook script inside the kimi home,
+/// and the marker the config merge looks for, like
+/// `GAVIN_HOOK_SCRIPT_FILE`.
+const GAVIN_SHELL_WRITES_SCRIPT_FILE: &str = "gavin-shell-writes";
+
+/// kimi's shell-write rules, as `(event, matcher, phase)`: before every
+/// `Bash` call, and after it on both outcomes -- kimi fires
+/// `PostToolUseFailure` instead of `PostToolUse` for a call that failed,
+/// and a failed command may still have written. kimi reads a matcher as a
+/// regular expression, so it is anchored. Its PostToolUse is
+/// fire-and-forget: the snapshot after a call can land while the next
+/// call has started, which moves a write between two calls of the same
+/// run and never between runs.
+const GAVIN_SHELL_WRITE_HOOKS: &[(&str, &str, &str)] = &[
+    ("PreToolUse", "^Bash$", protocol::shell_writes::PRE),
+    ("PostToolUse", "^Bash$", protocol::shell_writes::POST),
+    ("PostToolUseFailure", "^Bash$", protocol::shell_writes::POST),
+];
+
+/// The shell-write script: the CLI-independent hook line
+/// (`protocol::shell_writes::hook_command`) with the phase kimi's rule
+/// passes it as `$1`. POSIX `sh`, like the attention script.
+fn gavin_shell_writes_script() -> String {
+    format!(
+        "#!/bin/sh\n\
+         # gavin-managed: hands each shell call to gavin-mcp, which records\n\
+         # what it wrote for gavin's Review tab. Does nothing outside a gavin\n\
+         # tab. Do not edit -- gavin rewrites this file, and config.toml\n\
+         # merges on its name.\n\
+         {}\n",
+        protocol::shell_writes::hook_command("\"$1\"")
+    )
+}
+
 /// What the hook script does: drink the event JSON kimi pipes in (so a
 /// large payload can never fill the pipe and stall the hook), ring the
 /// bell on the session's own PTY, succeed.
@@ -2865,7 +2918,7 @@ exit 0
 /// below the root, or a rail's or Best-of-N's worktree under
 /// `.gavin-worktrees`, has none from the integration), and the config.toml
 /// entries a launched session should run with (permission default,
-/// attention hooks, the hook script). All no-ops on every launch after
+/// attention and shell-write hooks, their scripts). All no-ops on every launch after
 /// the first; a withheld trust grant leaves kimi asking at its screen,
 /// the pre-existing behavior, and is logged for the tab's log.
 pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home: &str) {
@@ -5874,9 +5927,27 @@ mod tests {
             if hooks {
                 let script = home.join(".kimi-code").join(GAVIN_HOOK_SCRIPT_FILE);
                 assert!(script.is_file(), "{label}: the hook script was written");
+                let shell_writes = home.join(".kimi-code").join(GAVIN_SHELL_WRITES_SCRIPT_FILE);
+                assert!(shell_writes.is_file(), "{label}: the shell-write script was written");
                 let doc = toml::from_str::<toml::Value>(&text).unwrap();
                 let hook_list = doc.get("hooks").and_then(toml::Value::as_array).cloned().unwrap_or_default();
-                assert_eq!(hook_list.len(), GAVIN_ATTENTION_HOOKS.len(), "{label}: one rule per event: {text}");
+                assert_eq!(
+                    hook_list.len(),
+                    GAVIN_ATTENTION_HOOKS.len() + GAVIN_SHELL_WRITE_HOOKS.len(),
+                    "{label}: one rule per event and script: {text}"
+                );
+                let rule = |event: &str| {
+                    hook_list
+                        .iter()
+                        .find(|h| h.get("event").and_then(toml::Value::as_str) == Some(event))
+                        .and_then(|h| h.get("command").and_then(toml::Value::as_str))
+                        .map(str::to_string)
+                        .unwrap()
+                };
+                let shell_writes = shell_writes.display();
+                assert_eq!(rule("PreToolUse"), format!("sh '{shell_writes}' pre"), "{label}");
+                assert_eq!(rule("PostToolUse"), format!("sh '{shell_writes}' post"), "{label}");
+                assert_eq!(rule("PostToolUseFailure"), format!("sh '{shell_writes}' post"), "{label}");
             }
         }
     }
@@ -5902,13 +5973,16 @@ mod tests {
         // A human hook and a hand-tuned matcher survive the next launch.
         let mut edited = first.clone();
         edited.push_str("[[hooks]]\nevent = \"SessionStart\"\ncommand = \"my-tracker\"\n\n");
-        edited = edited.replace("matcher = \".*\"\ncommand = \"sh '", "matcher = \"^Bash$\"\ncommand = \"sh '");
+        edited = edited.replace("matcher = \".*\"\ncommand = \"sh '", "matcher = \"^Edit$\"\ncommand = \"sh '");
         std::fs::write(&config, &edited).unwrap();
         ensure_kimi_launch_config(&fs, &home);
         let after = std::fs::read_to_string(&config).unwrap();
         assert!(after.contains("my-tracker"), "the human's hook stays");
-        assert!(after.matches("[[hooks]]").count() == GAVIN_ATTENTION_HOOKS.len() + 1, "no rule duplicated: {after}");
-        assert!(after.contains("matcher = \"^Bash$\""), "the hand-tuned matcher is not rewritten");
+        assert!(
+            after.matches("[[hooks]]").count() == GAVIN_ATTENTION_HOOKS.len() + GAVIN_SHELL_WRITE_HOOKS.len() + 1,
+            "no rule duplicated: {after}"
+        );
+        assert!(after.contains("matcher = \"^Edit$\""), "the hand-tuned matcher is not rewritten");
         assert_eq!(after.matches("event = \"PermissionRequest\"").count(), 1, "one PermissionRequest rule");
     }
 
@@ -5928,6 +6002,7 @@ mod tests {
         assert!(config.contains("default_permission_mode = \"yolo\""), "{config}");
         assert!(config.contains("gavin-attention"), "{config}");
         assert!(files.contains_key(Path::new("/opt/kimi/gavin-attention")), "the script follows too");
+        assert!(files.contains_key(Path::new("/opt/kimi/gavin-shell-writes")), "and the shell-write one");
         assert!(!files.contains_key(Path::new("/home/ada/.kimi-code/config.toml")));
     }
 
@@ -5946,6 +6021,54 @@ mod tests {
         ensure_kimi_launch_config(&fs, &home);
 
         assert_eq!(std::fs::read_to_string(&script).unwrap(), GAVIN_HOOK_SCRIPT);
+    }
+
+    /// The shell-write script as kimi runs it (`sh '<script>' pre`, the
+    /// event JSON on stdin). Outside a gavin tab -- or in an older
+    /// build's, which sets `GAVIN_MCP` but not `GAVIN_SHELL_WRITES` -- it
+    /// reads its stdin and succeeds. In a tab that names the hook's
+    /// gavin-mcp it hands the call, phase and stdin, to that binary.
+    #[cfg(unix)]
+    #[test]
+    fn the_shell_write_script_hands_the_call_to_gavin_mcp_only_in_a_gavin_tab() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join(GAVIN_SHELL_WRITES_SCRIPT_FILE);
+        std::fs::write(&script, gavin_shell_writes_script()).unwrap();
+        let seen = dir.path().join("seen");
+        let fake = dir.path().join("gavin-mcp");
+        std::fs::write(&fake, format!("#!/bin/sh\necho \"$@\" > '{0}'\ncat >> '{0}'\n", seen.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let run = |hook_binary: Option<&Path>| {
+            let mut kimi = crate::program::command("sh");
+            // An older build's tab: GAVIN_MCP names a binary that does not
+            // have the subcommand, and must not be run.
+            kimi.arg(&script).arg("pre").env("GAVIN_MCP", &fake).env_remove("GAVIN_SHELL_WRITES");
+            if let Some(path) = hook_binary {
+                kimi.env("GAVIN_SHELL_WRITES", path);
+            }
+            let mut child = kimi
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            // Larger than a pipe holds, so an unread stdin would block here.
+            child.stdin.take().unwrap().write_all(&vec![b'x'; 256 * 1024]).unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            assert!(out.stdout.is_empty() && out.stderr.is_empty(), "silent: {out:?}");
+        };
+
+        run(None);
+        assert!(!seen.exists(), "nothing ran without GAVIN_SHELL_WRITES");
+        run(Some(&fake));
+        let got = std::fs::read_to_string(&seen).unwrap();
+        assert!(got.starts_with("shell-writes pre\n"), "{}", &got[..40.min(got.len())]);
+        assert_eq!(got.len(), "shell-writes pre\n".len() + 256 * 1024, "stdin handed over whole");
     }
 
     /// The hook chain's first link against the way kimi 2.1.1 actually

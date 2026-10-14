@@ -28,11 +28,26 @@
 //! checkout diff's, which claimed every co-tenant's work -- and the caller
 //! falls back to that diff whenever this has no answer at all.
 //!
+//! So a third kind of evidence replaces the heuristic wherever it exists:
+//! what the CLI's own hook saw each shell call change (`gavin-mcp
+//! shell-writes`, kept by the daemon, handed in as `observed`). It is per
+//! CALL, matched by the id the call carries in the transcript and in the
+//! hook alike. A command the hook watched is judged by its record alone
+//! -- the files it changed, named or not, and none it only read; a command
+//! it did not watch keeps the name heuristic, which is what a run from
+//! before the hook, a Codex run (no hooks) and a command the hook judged
+//! read-only all get, exactly as they did. The record's own blind spot is
+//! the other side of a shared checkout: anything written by anyone while
+//! a watched call ran is in that call's window (`shell_writes.rs` in
+//! gavin-mcp).
+//!
 //! It reads the same files `agent_tokens` does, through the same
 //! resolver, so a run whose cost can be read is a run whose edits can be.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
+
+use protocol::shell_writes::{may_write, ShellWrites};
 
 use crate::agent_setup::TokenLog;
 use crate::agent_tokens::{kimi_session_wires, log_root, transcript_path};
@@ -64,6 +79,10 @@ pub enum TouchReport {
 /// was picked by its complexity level would otherwise be looked up under
 /// the workspace's default profile and never found.
 ///
+/// `observed` is what the daemon kept of the run's shell calls
+/// (`Request::ShellWrites`), or nothing -- an older daemon, a run nothing
+/// was recorded for -- which reads every command by its text, as before.
+///
 /// `async` + `spawn_blocking` for `card_run_tokens`'s reason: a whole
 /// transcript read, once per listed card, when the Review tab opens.
 #[tauri::command]
@@ -72,10 +91,13 @@ pub async fn card_run_touched_files(
     cwd: String,
     root: String,
     candidates: Vec<String>,
+    observed: Option<ShellWrites>,
 ) -> Result<TouchReport, String> {
-    tauri::async_runtime::spawn_blocking(move || touched_files_blocking(conversation_id, &cwd, &root, candidates))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        touched_files_blocking(conversation_id, &cwd, &root, candidates, &observed.unwrap_or_default())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn touched_files_blocking(
@@ -83,6 +105,7 @@ fn touched_files_blocking(
     cwd: &str,
     root: &str,
     candidates: Vec<String>,
+    observed: &ShellWrites,
 ) -> TouchReport {
     let Some(conversation_id) = conversation_id.map(|id| id.trim().to_string()).filter(|id| !id.is_empty())
     else {
@@ -106,7 +129,7 @@ fn touched_files_blocking(
             TokenLog::KimiWireJsonl => kimi_evidence(&text, &mut evidence),
         }
     }
-    TouchReport::Ready { paths: touched(candidates, &evidence, Path::new(cwd), Path::new(root)) }
+    TouchReport::Ready { paths: touched(candidates, &evidence, observed, Path::new(cwd), Path::new(root)) }
 }
 
 /// The transcript holding this conversation, under whichever layout has
@@ -152,7 +175,18 @@ pub struct Evidence {
     /// Paths an edit tool named, as the agent spelled them.
     pub edited: Vec<String>,
     /// Shell commands, whole, as the agent ran them.
-    pub commands: Vec<String>,
+    pub commands: Vec<ShellCommand>,
+}
+
+/// One shell command of the run.
+#[derive(Debug, PartialEq)]
+pub struct ShellCommand {
+    /// The CLI's id for the call -- Claude Code's `tool_use` id, kimi's
+    /// `toolCallId` -- which the shell-write hook records under too.
+    /// `None` where the transcript carries none worth matching (codex,
+    /// which has no hook).
+    pub call_id: Option<String>,
+    pub text: String,
 }
 
 /// Claude Code's edit tools and the input field each names its file in.
@@ -185,7 +219,10 @@ pub fn claude_evidence(text: &str, out: &mut Evidence) {
             let input = block.get("input");
             if name == "Bash" {
                 if let Some(command) = input.and_then(|i| i.get("command")).and_then(|v| v.as_str()) {
-                    out.commands.push(command.to_string());
+                    out.commands.push(ShellCommand {
+                        call_id: block.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                        text: command.to_string(),
+                    });
                 }
                 continue;
             }
@@ -218,7 +255,10 @@ pub fn kimi_evidence(text: &str, out: &mut Evidence) {
         let name = event.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         if name == "Bash" {
             if let Some(command) = event.pointer("/args/command").and_then(|v| v.as_str()) {
-                out.commands.push(command.to_string());
+                out.commands.push(ShellCommand {
+                    call_id: event.get("toolCallId").and_then(|v| v.as_str()).map(str::to_string),
+                    text: command.to_string(),
+                });
             }
         } else if KIMI_EDIT_TOOLS.contains(&name) {
             if let Some(path) = event.pointer("/args/path").and_then(|v| v.as_str()) {
@@ -267,7 +307,7 @@ pub fn codex_evidence(text: &str, out: &mut Evidence) {
             if string.contains("*** Begin Patch") {
                 out.edited.extend(patch_files(&string));
             } else {
-                out.commands.push(string);
+                out.commands.push(ShellCommand { call_id: None, text: string });
             }
         }
     }
@@ -294,84 +334,6 @@ fn patch_files(patch: &str) -> Vec<String> {
         .collect()
 }
 
-/// Programs that only read. A command built of nothing else -- and no
-/// output redirect -- names files it looked at, not files it wrote.
-const READERS: &[&str] = &[
-    "cat", "head", "tail", "less", "grep", "egrep", "rg", "ls", "wc", "nl", "sort", "uniq", "cut", "tr",
-    "echo", "printf", "cd", "pwd", "which", "file", "stat", "diff", "jq", "true", "test", "[",
-];
-
-/// git subcommands that only read.
-const GIT_READERS: &[&str] = &["diff", "log", "show", "status", "ls-files", "grep", "blame", "rev-parse", "cat-file"];
-
-/// Whether a shell command could have written a file. Errs toward yes:
-/// anything not plainly a reader counts, and the cost of a wrong yes is
-/// one file that was only read being listed against a run that named it.
-pub fn may_write(command: &str) -> bool {
-    // Quoted text is an argument, never a pipe or a redirect: the `|` in
-    // `grep "a|b"` would otherwise make `b` a program that might write.
-    // Redirects into the void or between descriptors write nothing.
-    let mut stripped = unquoted(command);
-    for harmless in ["2>&1", "1>&2", ">&2", "&>/dev/null", "2>/dev/null", ">/dev/null", "> /dev/null"] {
-        stripped = stripped.replace(harmless, " ");
-    }
-    if stripped.contains('>') {
-        return true;
-    }
-    stripped
-        .split(['\n', ';', '|', '&', '(', ')'])
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .any(|segment| !reads_only(segment))
-}
-
-/// `command` with every quoted span blanked to `''`, so what is left is
-/// the shell's own syntax. An unclosed quote blanks the rest.
-fn unquoted(command: &str) -> String {
-    let mut out = String::with_capacity(command.len());
-    let mut chars = command.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                out.push_str("''");
-                for q in chars.by_ref() {
-                    if q == '\'' {
-                        break;
-                    }
-                }
-            }
-            '"' => {
-                out.push_str("''");
-                while let Some(q) = chars.next() {
-                    match q {
-                        '\\' => {
-                            chars.next();
-                        }
-                        '"' => break,
-                        _ => {}
-                    }
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn reads_only(segment: &str) -> bool {
-    let mut words = segment.split_whitespace().skip_while(|w| w.contains('=') && !w.starts_with('-'));
-    let Some(program) = words.next() else { return true };
-    let program = program.rsplit('/').next().unwrap_or(program);
-    let rest: Vec<&str> = words.collect();
-    match program {
-        "git" => rest.iter().find(|w| !w.starts_with('-')).is_some_and(|sub| GIT_READERS.contains(sub)),
-        "sed" | "perl" => !rest.iter().any(|w| w.starts_with("-i")),
-        "find" => !rest.iter().any(|w| matches!(*w, "-delete" | "-exec" | "-execdir" | "-ok")),
-        "awk" => true,
-        _ => READERS.contains(&program),
-    }
-}
-
 /// The path-shaped words in a shell command: runs of characters a path
 /// is spelled with, holding a `/` or a `.` and not an option.
 fn path_words(command: &str) -> impl Iterator<Item = &str> {
@@ -391,13 +353,40 @@ fn path_words(command: &str) -> impl Iterator<Item = &str> {
 /// where it ran from, and a two-segment tail is specific enough not to
 /// match a stranger. A bare name never gets that latitude -- `lib.rs` is
 /// in every crate.
-pub fn touched(candidates: Vec<String>, evidence: &Evidence, cwd: &Path, root: &Path) -> Vec<String> {
-    let writing: Vec<&str> = evidence.commands.iter().map(String::as_str).filter(|c| may_write(c)).collect();
+///
+/// A command whose call the hook watched (`observed.calls`) is not read
+/// by those rules at all: what the watched calls wrote (`observed.files`)
+/// stands for it, resolved like an edit tool's absolute path.
+pub fn touched(
+    candidates: Vec<String>,
+    evidence: &Evidence,
+    observed: &ShellWrites,
+    cwd: &Path,
+    root: &Path,
+) -> Vec<String> {
+    let watched: HashSet<&str> = observed.calls.iter().map(String::as_str).collect();
+    let writing: Vec<&str> = evidence
+        .commands
+        .iter()
+        .filter(|c| !c.call_id.as_deref().is_some_and(|id| watched.contains(id)))
+        .map(|c| c.text.as_str())
+        .filter(|c| may_write(c))
+        .collect();
     // Deduped before anything touches the disk: a long run names the same
     // few files in hundreds of commands, and each word costs a resolve.
     let words: BTreeSet<&str> = writing.iter().flat_map(|c| path_words(c)).collect();
+    let recorded: Vec<String> = observed
+        .files
+        .iter()
+        .flat_map(|f| f.paths.iter().map(|p| Path::new(&f.root).join(p).to_string_lossy().into_owned()))
+        .collect();
     let exact = under_root(
-        evidence.edited.iter().map(String::as_str).chain(words.iter().copied()),
+        evidence
+            .edited
+            .iter()
+            .map(String::as_str)
+            .chain(words.iter().copied())
+            .chain(recorded.iter().map(String::as_str)),
         cwd,
         root,
     );
@@ -481,8 +470,16 @@ mod tests {
     fn evidence(edited: &[&str], commands: &[&str]) -> Evidence {
         Evidence {
             edited: edited.iter().map(|s| s.to_string()).collect(),
-            commands: commands.iter().map(|s| s.to_string()).collect(),
+            commands: commands.iter().map(|s| ShellCommand { call_id: None, text: s.to_string() }).collect(),
         }
+    }
+
+    fn command(call_id: &str, text: &str) -> ShellCommand {
+        ShellCommand { call_id: Some(call_id.to_string()), text: text.to_string() }
+    }
+
+    fn nothing_observed() -> ShellWrites {
+        ShellWrites::default()
     }
 
     fn strings(items: &[&str]) -> Vec<String> {
@@ -495,14 +492,15 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/r/a.ts","old_string":"x","new_string":"y"}}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"},{"type":"tool_use","name":"Write","input":{"file_path":"/r/b.ts","content":""}},{"type":"tool_use","name":"Read","input":{"file_path":"/r/c.ts"}}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/r/n.ipynb"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i '' x d.ts"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"sed -i '' x d.ts"}}]}}"#,
             // A tool RESULT quoting an edit call is a user record, not a call.
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"\"tool_use\" Edit /r/e.ts"}]}}"#,
         ]
         .join("\n");
         let mut out = Evidence::default();
         claude_evidence(&text, &mut out);
-        assert_eq!(out, evidence(&["/r/a.ts", "/r/b.ts", "/r/n.ipynb"], &["sed -i '' x d.ts"]));
+        assert_eq!(out.edited, strings(&["/r/a.ts", "/r/b.ts", "/r/n.ipynb"]));
+        assert_eq!(out.commands, [command("toolu_9", "sed -i '' x d.ts")]);
     }
 
     #[test]
@@ -511,13 +509,14 @@ mod tests {
             r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","name":"Edit","args":{"path":"src/a.rs","old_string":"x","new_string":"y"}}}"#,
             r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","name":"Write","args":{"path":"/abs/b.rs","content":""}}}"#,
             r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","name":"Read","args":{"path":"src/c.rs"}}}"#,
-            r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","name":"Bash","args":{"command":"rm src/d.rs"}}}"#,
+            r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","toolCallId":"tool_7","name":"Bash","args":{"command":"rm src/d.rs"}}}"#,
             r#"{"type":"agent.message.appended","message":{"content":"tool.call Edit src/e.rs"}}"#,
         ]
         .join("\n");
         let mut out = Evidence::default();
         kimi_evidence(&text, &mut out);
-        assert_eq!(out, evidence(&["src/a.rs", "/abs/b.rs"], &["rm src/d.rs"]));
+        assert_eq!(out.edited, strings(&["src/a.rs", "/abs/b.rs"]));
+        assert_eq!(out.commands, [command("tool_7", "rm src/d.rs")]);
     }
 
     #[test]
@@ -537,33 +536,7 @@ mod tests {
             out.edited,
             strings(&["src/a.rs", "src/new.rs", "src/old.rs", "src/from.rs", "src/to.rs", "lib/f.rs"])
         );
-        assert!(out.commands.contains(&"mv a.rs b.rs".to_string()));
-    }
-
-    #[test]
-    fn a_command_of_readers_alone_writes_nothing() {
-        for command in [
-            "cat a.ts",
-            "sed -n 1,20p src/a.ts | head",
-            "cd app && grep -rn foo src/lib/x.ts 2>&1 | tail -5",
-            "git diff --stat src/a.ts; git log -1",
-            "find . -name '*.rs' | wc -l",
-            "FOO=1 rg bar src/a.ts >/dev/null",
-            r#"cat x.md && grep -rniE "a|b_c" --include=*.ts . | grep -v "x>y" | head"#,
-        ] {
-            assert!(!may_write(command), "{command}");
-        }
-        for command in [
-            "sed -i '' s/a/b/ src/a.ts",
-            "echo x > src/a.ts",
-            "python3 - <<'EOF'\nopen('src/a.ts','w')\nEOF",
-            "git mv a.ts b.ts",
-            "cd app && npm run format",
-            "find . -name x -delete",
-            "cat a | tee b.ts",
-        ] {
-            assert!(may_write(command), "{command}");
-        }
+        assert!(out.commands.contains(&ShellCommand { call_id: None, text: "mv a.rs b.rs".to_string() }));
     }
 
     #[test]
@@ -592,7 +565,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            touched(candidates, &evidence, &root, &root),
+            touched(candidates, &evidence, &nothing_observed(), &root, &root),
             strings(&["app/src/lib/a.ts", "app/src/lib/gone.ts", "app/src/lib/moved.ts", "README.md"])
         );
     }
@@ -607,16 +580,107 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let evidence = evidence(&[&link.join("a.ts").to_string_lossy()], &[]);
-        assert_eq!(touched(strings(&["a.ts"]), &evidence, &link, &real), strings(&["a.ts"]));
+        assert_eq!(touched(strings(&["a.ts"]), &evidence, &nothing_observed(), &link, &real), strings(&["a.ts"]));
+    }
+
+    /// The card's two cases at once. A formatter run through npm names no
+    /// file and wrote two; a `sed -i` through a script names none either. A
+    /// `cat` the hook never watched (read-only, no snapshot) names one and
+    /// is still judged by its text -- which credits it with nothing. And a
+    /// watched command that NAMES a file it only read is not credited
+    /// with it: its record says what it changed.
+    #[test]
+    fn a_watched_command_is_judged_by_its_record_and_an_unwatched_one_by_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let candidates = strings(&[
+            "src/formatted.ts", // the formatter's, named nowhere
+            "src/scripted.ts",  // the script's `sed -i`, named nowhere
+            "src/read.ts",      // only read, by `cat` and by the script
+            "src/named.ts",     // named by an UNWATCHED writing command
+            "src/neighbour.ts", // a co-tenant's
+        ]);
+        let evidence = Evidence {
+            edited: vec![],
+            commands: vec![
+                command("toolu_1", "npm run format"),
+                command("toolu_2", "./fix.sh src/read.ts"),
+                command("toolu_3", "cat src/read.ts"),
+                // A run from before the hook, or a call it missed.
+                command("toolu_4", "sed -i '' s/a/b/ src/named.ts"),
+            ],
+        };
+        let observed = ShellWrites {
+            calls: strings(&["toolu_1", "toolu_2"]),
+            files: vec![protocol::shell_writes::RootFiles {
+                root: root.to_string_lossy().into_owned(),
+                paths: strings(&["src/formatted.ts", "src/scripted.ts"]),
+            }],
+        };
+        assert_eq!(
+            touched(candidates, &evidence, &observed, &root, &root),
+            strings(&["src/formatted.ts", "src/scripted.ts", "src/named.ts"])
+        );
+    }
+
+    /// A run with no records reads exactly as it did before the hook: the
+    /// same candidates, by the same rules.
+    #[test]
+    fn a_run_with_no_records_reads_as_it_always_did() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let evidence = Evidence {
+            edited: vec![],
+            commands: vec![command("toolu_1", "sed -i '' x a.ts"), command("toolu_2", "cat b.ts")],
+        };
+        assert_eq!(
+            touched(strings(&["a.ts", "b.ts"]), &evidence, &nothing_observed(), &root, &root),
+            strings(&["a.ts"])
+        );
+    }
+
+    /// Records under another checkout -- a worktree of the same run, a
+    /// sibling repository -- are not this checkout's files, whatever
+    /// their relative paths say.
+    #[test]
+    fn a_record_under_another_root_is_not_this_checkouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let other = dir.path().join("worktree");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let observed = ShellWrites {
+            calls: strings(&["toolu_1"]),
+            files: vec![protocol::shell_writes::RootFiles {
+                root: other.to_string_lossy().into_owned(),
+                paths: strings(&["a.ts"]),
+            }],
+        };
+        let evidence = Evidence { edited: vec![], commands: vec![command("toolu_1", "npm run format")] };
+        assert!(touched(strings(&["a.ts"]), &evidence, &observed, &root, &root).is_empty());
     }
 
     #[test]
     fn a_run_with_no_conversation_id_is_unavailable() {
-        assert!(matches!(touched_files_blocking(None, "/", "/", vec![]), TouchReport::Unavailable { .. }));
+        let none = nothing_observed();
+        assert!(matches!(touched_files_blocking(None, "/", "/", vec![], &none), TouchReport::Unavailable { .. }));
         assert!(matches!(
-            touched_files_blocking(Some("  ".into()), "/", "/", vec![]),
+            touched_files_blocking(Some("  ".into()), "/", "/", vec![], &none),
             TouchReport::Unavailable { .. }
         ));
+    }
+
+    /// What the frontend hands back is what the host's `shell_writes`
+    /// command gave it, in its camelCase.
+    #[test]
+    fn the_observed_records_arrive_in_the_shape_the_frontend_sends() {
+        let observed: ShellWrites =
+            serde_json::from_value(serde_json::json!({"calls": ["t"], "files": [{"root": "/r", "paths": ["a"]}]}))
+                .unwrap();
+        assert_eq!(observed.calls, ["t"]);
+        assert_eq!(observed.files[0].paths, ["a"]);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 mod cards;
 mod playwright;
+mod shell_writes;
 
 /// How long the version probe may sit in a read before the daemon is
 /// treated as unreachable. Matches the Windows named-pipe connect budget:
@@ -33,6 +34,13 @@ fn endpoint_label(path: &Path) -> String {
 /// new one not bound yet -- which used to fail every call that landed in
 /// it, and leave the session believing the daemon was gone for good.
 const CONNECT_BUDGET: Duration = Duration::from_secs(5);
+
+/// The shell-write hook's connect budget: a daemon mid-restart costs one
+/// call's record rather than seconds of the agent's turn.
+const HOOK_CONNECT_BUDGET: Duration = Duration::from_millis(500);
+
+/// How long the hook waits for the daemon to answer its record.
+const HOOK_ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Connects, retrying only the two answers a restart window gives: the
 /// socket refused (the file is there, nobody is accepting) and the socket
@@ -323,6 +331,11 @@ struct SocketTransport {
     connect_budget: Duration,
     /// Where a failed connect's diagnosis is appended, or nowhere.
     log_path: Option<PathBuf>,
+    /// How long an answer is waited for once the probe has passed. `None`
+    /// for the MCP server, where a slow tool call is still a tool call;
+    /// a bound for the shell-write hook, which an agent's shell call
+    /// waits on.
+    answer_timeout: Option<Duration>,
 }
 
 /// The endpoint the daemon that opened this tab told us to use.
@@ -372,6 +385,21 @@ impl SocketTransport {
                     protocol::BuildProfile::current(),
                 ))
             }),
+            answer_timeout: None,
+        }
+    }
+
+    /// The transport the shell-write hook records through: the same
+    /// endpoint and identity, but a daemon that is restarting or slow to
+    /// answer costs the record, never the agent's turn. No log either --
+    /// a hook that cannot reach the daemon is not a fault worth a line
+    /// per shell call.
+    fn for_hook() -> Self {
+        Self {
+            connect_budget: HOOK_CONNECT_BUDGET,
+            answer_timeout: Some(HOOK_ANSWER_TIMEOUT),
+            log_path: None,
+            ..Self::new()
         }
     }
 
@@ -396,6 +424,7 @@ impl SocketTransport {
             connect_budget: CONNECT_BUDGET,
             // Never the real app-support directory from a test.
             log_path: None,
+            answer_timeout: None,
         }
     }
 
@@ -448,7 +477,7 @@ impl SocketTransport {
         };
         // Probe answered; drop the short timeout so a slow tool call is
         // not killed by the connect budget.
-        let _ = reader.get_ref().set_read_timeout(None);
+        let _ = reader.get_ref().set_read_timeout(self.answer_timeout);
         match protocol::version_band(version, PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION) {
             // Not a hard error any more (spec §3). Whatever moved the
             // daemon ahead -- a rebuild, an update -- replaced the binary
@@ -2143,6 +2172,22 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    // `gavin-mcp shell-writes pre|post`: the hook a Claude Code or kimi
+    // launch runs around every shell call (`shell_writes.rs`). Exits 0
+    // whatever happened -- a hook's failure is shown to the human on
+    // every call, and this one only ever observes.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new(protocol::shell_writes::SUBCOMMAND)) {
+        let phase = args.next().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut transport = SocketTransport::for_hook();
+        if let Some(dir) = shell_writes::snapshot_dir() {
+            shell_writes::run(&phase, &mut std::io::stdin().lock(), &dir, &mut transport);
+        } else {
+            shell_writes::drain(&mut std::io::stdin().lock());
+        }
+        std::process::exit(0);
     }
 
     let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));

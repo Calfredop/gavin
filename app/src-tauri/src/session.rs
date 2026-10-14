@@ -6830,6 +6830,33 @@ pub async fn card_runs(
     card_runs_impl(&lanes_for(route, &state, &compat), workspace_id, path).await.map_err(|e| e.to_string())
 }
 
+async fn shell_writes_impl(
+    lanes: &DaemonLanes,
+    conversation_id: String,
+) -> anyhow::Result<protocol::shell_writes::ShellWrites> {
+    match lanes.request(Request::ShellWrites { conversation_id }).await? {
+        Response::ShellWrites { writes } => Ok(writes),
+        other => anyhow::bail!("expected ShellWrites, got {other:?}"),
+    }
+}
+
+/// What the shell-write hook recorded of one run's shell calls (v72), for
+/// the Review tab to hand to `card_run_touched_files`. Routed by the
+/// workspace like `card_runs`: the records live with the daemon whose tab
+/// ran the agent. The frontend checks FEATURE_MIN_VERSION.shellWrites
+/// first; an older daemon is refused here before anything is sent.
+#[tauri::command]
+pub async fn shell_writes(
+    workspace_id: String,
+    conversation_id: String,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::shell_writes::ShellWrites, String> {
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    shell_writes_impl(&lanes_for(route, &state, &compat), conversation_id).await.map_err(|e| e.to_string())
+}
+
 async fn set_board_impl(
     lanes: &DaemonLanes,
     workspace_id: String,
@@ -8417,6 +8444,17 @@ mod kanban_command_tests {
         assert_eq!(board.card_sessions.len(), 1);
         assert_eq!(board.card_sessions[0].command, None);
         assert!(!serde_json::to_string(&board).unwrap().contains("whole prompt"));
+    }
+
+    #[test]
+    fn shell_writes_impl_returns_what_the_daemon_kept() {
+        let writes = protocol::shell_writes::ShellWrites {
+            calls: vec!["toolu_1".to_string()],
+            files: vec![protocol::shell_writes::RootFiles { root: "/r".into(), paths: vec!["a.ts".into()] }],
+        };
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ShellWrites { writes: writes.clone() }]);
+        let got = block_on(shell_writes_impl(&lanes_over(client), "conv-1".into())).unwrap();
+        assert_eq!(got, writes);
     }
 
     #[test]

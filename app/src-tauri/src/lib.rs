@@ -217,6 +217,7 @@ pub fn run() {
             session::get_board,
             session::card_session,
             session::card_runs,
+            session::shell_writes,
             session::set_board,
             session::get_orchestration,
             session::set_orchestration,

@@ -28,6 +28,7 @@ mod remote;
 mod screen;
 mod server;
 mod shell;
+mod shell_writes;
 mod singleton;
 mod status;
 #[cfg(test)]

@@ -143,6 +143,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("get_board", RemoteAllowance::Allowed),
     ("card_session", RemoteAllowance::Allowed),
     ("card_runs", RemoteAllowance::Allowed),
+    ("shell_writes", RemoteAllowance::Allowed),
     ("set_board", RemoteAllowance::Allowed),
     ("get_orchestration", RemoteAllowance::Allowed),
     ("set_orchestration", RemoteAllowance::Allowed),

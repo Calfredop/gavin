@@ -4146,10 +4146,20 @@ impl SessionManager {
         // Headroom as it is then.
         let compression =
             self.decide_compression(workspace_path, launch, &id, command, without_headroom);
+        // Codex's recipe hands its base URL over on the command line.
+        let line = compression.command().or(command);
+        // And a Claude Code launch is handed the shell-write hook the same
+        // way (`shell_writes`), whatever the recipe made of its line.
+        let hooked = line.and_then(|line| {
+            crate::shell_writes::with_claude_hooks(
+                line,
+                launch,
+                crate::pty::gavin_mcp_beside_this_binary().is_some(),
+            )
+        });
         let pty = PtySession::spawn_with_env(
             cwd,
-            // Codex's recipe hands its base URL over on the command line.
-            compression.command().or(command),
+            hooked.as_deref().or(line),
             &id,
             Some(&session_token),
             compression.env(),
@@ -4757,6 +4767,28 @@ impl SessionManager {
         let mut kanban = self.kanban.lock().unwrap();
         kanban.abandon_runs_for_sessions(&gone)?;
         kanban.card_runs(workspace_id, path)
+    }
+
+    /// Keeps what one shell call of an agent wrote (`gavin-mcp
+    /// shell-writes`). Both ids are required: they are the only way the
+    /// record is ever found again, and a row under an empty one would be
+    /// read back as some other run's.
+    pub fn record_shell_writes(
+        &self,
+        conversation_id: &str,
+        tool_call_id: &str,
+        root: &str,
+        paths: &[String],
+    ) -> anyhow::Result<()> {
+        if conversation_id.trim().is_empty() || tool_call_id.trim().is_empty() {
+            anyhow::bail!("gavin-daemon: a shell-write record needs its conversation and call ids");
+        }
+        self.kanban.lock().unwrap().record_shell_writes(conversation_id, tool_call_id, root, paths)
+    }
+
+    /// Every shell call recorded for a conversation, for the Review tab.
+    pub fn shell_writes(&self, conversation_id: &str) -> anyhow::Result<protocol::shell_writes::ShellWrites> {
+        self.kanban.lock().unwrap().shell_writes(conversation_id)
     }
 
     /// Whether a session's agent talked to its model through Headroom,
@@ -6671,6 +6703,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
+        // What a shell call wrote (v72). An agent reaches the write only
+        // for a root in its own scope (`agent_allows`); the read is the
+        // app's.
+        Request::RecordShellWrites { conversation_id, tool_call_id, root, paths } => manager
+            .record_shell_writes(&conversation_id, &tool_call_id, &root, &paths)
+            .map(|_| Response::Ok),
+        Request::ShellWrites { conversation_id } => {
+            manager.shell_writes(&conversation_id).map(|writes| Response::ShellWrites { writes })
+        }
         Request::StartToolRun {
             workspace_id,
             tool_id,
@@ -7141,6 +7182,15 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
         Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
         Request::GitDirtyPaths { cwd, .. } => agent_path_in_scope(id, cwd),
+        // The shell-write hook's record (v72), sent by `gavin-mcp
+        // shell-writes` from inside the agent's own tab, so it arrives on
+        // the agent's token. Scoped by root like the `*ByRoot` family --
+        // bidirectionally, because the repository root the hook finds can
+        // sit ABOVE a workspace that is a folder of a larger repo. The
+        // conversation id is the agent's word and is not checked against
+        // the session: what it could forge is a line in a Review tab, about
+        // files in a root it already writes to.
+        Request::RecordShellWrites { root, .. } => agent_root_in_scope(id, root),
 
         // Spawning is allowed but confined: an agent may open another
         // visible session in its OWN workspace (an orchestration agent
@@ -7214,6 +7264,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnlinkCardSession { .. }
         | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
+        // What every run's shell calls wrote (v72): the Review tab's
+        // read. An agent records its own and has no use for this one.
+        | Request::ShellWrites { .. }
         // Every card's savings in every workspace (v49): the run history
         // above, read across the whole daemon, and no more the agent's
         // than a card run is.
@@ -9349,6 +9402,64 @@ mod tests {
                 "UnlistenDesktop",
             ]
         );
+    }
+
+    /// The shell-write hook rides the agent's own token: it may record for
+    /// the root it is standing in -- or a repository root above it, the
+    /// shape of a workspace that is a folder of a larger repo -- and for no
+    /// other. Reading the records is the app's; a Device gets neither.
+    #[test]
+    fn an_agent_records_its_own_shell_writes_and_reads_none() {
+        let repo = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let ws = repo.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws = ws.to_string_lossy().to_string();
+        let agent = ClientIdentity::agent("sess-1", &ws, &ws);
+        let record = |root: String| Request::RecordShellWrites {
+            conversation_id: "c".into(),
+            tool_call_id: "t".into(),
+            root,
+            paths: vec!["a.ts".into()],
+        };
+        assert!(authorize(&agent, &record(ws.clone()), false).is_ok());
+        assert!(authorize(&agent, &record(repo.path().to_string_lossy().to_string()), false).is_ok());
+        assert!(authorize(&agent, &record(other.path().to_string_lossy().to_string()), false).is_err());
+        let read = Request::ShellWrites { conversation_id: "c".into() };
+        assert!(matches!(
+            authorize(&agent, &read, false),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+        let device = ClientIdentity::remote("dev-1");
+        assert!(authorize(&device, &record(ws.clone()), false).is_err());
+        assert!(authorize(&device, &read, false).is_err());
+    }
+
+    /// A record goes in, the folded read comes out; an empty id is
+    /// refused, since nothing could ever find that row again.
+    #[test]
+    fn shell_writes_answer_over_the_wire() {
+        let dirs = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dirs);
+        let record = |call: &str, paths: &[&str]| Request::RecordShellWrites {
+            conversation_id: "c-1".into(),
+            tool_call_id: call.into(),
+            root: "/r".into(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+        };
+        assert!(matches!(handle_request(&manager, record("t-1", &["a.ts"])), Response::Ok));
+        assert!(matches!(handle_request(&manager, record("t-2", &[])), Response::Ok));
+        assert!(matches!(handle_request(&manager, record(" ", &["b.ts"])), Response::Error { .. }));
+        match handle_request(&manager, Request::ShellWrites { conversation_id: "c-1".into() }) {
+            Response::ShellWrites { writes } => {
+                assert_eq!(writes.calls, ["t-1", "t-2"]);
+                assert_eq!(
+                    writes.files,
+                    [protocol::shell_writes::RootFiles { root: "/r".into(), paths: vec!["a.ts".into()] }]
+                );
+            }
+            other => panic!("wrong response: {other:?}"),
+        }
     }
 
     /// An agent searches its own workspace's adopted memories and cards

@@ -696,6 +696,17 @@ export const FEATURE_MIN_VERSION = {
   // Companion's terminal reads in its Hand over sheet, the one place a
   // Device holding a session looks at what holding it means.
   deskInputNotice: 70,
+  // What each shell call of an agent wrote (v72,
+  // `feat-touched-files-shell-hook.md`): `RecordShellWrites`, sent by the
+  // CLI hook, and `ShellWrites`, which the Review tab reads. Two new TYPES,
+  // so `min_version_for` already stops both against an older daemon --
+  // which recorded nothing to read.
+  //
+  // Consumer: `reviewState.ts`'s `shellWritesFor`, which does not ask an
+  // older daemon at all and reads the run's transcript alone, exactly as
+  // before -- a refusal there is not a fault to show, it is a daemon that
+  // kept no records.
+  shellWrites: 72,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -1496,18 +1496,37 @@ export type TouchReport =
   | { kind: "ready"; paths: string[] }
   | { kind: "unavailable"; reason: string };
 
+/// Mirrors `protocol::shell_writes::ShellWrites`: what the shell-write
+/// hook recorded of one conversation's shell calls -- the calls it
+/// watched, by the CLI's id for each, and the files they wrote under each
+/// repository root.
+export type ShellWrites = {
+  calls: string[];
+  files: { root: string; paths: string[] }[];
+};
+
+/// The shell-write hook's records for one run (v72). Gate on
+/// FEATURE_MIN_VERSION.shellWrites before calling: an older daemon keeps
+/// none and is refused the question.
+export function shellWrites(workspaceId: string, conversationId: string): Promise<ShellWrites> {
+  return invoke("shell_writes", { workspaceId, conversationId });
+}
+
 /// Which of `candidates` -- root-relative paths under `root`, the
 /// checkout `gitRunChanges` resolved -- one run's agent touched, read out
 /// of its transcript the way `cardRunTokens` reads its cost. `cwd` is the
 /// run's launch directory, which relative paths in the transcript are
-/// taken against.
+/// taken against. `observed` is what `shellWrites` returned for the run:
+/// a shell command the hook watched is judged by what it wrote rather
+/// than by the paths its text names; null judges every one by its text.
 export function cardRunTouchedFiles(
   conversationId: string | null,
   cwd: string,
   root: string,
-  candidates: string[]
+  candidates: string[],
+  observed: ShellWrites | null
 ): Promise<TouchReport> {
-  return invoke("card_run_touched_files", { conversationId, cwd, root, candidates });
+  return invoke("card_run_touched_files", { conversationId, cwd, root, candidates, observed });
 }
 
 export function deleteBoard(workspaceId: string): Promise<void> {

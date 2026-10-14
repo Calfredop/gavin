@@ -45,6 +45,10 @@ pub mod playwright;
 // trait each caller implements.
 pub mod kimi_trust;
 
+// The shell-write hook's subcommand, the hook lines that run it, and the
+// read-only test both the hook and the transcript reader apply. Pure.
+pub mod shell_writes;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
     ATTENTION_API_VERSION,
@@ -81,6 +85,18 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v72 records what each shell call of an agent wrote
+/// (`feat-touched-files-shell-hook.md`): `RecordShellWrites`, sent by the
+/// `gavin-mcp shell-writes` hook a Claude Code or kimi launch runs around
+/// every shell call, and `ShellWrites`, which the Review tab reads so a
+/// command the hook watched is judged by what it changed rather than by
+/// the paths its text names. Two new TYPES, so `min_version_for` is the
+/// whole wire gate: an older daemon is never sent either, the hook drops
+/// its record and the tab keeps today's reading.
+/// `FEATURE_MIN_VERSION.shellWrites` is the app's copy, read by the
+/// Review tab before it asks. The same version is also the daemon adding
+/// the hook to a Claude Code launch line, which no request carries.
 ///
 /// v71 ranks a workspace's cards by meaning (`opts-gavin-get-tree-archived-
 /// cards.md`): `SearchCards`, gavin-mcp's `gavin_find_cards`, embeds every
@@ -895,7 +911,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 71;
+pub const PROTOCOL_VERSION: u32 = 72;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1652,6 +1668,27 @@ pub enum Request {
     CardRuns {
         workspace_id: String,
         path: String,
+    },
+    /// What one shell call of an agent wrote (v72), sent by the
+    /// `gavin-mcp shell-writes` hook after the call: the files that
+    /// appeared among the checkout's changes, or changed on disk while
+    /// already among them, between the call's start and its end, relative
+    /// to `root`. Keyed by the CLI's own conversation id and its id for the
+    /// call, the two the transcript carries, so the Review tab can match a
+    /// record to the command it observed (`shell_writes`). Empty `paths`
+    /// is recorded too: the call was watched and wrote nothing, which is
+    /// an answer the transcript's guess must not overrule.
+    RecordShellWrites {
+        conversation_id: String,
+        tool_call_id: String,
+        root: String,
+        paths: Vec<String>,
+    },
+    /// Every shell call recorded for a conversation (v72), for the Review
+    /// tab. Empty for a conversation nothing was recorded for -- an older
+    /// run, a CLI with no hook -- which is not an error.
+    ShellWrites {
+        conversation_id: String,
     },
     /// Opens a run for a tool launched STANDALONE from the Tools tab
     /// (v30). The rail's own steps do not come through here: a step
@@ -2538,6 +2575,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // Cards ranked by meaning (v71). A new TYPE, and gavin-mcp is
         // its only sender: refused here, it matches words instead.
         Request::SearchCards { .. } => 71,
+        // What a shell call wrote (v72). Two new TYPES, so this is their
+        // whole wire gate: the hook's record never reaches an older
+        // daemon, and the Review tab's read is refused here before it is
+        // sent -- the tab checks FEATURE_MIN_VERSION.shellWrites first and
+        // reads the transcript alone, exactly as before.
+        Request::RecordShellWrites { .. } | Request::ShellWrites { .. } => 72,
 
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
@@ -3185,6 +3228,8 @@ pub enum Response {
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     CardSession { card_session: Option<CardSession> },
     CardRuns { runs: Vec<CardRun> },
+    /// The answer to `ShellWrites` (v72).
+    ShellWrites { writes: shell_writes::ShellWrites },
     ToolRuns { runs: Vec<ToolRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -8018,7 +8063,9 @@ mod tests {
         // desk's. One new TYPE.
         // v71: SearchCards + CardHits -- a workspace's cards ranked by
         // meaning, for gavin-mcp's gavin_find_cards. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 71);
+        // v72: RecordShellWrites + ShellWrites -- what each shell call of
+        // an agent wrote, recorded by its CLI's hook. Two new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 72);
     }
 
     #[test]
@@ -8436,6 +8483,14 @@ mod tests {
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
+            // v72: what a shell call wrote.
+            Request::RecordShellWrites {
+                conversation_id: "c".into(),
+                tool_call_id: "t".into(),
+                root: "/r".into(),
+                paths: vec!["a.ts".into()],
+            },
+            Request::ShellWrites { conversation_id: "c".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
@@ -8755,6 +8810,8 @@ mod tests {
         expected.insert(70, 1);
         // SearchCards -- a workspace's cards ranked by meaning.
         expected.insert(71, 1);
+        // RecordShellWrites, ShellWrites -- what a shell call wrote.
+        expected.insert(72, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

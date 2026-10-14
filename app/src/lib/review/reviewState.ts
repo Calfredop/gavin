@@ -33,6 +33,8 @@ import {
   type TouchSource,
 } from "$lib/review/reviewBoard";
 import { attributeRun } from "$lib/cards/changeAttributionState";
+import { daemonCompat } from "$lib/core/layoutState";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 
 /// How many `git diff`s may be in flight at once. Four rather than one
 /// because the tab is unusable until they all land, and rather than
@@ -110,8 +112,8 @@ export interface TouchedRun {
   changes: RunChanges | null;
   files: string[] | null;
   /// Where `files` came from. `transcript`: the checkout's changes the
-  /// run's own agent wrote, per its transcript -- the run's work and no
-  /// one else's. `checkout`: everything that moved in the checkout since
+  /// run's own agent wrote, per its transcript and what its CLI's
+  /// shell-write hook recorded -- the run's work and no one else's. `checkout`: everything that moved in the checkout since
   /// the baseline, which in a shared checkout is every co-tenant's work
   /// too; the fallback whenever the transcript has no answer.
   source: TouchSource;
@@ -188,11 +190,13 @@ function cached(view: ReviewView, request: TouchRequest): boolean {
 /// among them: a file the agent wrote and somebody since reverted is not
 /// a change of this run any more, and the diff under each row has to
 /// exist. What counts as "touched" -- an edit tool, a shell command that
-/// named the file -- and what slips past it is `agent_edits.rs`'s.
+/// named the file, or what the shell-write hook saw a command change --
+/// and what slips past it is `agent_edits.rs`'s.
 ///
 /// `added`, `removed` and `commits` stay the window's: they are per
 /// window, not per file, and nothing on this tab reads them.
 export async function narrowToTranscript(
+  workspaceId: string,
   request: TouchRequest,
   changes: RunChanges
 ): Promise<RunChanges | null> {
@@ -200,9 +204,16 @@ export async function narrowToTranscript(
   // A rename is the run's when either end of it is: an agent that moved
   // a file may have named only the path it moved it from.
   const candidates = changes.files.flatMap((f) => (f.oldPath ? [f.path, f.oldPath] : [f.path]));
+  const observed = await shellWritesFor(workspaceId, request.conversationId);
   let report: backend.TouchReport;
   try {
-    report = await backend.cardRunTouchedFiles(request.conversationId, request.cwd, changes.root, candidates);
+    report = await backend.cardRunTouchedFiles(
+      request.conversationId,
+      request.cwd,
+      changes.root,
+      candidates,
+      observed
+    );
   } catch {
     return null;
   }
@@ -214,11 +225,25 @@ export async function narrowToTranscript(
   };
 }
 
+/// What the shell-write hook recorded of a run's shell calls, or null:
+/// a daemon older than v72 kept none and is not asked
+/// (`FEATURE_MIN_VERSION.shellWrites`), and a read that failed is the same
+/// answer. Null judges every command by its text -- the reading every run
+/// had before the hook, and still the one for a run it never watched.
+async function shellWritesFor(workspaceId: string, conversationId: string): Promise<backend.ShellWrites | null> {
+  if (featureBlockedReason(get(daemonCompat), "shellWrites")) return null;
+  try {
+    return (await backend.shellWrites(workspaceId, conversationId)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchOne(workspaceId: string, request: TouchRequest, token: number): Promise<void> {
   try {
     const measured = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
     const problem = changesProblem(measured);
-    const narrowed = problem ? null : await narrowToTranscript(request, measured);
+    const narrowed = problem ? null : await narrowToTranscript(workspaceId, request, measured);
     const changes = narrowed ?? measured;
     store(workspaceId, request, token, {
       cwd: request.cwd,

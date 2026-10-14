@@ -239,6 +239,11 @@ impl PtySession {
         // when the file is missing rather than fatal: a half-built tree
         // still opens a terminal, and the launcher falls back as before.
         if let Some(mcp) = gavin_mcp_beside_this_binary() {
+            // The same file again, for the shell-write hook: its presence
+            // is this build's word that the gavin-mcp has the subcommand
+            // (`protocol::shell_writes::HOOK_BINARY_ENV` says why that
+            // cannot be `GAVIN_MCP`).
+            cmd.env(protocol::shell_writes::HOOK_BINARY_ENV, &mcp);
             cmd.env("GAVIN_MCP", mcp);
         }
         cmd.env("TERM_PROGRAM", "ghostty");
@@ -308,10 +313,10 @@ impl PtySession {
         // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
         // *install* -- two sessions of the same install share it -- so
         // none of those are this bug. Deliberately still passed in above:
-        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN, GAVIN_SESSION_SOCKET and
-        // GAVIN_MCP, which name THIS session, the daemon serving it and
-        // the gavin-mcp beside that daemon, and are the entire point of
-        // setting them.
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN, GAVIN_SESSION_SOCKET,
+        // GAVIN_MCP and GAVIN_SHELL_WRITES, which name THIS session, the
+        // daemon serving it and the gavin-mcp beside that daemon, and are
+        // the entire point of setting them.
         for key in [
             // "you are running under Claude Code", and by which entrypoint.
             "CLAUDECODE",
@@ -607,7 +612,7 @@ impl PtySession {
 /// its own (`resolve_mcp_binary_path`): the three binaries of a build are
 /// siblings by construction. `None` when `current_exe` cannot be read or
 /// the sibling is not on disk yet — the caller skips the env pin then.
-fn gavin_mcp_beside_this_binary() -> Option<std::path::PathBuf> {
+pub(crate) fn gavin_mcp_beside_this_binary() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let path = exe
         .parent()?
