@@ -8,3 +8,4 @@ node_modules/
 registry.sqlite
 .svelte-kit/
 .vite/
+/scripts/prune-target-mac.py
