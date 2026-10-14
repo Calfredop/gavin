@@ -21,7 +21,7 @@ Developed 2026-10-13: publish a **Preview build** (`CONTEXT.md`) of Gavin — un
 - [x] The same script builds the Windows setup `.exe` the way the nested card concluded — or, if cross-compiling was ruled out there, takes `--windows-exe PATH` (built on the Windows machine with `build-windows-installer.ps1`) and refuses to publish without one.
 - [x] Gates: publishing refuses a commit not on `origin/main`, one without a green `ci.yml` run (unless `--force`), and a second concurrent run — each refusal names the gate.
 - [x] `--dry-run` builds and stages both files under their final names with their notes, uploading nothing; `--ref REV` builds a local commit and is only allowed with `--dry-run`. Proven by a dry run of a local commit, both files present.
-- [ ] The publish step replaces the `preview` release (pre-release) with both assets and the notes. Proven against a scratch tag on this repo, deleted afterwards — never on `preview` itself.
+- [x] The publish step replaces the `preview` release (pre-release) with both assets and the notes. Proven against a scratch tag on this repo, deleted afterwards — never on `preview` itself.
 - [x] Gavin tool **Publish Preview build** (`kind: script`, cwd the workspace root, icon `package`, body `scripts/publish-preview.sh {{flags}}`, one param `flags` labelled "Extra flags (--force skips the CI check, --dry-run builds without publishing)") saved with `gavin_save_tool`.
 - [x] README *Install* leads with downloading the Preview build (both fixed asset URLs + the unsigned-install steps); building from source becomes the second route.
 - [x] `docs/RELEASING.md` gains a short *Preview builds* section: what it is, how it differs from the signed tag path, and that `release.yml` is unchanged.
