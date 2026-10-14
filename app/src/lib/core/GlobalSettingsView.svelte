@@ -82,6 +82,7 @@
     dimInactiveWorkspaces,
     setDimInactiveWorkspaces,
   } from "$lib/sidebar/sidebarPrefs";
+  import { middleClickEnabled, setMiddleClickEnabled } from "$lib/ui/middleClick";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
@@ -678,6 +679,10 @@
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
     {
+      id: "mouse",
+      keywords: ["Mouse", "Middle click", "middle-click", "middle button", "open link", "close tab"],
+    },
+    {
       id: "browser",
       keywords: [
         "Agent browser",
@@ -1031,6 +1036,25 @@
       <p class="hint">
         Every terminal in every workspace, unless the workspace sets a size of its own. Open
         terminals resize as you pick.
+      </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("mouse") || selectedSection !== "mouse"}>
+      <h3>Mouse</h3>
+      <div class="row">
+        <span>Middle click</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$middleClickEnabled}
+            onchange={(e) => setMiddleClickEnabled(e.currentTarget.checked)}
+          />
+          <span>Open links and close tabs</span>
+        </label>
+      </div>
+      <p class="hint">
+        A middle press on a URL or file path in a terminal opens it, as ⌘-click does; on a tab it
+        closes the tab, as its close box does. Pinned tabs stay put. ⌘-click works either way.
       </p>
     </section>
 

@@ -11,6 +11,8 @@ import { xtermTheme } from "$lib/ui/terminalTheme";
 import { osc52Text } from "$lib/terminal/osc52";
 import { pathCandidatesIn } from "$lib/terminal/pathCandidate";
 import type { EffectiveTheme } from "$lib/ui/theme";
+import { middleClickEnabled, opensLink } from "$lib/ui/middleClick";
+import { get } from "svelte/store";
 
 interface RegistryEntry {
   term: Terminal;
@@ -144,9 +146,10 @@ function registerPathLinks(term: Terminal, sessionId: string): void {
             },
             text: candidate,
             activate: (event: MouseEvent) => {
-              // Cmd+click only -- a plain click must keep doing exactly
-              // what it does today (nothing special).
-              if (!event.metaKey) return;
+              // Cmd+click, or a middle press while Settings allows it --
+              // a plain click must keep doing exactly what it does today
+              // (nothing special).
+              if (!opensLink(event, get(middleClickEnabled))) return;
               void activatePath(resolved, sessionId);
             },
           };
@@ -183,9 +186,9 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
   term.loadAddon(fitAddon);
   term.loadAddon(
     new WebLinksAddon((event, uri) => {
-      // Cmd+click only, matching the path links -- a plain click on a URL
-      // keeps doing nothing, as it does today.
-      if (!event.metaKey) return;
+      // Cmd+click or a middle press, matching the path links -- a plain
+      // click on a URL keeps doing nothing, as it does today.
+      if (!opensLink(event, get(middleClickEnabled))) return;
       void openUrl(uri).catch(() => {});
     })
   );

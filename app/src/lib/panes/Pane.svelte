@@ -40,6 +40,7 @@
   import { chipTooltip, runBaseline } from "$lib/cards/runChanges";
   import { nearestContext } from "$lib/core/planBoard";
   import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
+  import { closesTab, middleClickEnabled } from "$lib/ui/middleClick";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import { deviceNameBySessionId, typingBySessionId } from "$lib/core/devicesState";
@@ -391,6 +392,21 @@
     return (leaf.pinned ?? []).includes(sessionId);
   }
 
+  /// A middle press does what the tab's close box does, through the same
+  /// confirm -- and, like the close box, not on a pinned tab, which has
+  /// none. The press is claimed on mousedown too so a Chromium webview
+  /// (Windows) never starts its autoscroll from it.
+  function claimTabMiddlePress(e: MouseEvent, sessionId: string): void {
+    if (closesTab(e, $middleClickEnabled) && !isPinnedTab(sessionId)) e.preventDefault();
+  }
+
+  async function handleTabAuxClick(e: MouseEvent, sessionId: string): Promise<void> {
+    if (!closesTab(e, $middleClickEnabled) || isPinnedTab(sessionId)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (await confirmTabClose(sessionId)) closeSession(sessionId);
+  }
+
   function reportMenuError(text: string): void {
     console.error(text);
     void showAlert({ title: "That didn't work", lines: [text] });
@@ -609,6 +625,8 @@
           ondragstart={(e) => handleTabDragStart(e, sessionId)}
           ondragend={clearTabReorder}
           onclick={() => switchToTab(sessionId)}
+          onmousedown={(e) => claimTabMiddlePress(e, sessionId)}
+          onauxclick={(e) => void handleTabAuxClick(e, sessionId)}
           use:scrollsIntoLead={sessionId === active}
           class:pinned={isPinnedTab(sessionId)}
           oncontextmenu={(e) => openTabMenu(e, sessionId)}
