@@ -96,9 +96,10 @@ the stores are sent — review notes, description, listing, Play icon — is in
   target's own `UserDefaults` reads. App Store Connect refuses an upload that
   reads a required-reason API no manifest declares (ITMS-91053), so native
   code that starts reading a new one declares it there too.
-- **Icons and launch images** are drawn from the desktop's
-  `app/src-tauri/icons/icon.svg` by `scripts/icons.mjs` (needs `rsvg-convert`
-  and `magick`). The PNGs are committed; run it again when the icon changes.
+- **Icons and launch images** are drawn from the app's icon definition,
+  `app/src/lib/ui/appIcon.ts` (the desktop's icon set comes from the same
+  module), by `scripts/icons.mjs` (needs `rsvg-convert`, `magick` and the
+  Menlo font). The PNGs are committed; run it again when the icon changes.
   The iOS icon must stay opaque: App Store Connect refuses one with alpha.
 
 ## The probe
