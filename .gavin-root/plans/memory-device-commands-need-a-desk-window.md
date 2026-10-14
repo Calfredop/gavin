@@ -1,5 +1,5 @@
 ---
-order: 12288
+order: 11264
 kind: note
 title: A Device command needs a desk window open
 status: To Do

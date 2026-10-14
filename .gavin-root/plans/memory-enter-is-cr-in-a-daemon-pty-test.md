@@ -1,5 +1,5 @@
 ---
-order: 6144
+order: 5120
 labels: memory
 kind: note
 title: Typing into a session in a test means CR, not LF

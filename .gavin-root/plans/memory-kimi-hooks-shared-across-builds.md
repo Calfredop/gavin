@@ -1,4 +1,5 @@
 ---
+order: 13312
 kind: note
 title: A kimi hook runs under every gavin build
 labels: memory
