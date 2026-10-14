@@ -1,12 +1,23 @@
-// The app icon: a wall of monospace code glyphs with ">G" carved out of
-// it, so the letters are the dark tile showing through.
+// Gavin's mark: a wall with ">G" carved out of it, so the letters are the
+// dark tile showing through. It comes in two forms, each with its own
+// generator:
 //
-// One definition drawn three ways: as SVG for the icon files (the desktop
-// set through `app/src-tauri/icons/render.mjs`, the phone's through
-// `companion-shell/scripts/icons.mjs`), and live on a canvas in the app
-// hub's masthead (LiveAppIcon.svelte), where the wall moves with what the
-// fleet is doing. `appIcon.test.ts` holds the committed icon.svg to this
-// module, so the file in the Dock and the one on screen cannot drift.
+// - The APP ICON -- whatever the OS shows for the application: the Dock,
+//   the taskbar, Finder, a phone's home screen -- is a solid face with the
+//   >G cut through it (APP_ICON_STYLE), at every size. The OS draws it
+//   small, often from its largest layer scaled down (the dev build hands
+//   macOS one image at launch, so a per-size icns cannot help there), and
+//   thin code glyphs scaled down average out to a dark wash the carved >G
+//   disappears into.
+//   Drawn by `app/src-tauri/icons/render.mjs` (desktop) and
+//   `companion-shell/scripts/icons.mjs` (phone).
+// - The IN-APP MARK -- inside Gavin's own windows -- is the wall of code
+//   glyphs, which reads at the sizes the app draws it: live on a canvas in
+//   the app hub's masthead (LiveAppIcon.svelte), where the wall moves with
+//   what the fleet is doing, and as the web favicon, drawn by
+//   `app/scripts/in-app-mark.mjs`.
+//
+// `appIcon.test.ts` holds the committed icon.svg to this module.
 //
 // Imports nothing and uses only erasable TypeScript, so both generator
 // scripts load it straight from Node.
@@ -15,6 +26,11 @@ export const ICON_COLOURS = {
   /// The wall's glyphs: the light tone on the top half, the deep one below.
   light: "#a8e2ff",
   deep: "#7cc8f2",
+  /// The app icon's solid face, top to bottom: a step deeper than the
+  /// glyphs, since it covers the whole tile -- at the glyphs' tones or
+  /// lighter the Dock icon washes out to near white.
+  faceTop: "#78c2ec",
+  faceBottom: "#4c9dcc",
   /// The tile, top to bottom of its gradient.
   tileTop: "#0f1c26",
   tileBottom: "#070e13",
@@ -160,6 +176,58 @@ export function wallSvg(art: readonly string[], side: number): string {
   );
 }
 
+/// A carved run: `length` carved cells of `art` from (`col`, `row`).
+export interface CarvedRun {
+  row: number;
+  col: number;
+  length: number;
+}
+
+/// The carving as runs along each row, left to right, top to bottom.
+export function carvedRuns(art: readonly string[]): CarvedRun[] {
+  const runs: CarvedRun[] = [];
+  art.forEach((line, row) => {
+    for (const m of line.matchAll(/x+/g)) runs.push({ row, col: m.index ?? 0, length: m[0].length });
+  });
+  return runs;
+}
+
+/// The app icon's form: a solid face over a `side` x `side` square with
+/// the carving cut through it, so the tile behind shows in the >G. One
+/// path, the runs as holes in it: separate shapes would leave hairline
+/// seams between rows once antialiased.
+export function solidSvg(art: readonly string[], side: number): string {
+  const cellW = side / art[0].length;
+  const cellH = side / art.length;
+  const n = (v: number) => +v.toFixed(2);
+  const holes = carvedRuns(art).map(({ row, col, length }) => {
+    const x = n(col * cellW);
+    const y = n(row * cellH);
+    // Anticlockwise, against the face's clockwise outline.
+    return `M${x} ${y}V${n((row + 1) * cellH)}H${n((col + length) * cellW)}V${y}Z`;
+  });
+  return `<g>
+<defs><linearGradient id="face" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${ICON_COLOURS.faceTop}"/><stop offset="1" stop-color="${ICON_COLOURS.faceBottom}"/></linearGradient></defs>
+<path fill="url(#face)" fill-rule="evenodd" d="M0 0H${side}V${side}H0Z${holes.join("")}"/>
+</g>`;
+}
+
+export type IconStyle =
+  /// The wall of code glyphs: the in-app mark.
+  | "glyphs"
+  /// A solid face with the carving cut through: the app icon.
+  | "solid";
+
+/// The app icon's form, at every size and on every platform.
+export const APP_ICON_STYLE: IconStyle = "solid";
+
+/// The in-app mark's form.
+export const IN_APP_STYLE: IconStyle = "glyphs";
+
+function wallOf(art: readonly string[], side: number, style: IconStyle): string {
+  return style === "glyphs" ? wallSvg(art, side) : solidSvg(art, side);
+}
+
 export type IconFrame =
   /// The macOS icon: an 824 tile inset on a 1024 canvas, rounded, with a
   /// drop shadow and the graphite rim. The source of the desktop icon set.
@@ -170,12 +238,12 @@ export type IconFrame =
   /// launch screen.
   | "tile";
 
-export function appIconSvg(frame: IconFrame = "macos"): string {
+export function appIconSvg(frame: IconFrame = "macos", style: IconStyle = "glyphs"): string {
   const { tileTop, tileBottom, rim } = ICON_COLOURS;
   const defs =
     `<linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${tileTop}"/><stop offset="1" stop-color="${tileBottom}"/></linearGradient>\n` +
     `<linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${rim[0]}"/><stop offset="0.5" stop-color="${rim[1]}"/><stop offset="1" stop-color="${rim[2]}"/></linearGradient>`;
-  const wall = wallSvg(ICON_ART, 824);
+  const wall = wallOf(ICON_ART, 824, style);
   if (frame === "square") {
     return `<svg width="824" height="824" viewBox="0 0 824 824" xmlns="http://www.w3.org/2000/svg">
 <defs>
@@ -210,9 +278,10 @@ ${wall}
 
 /// The wall alone on a clear square, carved with `art`: an Android
 /// adaptive icon's foreground, over a background of the tile's colour.
-export function wallLayerSvg(art: readonly string[], side: number): string {
+export function wallLayerSvg(art: readonly string[], side: number, style: IconStyle = "glyphs"): string {
+  const wall = wallOf(art, side, style);
   return `<svg width="${side}" height="${side}" viewBox="0 0 ${side} ${side}" xmlns="http://www.w3.org/2000/svg">
-${wallSvg(art, side)}
+${wall}
 </svg>
 `;
 }

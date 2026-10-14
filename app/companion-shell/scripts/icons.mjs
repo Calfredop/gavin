@@ -11,10 +11,13 @@
 // and Menlo, the wall's font. The PNGs it writes are committed; run it
 // again when appIcon.ts changes.
 //
-// The icon is a wall of code glyphs with ">G" carved out of it. The
-// desktop's is a macOS one: a rounded tile inset on a clear canvas, with
-// a drop shadow. A phone draws its own shape, so each platform gets the
-// tile's contents instead:
+// The icon is a wall with ">G" carved out of it, in its app-icon form,
+// a solid face with the letters cut through (appIcon's APP_ICON_STYLE): a
+// home screen draws it at under 200 pixels, where code glyphs would
+// average out to a dim wash. The desktop's is
+// a macOS one: a rounded tile inset on a clear canvas, with a drop shadow.
+// A phone draws its own shape, so each platform gets the tile's contents
+// instead:
 // - iOS: the tile full-bleed and opaque, 1024 square (App Store Connect
 //   refuses an icon with an alpha channel). The system rounds it.
 // - Android: an adaptive icon. The background layer is the tile's colour;
@@ -33,7 +36,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ICON_COLOURS, appIconSvg, centredArt, wallLayerSvg } from "../../src/lib/ui/appIcon.ts";
+import { APP_ICON_STYLE, ICON_COLOURS, appIconSvg, centredArt, wallLayerSvg } from "../../src/lib/ui/appIcon.ts";
 
 const shell = join(dirname(fileURLToPath(import.meta.url)), "..");
 const res = join(shell, "android", "app", "src", "main", "res");
@@ -52,7 +55,7 @@ function mix(a, b) {
 
 /// The adaptive foreground's wall. 42 rows puts the >G's diagonal at
 /// about 56% of the layer, inside the 66dp circle's 61% with a margin;
-/// 70 columns keeps the glyphs' 0.6 aspect on a square layer.
+/// 70 columns keeps the art's 0.6 aspect on a square layer.
 const ADAPTIVE_COLS = 70;
 const ADAPTIVE_ROWS = 42;
 
@@ -94,10 +97,13 @@ function launch(glyphSvg, width, height, share, out) {
 }
 
 try {
-  const tile = svgFile("tile.svg", appIconSvg("square"));
-  const foreground = svgFile("foreground.svg", wallLayerSvg(centredArt(ADAPTIVE_COLS, ADAPTIVE_ROWS), 1080));
+  const tile = svgFile("tile.svg", appIconSvg("square", APP_ICON_STYLE));
+  const foreground = svgFile(
+    "foreground.svg",
+    wallLayerSvg(centredArt(ADAPTIVE_COLS, ADAPTIVE_ROWS), 1080, APP_ICON_STYLE),
+  );
   // The rounded tile with its rim, for the launch images.
-  const mark = svgFile("mark.svg", appIconSvg("tile"));
+  const mark = svgFile("mark.svg", appIconSvg("tile", APP_ICON_STYLE));
 
   render(tile, 1024, join(ios, "AppIcon.appiconset", "AppIcon-512@2x.png"), {
     opaque: true, background: tileColour,

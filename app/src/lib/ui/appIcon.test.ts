@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { CURSOR, ICON_ART, appIconSvg, centredArt, wallCells, wallSvg } from "./appIcon";
+import {
+  CURSOR,
+  ICON_ART,
+  APP_ICON_STYLE,
+  appIconSvg,
+  carvedRuns,
+  centredArt,
+  wallCells,
+  wallSvg,
+} from "./appIcon";
 
 const COLS = 40;
 const ROWS = 24;
@@ -86,12 +95,25 @@ describe("centredArt", () => {
   });
 });
 
-describe("the committed icon", () => {
+describe("the app icon's solid form", () => {
+  it("cuts out exactly the carved cells, as runs that never overlap", () => {
+    const cut = new Set<string>();
+    for (const { row, col, length } of carvedRuns(ICON_ART)) {
+      for (let c = col; c < col + length; c++) {
+        expect(cut.has(`${c},${row}`), `cell ${c},${row} cut twice`).toBe(false);
+        cut.add(`${c},${row}`);
+      }
+    }
+    const carved = ICON_ART.flatMap((line, r) => [...line].flatMap((ch, c) => (ch === "x" ? [`${c},${r}`] : [])));
+    expect([...cut].sort()).toEqual(carved.sort());
+  });
+});
+
+describe("the committed app icon", () => {
   // icon.svg is what render.mjs turned into every PNG, ICNS and ICO the
-  // app ships, and the live icon on the hub draws from this module. If
-  // they differ, the Dock and the hub show different icons; rerun
-  // `node src-tauri/icons/render.mjs` after changing appIcon.ts.
-  it("is exactly what appIcon.ts draws", () => {
+  // app ships. If it differs from appIcon.ts, the Dock shows an icon this
+  // module no longer draws; rerun `node src-tauri/icons/render.mjs`.
+  it("is exactly the app-icon form appIcon.ts draws", () => {
     const sources = import.meta.glob("../../../src-tauri/icons/icon.svg", {
       query: "?raw",
       import: "default",
@@ -99,6 +121,6 @@ describe("the committed icon", () => {
     }) as Record<string, string>;
     const svg = Object.values(sources)[0];
     expect(svg, "icon.svg did not load -- the glob path is wrong").toBeTruthy();
-    expect(svg).toBe(appIconSvg("macos"));
+    expect(svg).toBe(appIconSvg("macos", APP_ICON_STYLE));
   });
 });
