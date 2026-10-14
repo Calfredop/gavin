@@ -1100,12 +1100,19 @@
   /* The tab bar stays full width; only what is under it makes room for
      the bar. Every pane touching that edge shifts: one with no row-split
      ancestor on the far side of it (a column split stacks its panes, so
-     all of them touch the edge). */
+     all of them touch the edge).
+
+     The same goes for a tab bar that is NOT the page's top edge: the
+     lower half of a column split brings its own, and the bar's column
+     runs down past it. Left at full width, that row's first tabs sat
+     under the bar. */
   .page-with-navigator:not(.navigator-right) :global(.tree .pane-wrapper > .content:not(.split.row > .child:not(:first-child) *)),
+  .page-with-navigator:not(.navigator-right) :global(.tree .split.column > .child:not(:first-child) .pane-wrapper > .tab-bar:not(.split.row > .child:not(:first-child) *)),
   .page-with-navigator:not(.navigator-right) .navigator-overlay {
     margin-left: var(--hub-nav-width);
   }
   .page-with-navigator.navigator-right :global(.tree .pane-wrapper > .content:not(.split.row > .child:not(:last-child) *)),
+  .page-with-navigator.navigator-right :global(.tree .split.column > .child:not(:first-child) .pane-wrapper > .tab-bar:not(.split.row > .child:not(:last-child) *)),
   .page-with-navigator.navigator-right .navigator-overlay {
     margin-right: var(--hub-nav-width);
   }
