@@ -11,6 +11,19 @@ members = [
   "app/src-tauri",
 ]
 
+# Debug builds on macOS leave every codegen unit's `.o` in `target/debug/deps`
+# (split-debuginfo=unpacked: the binary points at them instead of carrying its
+# DWARF) and cargo never collects the old ones, so full debuginfo grew target/
+# to 90 GB. Line tables keep file:line in backtraces, `sample` and lldb `bt`
+# at a fraction of the size; set `debug = true` locally to inspect variables.
+# Dependencies get none: nobody steps through them, and their DWARF was most
+# of every link's input.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The Companion core as the shell ships it (`crates/companion-wasm`, built
 # by `app/companion-shell/scripts/core.mjs`): small, because it is carried
 # inside the phone app, and aborting on a panic, which on this target is a
