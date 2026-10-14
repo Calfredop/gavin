@@ -5203,12 +5203,13 @@ export async function movePaneOrTab(
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
-// Reorders a tab within its own pane's tab bar -- always scoped to the
-// active page, since dragging to reorder only ever happens on something
-// currently rendered on screen.
+// Reorders a tab within its own pane's tab bar. Scoped to the tab's own
+// page, not the active one -- see pageLocationForSession: the sidebar
+// lists every page's tabs, so a row dragged there may belong to a page
+// that is not on screen.
 export async function reorderTabWithinPane(sessionId: string, targetIndex: number): Promise<void> {
   const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = pageLocationForSession(state, sessionId);
   if (!location) return;
   const newTree = layout.moveTabWithinLeaf(location.tree, sessionId, targetIndex);
   const data = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);

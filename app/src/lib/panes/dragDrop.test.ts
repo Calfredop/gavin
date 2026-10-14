@@ -8,8 +8,10 @@ import {
   computeReorderPositionX,
   computeTabInsertion,
   reorderIndexWithin,
+  tabRowDrop,
   type DragPayload,
 } from "$lib/panes/dragDrop";
+import type { LayoutNode } from "$lib/panes/layout";
 
 // Minimal fake covering only the DataTransfer members this module
 // actually reads/writes -- avoids depending on a specific test
@@ -167,5 +169,43 @@ describe("computeReorderPositionX", () => {
   it("puts the midpoint itself after, like the vertical split", () => {
     expect(computeReorderPositionX(rect, 120)).toBe("after");
     expect(computeReorderPosition({ top: 0, height: 40 } as DOMRect, 20)).toBe("after");
+  });
+});
+
+describe("tabRowDrop", () => {
+  // Two panes side by side: [a,b,c] and [d,e].
+  const tree: LayoutNode = {
+    type: "split",
+    direction: "row",
+    sizes: [0.5, 0.5],
+    children: [
+      { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 0 },
+      { type: "leaf", tabs: ["d", "e"], activeTabIndex: 0 },
+    ],
+  };
+
+  // The splice index, not the slot: `a` after `b` lands at 1, the slot
+  // `b` sits in once `a` is out of the way.
+  it("reorders a tab within its own pane", () => {
+    expect(tabRowDrop(tree, "a", "b", "after")).toEqual({ kind: "reorder", index: 1 });
+    expect(tabRowDrop(tree, "a", "c", "after")).toEqual({ kind: "reorder", index: 2 });
+    expect(tabRowDrop(tree, "c", "a", "before")).toEqual({ kind: "reorder", index: 0 });
+    expect(tabRowDrop(tree, "c", "b", "before")).toEqual({ kind: "reorder", index: 1 });
+  });
+
+  // From another pane, nothing is spliced out of this one first, so the
+  // slot the row names is already the landing index.
+  it("joins a tab from another pane at the row's slot", () => {
+    expect(tabRowDrop(tree, "a", "d", "before")).toEqual({ kind: "join", index: 0 });
+    expect(tabRowDrop(tree, "a", "e", "after")).toEqual({ kind: "join", index: 2 });
+  });
+
+  it("joins a tab from another page the same way", () => {
+    expect(tabRowDrop(tree, "zz", "b", "after")).toEqual({ kind: "join", index: 2 });
+  });
+
+  it("does nothing on the dragged tab's own row or a row the page lacks", () => {
+    expect(tabRowDrop(tree, "a", "a", "after")).toBeNull();
+    expect(tabRowDrop(tree, "a", "missing", "before")).toBeNull();
   });
 });

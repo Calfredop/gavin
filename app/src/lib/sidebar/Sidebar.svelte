@@ -133,10 +133,17 @@
     getDragPayload,
     computeDropZone,
     computeReorderPosition,
+    tabRowDrop,
     type DropZone,
     type ReorderPosition,
   } from "$lib/panes/dragDrop";
-  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/core/layoutState";
+  import {
+    movePaneOrTab,
+    reorderTabWithinPane,
+    reorderWorkspaceAction,
+    movePageAction,
+    switchToSessionInPage,
+  } from "$lib/core/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
     getActiveView,
@@ -971,6 +978,49 @@
     }
   }
 
+  /// A page's tab rows are the same tab a pane's bar draws, so dragging
+  /// one carries the bar's own payload: every surface that takes a tab
+  /// from the bar -- another tab row, a page row, a workspace row, a
+  /// pane -- takes one from here too.
+  function handleTabRowDragStart(event: DragEvent, ws: Workspace, page: Page, row: PageTabRow): void {
+    setDragPayload(event, { kind: "tab", workspaceId: ws.id, pageId: page.id, sessionId: row.id });
+  }
+
+  function handleTabRowDragOver(event: DragEvent, row: PageTabRow): void {
+    if (getDragKind(event) !== "tab") return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    hoverState = { targetId: row.id, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
+  }
+
+  async function handleTabRowDrop(event: DragEvent, ws: Workspace, page: Page, row: PageTabRow): Promise<void> {
+    event.preventDefault();
+    const payload = getDragPayload(event);
+    clearHover();
+    if (!payload || payload.kind !== "tab") return;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const drop = tabRowDrop(page.layout, payload.sessionId, row.id, computeReorderPosition(rect, event.clientY));
+    if (!drop) return;
+    if (drop.kind === "reorder") {
+      await reorderTabWithinPane(payload.sessionId, drop.index);
+    } else {
+      // Aimed at the row's own pane: the page's remembered focus may be
+      // another pane entirely.
+      await movePaneOrTab(
+        { kind: "tab", workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+        {
+          kind: "page",
+          workspaceId: ws.id,
+          pageId: page.id,
+          mode: "center",
+          targetSessionId: row.id,
+          targetIndex: drop.index,
+        }
+      );
+    }
+  }
+
   // Auto-expands a workspace the first time it becomes active, without
   // fighting a later manual collapse. Gating on activeId actually
   // *changing* (via lastSyncedActiveId, a plain closure var -- it's
@@ -1304,6 +1354,18 @@
               <div
                 class="tab-row"
                 class:active={row.id === $layoutState.focusedSessionId}
+                class:drop-before={hoverState?.targetId === row.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "before"}
+                class:drop-after={hoverState?.targetId === row.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "after"}
+                draggable={editingSessionId !== row.id}
+                ondragstart={(e) => handleTabRowDragStart(e, ws, page, row)}
+                ondragover={(e) => handleTabRowDragOver(e, row)}
+                ondragleave={clearHover}
+                ondragend={clearHover}
+                ondrop={(e) => handleTabRowDrop(e, ws, page, row)}
                 use:tooltip={tabRowTip(row, gitStatus)}
                 onclick={() => {
                   switchWorkspaceView(ws.id, "terminal");
@@ -2509,11 +2571,13 @@
     gap: 2px;
   }
   .workspace-row.drop-before,
-  .page-row.drop-before {
+  .page-row.drop-before,
+  .tab-row.drop-before {
     box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .workspace-row.drop-after,
-  .page-row.drop-after {
+  .page-row.drop-after,
+  .tab-row.drop-after {
     box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .workspace-row.drop-append {

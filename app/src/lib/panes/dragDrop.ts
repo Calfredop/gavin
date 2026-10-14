@@ -1,3 +1,5 @@
+import { findLeafPath, getNodeAtPath, type LayoutNode } from "$lib/panes/layout";
+
 // Discriminates what's being dragged. For "pane"/"tab", sessionId is the
 // dragged content's identity within its source page: for "pane" it's any
 // one of that pane's tab session ids (used with detachLeaf, which locates
@@ -143,4 +145,36 @@ export function reorderIndexWithin(insertionIndex: number, fromIndex: number): n
 /// at every call site is a fact the reader has to decode.
 export function computeReorderPositionX(rect: DOMRect, clientX: number): ReorderPosition {
   return (clientX - rect.left) / rect.width < 0.5 ? "before" : "after";
+}
+
+/// What a tab dropped on one of the sidebar's tab rows does. The sidebar
+/// lists a page's tabs pane by pane, so the row under the pointer names a
+/// pane and a slot in it, before or after that row's tab. A tab already
+/// in that pane is reordered there -- renumbered the way the tab bar's own
+/// reorder is (reorderIndexWithin). Any other tab, from another pane or
+/// another page, joins that pane at the slot, the way a drop on the
+/// pane's tab bar does.
+///
+/// `tree` is the layout of the page the target row is drawn under. Null
+/// for a drop on the dragged tab's own row, or on a row the tree does not
+/// hold.
+export type TabRowDrop = { kind: "reorder"; index: number } | { kind: "join"; index: number };
+
+export function tabRowDrop(
+  tree: LayoutNode,
+  draggedId: string,
+  targetId: string,
+  position: ReorderPosition
+): TabRowDrop | null {
+  if (draggedId === targetId) return null;
+  const path = findLeafPath(tree, targetId);
+  if (!path) return null;
+  const leaf = getNodeAtPath(tree, path);
+  if (leaf.type !== "leaf") return null;
+  const target = leaf.tabs.indexOf(targetId);
+  const insertion = position === "before" ? target : target + 1;
+  const from = leaf.tabs.indexOf(draggedId);
+  return from === -1
+    ? { kind: "join", index: insertion }
+    : { kind: "reorder", index: reorderIndexWithin(insertion, from) };
 }
