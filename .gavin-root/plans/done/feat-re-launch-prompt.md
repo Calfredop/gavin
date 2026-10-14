@@ -2,7 +2,7 @@
 order: 14336
 kind: task
 title: [feat] re-launch prompt
-status: In Progress
+status: Done
 ---
 When using the relaunch prompt specify that the taks/plan was already being worked on and that the status can be fetched from the card md file
 
