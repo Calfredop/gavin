@@ -116,16 +116,37 @@ mod imp {
 
 #[cfg(target_os = "linux")]
 mod imp {
+    /// A zombie LEADER is not yet an exited process. Exiting a
+    /// multithreaded process, the thread-group leader turns zombie while
+    /// the other threads are still being torn down, and the open files --
+    /// the daemon's lock and its listening socket among them -- are
+    /// closed only when the last of those threads is gone. A daemon
+    /// caught in that window still holds the lock a restart is waiting
+    /// on, and still accepts connections into its backlog, so it is gone
+    /// only when no thread of it is left running.
     pub fn pid_alive(pid: u32) -> bool {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return false;
-        };
-        // The state is the first field after the LAST `)`: the name
-        // before it is in parentheses and may hold anything, `)` included.
-        match stat.rfind(')').and_then(|i| stat[i + 1..].split_whitespace().next()) {
-            Some(state) => state != "Z" && state != "X",
+        match state_in(&format!("/proc/{pid}/stat")) {
             None => false,
+            Some(state) if running(&state) => true,
+            Some(_) => std::fs::read_dir(format!("/proc/{pid}/task")).is_ok_and(|tasks| {
+                tasks.flatten().any(|task| state_in(&task.path().join("stat")).is_some_and(|s| running(&s)))
+            }),
         }
+    }
+
+    /// The state field of a `stat` file, if it can be read.
+    fn state_in(path: impl AsRef<std::path::Path>) -> Option<String> {
+        state_of(&std::fs::read_to_string(path).ok()?).map(str::to_owned)
+    }
+
+    /// The state is the first field after the LAST `)`: the name before
+    /// it is in parentheses and may hold anything, `)` included.
+    pub(super) fn state_of(stat: &str) -> Option<&str> {
+        stat.rfind(')').and_then(|i| stat[i + 1..].split_whitespace().next())
+    }
+
+    pub(super) fn running(state: &str) -> bool {
+        state != "Z" && state != "X"
     }
 }
 
@@ -205,6 +226,19 @@ mod tests {
         std::fs::write(&path, NO_SUCH_PID.to_string()).unwrap();
         assert_eq!(lock_holder(&path), LockHolder::Dead(NO_SUCH_PID));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_state_is_read_after_the_last_paren_and_only_zombies_and_the_dead_are_gone() {
+        assert_eq!(imp::state_of("4242 (a) b) Z 1 4242"), Some("Z"));
+        assert_eq!(imp::state_of("4242 (gavin-daemon) S 1"), Some("S"));
+        assert_eq!(imp::state_of("garbage"), None);
+        for state in ["R", "S", "D", "T", "t", "I"] {
+            assert!(imp::running(state), "{state}");
+        }
+        assert!(!imp::running("Z"));
+        assert!(!imp::running("X"));
     }
 
     #[cfg(unix)]
