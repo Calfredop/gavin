@@ -91,6 +91,8 @@
     text-transform: uppercase;
   }
   .line {
+    -webkit-user-select: text;
+    user-select: text;
     margin: 0 0 var(--space-1);
     font-size: 0.8125rem;
     line-height: 1.45;

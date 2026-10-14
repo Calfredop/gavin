@@ -365,6 +365,8 @@
     background: var(--surface-sunken);
   }
   .problem {
+    -webkit-user-select: text;
+    user-select: text;
     margin: 0;
     color: var(--danger-text);
     font-size: 0.8125rem;

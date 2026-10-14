@@ -167,6 +167,8 @@
     height: 20px;
   }
   .problem {
+    -webkit-user-select: text;
+    user-select: text;
     margin: -4px 0 8px;
     padding: 0 12px;
     color: var(--danger-text);

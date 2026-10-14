@@ -97,5 +97,7 @@
   }
   .warn {
     color: var(--warning-text);
+    -webkit-user-select: text;
+    user-select: text;
   }
 </style>

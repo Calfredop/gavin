@@ -83,6 +83,8 @@
     font-size: 0.75rem;
   }
   .url {
+    -webkit-user-select: text;
+    user-select: text;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;

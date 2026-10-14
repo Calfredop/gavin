@@ -29,6 +29,9 @@
 
 <style>
   .markdown {
+    /* Prose is read, so it selects where the page does not (phone.css). */
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--text);
     font-size: 0.9375rem;
     line-height: 1.55;

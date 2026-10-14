@@ -303,9 +303,13 @@
     margin: 0 0 12px;
   }
   .problem {
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--danger-text);
   }
   .detail {
+    -webkit-user-select: text;
+    user-select: text;
     overflow-wrap: anywhere;
     color: var(--text-subtle);
     font-size: 0.75rem;

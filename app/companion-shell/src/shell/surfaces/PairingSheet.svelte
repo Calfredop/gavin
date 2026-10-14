@@ -104,6 +104,9 @@
     color: var(--danger-text);
   }
   .code {
+    /* Read off and compared, so it selects where the page does not (phone.css). */
+    -webkit-user-select: text;
+    user-select: text;
     margin: 8px 0;
     color: var(--text);
     font-size: 2.5rem;

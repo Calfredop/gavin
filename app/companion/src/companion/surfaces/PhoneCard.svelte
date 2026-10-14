@@ -414,6 +414,9 @@
     text-transform: uppercase;
   }
   .where {
+    /* The card's file, which a person may want to copy. */
+    -webkit-user-select: text;
+    user-select: text;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -532,6 +535,8 @@
   }
   .problem {
     color: var(--danger-text);
+    -webkit-user-select: text;
+    user-select: text;
   }
   .notice {
     color: var(--text-muted);
@@ -551,6 +556,13 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  /* What the agent asked, and the last answer on record: words to read
+     and quote. The desk's row leaves them to its window's default. */
+  .items :global(.text),
+  .items :global(.latest) {
+    -webkit-user-select: text;
+    user-select: text;
   }
   .checklist,
   .links {

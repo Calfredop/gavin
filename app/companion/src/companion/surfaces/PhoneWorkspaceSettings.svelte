@@ -425,6 +425,8 @@
   }
   .folder,
   .value {
+    -webkit-user-select: text;
+    user-select: text;
     min-width: 0;
     color: var(--text);
     font-family: monospace;
@@ -442,6 +444,8 @@
   }
   .warn {
     color: var(--warning-text);
+    -webkit-user-select: text;
+    user-select: text;
   }
   /* The desk's own components size their text in `em`, for a desk panel's
      smaller type; under a phone's 16px body their hints would read larger

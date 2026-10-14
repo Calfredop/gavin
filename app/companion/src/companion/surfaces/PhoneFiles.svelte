@@ -232,6 +232,8 @@
     margin: 0 0 12px;
   }
   .problem {
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--danger-text);
     overflow-wrap: anywhere;
   }
