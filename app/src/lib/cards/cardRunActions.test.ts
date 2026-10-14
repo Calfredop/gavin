@@ -160,6 +160,7 @@ import {
   jumpToBoundSession,
   sendToMainAgent,
 } from "$lib/cards/cardRunActions";
+import { relaunchNote, shellQuote } from "$lib/cards/cardRun";
 import type { CardView } from "$lib/core/planBoard";
 import type { Board, CardSessionRecord } from "$lib/board/kanban";
 
@@ -1258,7 +1259,12 @@ describe("relaunchCard", () => {
     expect(err).toBeNull();
     // The command came from the one-card read: the board never had it.
     expect(backend.cardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
-    expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'", "/ws", "claude-code");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/p",
+      `claude 'x'${shellQuote(relaunchNote("/p/t.md"))}`,
+      "/ws",
+      "claude-code"
+    );
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
     expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
   });
@@ -1317,7 +1323,7 @@ describe("relaunchCard", () => {
 
     const [, command] = vi.mocked(backend.createSession).mock.calls[0];
     expect(command).not.toContain("11111111-1111-1111-1111-111111111111");
-    expect(command).toMatch(/^claude --session-id [0-9a-f-]{36} 'x'$/);
+    expect(command).toMatch(/^claude --session-id [0-9a-f-]{36} 'x''\n\nThis card was already/);
     const bound = get(kanbanState)["ws-1"].cardSessions[0];
     expect(bound.conversationId).not.toBe("11111111-1111-1111-1111-111111111111");
     // Stored with the run, not on the board: the fifth argument is the

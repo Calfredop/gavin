@@ -15,6 +15,8 @@ import {
   unresumableConversationReason,
   mintConversationId,
   withFreshConversationId,
+  withRelaunchNote,
+  relaunchNote,
   noPromptReason,
   agentPromptBlocker,
   usesPromptInjection,
@@ -586,6 +588,31 @@ describe("withFreshConversationId", () => {
       "--session-id"
     );
     expect(command).toContain("'run --session-id 9 for me'");
+  });
+});
+
+describe("withRelaunchNote", () => {
+  // The replayed prompt was written for a card nobody had started; the
+  // note tells the fresh conversation the card was under way and where
+  // its status is recorded.
+  it("appends the note to the quoted prompt as one argument", () => {
+    const command = withRelaunchNote("claude --session-id 1 'do it'", "/p/t.md");
+    expect(command).toBe(`claude --session-id 1 'do it'${shellQuote(relaunchNote("/p/t.md"))}`);
+    expect(relaunchNote("/p/t.md")).toContain("already being worked on");
+    expect(relaunchNote("/p/t.md")).toContain("card file at /p/t.md");
+  });
+
+  // The command is stored for the next re-launch, and the card may have
+  // moved in between.
+  it("replaces a note an earlier re-launch appended rather than stacking it", () => {
+    const once = withRelaunchNote("claude 'do it'", "/p/t.md");
+    const twice = withRelaunchNote(once, "/p/done/t.md");
+    expect(twice).toBe(`claude 'do it'${shellQuote(relaunchNote("/p/done/t.md"))}`);
+  });
+
+  it("leaves a command with no quoted prompt alone", () => {
+    expect(withRelaunchNote("kimi", "/p/t.md")).toBe("kimi");
+    expect(withRelaunchNote(null, "/p/t.md")).toBeNull();
   });
 });
 

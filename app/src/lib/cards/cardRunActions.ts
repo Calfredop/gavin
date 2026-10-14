@@ -26,6 +26,7 @@ import {
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
+  withRelaunchNote,
   noPromptReason,
   usesPromptInjection,
   withPromptExtras,
@@ -1170,7 +1171,11 @@ export async function relaunchCard(
   // A fresh id is also what this button means. Re-launch is "run this
   // again from the beginning"; reopening the old conversation is
   // Resume, which is a different entry with different words on it.
-  const fresh = withFreshConversationId(binding.command, agent.sessionIdArgs);
+  //
+  // And the replayed prompt says the card was already under way, and
+  // where its status is recorded: the original was written for a card
+  // nobody had started.
+  const fresh = withFreshConversationId(withRelaunchNote(binding.command, path), agent.sessionIdArgs);
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
   // was launched in, which is where it is about to run again.

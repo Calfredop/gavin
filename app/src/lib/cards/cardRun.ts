@@ -310,6 +310,48 @@ export function withFreshConversationId(
   return { command: command.slice(0, start) + conversationId + tail, conversationId };
 }
 
+// Free of single quotes, so its shell-quoted form opens with exactly
+// `'\n\n` + this text -- which is how withRelaunchNote finds a note an
+// earlier re-launch already appended.
+const RELAUNCH_NOTE_LEAD = "This card was already being worked on before this re-launch";
+
+/// The note a re-launch appends to the replayed prompt.
+///
+/// A re-launch replays the ORIGINAL prompt, which was written for a card
+/// nobody had touched -- so on its own it sends a fresh conversation to
+/// start from scratch on work an earlier agent may have half done. The
+/// card file is the record of where that work stands, so the note names
+/// it: the path the card lives at NOW, which after a move is not the one
+/// baked into the replayed prompt.
+export function relaunchNote(path: string): string {
+  return (
+    `\n\n${RELAUNCH_NOTE_LEAD}: an earlier agent started it and stopped. Its current ` +
+    `status -- the column, and any checklist items already ticked -- is recorded in the ` +
+    `card file at ${path}. Read that file first, and check what is already done before ` +
+    `you redo any of it.`
+  );
+}
+
+/// A remembered launch command with `relaunchNote` appended to its
+/// prompt.
+///
+/// The prompt is always the command's last word, shell-quoted (see
+/// buildRunCommand), so the note goes on as a second quoted word right
+/// against it: adjacent quoted words are one argument to the shell. A
+/// command that does not end in a quote carries no prompt to extend -- an
+/// injection launch's bare launch line, or an older binding -- and comes
+/// back untouched.
+///
+/// The command is stored again for the NEXT re-launch, so a note an
+/// earlier re-launch appended is replaced rather than stacked -- and
+/// replaced, not kept, because the card may have moved since.
+export function withRelaunchNote(command: string | null, path: string): string | null {
+  if (!command?.endsWith("'")) return command;
+  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
+  const base = earlier === -1 ? command : command.slice(0, earlier);
+  return base + shellQuote(relaunchNote(path));
+}
+
 /// `<command> <resume_args> <uuid>` -- the agent reopening the
 /// conversation it was having, rather than a new agent reading an
 /// account of it.
