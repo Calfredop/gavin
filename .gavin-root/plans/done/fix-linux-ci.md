@@ -1,6 +1,6 @@
 ---
 title: [fix] Linux CI red: headless browser and session memory tests
-status: In Progress
+status: Done
 priority: high
 complexity: moderate
 ---
@@ -17,7 +17,7 @@ Failing on ubuntu-latest, from run 38542951802 on `054f04d0`:
 - [x] Fix the zero RSS reading for a just-started session on Linux
 - [x] Check whether `a_restart_that_waits_for_the_old_pid_does_not_race_the_lock` is flaky, and fix it or record why
 - [x] The whole Linux job passes in the container
-- [ ] Push and see `ci.yml` green on `main`
+- [x] Push and see `ci.yml` green on `main` — run 38557627770 on `6fd5b82a`, every job passed
 
 ## Findings
 
