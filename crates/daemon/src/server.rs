@@ -18340,8 +18340,26 @@ mod tests {
         assert_eq!(row.command.as_deref(), Some("/bin/sleep 30"));
         assert!(row.pid.is_some(), "a live session reports the pid it was verified at");
         assert!(row.process_count >= 1, "at least the process in the PTY");
-        assert!(row.rss_bytes > 0, "a live process occupies memory");
         assert!(row.sampled_at_us > 0, "a rate needs an instant to divide by");
+
+        // Memory once the process has had a moment to exist. A sample
+        // taken the instant `create_session` returns can catch the child
+        // just after exec, when its new address space holds almost
+        // nothing -- and on Linux 6.2+ `/proc/<pid>/stat`'s RSS is a
+        // per-CPU counter read without the per-CPU deltas, so a process
+        // that has faulted in only a few dozen pages still reads 0. On a
+        // loaded CI runner the child can sit in that window for a while.
+        // A live process that is never measured in seconds is the bug.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let rss = loop {
+            let sample = manager.session_processes().unwrap();
+            let rss = sample.iter().find(|p| p.session_id == id).map(|p| p.rss_bytes).unwrap_or(0);
+            if rss > 0 || Instant::now() >= deadline {
+                break rss;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(rss > 0, "a live process occupies memory");
 
         manager.kill_session(&id).unwrap();
     }
