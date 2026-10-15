@@ -129,6 +129,11 @@ const WORK: Record<string, DemoCommand> = {
   resize_session: (args, demo): Answer<"resizeSession"> => {
     sessionId(args, demo);
   },
+  // The desk's size back when the phone closes a terminal: the demo has
+  // no desk, so nothing to give it to.
+  return_pty_size: (args, demo): Answer<"returnPtySize"> => {
+    sessionId(args, demo);
+  },
   // Answers with nothing and then pushes, as the daemon's does: the
   // repaint arrives as the session's own output.
   snapshot_session: (args, demo): Answer<"snapshotSession"> => {

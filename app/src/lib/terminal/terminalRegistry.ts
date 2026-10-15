@@ -10,6 +10,7 @@ import { hotState } from "$lib/core/hotState";
 import { xtermTheme } from "$lib/ui/terminalTheme";
 import { osc52Text } from "$lib/terminal/osc52";
 import { pathCandidatesIn } from "$lib/terminal/pathCandidate";
+import { mendMouseReports } from "$lib/terminal/terminalReport";
 import type { EffectiveTheme } from "$lib/ui/theme";
 import { middleClickEnabled, opensLink } from "$lib/ui/middleClick";
 import { get } from "svelte/store";
@@ -208,8 +209,14 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
   container.style.height = "100%";
   term.open(container);
 
-  term.onData((data) => {
+  // Where this terminal's last whole mouse report was (see mendMouseReports).
+  let mouseAt: string | null = null;
+  term.onData((raw) => {
     if (live.inputGate && !live.inputGate(sessionId)) return;
+    const mended = mendMouseReports(raw, mouseAt);
+    mouseAt = mended.at;
+    const data = mended.data;
+    if (data === "") return;
     const bytes = live.inputTransform ? live.inputTransform(sessionId, data) : data;
     backend.writeInput(sessionId, bytes).catch(() => {});
   });

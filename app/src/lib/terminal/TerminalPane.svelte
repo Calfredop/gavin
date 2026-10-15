@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Lock } from "@lucide/svelte";
+  import { Lock, Smartphone } from "@lucide/svelte";
   import * as backend from "$lib/core/backend";
   import { lockDetail, lockTitle, takeLabel } from "$lib/core/sessionOwnership";
   import { lockBySessionId, ownerClock, ownershipViewer, takeOver } from "$lib/core/sessionOwnershipState";
   import { fitWorthTaking } from "$lib/terminal/terminalFit";
+  import { BORROW_ACTION, BORROW_DETAIL, borrowTitle } from "$lib/terminal/ptyBorrow";
+  import { borrowBySessionId, returnPtySize } from "$lib/terminal/ptyBorrowState";
   import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "$lib/terminal/terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
@@ -44,6 +46,20 @@
     taking = true;
     takeError = await takeOver(sessionId);
     taking = false;
+    // Taking the session back is taking its size back too.
+    if (takeError === null && borrow) void fitHere();
+  }
+
+  // A Device has the session open and the PTY is sized for its screen
+  // (v74), so this terminal is drawn narrower than its pane. Only the desk
+  // watches for it (ptyBorrowState.ts); the lock's bar, when there is one,
+  // already names the Device, so this one waits behind it. Like the lock's,
+  // it floats over the terminal's foot: taking rows would be a refit.
+  const borrow = $derived($borrowBySessionId[sessionId] ?? null);
+
+  async function fitHere(): Promise<void> {
+    await returnPtySize(sessionId).catch(() => {});
+    await fit();
   }
 
   let mountPoint: HTMLDivElement;
@@ -134,6 +150,15 @@
         </button>
       </div>
     {/if}
+  {:else if borrow && lockBar}
+    <div class="lock-bar" role="status">
+      <Smartphone size={14} aria-hidden="true" />
+      <div class="lock-words">
+        <strong>{borrowTitle(borrow)}</strong>
+        <span>{BORROW_DETAIL}</span>
+      </div>
+      <button type="button" class="take" onclick={() => void fitHere()}>{BORROW_ACTION}</button>
+    </div>
   {/if}
 </div>
 

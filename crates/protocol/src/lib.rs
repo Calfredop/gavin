@@ -57,7 +57,7 @@ pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 pub use session_owner::{
     LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, DESK_INPUT_NOTICE_MIN_VERSION,
-    SESSION_OWNERS_MIN_VERSION,
+    PTY_BORROW_MIN_VERSION, SESSION_OWNERS_MIN_VERSION,
 };
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -85,6 +85,22 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v74 lends a session's PTY size to the Device looking at it
+/// (`ui-companion-session-connect.md`). A PTY has one size, and a phone has
+/// to shrink it to be readable; until now nothing gave it back, so the
+/// desk's terminal stayed phone-width after the phone left. A Device's
+/// `resize_session` is now answered by the daemon as that Device
+/// (`RemoteAllowance::Daemon`) and records it as the session's borrower,
+/// while the desk's own `ResizeSession` is remembered and held back. The
+/// desk's size comes back when the Device closes the terminal
+/// (`return_pty_size`), when its last connection closes, or when the desk
+/// asks (`ReturnPtySize`, one new TYPE). Each change is pushed as
+/// `PtySizeBorrowed`, only to an app whose `Hello` speaks 74
+/// (`PTY_BORROW_MIN_VERSION`), which draws the overlay naming the Device.
+/// No request changed shape, so `MIN_COMPATIBLE_VERSION` stands. An older
+/// daemon forwards a Device's resize to the desk as before, and the
+/// overlay never appears, so no `FEATURE_MIN_VERSION` entry is owed.
 ///
 /// v73 lets the desk run this Mac's own Relay
 /// (`desk-runs-the-local-relay-itself.md`). The "Run a Relay on this Mac"
@@ -934,7 +950,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 73;
+pub const PROTOCOL_VERSION: u32 = 74;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1204,6 +1220,15 @@ pub enum Request {
         id: String,
         cols: u16,
         rows: u16,
+    },
+    /// Gives session `id` its desk size back (v74): ends the Device's
+    /// borrow of the PTY's size and resizes it to the size the desk last
+    /// asked for. Sent by the desk's "Fit here"; a Device sends the same as
+    /// the `return_pty_size` desktop command when it closes the terminal,
+    /// which the daemon answers itself and honours only from the borrower.
+    /// Answered `Ok` whether or not anything was borrowed.
+    ReturnPtySize {
+        id: String,
     },
     KillSession {
         id: String,
@@ -2798,6 +2823,10 @@ pub fn min_version_for(req: &Request) -> u32 {
         // Rotating the desk's token (v73). One new TYPE; the Refresh
         // button owes FEATURE_MIN_VERSION.admissionRefresh for its copy.
         Request::RefreshRelayAdmission => 73,
+        // The desk taking its PTY size back from a Device (v74). One new
+        // TYPE; its button only shows once a v74 daemon has pushed a
+        // borrow, so no FEATURE_MIN_VERSION entry is owed.
+        Request::ReturnPtySize { .. } => 74,
 
         Request::Shutdown => 12,
 
@@ -3562,6 +3591,18 @@ pub enum Response {
     /// `DESK_INPUT_NOTICE_MIN_VERSION`; the desk offers it on to the
     /// Devices that listen (`session-desk-input`).
     SessionDeskInput { session_id: String, owner: String, at: i64 },
+    /// Push (v74): which Device a session's PTY is sized for, or `None`
+    /// once the desk has its size back. Sent only to an `app` connection
+    /// that reads pushes and whose `Hello` speaks `PTY_BORROW_MIN_VERSION`,
+    /// on every change and again whenever the desk's own resize of a
+    /// borrowed session is held back -- which is how a desk that reloaded
+    /// mid-borrow hears of it. The desk does not offer it on: the Device
+    /// that borrowed knows, and no other needs to.
+    PtySizeBorrowed {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<LiveDevice>,
+    },
     /// Push to every live `app` connection (v61): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -8230,7 +8271,9 @@ mod tests {
         // DeskRelayStateChanged push -- the desk running this Mac's Relay.
         // Two new TYPES; `Devices.desk_relay_enabled` widens a reply,
         // behind FEATURE_MIN_VERSION.deskRelay.
-        assert_eq!(PROTOCOL_VERSION, 73);
+        // v74: ReturnPtySize and the PtySizeBorrowed push -- a Device
+        // borrowing a session's PTY size while it looks. One new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 74);
     }
 
     #[test]
@@ -8761,6 +8804,8 @@ mod tests {
             // v68: session ownership.
             Request::SetSessionOwner { id: "s".into(), to: Some("d1".into()), expect: None, force: false },
             Request::ListSessionOwners,
+            // v74: the desk taking its PTY size back.
+            Request::ReturnPtySize { id: "s".into() },
             // v70: the desk host's write for a Device.
             Request::ForwardedInput {
                 request: Box::new(Request::WriteInput { id: "s".into(), data: "d".into() }),
@@ -8977,6 +9022,8 @@ mod tests {
         expected.insert(71, 1);
         // RecordShellWrites, ShellWrites -- what a shell call wrote.
         expected.insert(72, 2);
+        // ReturnPtySize -- the desk taking its PTY size back.
+        expected.insert(74, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

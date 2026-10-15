@@ -12,6 +12,7 @@
   import { ArrowDownToLine, ArrowRightLeft, Globe, Keyboard, Lock, Power, Send, Type, X } from "@lucide/svelte";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
+  import * as backend from "$lib/core/backend";
   import { askConfirm, showAlert } from "$lib/core/dialog";
   import { daemonCompat, layoutState } from "$lib/core/layoutState";
   import {
@@ -43,6 +44,7 @@
   import { tabAgentIndicator } from "$lib/ui/indicators";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { browserShown, browserViews, hideBrowser, showBrowser } from "$companion/state/browser";
+  import { onReconnect } from "$companion/state/reachability";
   import { endSession } from "$companion/state/sessions";
   import { watchTurn } from "$companion/state/turn";
   import { sendAsOwner, sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
@@ -318,9 +320,19 @@
     });
     if (frame) observer.observe(frame);
 
+    // The PTY is sized for this phone only while this terminal is open
+    // (v74): a dropped connection gave the desk its size back, so coming
+    // back sizes it for the phone again.
+    const stopRefitting = onReconnect(() => void pane?.fit());
+
     const stopWatching = watchTurn(sessionId);
     return () => {
       stopWatching();
+      stopRefitting();
+      // The desk's size back, rather than a phone-width terminal at the
+      // desk until its window next changes size. An older Workstation
+      // does not know the command, and kept the desk's size all along.
+      void backend.returnPtySize(sessionId).catch(() => {});
       // The next time this terminal opens, it opens alone.
       hideBrowser(sessionId);
       observer.disconnect();

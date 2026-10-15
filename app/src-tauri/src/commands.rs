@@ -9,6 +9,7 @@
 pub const REGISTERED_COMMANDS: &[&str] = &[
     "write_input",
     "resize_session",
+    "return_pty_size",
     "create_session",
     "kill_session",
     "adopt_session",

@@ -19,6 +19,7 @@ mod ownership;
 mod pairing;
 mod presence;
 mod proc;
+mod pty_borrow;
 mod program;
 mod pty;
 mod notify_crypto;

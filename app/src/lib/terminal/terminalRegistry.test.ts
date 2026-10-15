@@ -278,4 +278,16 @@ describe("what a terminal's typing sends", () => {
     expect(backend.writeInput).toHaveBeenLastCalledWith("t4", "x");
     destroyTerminal("t4");
   });
+
+  it("puts a swipe's momentum where the swipe was, never NaN into the prompt", () => {
+    getOrCreateTerminal("t5", 13);
+    // Nothing known yet: the report has nowhere to go and nothing is sent.
+    typed?.("\x1b[<65;NaN;NaNM");
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    typed?.("\x1b[<65;12;30M");
+    typed?.("\x1b[<65;NaN;NaNM");
+    expect(backend.writeInput).toHaveBeenLastCalledWith("t5", "\x1b[<65;12;30M");
+    expect(backend.writeInput).toHaveBeenCalledTimes(2);
+    destroyTerminal("t5");
+  });
 });

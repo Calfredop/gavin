@@ -184,6 +184,9 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // ---- ordinary ----
   write_input: ["ordinary"],
   resize_session: ["ordinary"],
+  // The desk's size back from a Device that has the session open (v74).
+  // A Device's call is answered by the daemon as that Device.
+  return_pty_size: ["ordinary"],
   create_session: ["ordinary"],
   adopt_session: ["ordinary"],
   snapshot_session: ["ordinary"],

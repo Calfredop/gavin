@@ -23,3 +23,35 @@ const MOUSE_REPORTS = /^(?:\x1b\[<\d+;\d+;\d+[Mm])+$/;
 export function isTerminalReport(data: string): boolean {
   return FOCUS_REPORTS.has(data) || MOUSE_REPORTS.test(data);
 }
+
+// An SGR report whatever its coordinates say, so one whose position is not
+// a number is found as well as a whole one.
+const ANY_MOUSE_REPORT = /\x1b\[<(\d+);([^;\x1b]*);([^;\x1b]*?)([Mm])/g;
+const WHOLE = /^\d+$/;
+
+/// Mends the mouse reports xterm sends without a position.
+///
+/// xterm 6.1 turns a swipe into wheel reports once the program tracks the
+/// mouse (MouseService's touch handling), and keeps sending them through
+/// the swipe's momentum. Those frames are synthesized gesture events with
+/// no pointer on them, so the report's column and row come out `NaN` --
+/// `ESC [ < 65 ; NaN ; NaN M` -- which no program parses as a report:
+/// Claude Code typed them into its prompt as `NaN;NaNM…`. Every touch
+/// screen produces them, the Companion's and a touch-screen desk's alike.
+///
+/// The momentum is the swipe still going, so its reports go where the
+/// swipe last was: `at` is the `col;row` of the last whole report, carried
+/// between calls by the caller. With nothing known yet the report is
+/// dropped -- a wheel turn at a made-up cell is worse than one fewer.
+export function mendMouseReports(data: string, at: string | null): { data: string; at: string | null } {
+  if (!data.includes("\x1b[<")) return { data, at };
+  let last = at;
+  const mended = data.replace(ANY_MOUSE_REPORT, (report, button: string, col: string, row: string, end: string) => {
+    if (WHOLE.test(col) && WHOLE.test(row)) {
+      last = `${col};${row}`;
+      return report;
+    }
+    return last === null ? "" : `\x1b[<${button};${last}${end}`;
+  });
+  return { data: mended, at: last };
+}

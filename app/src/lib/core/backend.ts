@@ -932,6 +932,13 @@ export function resizeSession(sessionId: string, cols: number, rows: number): Pr
   return invoke("resize_session", { sessionId, cols, rows });
 }
 
+/// Ends a Device's borrow of the session's PTY size and puts back the size
+/// this desk last asked for (v74). A Device sends it when it closes the
+/// terminal, and the daemon honours that only from the borrower.
+export function returnPtySize(sessionId: string): Promise<void> {
+  return invoke("return_pty_size", { sessionId });
+}
+
 /// Asks the daemon to repaint this session's terminal from its own model of
 /// the screen. See the Rust command for why a reloaded frontend needs it and
 /// why it isn't a second Attach.

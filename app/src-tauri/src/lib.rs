@@ -135,6 +135,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             session::write_input,
             session::resize_session,
+            session::return_pty_size,
             session::create_session,
             session::kill_session,
             session::adopt_session,

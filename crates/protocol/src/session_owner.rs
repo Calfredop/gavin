@@ -27,6 +27,13 @@ pub const SESSION_OWNERS_MIN_VERSION: u32 = 68;
 /// the desk's, since an older host sends a Device's input bare too.
 pub const DESK_INPUT_NOTICE_MIN_VERSION: u32 = 70;
 
+/// The first version that answers a Device's `resize_session` itself and
+/// takes `ReturnPtySize`, and pushes `PtySizeBorrowed`: a Device sizing a
+/// session's PTY for its own screen while it has the terminal open, and
+/// the desk getting its size back. The daemon compares an app's `Hello`
+/// version with this before it writes the push.
+pub const PTY_BORROW_MIN_VERSION: u32 = 74;
+
 /// How long a session stays its Device's after the Device's last
 /// connection closes -- the phone locked, went to the background, or lost
 /// the network -- before it goes back to the desk. Long enough for a

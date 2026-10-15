@@ -49,7 +49,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // which Device is asking; see `RemoteAllowance::Daemon`.
     ("set_session_owner", RemoteAllowance::Daemon),
     ("list_session_owners", RemoteAllowance::Daemon),
-    ("resize_session", RemoteAllowance::Allowed),
+    // A Device's resize borrows the PTY's size for its screen, and the
+    // daemon alone knows which Device that is (v74); forwarded, the desk
+    // would apply it as the desk. `return_pty_size` gives it back.
+    ("resize_session", RemoteAllowance::Daemon),
+    ("return_pty_size", RemoteAllowance::Daemon),
     ("create_session", RemoteAllowance::Allowed),
     ("kill_session", RemoteAllowance::Allowed),
     ("adopt_session", RemoteAllowance::Allowed),
@@ -390,6 +394,15 @@ mod tests {
     fn session_ownership_is_answered_by_the_daemon() {
         assert_eq!(allowance_for("set_session_owner"), Some(RemoteAllowance::Daemon));
         assert_eq!(allowance_for("list_session_owners"), Some(RemoteAllowance::Daemon));
+    }
+
+    /// Whose screen a PTY is sized for is the Device on the connection
+    /// (v74): forwarded, the desk would resize it as the desk, and nothing
+    /// would ever give the desk its size back.
+    #[test]
+    fn a_devices_resize_is_answered_by_the_daemon() {
+        assert_eq!(allowance_for("resize_session"), Some(RemoteAllowance::Daemon));
+        assert_eq!(allowance_for("return_pty_size"), Some(RemoteAllowance::Daemon));
     }
 
     #[test]

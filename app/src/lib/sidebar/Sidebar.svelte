@@ -12,6 +12,7 @@
   import { DEVICES_LABEL, devicesBadgeTip } from "$lib/core/devicesPanel";
   import { deviceNameBySessionId, devicesBadgeText, watchDevices } from "$lib/core/devicesState";
   import { watchSessionOwners } from "$lib/core/sessionOwnershipState";
+  import { watchPtyBorrows } from "$lib/terminal/ptyBorrowState";
   import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import {
     armRequest,
@@ -214,6 +215,9 @@
   // Who owns each session (v68): locks this window's terminals and input
   // surfaces while a Device works in one.
   onMount(() => watchSessionOwners());
+  // Which Device a session's PTY is sized for (v74): the bar a terminal
+  // drawn narrower than its pane shows while a phone has it open.
+  onMount(() => watchPtyBorrows());
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and

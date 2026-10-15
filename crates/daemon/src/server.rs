@@ -1764,6 +1764,10 @@ pub struct SessionManager {
     /// store read that names a Device taking a session: nothing takes
     /// this while holding the trust store.
     session_owners: Mutex<crate::ownership::Owners>,
+    /// Which Device each session's PTY is sized for, and the size the desk
+    /// last asked for (v74, `pty_borrow.rs`). In memory, for ownership's
+    /// reason. Leaf lock.
+    pty_borrows: Mutex<crate::pty_borrow::Borrows>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -2027,6 +2031,11 @@ impl Drop for DeviceConnectionSlot<'_> {
                     .unwrap()
                     .device_away(&conn.device_id, crate::remote::epoch_seconds());
                 self.manager.announce_owners(away);
+                // The sizes it borrowed go back at once: no grace, since
+                // the desk is left looking at a phone-width terminal, and
+                // the Companion sizes its terminal again when it is back.
+                let returned = self.manager.pty_borrows.lock().unwrap().device_gone(&conn.device_id);
+                self.manager.restore_desk_sizes(returned);
             }
             self.manager
                 .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
@@ -2207,6 +2216,7 @@ impl SessionManager {
             device_refusals: Mutex::new(HashMap::new()),
             device_presence: Mutex::new(crate::presence::Presences::default()),
             session_owners: Mutex::new(crate::ownership::Owners::default()),
+            pty_borrows: Mutex::new(crate::pty_borrow::Borrows::default()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
@@ -2702,19 +2712,24 @@ impl SessionManager {
             Some(protocol::RemoteAllowance::Refused) => Response::Error {
                 message: format!("gavin-daemon: remote role may not invoke `{command}`"),
             },
-            Some(protocol::RemoteAllowance::Daemon) => self.answer_in_daemon(device_id, command, &args),
+            Some(protocol::RemoteAllowance::Daemon) => self.answer_in_daemon(device_id, command, args),
             Some(protocol::RemoteAllowance::Allowed) => {
                 if let Some(refusal) = device_id.and_then(|device_id| self.device_input(device_id, command, &args)) {
                     return Response::DesktopResult { value: None, error: Some(refusal.to_error()) };
                 }
-                let what = format!("`{command}`");
-                let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
-                match self.ask_desktop(&what, FORWARD_BUDGET, push) {
-                    Ok(ForwardOutcome::Done { value, error }) => Response::DesktopResult { value, error },
-                    Ok(_) => Response::Error { message: "gavin-daemon: the desktop app answered something else".into() },
-                    Err(reason) => Response::Error { message: desktop_unreachable(reason).into() },
-                }
+                self.forward_to_desktop(command, args)
             }
+        }
+    }
+
+    /// Hands `command` to the desktop and waits for its `ForwardResult`.
+    fn forward_to_desktop(&self, command: &str, args: serde_json::Value) -> Response {
+        let what = format!("`{command}`");
+        let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
+        match self.ask_desktop(&what, FORWARD_BUDGET, push) {
+            Ok(ForwardOutcome::Done { value, error }) => Response::DesktopResult { value, error },
+            Ok(_) => Response::Error { message: "gavin-daemon: the desktop app answered something else".into() },
+            Err(reason) => Response::Error { message: desktop_unreachable(reason).into() },
         }
     }
 
@@ -3060,9 +3075,31 @@ impl SessionManager {
 
     /// A command the table marks `Daemon`, answered here as `device_id`
     /// with the arguments the webview's `invoke` would pass.
-    fn answer_in_daemon(&self, device_id: Option<&str>, command: &str, args: &serde_json::Value) -> Response {
+    fn answer_in_daemon(&self, device_id: Option<&str>, command: &str, args: serde_json::Value) -> Response {
         let text = |key: &str| args.get(key).and_then(serde_json::Value::as_str).filter(|s| !s.is_empty());
+        let size = |key: &str| args.get(key).and_then(serde_json::Value::as_u64).and_then(|n| u16::try_from(n).ok());
         let answer = match command {
+            "resize_session" => match (text("sessionId"), size("cols"), size("rows")) {
+                (Some(session_id), Some(cols), Some(rows)) => {
+                    // A session this daemon does not host is one the desk
+                    // reaches on another host (an ssh workspace), which only
+                    // the desk can route to: forwarded, as before v74.
+                    if !self.sessions.lock().unwrap().contains_key(session_id) {
+                        return self.forward_to_desktop(command, args);
+                    }
+                    self.device_resize_session(device_id, session_id, cols, rows)
+                        .map(|()| serde_json::Value::Null)
+                        .map_err(|e| e.to_string())
+                }
+                _ => Err("gavin-daemon: resize_session needs a sessionId, cols and rows".to_string()),
+            },
+            "return_pty_size" => match text("sessionId") {
+                None => Err("gavin-daemon: return_pty_size needs a sessionId".to_string()),
+                Some(session_id) => {
+                    self.return_pty_size(session_id, device_id);
+                    Ok(serde_json::Value::Null)
+                }
+            },
             "set_session_owner" => match text("sessionId") {
                 None => Err("gavin-daemon: set_session_owner needs a sessionId".to_string()),
                 Some(session_id) => {
@@ -3099,6 +3136,66 @@ impl SessionManager {
     fn end_session_owner(&self, session_id: &str) {
         let ended = self.session_owners.lock().unwrap().session_ended(session_id, crate::remote::epoch_seconds());
         self.announce_owners(ended.into_iter().collect());
+        self.pty_borrows.lock().unwrap().session_ended(session_id);
+    }
+
+    // -- a Device borrowing a PTY's size (v74, `pty_borrow.rs`) ---------
+
+    /// The desk's `ResizeSession`: applied, unless a Device has the size --
+    /// then remembered for when it comes back, and the borrow announced
+    /// again, which is how a desk that reloaded mid-borrow hears of it.
+    pub fn desk_resize_session(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        if !self.sessions.lock().unwrap().contains_key(id) {
+            anyhow::bail!("unknown session: {id}");
+        }
+        let decision = self.pty_borrows.lock().unwrap().desk_resize(id, (cols, rows));
+        match decision {
+            crate::pty_borrow::DeskResize::Apply => self.resize_session(id, cols, rows),
+            crate::pty_borrow::DeskResize::Held(device) => {
+                self.announce_pty_borrow(id, Some(device));
+                Ok(())
+            }
+        }
+    }
+
+    /// A Device's resize: it has the size from now on. `None` is a
+    /// connection that carries no Device, which is the desk's.
+    fn device_resize_session(&self, device_id: Option<&str>, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let Some(device_id) = device_id else {
+            return self.desk_resize_session(id, cols, rows);
+        };
+        // Named before the lock: a trust-store read.
+        let device = protocol::LiveDevice { device_id: device_id.to_string(), name: self.device_name(device_id) };
+        let borrowed = self.pty_borrows.lock().unwrap().device_resize(id, device);
+        self.resize_session(id, cols, rows)?;
+        if let Some(device) = borrowed {
+            self.announce_pty_borrow(id, Some(device));
+        }
+        Ok(())
+    }
+
+    /// Ends the session's borrow and puts the desk's size back. `by` is
+    /// the Device asking, `None` for the desk; see `Borrows::give_back`.
+    pub fn return_pty_size(&self, id: &str, by: Option<&str>) {
+        let returned = self.pty_borrows.lock().unwrap().give_back(id, by);
+        self.restore_desk_sizes(returned.into_iter().collect());
+    }
+
+    fn restore_desk_sizes(&self, returned: Vec<crate::pty_borrow::Returned>) {
+        for back in returned {
+            if let Some((cols, rows)) = back.desk_size {
+                // A session that ended meanwhile has nothing to resize.
+                let _ = self.resize_session(&back.session_id, cols, rows);
+            }
+            self.announce_pty_borrow(&back.session_id, None);
+        }
+    }
+
+    fn announce_pty_borrow(&self, session_id: &str, device: Option<protocol::LiveDevice>) {
+        self.push_to_apps_speaking(
+            protocol::PTY_BORROW_MIN_VERSION,
+            &Response::PtySizeBorrowed { session_id: session_id.to_string(), device },
+        );
     }
 
     /// Records a command the desktop ran for `device_id`, and tells the
@@ -6397,8 +6494,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             Ok(Response::SessionOwners { owners: list.owners, devices: list.devices, you: list.you })
         }
         Request::ResizeSession { id, cols, rows } => manager
-            .resize_session(&id, cols, rows)
+            .desk_resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
+        Request::ReturnPtySize { id } => {
+            manager.return_pty_size(&id, None);
+            Ok(Response::Ok)
+        }
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
         Request::SessionProcesses => manager
             .session_processes()
@@ -7315,6 +7416,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // The desk host's write for a Device; an agent is neither.
         | Request::ForwardedInput { .. }
         | Request::ResizeSession { .. }
+        | Request::ReturnPtySize { .. }
         | Request::KillSession { .. }
         | Request::Attach { .. }
         | Request::Snapshot { .. }
@@ -20474,10 +20576,10 @@ mod forwarding_tests {
         // What is not input is nobody's to lock: a kill from the phone
         // must never wait on one.
         std::thread::scope(|scope| {
-            let resize = scope.spawn(|| manager.invoke_desktop(Some("ipad"), "resize_session", typed("s1")));
+            let kill = scope.spawn(|| manager.invoke_desktop(Some("ipad"), "kill_session", typed("s1")));
             desk.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            assert_eq!(answer_forward(&manager, &mut desk), "resize_session");
-            assert!(matches!(resize.join().unwrap(), Response::DesktopResult { error: None, .. }));
+            assert_eq!(answer_forward(&manager, &mut desk), "kill_session");
+            assert!(matches!(kill.join().unwrap(), Response::DesktopResult { error: None, .. }));
         });
     }
 
@@ -20517,6 +20619,122 @@ mod forwarding_tests {
         }
     }
 
+    /// The next `PtySizeBorrowed` an app connection was pushed: whose
+    /// screen the session is sized for, `None` the desk's.
+    fn next_borrow(app: &mut BufReader<Stream>) -> (String, Option<String>) {
+        loop {
+            match read_message::<_, Response>(app).unwrap() {
+                Some(Response::PtySizeBorrowed { session_id, device }) => {
+                    return (session_id, device.map(|d| d.device_id));
+                }
+                Some(_) => continue,
+                None => panic!("the app connection closed before a borrow was pushed"),
+            }
+        }
+    }
+
+    /// An app connection that speaks v74, as a desk's `Hello` registers it.
+    fn borrow_listener(manager: &SessionManager) -> BufReader<Stream> {
+        let (ours, theirs) = Stream::pair().unwrap();
+        theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        manager.register_app_connection(protocol::PTY_BORROW_MIN_VERSION, Arc::new(Mutex::new(ours)));
+        BufReader::new(theirs)
+    }
+
+    /// v74: a phone sizes the PTY for its screen while it looks, the desk's
+    /// refits wait meanwhile, and closing the terminal gives the desk the
+    /// size it last asked for -- before v74 the desk stayed phone-width.
+    #[test]
+    fn a_devices_resize_borrows_the_pty_and_closing_gives_the_desk_its_size_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
+        let mut app = borrow_listener(&manager);
+        let size = || manager.last_pty_size.lock().unwrap().get(&id).copied();
+        let ok = |r: Response| assert!(matches!(r, Response::DesktopResult { error: None, .. }), "{r:?}");
+
+        manager.desk_resize_session(&id, 160, 48).unwrap();
+        assert_eq!(size(), Some((160, 48)));
+
+        ok(manager.invoke_desktop(Some("iphone"), "resize_session", serde_json::json!({ "sessionId": id, "cols": 45, "rows": 30 })));
+        assert_eq!(size(), Some((45, 30)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), Some("iphone".to_string())));
+
+        // The desk window grew meanwhile: held back, remembered, and the
+        // borrow said again for a desk that may not have heard it.
+        manager.desk_resize_session(&id, 170, 50).unwrap();
+        assert_eq!(size(), Some((45, 30)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), Some("iphone".to_string())));
+
+        // Another Device closing its terminal is not this one's borrow.
+        ok(manager.invoke_desktop(Some("ipad"), "return_pty_size", serde_json::json!({ "sessionId": id })));
+        assert_eq!(size(), Some((45, 30)));
+
+        ok(manager.invoke_desktop(Some("iphone"), "return_pty_size", serde_json::json!({ "sessionId": id })));
+        assert_eq!(size(), Some((170, 50)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), None));
+        manager.desk_resize_session(&id, 180, 52).unwrap();
+        assert_eq!(size(), Some((180, 52)), "the desk sizes freely again");
+        manager.kill_session(&id).unwrap();
+    }
+
+    /// The desk takes the size back itself ("Fit here"), from any Device;
+    /// and a Device whose last connection closes gives back what it had.
+    #[test]
+    fn the_desk_or_a_device_leaving_gives_the_size_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
+        let mut app = borrow_listener(&manager);
+        let size = || manager.last_pty_size.lock().unwrap().get(&id).copied();
+        let borrow = |device: &str| {
+            manager.invoke_desktop(Some(device), "resize_session", serde_json::json!({ "sessionId": id, "cols": 45, "rows": 30 }))
+        };
+        manager.desk_resize_session(&id, 160, 48).unwrap();
+
+        borrow("iphone");
+        assert_eq!(next_borrow(&mut app).1.as_deref(), Some("iphone"));
+        assert!(matches!(handle_request(&manager, Request::ReturnPtySize { id: id.clone() }), Response::Ok));
+        assert_eq!(size(), Some((160, 48)));
+        assert_eq!(next_borrow(&mut app).1, None);
+
+        let (ours, _theirs) = Stream::pair().unwrap();
+        let writer = Arc::new(Mutex::new(ours.try_clone().unwrap()));
+        let token = manager.next_device_connection.fetch_add(1, Ordering::SeqCst);
+        manager
+            .device_connections
+            .lock()
+            .unwrap()
+            .insert(token, DeviceConnection { device_id: "iphone".into(), stream: ours, writer });
+        borrow("iphone");
+        assert_eq!(next_borrow(&mut app).1.as_deref(), Some("iphone"));
+        // What the connection's thread does as it ends.
+        drop(DeviceConnectionSlot { manager: &manager, token });
+        assert_eq!(size(), Some((160, 48)));
+        assert_eq!(next_borrow(&mut app).1, None);
+        manager.kill_session(&id).unwrap();
+    }
+
+    /// A session this daemon does not host is one the desk reaches on
+    /// another host, which only the desk can route a resize to.
+    #[test]
+    fn a_devices_resize_of_a_session_hosted_elsewhere_still_goes_to_the_desk() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let (_token, mut desk) = desk(&manager);
+        std::thread::scope(|scope| {
+            let resize = scope.spawn(|| {
+                manager.invoke_desktop(
+                    Some("iphone"),
+                    "resize_session",
+                    serde_json::json!({ "sessionId": "on-the-ssh-host", "cols": 45, "rows": 30 }),
+                )
+            });
+            assert_eq!(answer_forward(&manager, &mut desk), "resize_session");
+            assert!(matches!(resize.join().unwrap(), Response::DesktopResult { error: None, .. }));
+        });
+    }
+
     /// A phone typing into a session the desk is typing in is asked first.
     #[test]
     fn a_device_typing_where_the_desk_just_typed_is_asked_first() {
@@ -20551,7 +20769,7 @@ mod forwarding_tests {
         let manager = manager_with_budget(&dir, Duration::from_millis(200));
         let (_token, _desk) = desk(&manager);
         assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotAnswering));
-        match manager.invoke_desktop(None, "resize_session", serde_json::json!({})) {
+        match manager.invoke_desktop(None, "kill_session", serde_json::json!({})) {
             Response::Error { message } => assert!(message.contains("did not answer in time"), "{message}"),
             other => panic!("expected an Error, got {other:?}"),
         }

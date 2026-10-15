@@ -180,6 +180,7 @@ fn is_unsolicited(resp: &Response) -> bool {
             | Response::DevicePresenceChanged { .. }
             | Response::SessionOwnerChanged { .. }
             | Response::SessionDeskInput { .. }
+            | Response::PtySizeBorrowed { .. }
     )
 }
 
@@ -1468,6 +1469,7 @@ mod tests {
                     | "DevicePresenceChanged"
                     | "SessionOwnerChanged"
                     | "SessionDeskInput"
+                    | "PtySizeBorrowed"
             );
             assert!(skipped, "the daemon pushes {name} to app connections; is_unsolicited must skip it");
             pushed += 1;

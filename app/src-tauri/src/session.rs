@@ -5595,6 +5595,16 @@ pub(crate) fn attach_and_relay(
                 Response::SessionOwnerChanged { ownership } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "session-owner-changed", ownership);
                 }
+                // Which Device a session's PTY is sized for (v74), or
+                // none: what draws the desk's "Open on …" bar. The desk's
+                // windows only -- not offered on, since the Device that
+                // borrowed knows. Only sent to an app that speaks 74.
+                Response::PtySizeBorrowed { session_id, device } => {
+                    let _ = reader_app_handle.emit(
+                        "pty-size-borrowed",
+                        serde_json::json!({ "sessionId": session_id, "device": device }),
+                    );
+                }
                 // The desk sent input into a session a Device owns (v70):
                 // offered on to the Devices, whose owner says a line
                 // arrived that it did not type. Only sent to an app that
@@ -6076,6 +6086,23 @@ pub async fn list_session_owners(
         Response::Error { message } => Err(message),
         other => Err(format!("expected SessionOwners, got {other:?}")),
     }
+}
+
+/// "Fit here" (v74): ends a Device's borrow of the session's PTY size and
+/// puts back the size this desk last asked for. A Device sends the same as
+/// the `return_pty_size` desktop command, which the daemon answers itself.
+#[tauri::command]
+pub fn return_pty_size(
+    session_id: String,
+    app_handle: AppHandle,
+    state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_writer(route, &state, &compat, |writer, compat| {
+        send_request(writer, &Request::ReturnPtySize { id: session_id }, compat)
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
