@@ -1,4 +1,5 @@
 ---
+order: 17408
 title: [bug] kimi launches: compressed-launch auth, subfolder trust screen, default permission mode
 status: In Progress
 ---

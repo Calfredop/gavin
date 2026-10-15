@@ -1,5 +1,5 @@
 ---
-order: 23552
+order: 14336
 title: Sessions worked by a Device lock for everyone else, with a take-over CTA and Device-to-Device hand-off
 status: In Progress
 priority: high

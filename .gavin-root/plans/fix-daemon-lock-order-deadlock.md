@@ -1,4 +1,5 @@
 ---
+order: 21504
 title: [fix] daemon deadlocks: a guard held across the session screen lock
 status: In Progress
 priority: urgent

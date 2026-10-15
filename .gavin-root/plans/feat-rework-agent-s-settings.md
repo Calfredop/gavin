@@ -1,6 +1,6 @@
 ---
 complexity: complex
-order: 39936
+order: 16384
 kind: plan
 title: [feat][rework] agent’s settings
 status: In Progress

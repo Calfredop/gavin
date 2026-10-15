@@ -1,5 +1,5 @@
 ---
-order: 4096
+order: 3072
 kind: task
 title: Companion 24: early store review
 status: In Progress

@@ -1,4 +1,5 @@
 ---
+order: 24576
 kind: task
 title: Theme: white on the accent fills, and 127 desktop text colours outside the text roles, are unmeasured for contrast
 status: In Progress
@@ -36,6 +37,7 @@ So every primary (accent-filled) button with white text is 2.75:1 in both themes
 **Acceptance.**
 - [ ] White (or whatever goes on a fill) clears 4.5:1 on every fill in both themes, held by the theme guard
 - [x] No `$lib` component colours text outside the text roles, held by a guard
-- [ ] Decision: Text on coloured fills (primary buttons, badges, checkbox ticks) is white at 2.75:1 on the blue and ~2:1 on dark-theme amber/green. How should it clear 4.5:1? (A) keeps every fill colour as it is and gives each fill its own ink: near-black #1a1a1a on blue in both themes (6.3:1), and on dark-theme red/amber/green (4.5/7.9/9.0:1); white stays on light-theme red/amber/green (6.0/5.1/6.2:1). (B) keeps white text and darkens the fills: blue #4a9eff→#0070f2 in both themes, dark amber #d9a648→#996e20, dark green #8bc98b→#3e853e, dark red #e0524a→#db372e. That also darkens the bars, LEDs and focus rings that use these colours.
+- [x] Decision: Text on coloured fills (primary buttons, badges, checkbox ticks) is white at 2.75:1 on the blue and ~2:1 on dark-theme amber/green. How should it clear 4.5:1? (A) keeps every fill colour as it is and gives each fill its own ink: near-black #1a1a1a on blue in both themes (6.3:1), and on dark-theme red/amber/green (4.5/7.9/9.0:1); white stays on light-theme red/amber/green (6.0/5.1/6.2:1). (B) keeps white text and darkens the fills: blue #4a9eff→#0070f2 in both themes, dark amber #d9a648→#996e20, dark green #8bc98b→#3e853e, dark red #e0524a→#db372e. That also darkens the bars, LEDs and focus rings that use these colours.
   Options: A) A: per-fill ink, fills unchanged (dark text on the blue button) B) B: darken the fills, keep white text
+  Answer (2026-10-15): A: per-fill ink, fills unchanged (dark text on the blue button)
 - [ ] Human test: In a Git merge conflict in the light theme, the conflict number badges read white on amber, and the active one shows a thin ring instead of a lighter amber; in the dark theme they stay dark on amber with the same ring

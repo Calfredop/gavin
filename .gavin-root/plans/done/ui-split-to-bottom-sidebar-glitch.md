@@ -2,7 +2,7 @@
 order: 15360
 kind: task
 title: [ui] split to bottom sidebar glitch
-status: In Progress
+status: Done
 ---
 Spillting tab horizontally makes the quick hub tabs sidebar hover over the tabs, cutting the terminals/content
 

@@ -1,5 +1,5 @@
 ---
-order: 11264
+order: 6144
 title: [feat] MCP-ready prompt injection for custom profiles
 status: In Progress
 ---

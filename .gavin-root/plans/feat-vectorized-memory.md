@@ -1,6 +1,6 @@
 ---
 complexity: complex
-order: 13312
+order: 9216
 kind: plan
 title: [feat] vectorized memory
 status: In Progress

@@ -1,6 +1,6 @@
 ---
 complexity: moderate
-order: 14336
+order: 11264
 kind: plan
 title: [feat] installers
 status: In Progress

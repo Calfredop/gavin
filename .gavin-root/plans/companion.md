@@ -1,5 +1,5 @@
 ---
-order: 5120
+order: 4096
 title: The Companion: Gavin on a phone
 status: In Progress
 priority: medium

@@ -1,6 +1,6 @@
 ---
 complexity: moderate
-order: 14336
+order: 12288
 kind: plan
 title: [enforce] daemon singleton + gavin-mcp connect diagnosis
 status: In Progress
