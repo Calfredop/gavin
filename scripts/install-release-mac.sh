@@ -172,6 +172,26 @@ else
     cp "$APP_DIR/package-lock.json" "$stamp"
   fi
 
+  # A build script's results are stored with absolute paths (link search
+  # dirs, tauri's plugin permission files), and cargo's fingerprint does not
+  # include where target/ lives -- so a worktree that was moved, the
+  # gavin-stable one above included, keeps naming the old folder and the build
+  # fails on a file that is no longer there. Forget each such run: its build
+  # dir and its fingerprint share a name, and without the fingerprint cargo
+  # runs the script again and rebuilds what depends on it.
+  build_dir="$WORKTREE/target/release/build"
+  if [ -d "$build_dir" ]; then
+    stale=$(grep -l "/target/release/build/" "$build_dir"/*/output 2>/dev/null |
+      xargs grep -L "$build_dir/" 2>/dev/null || true)
+    if [ -n "$stale" ]; then
+      say "forgetting $(printf '%s\n' "$stale" | wc -l | tr -d ' ') build-script results that name another target folder"
+      printf '%s\n' "$stale" | while IFS= read -r out; do
+        unit=$(basename -- "$(dirname -- "$out")")
+        rm -rf "$build_dir/$unit" "$WORKTREE/target/release/.fingerprint/$unit"
+      done
+    fi
+  fi
+
   # `npm run bundle` with an ad-hoc identity and the .app target alone.
   # GAVIN_BUILD_NUMBER is cleared so the number is the worktree's own commit
   # count, never one leaked in from the caller's environment.
