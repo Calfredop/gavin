@@ -154,6 +154,27 @@ export function composeTaskPrompt(
   });
 }
 
+// A direct-prompt task (`direct: true`, v75) is the one card whose body
+// goes to the agent exactly as the human wrote it: no tab-naming line, no
+// "you are executing the task card" framing, no status instructions, no
+// attachment block, no decoy note, and none of the per-agent extras,
+// relaunch note or rail retry prefix that wrap every other prompt. The
+// agent is not told which card it is working or asked to move it, so
+// the card stays where the launch put it until a human files it.
+//
+// Only a task: a plan's prompt is "read this file and work its
+// checklist", and the daemon reads the line on any other kind as a
+// warning and false. Checked again here so a hand-built card view that
+// says otherwise cannot send a plan's body as a prompt.
+export function isDirectPrompt(card: { kind: string; direct?: boolean }): boolean {
+  return card.kind === "task" && card.direct === true;
+}
+
+/// The refusal for a direct prompt with nothing in it. Every other card
+/// has gavin's framing to send even when its body is empty; this one
+/// would launch an agent with an empty prompt.
+export const EMPTY_DIRECT_PROMPT = "This direct prompt has no body to send";
+
 export function composePlanPrompt(
   path: string,
   attachments: string[] = [],

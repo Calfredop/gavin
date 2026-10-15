@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import { canReplay, type Label } from "$lib/board/kanban";
   import { slugStatus, type CardView } from "$lib/core/planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Send, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/cards/complexity";
   import { cardOverrideNote } from "$lib/cards/cardAgent";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -27,7 +27,7 @@
   import { tooltip } from "$lib/core/tooltip";
   import { layoutState, resolvedAgents } from "$lib/core/layoutState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
-  import { agentPromptBlocker } from "$lib/cards/cardRun";
+  import { agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { sshRunBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
   import { jumpToBoundSession, revealDevelopingCard } from "$lib/cards/cardRunActions";
@@ -296,15 +296,17 @@
       class="glyph"
       use:tooltip={card.kind === "note"
         ? "Note — a reminder"
-        : card.kind === "task"
-          ? "Task — the body is an agent prompt"
-          : card.checklistTotal > 0
+        : isDirectPrompt(card)
+          ? "Direct task — the body is sent to the agent exactly as written"
+          : card.kind === "task"
+            ? "Task — the body is an agent prompt"
+            : card.checklistTotal > 0
             ? "Plan — multi-step work with a checklist"
             : "Plan — multi-step work (no checklist yet)"}
     >
-      {#if card.kind === "note"}<StickyNote size={11} />{:else if card.kind === "task"}<Play
+      {#if card.kind === "note"}<StickyNote size={11} />{:else if isDirectPrompt(card)}<Send
           size={11}
-        />{:else}<FileText size={11} />{/if}
+        />{:else if card.kind === "task"}<Play size={11} />{:else}<FileText size={11} />{/if}
     </span>
     {#if railBadge}
       <span

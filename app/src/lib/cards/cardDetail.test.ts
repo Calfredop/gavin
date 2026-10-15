@@ -225,6 +225,12 @@ describe("settingsSummary", () => {
     );
   });
 
+  it("says a task is a direct prompt even folded: it changes what the agent is sent", () => {
+    expect(settingsSummary({ ...base, autoCommitApplies: false, direct: true })).toBe(
+      "no labels · no attachments · direct prompt"
+    );
+  });
+
   it("surfaces a missing attachment even folded, because it blocks every run", () => {
     const text = settingsSummary({ ...base, attachments: 2, brokenAttachments: 1 });
     expect(text).toContain("⚠ 1 missing attachment");

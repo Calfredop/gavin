@@ -7705,6 +7705,7 @@ pub async fn create_plan(
     parent: Option<String>,
     attachments: Option<String>,
     complexity: Option<String>,
+    direct: Option<bool>,
     app_handle: AppHandle,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
@@ -7722,6 +7723,7 @@ pub async fn create_plan(
             parent,
             attachments,
             complexity,
+            direct: direct.unwrap_or(false),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -8325,6 +8327,7 @@ mod gate_tests {
                 parent: None,
                 attachments: None,
                 complexity: None,
+                direct: false,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },

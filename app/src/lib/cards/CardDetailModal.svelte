@@ -73,7 +73,7 @@
   import { finishDeveloping } from "$lib/cards/developingCardsState";
   import { isViewTab } from "$lib/panes/tabIdentity";
   import { cardSessionState } from "$lib/board/columnRunAction";
-  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
+  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { mustPromptBody } from "$lib/agents/actionPromptsState";
   import { cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
@@ -307,7 +307,8 @@
       | "complexity"
       | "agent"
       | "model"
-      | "effort",
+      | "effort"
+      | "direct",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -456,8 +457,14 @@
   //
   // Task and plan only: nothing ever executes a note, so the instruction
   // would be text no agent reads, on a card with nothing to finish.
-  const autoCommitApplies = $derived(autoCommitAppliesTo(card.kind));
   const autoCommitOn = $derived(hasAutoCommit(content));
+  // Not offered on a direct prompt, whose body is sent as written: the
+  // block is gavin's sentence, and ticking it would put words in a prompt
+  // the human chose to write alone. Still shown while the block is there,
+  // so a card made direct after it was ticked can have it taken out.
+  const autoCommitApplies = $derived(
+    autoCommitAppliesTo(card.kind) && (!isDirectPrompt(card) || autoCommitOn)
+  );
   let autoCommitBusy = $state(false);
   let autoCommitError = $state<string | null>(null);
 
@@ -503,6 +510,23 @@
       await reloadContent();
     } finally {
       autoCommitBusy = false;
+    }
+  }
+
+  // --- direct prompt (is the body the whole prompt?) ----------------------
+  // A task only, and a frontmatter line rather than auto-commit's body
+  // block: it changes what gavin SENDS, so the board and every launcher
+  // have to know it without reading the body. Clearing removes the line
+  // rather than writing `false`, so an ordinary task stays byte-for-byte
+  // the card it was.
+  const directBlocked = $derived(featureBlockedReason($daemonCompat, "directPrompt"));
+  let directBusy = $state(false);
+  async function toggleDirect(on: boolean): Promise<void> {
+    directBusy = true;
+    try {
+      await writeField("direct", on ? "true" : "");
+    } finally {
+      directBusy = false;
     }
   }
 
@@ -1104,8 +1128,9 @@
         path: card.id,
         content: reviewContent,
         statuses: attachmentStatuses,
-        prompt:
-          card.kind === "task"
+        prompt: isDirectPrompt(card)
+          ? reviewContent.body
+          : card.kind === "task"
             ? composeTaskPrompt(
                 card.id,
                 card.title,
@@ -1154,6 +1179,7 @@
       brokenAttachments,
       autoCommit: autoCommitOn,
       autoCommitApplies,
+      direct: isDirectPrompt(card),
     })
   );
   const railLine = $derived(
@@ -1200,7 +1226,7 @@
   <div class="card-detail" class:inline>
     <div class="head">
       <div class="ident">
-        <span class="kind-badge kind-{card.kind}">{card.kind}</span>
+        <span class="kind-badge kind-{card.kind}">{isDirectPrompt(card) ? "direct task" : card.kind}</span>
         <!-- The absolute path used to have a line of its own under the
              title. It is a thing you copy, not a thing you read, so it
              rides the bubble here and gives the bar its row back. -->
@@ -1533,7 +1559,9 @@
            and a note's do rather than as raw source. -->
       {#if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
         <div class="section">
-          <div class="section-title">{card.kind === "task" ? "Prompt" : "Body"}</div>
+          <div class="section-title">
+            {isDirectPrompt(card) ? "Prompt · sent as written" : card.kind === "task" ? "Prompt" : "Body"}
+          </div>
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
           <div class="body-preview">{@html bodyHtml}</div>
         </div>
@@ -1644,6 +1672,24 @@
               {#if autoCommitError}
                 <p class="error">{autoCommitError}</p>
               {/if}
+            {/if}
+            {#if card.kind === "task"}
+              <!-- The reason rides the row, not the box: a disabled input never
+                   fires the mouseenter the tooltip binds. -->
+              <label class="row auto-commit" title={directBlocked ?? undefined}>
+                <span class="label">Direct prompt</span>
+                <input
+                  type="checkbox"
+                  checked={isDirectPrompt(card)}
+                  disabled={directBusy || directBlocked !== null}
+                  onchange={(e) => void toggleDirect(e.currentTarget.checked)}
+                />
+                <span class="auto-commit-hint">
+                  {isDirectPrompt(card)
+                    ? "The prompt is sent exactly as written — no card path, no status instructions, no attachments. The agent will not move this card."
+                    : "gavin wraps the prompt with the card's path, its attachments and the status instructions."}
+                </span>
+              </label>
             {/if}
             <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
                  binds mouseenter, which a disabled element never fires, so a

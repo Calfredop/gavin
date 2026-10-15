@@ -1331,7 +1331,8 @@ export function createPlan(
   kind?: "note" | "task" | "plan",
   parent?: string,
   attachments?: string,
-  complexity?: string
+  complexity?: string,
+  direct?: boolean
 ): Promise<string> {
   return invoke("create_plan", {
     contextFolder,
@@ -1344,6 +1345,7 @@ export function createPlan(
     parent,
     attachments,
     complexity,
+    direct,
   });
 }
 
@@ -1364,7 +1366,8 @@ export function setPlanFrontmatterField(
     | "complexity"
     | "agent"
     | "model"
-    | "effort",
+    | "effort"
+    | "direct",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

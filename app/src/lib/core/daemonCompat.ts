@@ -723,6 +723,19 @@ export const FEATURE_MIN_VERSION = {
   // before -- a refusal there is not a fault to show, it is a daemon that
   // kept no records.
   shellWrites: 72,
+  // The direct-prompt task (v75, `feat-direct-prompt-task.md`): a task's
+  // `direct: true` line, sending its body as the whole prompt. It widens
+  // EXISTING requests and replies -- `PlanFileInfo.direct`,
+  // `CreatePlan.direct`, a `SetPlanFrontmatterField` key -- so
+  // `min_version_for` is blind to it. A v74 daemon refuses the key loudly
+  // but drops `CreatePlan`'s flag silently, and never parses the line: a
+  // card filed as direct would come back an ordinary task and run wrapped
+  // in gavin's prompt with nothing on screen to say so.
+  //
+  // Consumers: the composer's Direct prompt box (CardComposeModal), which
+  // greys out and never sends the flag, and the card detail modal's Direct
+  // prompt row.
+  directPrompt: 75,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

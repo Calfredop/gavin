@@ -6794,6 +6794,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             parent,
             attachments,
             complexity,
+            direct,
         } => {
             crate::gavin::create_plan_file(
                 std::path::Path::new(&context_folder),
@@ -6806,6 +6807,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 parent.as_deref(),
                 attachments.as_deref(),
                 complexity.as_deref(),
+                direct,
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
@@ -9411,6 +9413,7 @@ mod tests {
             parent: None,
             attachments: None,
             complexity: None,
+            direct: false,
         }, false)
         .is_ok());
         assert!(authorize(&id, &Request::GitDirtyPaths { cwd: cwd.clone(), limit: 10 }, false).is_ok());
@@ -11202,6 +11205,7 @@ mod tests {
                 body: None,
                 attachments: None,
                 complexity: Some("simple".to_string()),
+                direct: false,
             },
         );
         let created_path = match resp {

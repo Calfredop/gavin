@@ -712,6 +712,7 @@ fn tool_definitions() -> Value {
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
             "body": { "type": "string", "description": "For kind task this IS the agent prompt" },
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
+            "direct": { "type": "boolean", "description": "Kind task only: the body goes to the agent exactly as written, with no gavin framing around it — no card path, no status instructions, no attachment list. Default false" },
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" },
             "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" },
@@ -899,6 +900,7 @@ fn dispatch_tool(
             parent: str_arg(args, "parent"),
             attachments: str_arg(args, "attachments"),
             complexity: str_arg(args, "complexity"),
+            direct: args.get("direct").and_then(Value::as_bool).unwrap_or(false),
         },
         "gavin_set_plan_field" => {
             let key = require_arg(args, "key")?;
@@ -2978,6 +2980,7 @@ mod tests {
             agent: None,
             model: None,
             effort: None,
+            direct: false,
             human_items: Some(vec![]),
         };
         protocol::GavinTree {
@@ -4114,6 +4117,7 @@ mod tests {
                     parent: None,
                     attachments: None,
                     complexity: None,
+                    direct: false,
                 },
                 &Response::PlanCreated { path: "/ws/plans/a.md".into() }
             )
@@ -4158,6 +4162,7 @@ mod tests {
                     parent: None,
                     attachments: None,
                     complexity: None,
+                    direct: false,
                 },
                 &Response::Error { message: "nope".into() }
             ),

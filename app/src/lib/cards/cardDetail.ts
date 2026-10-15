@@ -432,6 +432,10 @@ export function settingsSummary(input: {
   brokenAttachments: number;
   autoCommit: boolean;
   autoCommitApplies: boolean;
+  /// A direct-prompt task. Said even folded: it changes what the agent is
+  /// sent, and a human wondering why the agent never moved the card looks
+  /// here. Optional -- absent is an ordinary card.
+  direct?: boolean;
 }): string {
   const parts: string[] = [];
   parts.push(input.labels === 0 ? "no labels" : `${input.labels} label${input.labels === 1 ? "" : "s"}`);
@@ -446,6 +450,7 @@ export function settingsSummary(input: {
     );
   }
   if (input.autoCommitApplies) parts.push(input.autoCommit ? "auto commit on" : "auto commit off");
+  if (input.direct) parts.push("direct prompt");
   return parts.join(" · ");
 }
 

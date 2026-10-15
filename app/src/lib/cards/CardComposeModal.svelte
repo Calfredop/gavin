@@ -146,6 +146,15 @@
   // ticked. Survives `reset()` for the same reason railId does: filing a
   // run of cards that all need committing is one tick, not one per card.
   let autoCommit = $state(get(newCardAutoCommit));
+  // Whether the task goes out as written. Survives `reset()` with the
+  // settings beside it, for the same reason: a run of raw prompts is
+  // filed one tick, not one per card.
+  let direct = $state(false);
+  // Exactly the `complexity` hole again: a v74 daemon parses CreatePlan
+  // happily and drops `direct`, so the card would be filed looking raw
+  // and run wrapped. The box greys out and the flag is never sent.
+  const directBlocked = $derived(featureBlockedReason($daemonCompat, "directPrompt"));
+  const directOn = $derived(kind === "task" && direct && directBlocked === null);
   // How hard the card is, if the human says. Survives `reset()` like
   // `autoCommit` and `railId` above, and for the same reason: filing a
   // run of cards of the same difficulty is one choice, not one per card.
@@ -275,7 +284,7 @@
     }
     const ctx = contexts.find((c) => c.folderPath === contextFolder);
     const args = buildCreatePlanArgs(
-      { kind, title, body, status, attachments, autoCommit, complexity },
+      { kind, title, body, status, attachments, autoCommit, complexity, direct: directOn },
       ctx?.plans.map((p) => p.fileName) ?? []
     );
     if ("error" in args) {
@@ -311,7 +320,8 @@
         args.kind,
         undefined,
         args.attachments,
-        args.complexity
+        args.complexity,
+        args.direct
       );
       const created: PlanFileInfo = {
         path,
@@ -325,6 +335,7 @@
         labels: [],
         attachments: [...attachments],
         complexity: parseComplexity(args.complexity),
+        direct: args.direct === true,
         checklistDone: 0,
         checklistTotal: 0,
         parseWarning: false,
@@ -465,7 +476,11 @@
     <textarea
       class="compose-body"
       rows="5"
-      placeholder={kind === "task" ? "Agent prompt…" : "Plan body (use - [ ] for tasks)…"}
+      placeholder={kind === "task"
+        ? directOn
+          ? "Prompt, sent to the agent exactly as written…"
+          : "Agent prompt…"
+        : "Plan body (use - [ ] for tasks)…"}
       bind:value={body}
       onfocus={() => (focusField = "body")}
       onkeydown={(e) => handleKeydown("body", e)}
@@ -589,7 +604,21 @@
     <div class="compose-error">{attachmentsError}</div>
   {/if}
 
-  {#if autoCommitAppliesTo(kind)}
+  {#if kind === "task"}
+    <!-- The reason rides the label, not the box: a disabled input never
+         fires the mouseenter the tooltip binds. -->
+    <label class="check-row" title={directBlocked ?? undefined}>
+      <input
+        type="checkbox"
+        bind:checked={direct}
+        disabled={directBlocked !== null}
+        onfocus={() => (focusField = "body")}
+        onkeydown={(e) => handleKeydown("body", e)}
+      />
+      Direct prompt — send exactly what I wrote, with no gavin framing
+    </label>
+  {/if}
+  {#if autoCommitAppliesTo(kind) && !directOn}
     <label class="check-row">
       <input
         type="checkbox"

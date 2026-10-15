@@ -59,6 +59,11 @@ struct CardView<'a> {
     path: &'a str,
     title: &'a str,
     kind: CardKind,
+    /// Only ever true: a direct-prompt task, whose body is sent as the
+    /// whole prompt. An agent editing its body is editing what the next
+    /// agent reads verbatim, with no card path or status line around it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    direct: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,6 +146,7 @@ impl<'a> CardView<'a> {
             path: &plan.path,
             title: &plan.title,
             kind: plan.kind,
+            direct: plan.direct,
             status: plan.status.as_deref(),
             parent: plan.parent.as_deref(),
             priority: plan.priority.as_ref(),
@@ -636,6 +642,7 @@ mod tests {
             agent: None,
             model: None,
             effort: None,
+            direct: false,
             human_items: Some(vec![]),
         }
     }

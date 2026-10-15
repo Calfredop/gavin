@@ -41,6 +41,10 @@ author the file directly. `kind` picks what the card IS:
 - **note** — a reminder; title (+ optional body).
 - **task** — one unit of agent work; **the body is the prompt**. A human may
   run your card with the workspace agent at any time.
+  Add `direct: true` (or pass `direct` to `gavin_create_plan`) and the body
+  is sent to the agent **exactly as written** — no card path, no status
+  instructions, no attachment list around it. That agent is never told
+  which card it is working, so nothing moves the card when it finishes.
 - **plan** (the default) — multi-step work; the body holds ordinary markdown
   checklists (`- [ ] step`).
 

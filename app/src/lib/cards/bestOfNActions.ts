@@ -40,7 +40,7 @@ import {
   setSessionName,
   switchWorkspaceView,
 } from "$lib/core/layoutState";
-import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded, withPromptExtras } from "$lib/cards/cardRun";
+import { buildRunCommand, composePlanPrompt, composeTaskPrompt, EMPTY_DIRECT_PROMPT, isDirectPrompt, noPromptReason, provisionalSessionName, runStatusNeeded, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
@@ -120,16 +120,23 @@ export async function startBestOfN(
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
   const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
+  // A direct prompt is handed to every candidate as written, without the
+  // candidate framing or the extras below: the human wrote the prompt
+  // they want N agents to answer, and that is what each one gets.
+  const verbatim = isDirectPrompt(card);
+  if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
   const composePrompt = (at: string): string =>
-    card.kind === "task"
-      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, null, {
-          template: mustPromptBody("action:run-task", workspaceId),
-          nameTabBase,
-        })
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, null, {
-          template: mustPromptBody("action:run-plan", workspaceId),
-          nameTabBase,
-        });
+    verbatim
+      ? body
+      : card.kind === "task"
+        ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, null, {
+            template: mustPromptBody("action:run-task", workspaceId),
+            nameTabBase,
+          })
+        : composePlanPrompt(at, resolved.paths, null, resolved.withheld, null, {
+            template: mustPromptBody("action:run-plan", workspaceId),
+            nameTabBase,
+          });
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
@@ -178,15 +185,17 @@ export async function startBestOfN(
       agent.promptArgs,
       // Each candidate's own agent's extra prompt lines go last: they are
       // instructions to THAT agent, and the candidates may differ.
-      withPromptExtras(
-        composeCandidatePrompt(
-          prompt,
-          plan.label,
-          plans.length,
-          mustPromptBody("action:best-of-n-suffix", workspaceId)
-        ),
-        promptExtrasFor(workspaceId, agent.profileId)
-      ),
+      verbatim
+        ? prompt
+        : withPromptExtras(
+            composeCandidatePrompt(
+              prompt,
+              plan.label,
+              plans.length,
+              mustPromptBody("action:best-of-n-suffix", workspaceId)
+            ),
+            promptExtrasFor(workspaceId, agent.profileId)
+          ),
       agent.sessionIdArgs,
       conversationId
     );

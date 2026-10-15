@@ -112,6 +112,28 @@ describe("buildCreatePlanArgs", () => {
     ).toMatchObject({ body: "do the thing" });
   });
 
+  it("files a task as a direct prompt, and never with the auto-commit block", () => {
+    // The block is gavin's sentence; a prompt sent as written must not
+    // carry one the human never typed, whatever the box underneath says.
+    const r = buildCreatePlanArgs(
+      { kind: "task", title: "T", body: "do the thing", status: "To Do", autoCommit: true, direct: true },
+      []
+    );
+    expect(r).toMatchObject({ kind: "task", body: "do the thing", direct: true });
+  });
+
+  it("never sends the direct flag for a plan or a note, even with it still set", () => {
+    // The daemon refuses it there, and the chips hide the box without
+    // clearing it -- the whole file creation would fail over a hidden box.
+    for (const kind of ["plan", "note"] as const) {
+      const r = buildCreatePlanArgs({ kind, title: "T", body: "b", status: "To Do", direct: true }, []);
+      expect(r).toMatchObject({ direct: undefined });
+    }
+    expect(
+      buildCreatePlanArgs({ kind: "task", title: "T", body: "b", status: "To Do" }, [])
+    ).toMatchObject({ direct: undefined });
+  });
+
   it("never puts the block on a note, even with the flag still set", () => {
     // The chips hide the checkbox on note but do not clear it, so the
     // flag can arrive true on a card nothing will ever execute.

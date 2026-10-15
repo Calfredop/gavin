@@ -20,6 +20,8 @@ import {
   composeTaskPrompt,
   composePlanPrompt,
   composeResumeTaskPrompt,
+  isDirectPrompt,
+  EMPTY_DIRECT_PROMPT,
   composeResumePlanPrompt,
   composeDevelopPrompt,
   composeReviewLaunchPrompt,
@@ -714,7 +716,11 @@ async function launchCard(
   // by the note refusal at the top of this function, and a closure over a
   // parameter loses that.
   const kind = card.kind;
+  // A review is the one mode a direct prompt does not change: the
+  // reviewer is asked about the work, not handed the card's body to do.
+  const verbatim = isDirectPrompt(card) && mode !== "review";
   const composeCardPrompt = (at: string): string => {
+    if (verbatim) return body;
     if (mode === "review") {
       return composeReviewLaunchPrompt(
         at,
@@ -769,17 +775,20 @@ async function launchCard(
   // A new session on a card that already had one says so, as a re-launch
   // does: the run prompt was written for a card nobody had started.
   const composeLaunchPrompt = (at: string): string =>
-    mode === "new-session" ? composeCardPrompt(at) + relaunchNote(at) : composeCardPrompt(at);
+    mode === "new-session" && !verbatim ? composeCardPrompt(at) + relaunchNote(at) : composeCardPrompt(at);
   // The launching agent's own extra prompt lines, after whichever card
   // prompt the mode composed. Keyed by the agent that actually launches
   // (a fallback's, not the card's primary), because the lines are
   // instructions to THAT agent.
   const composePrompt = (at: string): string =>
-    withPromptExtras(composeLaunchPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
+    verbatim
+      ? composeLaunchPrompt(at)
+      : withPromptExtras(composeLaunchPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
     if (!file.exists) return `Card file not found: ${card.id}`;
     body = stripFrontmatter(file.content).trim();
+    if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
     const content = { title: card.title, body, attachments: card.attachments ?? [] };
     if (options.automatic) {
       // Unattended (auto-resume): refuse rather than ask. A modal raised
@@ -1099,28 +1108,34 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // whatever CLI the workspace chose -- a card's own `agent:`/`model:`
   // attribution never changes that.
   const agent = resolvedAgentFor(workspaceId);
+  const verbatim = isDirectPrompt(card);
+  if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
   const composeCardPrompt = (at: string): string =>
-    card.kind === "task"
-      ? composeTaskPrompt(
-          at,
-          card.title,
-          body,
-          resolved.paths,
-          null,
-          resolved.withheld,
-          agent.sessionIdDiscovery,
-          promptOpts(workspaceId, "action:run-task")
-        )
-      : composePlanPrompt(
-          at,
-          resolved.paths,
-          null,
-          resolved.withheld,
-          agent.sessionIdDiscovery,
-          promptOpts(workspaceId, "action:run-plan")
-        );
+    verbatim
+      ? body
+      : card.kind === "task"
+        ? composeTaskPrompt(
+            at,
+            card.title,
+            body,
+            resolved.paths,
+            null,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:run-task")
+          )
+        : composePlanPrompt(
+            at,
+            resolved.paths,
+            null,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:run-plan")
+          );
   const composePrompt = (at: string): string =>
-    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
+    verbatim
+      ? composeCardPrompt(at)
+      : withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
@@ -1202,7 +1217,8 @@ export async function relaunchCard(
   // `sessionIdArgs` below has to describe that binary. Resolving the
   // workspace's agent here would hand codex's replay claude's
   // `--session-id`, which is garbage in its argv.
-  const agent = agentForCard(workspaceId, cardViewForPath(get(gavinTrees)[workspaceId], path));
+  const relaunched = cardViewForPath(get(gavinTrees)[workspaceId], path);
+  const agent = agentForCard(workspaceId, relaunched);
   // The binding WHOLE, read by card: the board carries no launch command
   // (v43), and this is the one action that replays it. Read after the
   // gates, so a re-launch that queued reads it when it finally runs.
@@ -1228,8 +1244,11 @@ export async function relaunchCard(
   //
   // And the replayed prompt says the card was already under way, and
   // where its status is recorded: the original was written for a card
-  // nobody had started.
-  const fresh = withFreshConversationId(withRelaunchNote(binding.command, path), agent.sessionIdArgs);
+  // nobody had started. Not a direct prompt's, which carries no word of
+  // gavin's -- a note naming the card would be the first.
+  const replayed =
+    relaunched && isDirectPrompt(relaunched) ? binding.command : withRelaunchNote(binding.command, path);
+  const fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
   // was launched in, which is where it is about to run again.

@@ -144,6 +144,8 @@ import { allSessionIds } from "$lib/panes/layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
+  isDirectPrompt,
+  EMPTY_DIRECT_PROMPT,
   buildRunCommand,
   buildResumeCommand,
   noPromptReason,
@@ -1647,7 +1649,18 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
   let prompt: string;
   const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
-  if (entry.plan.kind === "task") {
+  // A direct prompt goes out as written, on a rail as on the board: no
+  // framing, no decoy note, no retry prefix and no extras. The step then
+  // finishes the way any card whose agent never filed it does -- marked
+  // turn-ended when the agent goes quiet, for a human to Mark done.
+  const verbatim = isDirectPrompt(entry.plan);
+  if (verbatim) {
+    if (body === "") {
+      await stallLaunch(workspaceId, stepId, EMPTY_DIRECT_PROMPT);
+      return false;
+    }
+    prompt = body;
+  } else if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
       step.cardPath,
       entry.plan.title,
@@ -1677,14 +1690,16 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
-  prompt = withRetryPrefix(
-    prompt,
-    await retryNoteFor(workspaceId, rail, stepId),
-    mustPromptBody("action:until-retry-prefix", workspaceId)
-  );
-  // The agent that actually launches (a fallback's, not the card's
-  // primary): the lines are instructions to THAT agent.
-  prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
+  if (!verbatim) {
+    prompt = withRetryPrefix(
+      prompt,
+      await retryNoteFor(workspaceId, rail, stepId),
+      mustPromptBody("action:until-retry-prefix", workspaceId)
+    );
+    // The agent that actually launches (a fallback's, not the card's
+    // primary): the lines are instructions to THAT agent.
+    prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
+  }
 
   const conversationId = conversationIdForLaunch(launchAgent);
   // An injection launch (K3) is the board Run's: the CLI has no prompt

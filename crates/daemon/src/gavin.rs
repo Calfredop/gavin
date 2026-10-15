@@ -212,6 +212,21 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     // The third half of the same override (v56): how hard that agent
     // thinks. Raw for `model`'s reason -- the levels are the CLI's.
     let effort = get("effort").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    // A direct-prompt task (v75): its body is the whole prompt. Read
+    // gavin's own way -- unreadable is a warning and false, never a
+    // guess -- and only on a task, `parent:`'s posture: a plan's prompt
+    // is "read this file" and a note runs nothing, so the line on either
+    // describes a run that cannot happen.
+    let direct = match get("direct") {
+        None => false,
+        Some(raw) => match parse_direct(&raw) {
+            Some(d) if kind == CardKind::Task => d,
+            _ => {
+                warning = true;
+                false
+            }
+        },
+    };
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: protocol::wire_path(path),
@@ -229,6 +244,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         agent,
         model,
         effort,
+        direct,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -237,6 +253,18 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         // daemon that has no such field at all, and the oversize card
         // below whose body was never read.
         human_items: Some(human_items(content)),
+    }
+}
+
+/// A `direct:` value, or None for one gavin cannot read. Only the two
+/// words the writers produce: a flag that decides whether the agent is
+/// told which card it is working is not a place to be generous about
+/// spellings.
+fn parse_direct(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
@@ -921,6 +949,7 @@ pub fn create_plan_file(
     parent: Option<&str>,
     attachments: Option<&str>,
     complexity: Option<&str>,
+    direct: bool,
 ) -> anyhow::Result<PathBuf> {
     let kind = match kind {
         None => "plan",
@@ -937,6 +966,11 @@ pub fn create_plan_file(
         if !valid {
             anyhow::bail!("parent must match [A-Za-z0-9._-]+.md, got: {p}");
         }
+    }
+    // Refused rather than dropped: the scan would read the line on any
+    // other kind as a warning, so filing one is filing a broken card.
+    if direct && kind != "task" {
+        anyhow::bail!("direct requires kind task, got: {kind}");
     }
     let gavin_dir = if context_folder.join(GAVIN_ROOT_DIR).is_dir() {
         context_folder.join(GAVIN_ROOT_DIR)
@@ -1040,6 +1074,9 @@ pub fn create_plan_file(
     }
     if let Some(c) = complexity {
         content.push_str(&format!("complexity: {}\n", c.as_str()));
+    }
+    if direct {
+        content.push_str("direct: true\n");
     }
     content.push_str("---\n");
     match body.map(str::trim).filter(|b| !b.is_empty()) {
@@ -1485,7 +1522,7 @@ pub fn set_plan_field(
     if value.is_empty() {
         match key {
             "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
-            | "model" | "effort" => {
+            | "model" | "effort" | "direct" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path, index);
             }
@@ -1560,6 +1597,18 @@ pub fn set_plan_field(
             if value.contains('\n') {
                 anyhow::bail!("{key} must be a single line");
             }
+        }
+        // Written in `parse_direct`'s own spelling, so a hand-typed
+        // "True" reads back the same as a toggled one. Not checked
+        // against the card's kind: the scan already shows the line on a
+        // plan or a note as a warning, and refusing here would leave a
+        // card whose kind changed under it with a flag nobody can clear
+        // except by clearing it, which the empty value above still does.
+        "direct" => {
+            let direct = parse_direct(value)
+                .ok_or_else(|| anyhow::anyhow!("direct must be true or false, got: {value}"))?;
+            write_plan_field(path, key, if direct { "true" } else { "false" })?;
+            return relocate_for_status(path, index);
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
@@ -1724,6 +1773,7 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         // and inheriting the level would spend the plan's model on every
         // checklist item promoted out of it.
         None,
+        false,
     )?;
 
     let line = lines[line_index];
@@ -2176,6 +2226,7 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         agent: None,
         model: None,
         effort: None,
+        direct: false,
         // None, not an empty list: the body was never read, so "this
         // card has nothing waiting on you" is a claim nothing here can
         // make. It rides out with `parse_warning: true` beside it.
@@ -3912,6 +3963,95 @@ mod tests {
         assert!(set_plan_field(&path, "effort", "high\nmax").is_err());
     }
 
+    /// A direct-prompt task (v75): read only on a task, and only in the
+    /// two spellings gavin writes. Anything else is a warning and false,
+    /// never a guess -- a card wrongly read as direct would go out with
+    /// no card path and no status line around it.
+    #[test]
+    fn direct_parses_on_a_task_only_and_warns_rather_than_guessing() {
+        let p = plan("---\nkind: task\ntitle: T\ndirect: true\n---\nDo it\n");
+        assert!(p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\ndirect: FALSE\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\ndirect: yes\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(p.parse_warning);
+        for kind in ["plan", "note"] {
+            let p = plan(&format!("---\nkind: {kind}\ntitle: T\ndirect: true\n---\nbody\n"));
+            assert!(!p.direct, "{kind}");
+            assert!(p.parse_warning, "{kind}");
+        }
+    }
+
+    #[test]
+    fn set_plan_field_writes_clears_and_rejects_direct() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\nkind: task\ntitle: T\n---\nbody\n",
+        );
+
+        // Written in gavin's own spelling, whatever case it was handed.
+        set_plan_field(&path, "direct", "True").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\ndirect: true\n"), "{content}");
+        let info = plan_file_info(&path, &content);
+        assert!(info.direct);
+        assert!(!info.parse_warning);
+
+        set_plan_field(&path, "direct", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\nkind: task\ntitle: T\n---\nbody\n");
+        assert!(set_plan_field(&path, "direct", "yes").is_err());
+    }
+
+    #[test]
+    fn create_plan_file_writes_direct_on_a_task_and_refuses_it_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        let path = create_plan_file(
+            dir.path(),
+            "raw.md",
+            "Raw one",
+            None,
+            None,
+            Some("Say hello."),
+            Some("task"),
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nkind: task\ntitle: Raw one\nstatus: To Do\ndirect: true\n---\nSay hello.\n"
+        );
+        for kind in [None, Some("plan"), Some("note")] {
+            let err = create_plan_file(
+                dir.path(),
+                "bad.md",
+                "Bad",
+                None,
+                None,
+                None,
+                kind,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("direct requires kind task"), "{kind:?}: {err}");
+        }
+    }
+
     #[test]
     fn create_plan_file_writes_a_complexity_line_and_refuses_an_unknown_level() {
         let dir = tempfile::tempdir().unwrap();
@@ -3927,6 +4067,7 @@ mod tests {
             None,
             None,
             Some("Intricate"),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -3946,6 +4087,7 @@ mod tests {
             None,
             None,
             Some("gnarly"),
+            false,
         )
         .is_err());
     }
@@ -5442,7 +5584,7 @@ mod tests {
     fn create_plan_file_writes_canonical_content_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None, None).unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None, None, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
@@ -5458,6 +5600,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -5471,20 +5614,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
         // A nested child: kind task + parent, no status line at all.
-        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None, None).unwrap();
+        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None, None, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "---\nkind: task\ntitle: Child\nparent: parent-plan.md\n---\n# Child\n"
         );
         // A note keeps the default/explicit status.
-        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None, None).unwrap();
+        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None, None, false).unwrap();
         assert!(std::fs::read_to_string(&n).unwrap().starts_with("---\nkind: note\ntitle: Note\nstatus: Done\n"));
         // kind plan writes no kind line (backward-canonical).
-        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None, None).unwrap();
+        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None, None, false).unwrap();
         assert!(std::fs::read_to_string(&pl).unwrap().starts_with("---\ntitle: P\nstatus: To Do\n"));
-        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None, None).is_err());
-        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None, None).is_err());
+        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None, None, false).is_err());
     }
 
     #[test]
@@ -5492,17 +5635,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
         // Not a context:
-        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None, None, false).is_err());
         // Bad names ("../esc.md" doubles as the path-escape guard):
         for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
-            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None, None).is_err(), "{bad}");
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None, None, false).is_err(), "{bad}");
         }
         // Bad priority / bad title:
-        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None, None, false).is_err());
         // Never overwrites:
-        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None, None).unwrap();
-        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None, None);
+        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None, None, false).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None, None, false);
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
@@ -5522,6 +5665,7 @@ mod tests {
                     <!-- /gavin:auto-commit -->";
         let path = create_plan_file(
             dir.path(), "ac.md", "T", None, None, Some(body), Some("task"), None, None, None,
+            false,
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -6516,7 +6660,7 @@ mod tests {
         let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
 
         let done =
-            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None, None)
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None, None, false)
                 .unwrap();
         assert_eq!(done, plans.join("done").join("shipped.md"));
 
@@ -6532,13 +6676,14 @@ mod tests {
             Some("shipped.md"),
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(child, plans.join("done").join("sub.md"));
 
         // A file name already used anywhere in the tree is refused.
         assert!(
-            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None, None).is_err()
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None, None, false).is_err()
         );
     }
 

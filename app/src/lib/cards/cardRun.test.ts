@@ -28,6 +28,7 @@ import {
   developAvailable,
   provisionalSessionName,
   cardHomeNote,
+  isDirectPrompt,
 } from "$lib/cards/cardRun";
 
 describe("composeTaskPrompt", () => {
@@ -40,6 +41,18 @@ describe("composeTaskPrompt", () => {
         "While you work, keep this card's status current with gavin_set_plan_field on /p/t.md; " +
         "set it to the board's done column when finished."
     );
+  });
+});
+
+describe("isDirectPrompt", () => {
+  it("is a task carrying direct: true, and nothing else", () => {
+    expect(isDirectPrompt({ kind: "task", direct: true })).toBe(true);
+    expect(isDirectPrompt({ kind: "task", direct: false })).toBe(false);
+    expect(isDirectPrompt({ kind: "task" })).toBe(false);
+    // A plan's prompt is "read this file": its body is never the prompt,
+    // so a view that says direct on one must not send it as one.
+    expect(isDirectPrompt({ kind: "plan", direct: true })).toBe(false);
+    expect(isDirectPrompt({ kind: "note", direct: true })).toBe(false);
   });
 });
 

@@ -86,6 +86,17 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v75 is the direct-prompt task (`feat-direct-prompt-task.md`): a
+/// `kind: task` card whose `direct: true` line says its body goes to the
+/// agent exactly as written, with none of gavin's framing around it.
+/// `PlanFileInfo` gains `direct`, `CreatePlan` gains `direct` and
+/// `SetPlanFrontmatterField` accepts the key. Not one new Request variant,
+/// so `min_version_for` is blind to all of it; the gate is the app's
+/// `FEATURE_MIN_VERSION.directPrompt`. A v74 daemon refuses the key loudly
+/// but drops `CreatePlan`'s field silently, and never parses the line --
+/// the card reads back as an ordinary task and runs wrapped in the usual
+/// prompt. `MIN_COMPATIBLE_VERSION` stands.
+///
 /// v74 lends a session's PTY size to the Device looking at it
 /// (`ui-companion-session-connect.md`). A PTY has one size, and a phone has
 /// to shrink it to be readable; until now nothing gave it back, so the
@@ -950,7 +961,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 74;
+pub const PROTOCOL_VERSION: u32 = 75;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1595,6 +1606,13 @@ pub enum Request {
         /// default agent while looking as though it had been placed.
         #[serde(default)]
         complexity: Option<String>,
+        /// Whether the card is filed carrying `direct: true` (v75) -- its
+        /// body sent to the agent verbatim. Refused on anything but a
+        /// task. Written in the same CreatePlan, like `complexity`, so a
+        /// card cannot be run in the window between filing and flagging
+        /// and go out wrapped in the prompt it was written without.
+        #[serde(default)]
+        direct: bool,
     },
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
@@ -5197,6 +5215,19 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub effort: Option<String>,
+    /// The card's `direct:` line (v75): true when its body is the WHOLE
+    /// prompt -- no tab-naming line, no "you are executing the task card"
+    /// framing, no status instructions, no attachment list and no extras
+    /// -- so the agent receives exactly what the human wrote. Only a task
+    /// carries it: on any other kind the line is a `parse_warning` and
+    /// reads false, the way `parent:` does, because a plan's prompt is
+    /// "read this file" and a note runs nothing.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses; from one,
+    /// false means "this daemon never looked", and the app's
+    /// `FEATURE_MIN_VERSION.directPrompt` is what says so.
+    #[serde(default)]
+    pub direct: bool,
     /// The card's `Decision:` / `Human test:` checklist lines, parsed
     /// (v42) -- everything on this card that is waiting on a person.
     ///
@@ -7744,6 +7775,7 @@ mod tests {
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
                     effort: Some("xhigh".to_string()),
+                    direct: false,
                     human_items: Some(vec![HumanItem {
                         kind: HumanItemKind::Decision,
                         text: "Which serializer?".to_string(),
@@ -7800,6 +7832,7 @@ mod tests {
                         "agent": "codex",
                         "model": "gpt-5.1",
                         "effort": "xhigh",
+                        "direct": false,
                         "humanItems": [{
                             "kind": "decision",
                             "text": "Which serializer?",
@@ -8273,7 +8306,11 @@ mod tests {
         // behind FEATURE_MIN_VERSION.deskRelay.
         // v74: ReturnPtySize and the PtySizeBorrowed push -- a Device
         // borrowing a session's PTY size while it looks. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 74);
+        // v75: PlanFileInfo.direct, CreatePlan.direct and a
+        // SetPlanFrontmatterField key -- the direct-prompt task. No new
+        // variant, so this match is blind to it; daemonCompat.ts's
+        // `directPrompt` is its only gate.
+        assert_eq!(PROTOCOL_VERSION, 75);
     }
 
     #[test]
@@ -8661,6 +8698,7 @@ mod tests {
                 parent: None,
                 attachments: None,
                 complexity: None,
+                direct: false,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::ClaimCardForSession {
@@ -9306,13 +9344,15 @@ mod tests {
             parent: Some("auth-plan.md".to_string()),
             attachments: Some("docs/spec.md, /Users/x/shot.png".to_string()),
             complexity: Some("intricate".to_string()),
+            direct: true,
         };
         write_message(&mut buf, &req).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments, complexity } => {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments, complexity, direct } => {
                 assert_eq!(kind.as_deref(), Some("task"));
+                assert!(direct);
                 assert_eq!(parent.as_deref(), Some("auth-plan.md"));
                 assert_eq!(attachments.as_deref(), Some("docs/spec.md, /Users/x/shot.png"));
                 assert_eq!(complexity.as_deref(), Some("intricate"));

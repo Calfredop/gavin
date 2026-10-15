@@ -162,7 +162,7 @@ import {
   sendToMainAgent,
 } from "$lib/cards/cardRunActions";
 import { NOTHING_TO_REPLAY } from "$lib/board/kanban";
-import { relaunchNote, shellQuote } from "$lib/cards/cardRun";
+import { EMPTY_DIRECT_PROMPT, relaunchNote, shellQuote } from "$lib/cards/cardRun";
 import type { CardView } from "$lib/core/planBoard";
 import type { Board, CardSessionRecord } from "$lib/board/kanban";
 
@@ -439,6 +439,50 @@ describe("runCard", () => {
     expect(command).toContain("Do the thing.");
     expect(command).toMatch(/Do the thing\.[\s\S]*Answer in British English\.\nBe brief\.'/);
     expect(promptExtrasFor).toHaveBeenCalledWith("ws-1", vi.mocked(resolvedAgentFor).mock.results[0].value.profileId);
+  });
+
+  /// A direct prompt (`direct: true`) is the body and nothing else: no
+  /// tab-naming line, no card path, no status instructions -- and not the
+  /// launching agent's extras either, which are gavin's words too.
+  it("direct task: the command carries the body alone, with no framing and no extras", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: To Do\ndirect: true\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(promptExtrasFor).mockReturnValue(["Answer in British English."]);
+
+    expect(await runCard("ws-1", { ...card("task", "To Do"), direct: true })).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toMatch(/ 'Do the thing\.'$/);
+    expect(command).not.toContain("gavin_name_session");
+    expect(command).not.toContain("/ws/.gavin-root/plans/t.md");
+    expect(command).not.toContain("British English");
+    // The card still goes In Progress and is still linked: the board has
+    // to know a run is out on it, even though the agent was never told.
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith(
+      "/ws/.gavin-root/plans/t.md",
+      "status",
+      "In Progress"
+    );
+    expect(backend.linkCardSession).toHaveBeenCalled();
+  });
+
+  it("direct task: an empty body is refused before anything is written", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: To Do\ndirect: true\n---\n\n",
+      truncated: false,
+      exists: true,
+    });
+
+    expect(await runCard("ws-1", { ...card("task", "To Do"), direct: true })).toBe(EMPTY_DIRECT_PROMPT);
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
 
   it("plan: a card in done/ is un-archived first, and the prompt names where it landed", async () => {

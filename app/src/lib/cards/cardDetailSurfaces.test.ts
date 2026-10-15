@@ -144,7 +144,7 @@ describe("what the scroller carries", () => {
     // and a note's were rendered: the same markdown read two ways.
     expect(DETAIL).not.toContain('<pre class="prompt">');
     expect(DETAIL).not.toContain('card.kind === "task" && bodyHtml');
-    expect(DETAIL).toContain('{card.kind === "task" ? "Prompt" : "Body"}');
+    expect(DETAIL).toContain('isDirectPrompt(card) ? "Prompt · sent as written" : card.kind === "task" ? "Prompt" : "Body"');
     expect(DETAIL.match(/\{@html bodyHtml\}/g)).toHaveLength(1);
   });
 
