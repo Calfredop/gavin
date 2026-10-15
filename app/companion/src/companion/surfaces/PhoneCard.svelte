@@ -8,6 +8,7 @@
   import { Archive, ArchiveRestore, ChevronRight } from "@lucide/svelte";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { cardSessionState } from "$lib/board/columnRunAction";
+  import { canReplay } from "$lib/board/kanban";
   import { cardSessionFor, kanbanState } from "$lib/board/kanbanState";
   import { cardSessionBar, cardSituation, primaryAction, type CardActionId } from "$lib/cards/cardDetail";
   import { childCards, parentCard } from "$lib/cards/cardRelations";
@@ -109,7 +110,12 @@
           bestOfN: null,
           binding:
             binding && phase !== "none"
-              ? { phase, status: $verdictAttentionStatusById[binding.sessionId] ?? null, orphan: false }
+              ? {
+                  phase,
+                  status: $verdictAttentionStatusById[binding.sessionId] ?? null,
+                  orphan: false,
+                  replayable: canReplay(binding),
+                }
               : null,
           developing: false,
           canDevelop: false,
@@ -119,6 +125,10 @@
     );
   });
   const primary = $derived(primaryAction(bar));
+  /// Why a greyed action cannot be pressed: a disabled button cannot say.
+  const barReasons = $derived(
+    (bar?.actions ?? []).flatMap((a) => (!a.enabled && a.reason ? [a.reason] : []))
+  );
   const badge = $derived(
     card ? cardAgent({ board, layout: $layoutState, statusById: $attentionStatusById }, card.id) : null
   );
@@ -149,7 +159,7 @@
       void jumpToAgent(workspace.id, current);
       return;
     }
-    if (id === "run" || id === "resume" || id === "relaunch") {
+    if (id === "run" || id === "resume" || id === "relaunch" || id === "new-session") {
       void act(id, () => launch(workspace.id, current, id));
     }
   }
@@ -281,6 +291,9 @@
                 </button>
               {/each}
             </div>
+            {#each barReasons as reason (reason)}
+              <p class="reason">{reason}</p>
+            {/each}
           {/if}
         </section>
       {/if}
@@ -532,6 +545,12 @@
     font-size: 0.875rem;
     line-height: 1.45;
     overflow-wrap: anywhere;
+  }
+  .reason {
+    margin: 0;
+    color: var(--text-muted);
+    -webkit-user-select: text;
+    user-select: text;
   }
   .problem {
     color: var(--danger-text);

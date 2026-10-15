@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { Label } from "$lib/board/kanban";
+  import { canReplay, type Label } from "$lib/board/kanban";
   import { slugStatus, type CardView } from "$lib/core/planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/cards/complexity";
@@ -124,7 +124,11 @@
         action: "open the card to resume it",
       };
     if (state === "exited")
-      return { indicator: agentExitedIndicator(), action: "open the card for Re-launch" };
+      return {
+        indicator: agentExitedIndicator(),
+        // A binding with no recorded launch has no Re-launch to offer.
+        action: canReplay(binding) ? "open the card for Re-launch" : "open the card to launch a new session",
+      };
     // The acknowledged, verdict-aware view, like the tab badge and the
     // sidebar dot: one session, one answer, wherever it is drawn -- and
     // a question asked in prose is a wait on all three of them.

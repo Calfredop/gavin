@@ -401,6 +401,19 @@ describe("buildCardMenuEntries", () => {
 
     vi.mocked(findSessionLocation).mockReturnValue(null);
     expect(labels(buildCardMenuEntries(card("plan", null), hooks()))).toContain("Re-launch agent");
+    expect(labels(buildCardMenuEntries(card("plan", null), hooks()))).toContain("Launch as new session");
+  });
+
+  // Linked to a session that was already running, so no launch was ever
+  // recorded: Re-launch would replay nothing into a bare shell.
+  it("a dead binding with no launch to replay offers only a new session", () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", replayable: false }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    const entries = labels(buildCardMenuEntries(card("plan", null), hooks()));
+    expect(entries).not.toContain("Re-launch agent");
+    expect(entries).toContain("Launch as new session");
   });
 
   // An interrupted binding is neither: the tab is there, so "Jump to

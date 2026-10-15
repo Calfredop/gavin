@@ -20,6 +20,7 @@ import { cardSessionFor, kanbanState } from "$lib/board/kanbanState";
 import { buildCreatePlanArgs, type ComposeKind } from "$lib/cards/cardCompose";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import {
+  launchCardAsNewSession,
   relaunchCard,
   resumeCard,
   runCard,
@@ -104,7 +105,7 @@ export async function readyToLaunch(): Promise<string | null> {
 export async function launch(
   workspaceId: string,
   card: CardView,
-  action: "run" | "resume" | "relaunch"
+  action: "run" | "resume" | "relaunch" | "new-session"
 ): Promise<string | null> {
   await loadLaunchTables();
   nowStore.set(Date.now());
@@ -116,6 +117,8 @@ export async function launch(
         return await resumeCard(workspaceId, card, { host: DEVICE_LAUNCH_HOST });
       case "relaunch":
         return await relaunchCard(workspaceId, card.id, { host: DEVICE_LAUNCH_HOST });
+      case "new-session":
+        return await launchCardAsNewSession(workspaceId, card, DEVICE_LAUNCH_HOST);
     }
   } catch (e) {
     return `Couldn't start the agent: ${message(e)}`;

@@ -8375,6 +8375,7 @@ mod kanban_command_tests {
             session_id: format!("s-{path}"),
             cwd: "/p".into(),
             command: command.map(Into::into),
+            replayable: Some(command.is_some()),
             conversation_id: None,
             launch_cwd: Some("/p".into()),
             resume_attempts: None,

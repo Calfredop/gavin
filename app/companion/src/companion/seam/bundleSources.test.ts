@@ -191,8 +191,15 @@ describe("acting on a card", () => {
     // Without a host the desk's launch flow places the session as a tab,
     // jumps the desk's view to it and queues in the desk's queue -- the
     // desk's layout and duties, from a phone.
-    const calls = [...cards().matchAll(/\b(runCard|resumeCard|relaunchCard)\(([^;]*?)\);/gs)];
-    expect(calls.map((c) => c[1]).sort()).toEqual(["relaunchCard", "resumeCard", "runCard"]);
+    const calls = [
+      ...cards().matchAll(/\b(runCard|resumeCard|relaunchCard|launchCardAsNewSession)\(([^;]*?)\);/gs),
+    ];
+    expect(calls.map((c) => c[1]).sort()).toEqual([
+      "launchCardAsNewSession",
+      "relaunchCard",
+      "resumeCard",
+      "runCard",
+    ]);
     for (const [call] of calls) expect(call).toContain("DEVICE_LAUNCH_HOST");
   });
 

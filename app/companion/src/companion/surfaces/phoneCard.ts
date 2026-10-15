@@ -97,11 +97,11 @@ export function tickableItems(checklist: ChecklistItem[], tree: GavinTree | unde
 }
 
 /// The bar's actions a Device can take. Reaching the agent, resuming it,
-/// running the card and running it again are the desk's own launches
-/// (state/cards.ts). The rest are the desk's to do: several agents and a
+/// running the card, running it again and starting it afresh in a new
+/// session are the desk's own launches (state/cards.ts). The rest are the desk's to do: several agents and a
 /// develop run are chosen in dialogs of the desk's, and ending a stray
 /// process is a decision made watching it.
-const DEVICE_ACTIONS: readonly CardActionId[] = ["jump", "resume", "relaunch", "run"];
+const DEVICE_ACTIONS: readonly CardActionId[] = ["jump", "resume", "relaunch", "new-session", "run"];
 
 export function deviceBar(bar: CardSessionBar | null): CardSessionBar | null {
   if (!bar) return null;

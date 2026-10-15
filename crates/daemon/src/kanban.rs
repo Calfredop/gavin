@@ -272,7 +272,8 @@ impl KanbanStore {
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, conversation_id, launch_cwd, resume_attempts, base_sha \
+                "SELECT path, session_id, cwd, conversation_id, launch_cwd, resume_attempts, base_sha, \
+                        command IS NOT NULL AND trim(command) <> '' \
                  FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
@@ -281,6 +282,10 @@ impl KanbanStore {
                     session_id: row.get(1)?,
                     cwd: row.get(2)?,
                     command: None,
+                    // Whether it HAS one, which is a bit rather than a
+                    // prompt: what the board needs to offer Re-launch
+                    // only where there is a launch to replay.
+                    replayable: Some(row.get(7)?),
                     conversation_id: row.get(3)?,
                     launch_cwd: row.get(4)?,
                     resume_attempts: row.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u32),
@@ -347,11 +352,13 @@ impl KanbanStore {
              FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query_map(params![workspace_id, path], |row| {
+            let command: Option<String> = row.get(3)?;
             Ok(CardSession {
                 path: row.get(0)?,
                 session_id: row.get(1)?,
                 cwd: row.get(2)?,
-                command: row.get(3)?,
+                replayable: Some(command.as_deref().is_some_and(|c| !c.trim().is_empty())),
+                command,
                 conversation_id: row.get(4)?,
                 launch_cwd: row.get(5)?,
                 resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
@@ -1404,8 +1411,10 @@ mod tests {
             line.len()
         };
 
+        // Against a short command rather than none: whether a binding HAS
+        // one is on the board (`replayable`), how long it is must not be.
         let with_prompts = board_line(Some(&prompt));
-        assert_eq!(with_prompts, board_line(None), "the board's size depends on its commands");
+        assert_eq!(with_prompts, board_line(Some("claude 'x'")), "the board's size depends on its commands");
         // ~330 bytes a binding with realistic paths and ids: 400 of them is
         // an eighth of the cap, where the commands alone were 1.6 MiB.
         assert!(with_prompts < 400 * BINDINGS, "{with_prompts} bytes for {BINDINGS} bindings");
@@ -1425,6 +1434,31 @@ mod tests {
         assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
         assert_eq!(store.card_session("ws-1", "/p/unbound.md").unwrap(), None);
         assert_eq!(store.card_session("ws-2", "/p/t.md").unwrap(), None);
+    }
+
+    /// A binding with no launch -- a session that claimed the card over
+    /// MCP, or was linked while already running -- re-launched as a bare
+    /// login shell bound to the card. The board says which bindings have
+    /// something to replay, without carrying what it is.
+    #[test]
+    fn the_board_says_which_bindings_have_a_launch_to_replay() {
+        let (_dir, mut store) = store();
+        store.link_card_session("ws-1", "/p/a.md", "s-1", "/p", Some("claude 'x'"), None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/b.md", "s-2", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/c.md", "s-3", "/p", Some("  "), None, None, None, None).unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+        let replayable = |path: &str| {
+            let binding = board.card_sessions.iter().find(|cs| cs.path == path).unwrap();
+            assert_eq!(binding.command, None, "the board read carries no command");
+            binding.replayable
+        };
+        assert_eq!(replayable("/p/a.md"), Some(true));
+        assert_eq!(replayable("/p/b.md"), Some(false));
+        assert_eq!(replayable("/p/c.md"), Some(false));
+        // The single read agrees with the board.
+        assert_eq!(store.card_session("ws-1", "/p/a.md").unwrap().unwrap().replayable, Some(true));
+        assert_eq!(store.card_session("ws-1", "/p/b.md").unwrap().unwrap().replayable, Some(false));
     }
 
     #[test]

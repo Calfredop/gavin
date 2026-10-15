@@ -4402,6 +4402,16 @@ pub struct CardSession {
     /// bindings carries nothing for it at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Whether `command` holds a launch Re-launch can replay. The board
+    /// read leaves the command out (above), and a binding with none -- a
+    /// session that claimed the card over MCP, or was linked to it while
+    /// already running -- would otherwise re-launch as a bare login shell
+    /// bound to the card. Computed by the daemon from the stored column,
+    /// never written. None from a daemon that predates it, which a
+    /// surface reads as "can replay": Re-launch refuses on the command it
+    /// reads back either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayable: Option<bool>,
     /// The agent CLI's own conversation id for this run (see
     /// `Request::LinkCardSession::conversation_id`).
     #[serde(default)]
@@ -6607,6 +6617,7 @@ mod tests {
             session_id: "s-1".into(),
             cwd: "/p".into(),
             command: Some("claude 'x'".into()),
+            replayable: Some(true),
             conversation_id: None,
             launch_cwd: None,
             resume_attempts: None,
@@ -9001,6 +9012,7 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/p".to_string(),
             command: None,
+            replayable: Some(false),
             conversation_id: Some("conv-1".to_string()),
             launch_cwd: Some("/p/worktrees/a".to_string()),
             resume_attempts: Some(1),
@@ -9011,6 +9023,7 @@ mod tests {
             // No `command` key at all, not `null`: a board of bindings is
             // exactly where that field is left out (v43).
             serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p",
+                                "replayable": false,
                                 "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
                                 "resumeAttempts": 1,
                                 "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db" })

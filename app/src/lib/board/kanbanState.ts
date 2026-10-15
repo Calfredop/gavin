@@ -197,8 +197,9 @@ async function mutateBindings(
 
 export function linkCardSessionAction(workspaceId: string, binding: CardSessionRecord): Promise<void> {
   // The board keeps the binding without its command, exactly as the next
-  // read will bring it back (CardSession).
-  const { command: _command, ...onBoard } = binding;
+  // read will bring it back (CardSession) -- with only whether it has one.
+  const { command, ...rest } = binding;
+  const onBoard: CardSession = { ...rest, replayable: !!command?.trim() };
   return mutateBindings(
     workspaceId,
     (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), onBoard],

@@ -157,9 +157,11 @@ import {
   reviewCardSession,
   developCard,
   relaunchCard,
+  launchCardAsNewSession,
   jumpToBoundSession,
   sendToMainAgent,
 } from "$lib/cards/cardRunActions";
+import { NOTHING_TO_REPLAY } from "$lib/board/kanban";
 import { relaunchNote, shellQuote } from "$lib/cards/cardRun";
 import type { CardView } from "$lib/core/planBoard";
 import type { Board, CardSessionRecord } from "$lib/board/kanban";
@@ -1333,6 +1335,134 @@ describe("relaunchCard", () => {
 
   it("errors when nothing is remembered", async () => {
     expect(await relaunchCard("ws-1", "/p/absent.md")).toContain("No session");
+  });
+
+  // Seen in the wild: a card claimed over MCP by a session that was
+  // already running has a binding with no launch command. Replaying
+  // nothing spawned `/bin/zsh -l` and re-bound the card to it, so the
+  // card read as re-launched while its tab held an empty shell.
+  it("a binding with no launch spawns nothing and keeps the card where it was", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", replayable: false }]),
+    });
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBe(NOTHING_TO_REPLAY);
+    // Refused on the board's word, before the binding is even read.
+    expect(backend.cardSession).not.toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+    expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-dead");
+  });
+
+  // A daemon that predates `replayable` says nothing on the board, so the
+  // command read back is what decides -- before anything is spawned.
+  it("a command-less binding read back is refused even when the board did not say", async () => {
+    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: null });
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBe(NOTHING_TO_REPLAY);
+    expect(backend.cardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+    expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-dead");
+  });
+
+  it("records on the board whether the new binding can be replayed", async () => {
+    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBeNull();
+    expect(get(kanbanState)["ws-1"].cardSessions[0].replayable).toBe(true);
+  });
+});
+
+/// Launch as new session: Run's prompt, from the card as it is now, for a
+/// card that already has a binding -- including one Re-launch cannot
+/// replay -- and a binding that is wholly the new run's.
+describe("launchCardAsNewSession", () => {
+  const PATH = "/ws/.gavin-root/plans/t.md";
+  const BASE = "4444444444444444444444444444444444444444";
+
+  function linkedNotLaunched(): void {
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: PATH,
+          sessionId: "s-linked",
+          cwd: "/elsewhere",
+          conversationId: "old-conv",
+          launchCwd: "",
+          resumeAttempts: 1,
+          baseSha: "0000000000000000000000000000000000000000",
+          replayable: false,
+        },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: In Progress\n---\nDo the thing, now with step 3.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(conversationIdForLaunch).mockReturnValue("new-conv");
+    vi.mocked(baseShaForLaunch).mockResolvedValue(BASE);
+  }
+
+  it("composes Run's prompt from the card now, with the already-under-way note", async () => {
+    linkedNotLaunched();
+
+    expect(await launchCardAsNewSession("ws-1", card("task", "In Progress"))).toBeNull();
+
+    // Never the stored command: there is none, and it is never read.
+    expect(backend.cardSession).not.toHaveBeenCalled();
+    const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(cwd).toBe("/ws");
+    expect(command).toContain("claude --model opus '");
+    expect(command).toContain("Do the thing, now with step 3.");
+    expect(command).toContain(`the task card at ${PATH}`);
+    expect(command).toContain(relaunchNote(PATH).trim());
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
+  });
+
+  it("replaces the binding with a fresh conversation, budget and baseline", async () => {
+    linkedNotLaunched();
+
+    expect(await launchCardAsNewSession("ws-1", card("task", "In Progress"))).toBeNull();
+
+    const [ws, path, sessionId, cwd, command, conversationId, launchCwd, resumeAttempts, baseSha] =
+      vi.mocked(backend.linkCardSession).mock.calls[0];
+    expect([ws, path, sessionId, cwd]).toEqual(["ws-1", PATH, "s-new", "/ws"]);
+    expect(command).toBe(vi.mocked(backend.createSession).mock.calls[0][1]);
+    expect(conversationId).toBe("new-conv");
+    expect(launchCwd).toBe("/ws");
+    expect(resumeAttempts).toBe(0);
+    expect(baseSha).toBe(BASE);
+    expect(baseShaForLaunch).toHaveBeenCalledWith("/ws");
+    const bound = get(kanbanState)["ws-1"].cardSessions;
+    expect(bound).toHaveLength(1);
+    expect(bound[0]).toMatchObject({ sessionId: "s-new", conversationId: "new-conv", replayable: true });
+  });
+
+  it("asks the first-Run review, as Run does", async () => {
+    linkedNotLaunched();
+    vi.mocked(ensureCardReviewed).mockResolvedValueOnce(false);
+
+    expect(await launchCardAsNewSession("ws-1", card("task", "In Progress"))).toBeNull();
+    expect(ensureCardReviewed).toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses beside a live agent instead of jumping to it", async () => {
+    kanbanState.set({ "ws-1": board([{ path: PATH, sessionId: "s-live", cwd: "/ws" }]) });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await launchCardAsNewSession("ws-1", card("task", "In Progress"))).toContain("still running");
+    expect(switchToSessionInPage).not.toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
   });
 });
 

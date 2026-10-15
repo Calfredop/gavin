@@ -26,6 +26,7 @@
 
 import type { SessionStatus } from "$lib/core/notifications";
 import type { IndicatorTone } from "$lib/ui/indicators";
+import { NOTHING_TO_REPLAY } from "$lib/board/kanban";
 
 /// Where a card's bound session stands. `cardSessionState`
 /// (columnRunAction.ts) is the one place that vocabulary is derived; the
@@ -51,6 +52,9 @@ export type CardSituation =
       status: SessionStatus | null;
       /// The daemon found the agent's process still running.
       orphan: boolean;
+      /// The binding holds a launch Re-launch can replay (`canReplay`).
+      /// Absent reads as true, as it does on the binding.
+      replayable?: boolean;
     }
   | {
       kind: "unbound";
@@ -68,6 +72,7 @@ export type CardActionId =
   | "resume"
   | "jump"
   | "relaunch"
+  | "new-session"
   | "run"
   | "develop"
   | "best-of-n"
@@ -81,6 +86,10 @@ export interface CardBarAction {
   /// is how an exited session says which of the two is possible. The bar
   /// never silently drops one of a pair.
   enabled: boolean;
+  /// Why a disabled action cannot be pressed, where the situation alone
+  /// does not say. Drawn as text under the bar: a disabled button gets
+  /// no hover, so a tooltip on it would never show.
+  reason?: string;
   /// Ends something rather than reaching it, and is toned accordingly.
   danger?: boolean;
 }
@@ -105,7 +114,14 @@ export interface CardSituationInput {
   /// A best-of-N run's one-line summary, or null when no run is going.
   bestOfN: string | null;
   /// The card's session binding, reduced to what the precedence needs.
-  binding: { phase: CardSessionPhase; status: SessionStatus | null; orphan: boolean } | null;
+  /// `replayable` absent reads as true: only a daemon's explicit "no
+  /// launch recorded" takes Re-launch away (`canReplay`).
+  binding: {
+    phase: CardSessionPhase;
+    status: SessionStatus | null;
+    orphan: boolean;
+    replayable?: boolean;
+  } | null;
   /// A "Develop into a plan…" run is rewriting this card's file.
   developing: boolean;
   canDevelop: boolean;
@@ -140,6 +156,7 @@ export function cardSituation(input: CardSituationInput): CardSituation {
       // interrupted id holds a bare shell, and its status is the shell's.
       status: input.binding.phase === "live" ? (input.binding.status ?? "idle") : null,
       orphan: input.binding.orphan,
+      replayable: input.binding.replayable !== false,
     };
   }
   if (input.developing) return { kind: "developing" };
@@ -274,6 +291,7 @@ export function cardSessionBar(situation: CardSituation): CardSessionBar | null 
 
 function boundBar(situation: Extract<CardSituation, { kind: "bound" }>): CardSessionBar {
   const { phase, orphan } = situation;
+  const replayable = situation.replayable !== false;
   const live = phase === "live";
   const status = situation.status ?? "idle";
 
@@ -307,7 +325,18 @@ function boundBar(situation: Extract<CardSituation, { kind: "bound" }>): CardSes
     actions.push({ id: "resume", label: "Resume this card", enabled: true });
   }
   actions.push({ id: "jump", label: "Jump to session", enabled: live });
-  actions.push({ id: "relaunch", label: "Re-launch", enabled: !live });
+  // Drawn even with nothing to replay, greyed with the reason, so the
+  // pair beside Jump keeps its shape and the human learns why the button
+  // they expected cannot be pressed. While the agent is live the live
+  // agent is the reason, and the bar already says so.
+  actions.push(
+    replayable || live
+      ? { id: "relaunch", label: "Re-launch", enabled: !live && replayable }
+      : { id: "relaunch", label: "Re-launch", enabled: false, reason: NOTHING_TO_REPLAY }
+  );
+  // The card as it is NOW, rather than the command the binding stored --
+  // and the only way to start an agent here when that is missing.
+  actions.push({ id: "new-session", label: "Launch as new session", enabled: !live });
 
   return {
     headline: orphan ? `${headline} · its process is still running` : headline,

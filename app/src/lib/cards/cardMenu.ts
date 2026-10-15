@@ -12,6 +12,7 @@ import { requestedExplorerFile } from "$lib/files/planExplorer";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import {
   jumpToBoundSession,
+  launchCardAsNewSession,
   relaunchCard,
   developCard,
   resumeCard,
@@ -34,8 +35,12 @@ import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/agents/launchQueue";
 import { isArchivedCard, slugStatus, type CardView } from "$lib/core/planBoard";
-import type { Column } from "$lib/board/kanban";
+import { canReplay, type Column } from "$lib/board/kanban";
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
+
+/// A fresh agent on the card as it is now, replacing an exited binding
+/// (`launchCardAsNewSession`).
+export const NEW_SESSION_MENU_LABEL = "Launch as new session";
 
 export interface CardMenuHooks {
   workspaceId: string;
@@ -145,10 +150,23 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         },
       });
     } else if (binding) {
+      // Only where the binding recorded a launch: one linked to a session
+      // that was already running has nothing to replay, and Launch as new
+      // session below is then the way to start an agent here.
+      if (canReplay(binding)) {
+        entries.push({
+          label: "Re-launch agent",
+          onPick: () => {
+            void relaunchCard(workspaceId, card.id).then((err) => {
+              if (err) hooks.reportError(err);
+            });
+          },
+        });
+      }
       entries.push({
-        label: "Re-launch agent",
+        label: NEW_SESSION_MENU_LABEL,
         onPick: () => {
-          void relaunchCard(workspaceId, card.id).then((err) => {
+          void launchCardAsNewSession(workspaceId, card).then((err) => {
             if (err) hooks.reportError(err);
           });
         },

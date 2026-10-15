@@ -14,7 +14,7 @@ import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
-import type { CardSessionRecord } from "$lib/board/kanban";
+import { canReplay, NOTHING_TO_REPLAY, type CardSessionRecord } from "$lib/board/kanban";
 import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import {
   composeTaskPrompt,
@@ -27,6 +27,7 @@ import {
   buildResumeCommand,
   withFreshConversationId,
   withRelaunchNote,
+  relaunchNote,
   noPromptReason,
   usesPromptInjection,
   withPromptExtras,
@@ -324,6 +325,29 @@ export function runCard(
   return launchCard(workspaceId, card, "run", { host });
 }
 
+// Launch as new session: a Run of the card AS IT IS NOW, for a card that
+// already has a binding. Re-launch replays the command the binding
+// stored -- stale once the card has moved on, and missing altogether for
+// a session that was linked rather than launched -- while this composes
+// the prompt fresh from the card file, exactly as Run does, with the note
+// a re-launch adds: the card was already under way, so check what is
+// done before redoing it.
+//
+// Everything else is Run's: the same gates (develop, ssh, the agent, the
+// launch wall, the first-Run review), the card's own agent, its context
+// folder, a fresh conversation id, a fresh baseline and a fresh resume
+// budget -- and the new binding replaces the old. A LIVE binding is a
+// refusal rather than a jump: the action exists to start an agent, and a
+// second one in a checkout an agent is still working in is the outcome
+// every other launch goes out of its way to prevent.
+export function launchCardAsNewSession(
+  workspaceId: string,
+  card: CardView,
+  host: CardLaunchHost = DESK_LAUNCH_HOST
+): Promise<string | null> {
+  return launchCard(workspaceId, card, "new-session", { host });
+}
+
 // Resume: the same launch, with the prompt that tells the agent work on
 // this card already happened (columnRunAction.ts). Deliberately usable
 // on a card whose bound session has EXITED -- picking that work back up
@@ -538,20 +562,29 @@ export async function developCard(
 async function launchCard(
   workspaceId: string,
   card: CardView,
-  mode: "run" | "resume" | "review",
+  mode: "run" | "resume" | "review" | "new-session",
   options: { automatic?: boolean; queued?: boolean; withoutHeadroom?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
   const host = options.host ?? DESK_LAUNCH_HOST;
 
-  if ((await host.jump(workspaceId, card.id)) === "jumped") return null;
+  // A new session is asked for BESIDE a bound one, so a live binding is
+  // the one thing it must not jump to and call done (launchCardAsNewSession).
+  if (mode === "new-session") {
+    const bound = cardSessionFor(get(kanbanState)[workspaceId], card.id);
+    if (cardSessionState(get(layoutState), bound) === "live") return NEW_SESSION_WHILE_LIVE;
+  } else if ((await host.jump(workspaceId, card.id)) === "jumped") {
+    return null;
+  }
   const state = get(layoutState);
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   // Re-checked rather than trusted from the jump above, which is async:
   // a session that became live in between is still the work. An
   // INTERRUPTED binding falls through on purpose -- launching replaces
   // it, which is the only way a card gets un-stuck from a killed run.
-  if (cardSessionState(state, binding) === "live") return null;
+  if (cardSessionState(state, binding) === "live") {
+    return mode === "new-session" ? NEW_SESSION_WHILE_LIVE : null;
+  }
 
   // All three gates run BEFORE the status write below. A refused launch
   // must leave the card exactly as it was: writing In Progress and then
@@ -733,12 +766,16 @@ async function launchCard(
           promptOpts(workspaceId, "action:run-plan")
         );
   };
+  // A new session on a card that already had one says so, as a re-launch
+  // does: the run prompt was written for a card nobody had started.
+  const composeLaunchPrompt = (at: string): string =>
+    mode === "new-session" ? composeCardPrompt(at) + relaunchNote(at) : composeCardPrompt(at);
   // The launching agent's own extra prompt lines, after whichever card
   // prompt the mode composed. Keyed by the agent that actually launches
   // (a fallback's, not the card's primary), because the lines are
   // instructions to THAT agent.
   const composePrompt = (at: string): string =>
-    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
+    withPromptExtras(composeLaunchPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
     if (!file.exists) return `Card file not found: ${card.id}`;
@@ -956,6 +993,9 @@ async function launchCard(
   return null;
 }
 
+const NEW_SESSION_WHILE_LIVE =
+  "This card's agent is still running — jump to it, or end it before launching a new session";
+
 const NO_MAIN_AGENT = "No workspace agent running — start it on the Home tab first";
 
 /// The workspace's running main agent, or null. Exported so callers can
@@ -1110,12 +1150,23 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 
 // Re-launch from the remembered binding (same cwd/command), replacing
 // the stored session id -- the old modal's behavior, file-card edition.
+//
+// Only where there IS a remembered command. A binding made by linking a
+// session that was already running -- an agent claiming the card over
+// MCP -- recorded none, and replaying nothing spawned a bare login shell
+// and re-bound the card to it as if the agent had come back. That is
+// refused (NOTHING_TO_REPLAY) on the board's word before any gate, and
+// again on the command read back, before anything is spawned or bound.
 export async function relaunchCard(
   workspaceId: string,
   path: string,
   options: { queued?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
-  if (!cardSessionFor(get(kanbanState)[workspaceId], path)) return "No session remembered for this card";
+  const onBoard = cardSessionFor(get(kanbanState)[workspaceId], path);
+  if (!onBoard) return "No session remembered for this card";
+  // Before the launch wall: a re-launch that queued with nothing to
+  // replay would be refused at drain time, into a void.
+  if (!canReplay(onBoard)) return NOTHING_TO_REPLAY;
   const host = options.host ?? DESK_LAUNCH_HOST;
   // Re-launch replays the ORIGINAL prompt, which for a card being
   // developed is the very text the develop agent is replacing -- so it is
@@ -1162,6 +1213,9 @@ export async function relaunchCard(
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
   if (!binding) return "No session remembered for this card";
+  // The command itself, whatever the board said: a daemon too old to
+  // say anything reads as replayable there.
+  if (!binding.command?.trim()) return NOTHING_TO_REPLAY;
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is

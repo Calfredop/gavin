@@ -41,7 +41,29 @@ export interface CardSession {
   /// unborn HEAD, or against a daemon that could not store it: "no
   /// baseline", never "no changes".
   baseSha?: string | null;
+  /// Whether the binding holds a launch Re-launch can replay -- the bit,
+  /// not the command. False for a session that claimed the card over MCP
+  /// or was linked while already running: no launch was ever recorded,
+  /// and replaying nothing starts a bare login shell. Absent from a
+  /// daemon that predates it, which reads as replayable (`canReplay`).
+  replayable?: boolean | null;
 }
+
+/// Whether Re-launch has something to replay on this binding. Only a
+/// daemon's explicit "no" says no: an older one sends nothing, and
+/// `relaunchCard` still refuses on the command it reads back.
+export function canReplay(binding: Pick<CardSession, "replayable">): boolean {
+  return binding.replayable !== false;
+}
+
+/// What Re-launch answers for a binding with no launch to replay: a
+/// session that claimed the card over MCP, or was linked to it while
+/// already running, never recorded one. Replaying nothing used to start a
+/// bare login shell and bind the card to it as if the agent had come
+/// back.
+export const NOTHING_TO_REPLAY =
+  "This card's session was linked, not launched from the card, so there is no launch to " +
+  "replay — use Launch as new session.";
 
 /// The binding whole, as it is written (LinkCardSession) and as Re-launch
 /// reads it back (`backend.cardSession`): with the command it launched.

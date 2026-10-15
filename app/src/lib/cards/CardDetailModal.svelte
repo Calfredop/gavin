@@ -5,7 +5,7 @@
   import { renderMarkdown } from "$lib/files/markdown";
   import { pickPath } from "$lib/workspace/picker";
   import type { CardView } from "$lib/core/planBoard";
-  import type { Column, Label, Priority } from "$lib/board/kanban";
+  import { canReplay, type Column, type Label, type Priority } from "$lib/board/kanban";
   import { isArchivedCard, slugStatus } from "$lib/core/planBoard";
   import { childCards, parentCard } from "$lib/cards/cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/cards/planChecklist";
@@ -64,6 +64,7 @@
     runCard,
     resumeCard,
     relaunchCard,
+    launchCardAsNewSession,
     developCard,
     revealSession,
     revealDevelopingCard,
@@ -811,6 +812,16 @@
     else onClose();
   }
 
+  // The card as it is now, in a new session that replaces the binding --
+  // what to press when Re-launch has nothing to replay, or replays a
+  // prompt the card has outgrown.
+  async function handleNewSession(): Promise<void> {
+    errorMessage = null;
+    const err = await launchCardAsNewSession(workspaceId, card);
+    if (err) errorMessage = err;
+    else onClose();
+  }
+
   async function handleUnlink(): Promise<void> {
     errorMessage = null;
     await unlinkCardSessionAction(workspaceId, card.id);
@@ -964,6 +975,7 @@
             phase: bindingPhase,
             status: $verdictAttentionStatusById[binding.sessionId] ?? null,
             orphan: bindingOrphan !== null,
+            replayable: canReplay(binding),
           }
         : null,
       developing: developing !== null,
@@ -972,6 +984,11 @@
     })
   );
   const bar = $derived(cardSessionBar(situation));
+  /// Why a greyed action cannot be pressed, said under the bar: a
+  /// disabled button gets no hover, so it cannot explain itself.
+  const barReasons = $derived(
+    (bar?.actions ?? []).flatMap((a) => (!a.enabled && a.reason ? [a.reason] : []))
+  );
 
   /// The bar's glyph, from the app's one badge vocabulary. Null where
   /// there is no agent to describe: an unbound card has no state, and a
@@ -1019,6 +1036,8 @@
         return handleRun();
       case "relaunch":
         return handleRelaunch();
+      case "new-session":
+        return handleNewSession();
       case "develop":
         return handleDevelop();
       case "best-of-n":
@@ -1381,8 +1400,11 @@
             </div>
           </div>
         {:else if binding}
-          {#if bindingFailed || resumeNote || bindingInterrupted || bindingOrphan}
+          {#if bindingFailed || resumeNote || bindingInterrupted || bindingOrphan || barReasons.length > 0}
             <div class="situation">
+              {#each barReasons as reason (reason)}
+                <p class="session-note">{reason}</p>
+              {/each}
               {#if bindingFailed}
                 <p class="session-note">
                   This agent stopped because something broke, not because it finished{failureReason
