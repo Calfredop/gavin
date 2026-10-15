@@ -563,26 +563,33 @@ export function createPage(
 /// session a Device started (`devicePresence.ts`). Found by name.
 export const AGENTS_PAGE_NAME = "Agents";
 
-/// Adds `sessionId` as a tab on the workspace's Agents page, creating the
-/// page with the session as its first tab when there is none (`newPageId`
-/// is only used then). Never steals focus: `createPage` activates the page
-/// it makes, so the page that was active is put back.
+/// Where a tool run started on its own (not as a rail step) lands, so a
+/// tool's tabs do not crowd the agents working cards. A rail's tool step
+/// still lands with the rail's other sessions.
+export const TOOLS_PAGE_NAME = "Tools";
+
+/// Adds `sessionId` as a tab on the workspace's page named `pageName`
+/// (the Agents page unless told otherwise), creating the page with the
+/// session as its first tab when there is none (`newPageId` is only used
+/// then). Never steals focus: `createPage` activates the page it makes,
+/// so the page that was active is put back.
 export function addToAgentsPage(
   state: WorkspacesData,
   workspaceId: string,
   sessionId: string,
-  newPageId: string
+  newPageId: string,
+  pageName: string = AGENTS_PAGE_NAME
 ): WorkspacesData {
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return state;
-  const agentsPage = ws.pages.find((p) => p.name === AGENTS_PAGE_NAME);
+  const agentsPage = ws.pages.find((p) => p.name === pageName);
   if (agentsPage) {
     const anchor = allSessionIds(agentsPage.layout)[0];
     const tree = addTab(agentsPage.layout, anchor, sessionId);
     return updatePageLayout(state, workspaceId, agentsPage.id, tree);
   }
   const previousActive = ws.activePageId;
-  const data = createPage(state, workspaceId, newPageId, AGENTS_PAGE_NAME, {
+  const data = createPage(state, workspaceId, newPageId, pageName, {
     type: "leaf",
     tabs: [sessionId],
     activeTabIndex: 0,

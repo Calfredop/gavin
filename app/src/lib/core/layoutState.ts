@@ -3970,7 +3970,13 @@ export function handleSessionExited(
 // focus (createPage activates the new page, so the previous active page
 // is restored). If the workspace no longer exists, the session is
 // killed: an agent the human can't see is never allowed to keep running.
-export function handleAgentSessionSpawned(workspaceId: string, sessionId: string): void {
+// `pageName` sends it to another page by the same rules -- a tool run
+// started on its own lands on Tools.
+export function handleAgentSessionSpawned(
+  workspaceId: string,
+  sessionId: string,
+  pageName: string = workspace.AGENTS_PAGE_NAME
+): void {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) {
@@ -3978,7 +3984,7 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
     return;
   }
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
-  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID());
+  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID(), pageName);
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }

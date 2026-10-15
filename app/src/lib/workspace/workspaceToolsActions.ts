@@ -34,6 +34,7 @@ import * as backend from "$lib/core/backend";
 import { buildRunCommand, buildToolCommand, withPromptExtras } from "$lib/cards/cardRun";
 import { revealSession } from "$lib/cards/cardRunActions";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
+import { TOOLS_PAGE_NAME } from "$lib/core/workspace";
 import {
   armFailureDetection,
   conversationIdForLaunch,
@@ -214,7 +215,9 @@ async function launch(
     // no-op that only jumped focus around.
     retainTabOnExit(sessionId);
   }
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  // On the Tools page, not Agents: a run started on its own is not a
+  // card's agent, and a rail's tool step never comes through here.
+  handleAgentSessionSpawned(workspaceId, sessionId, TOOLS_PAGE_NAME);
   // Revealed for the reason a review is: nothing else on screen would
   // show that a tool is running, and an agent's first question would be
   // asked in a tab nobody is looking at. A shell tool's PTY can close in

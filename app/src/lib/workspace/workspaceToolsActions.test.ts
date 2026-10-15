@@ -209,7 +209,7 @@ describe("the launch", () => {
     await requestToolRun("ws-1", tool());
     expect(setSessionName).toHaveBeenCalledWith("sess-1", "Deploy");
     expect(revealSession).toHaveBeenCalledWith("sess-1");
-    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "sess-1");
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "sess-1", "Tools");
   });
 
   // And keeps that tab after exit: otherwise the jump lands on a page
