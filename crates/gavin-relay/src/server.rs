@@ -189,7 +189,7 @@ struct Waiting {
 struct Shared {
     /// SHA-256 of each token, so a comparison takes the same time
     /// whatever was presented and however long it was.
-    tokens: Vec<[u8; 32]>,
+    tokens: AdmissionTokens,
     limits: Limits,
     counters: Arc<Counters>,
     registrations: Mutex<HashMap<String, Vec<Registration>>>,
@@ -206,13 +206,38 @@ fn digest(token: &str) -> [u8; 32] {
     out
 }
 
+/// The admission tokens a running Relay takes, which can be replaced
+/// while it runs: what lets the daemon that runs this Mac's own Relay
+/// rotate its token without a restart, which would drop every stream it
+/// carries. A connection already admitted stays admitted; the next hello
+/// is judged against the new set.
+#[derive(Clone)]
+pub struct AdmissionTokens(Arc<std::sync::RwLock<Vec<[u8; 32]>>>);
+
+impl AdmissionTokens {
+    /// The set `config` starts with, or the refusal to start without one.
+    pub fn of(config: &RelayConfig) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(std::sync::RwLock::new(admission_digests(config)?))))
+    }
+
+    /// Takes `tokens` in place of the set held. Refused, and the set left
+    /// as it was, when none is usable: for the reason `serve` will not
+    /// start without one.
+    pub fn replace(&self, tokens: &[String]) -> anyhow::Result<()> {
+        let digests = admission_digests_of(tokens)?;
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = digests;
+        Ok(())
+    }
+}
+
 impl Shared {
     fn admits(&self, token: &str) -> bool {
         let presented = digest(token);
         // Every token is compared, and every byte of each: no early exit
         // for a timing to read.
         let mut admitted = false;
-        for held in &self.tokens {
+        let tokens = self.tokens.0.read().unwrap_or_else(|e| e.into_inner());
+        for held in tokens.iter() {
             let mut difference = 0u8;
             for (a, b) in held.iter().zip(presented.iter()) {
                 difference |= a ^ b;
@@ -277,16 +302,29 @@ pub async fn serve(
     config: RelayConfig,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
-    serve_counting(listener, config, Arc::new(Counters::default()), shutdown).await
+    let tokens = AdmissionTokens::of(&config)?;
+    serve_counting(listener, config, tokens, Arc::new(Counters::default()), shutdown).await
+}
+
+/// `serve`, admitting by `tokens`, which the caller may replace while it
+/// runs.
+pub async fn serve_with(
+    listener: TcpListener,
+    config: RelayConfig,
+    tokens: AdmissionTokens,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> anyhow::Result<()> {
+    serve_counting(listener, config, tokens, Arc::new(Counters::default()), shutdown).await
 }
 
 async fn serve_counting(
     listener: TcpListener,
     config: RelayConfig,
+    tokens: AdmissionTokens,
     counters: Arc<Counters>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
-    let shared = Arc::new(shared_for(&config, counters)?);
+    let shared = Arc::new(shared_for(&config, tokens, counters));
     let acceptor = config.tls.as_ref().map(tls_acceptor).transpose()?;
     let slots = Arc::new(Semaphore::new(config.limits.connections));
 
@@ -325,8 +363,11 @@ async fn serve_counting(
 /// The digest of every admission token, or the refusal to start without
 /// one.
 fn admission_digests(config: &RelayConfig) -> anyhow::Result<Vec<[u8; 32]>> {
-    let tokens: Vec<&str> =
-        config.tokens.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    admission_digests_of(&config.tokens)
+}
+
+fn admission_digests_of(tokens: &[String]) -> anyhow::Result<Vec<[u8; 32]>> {
+    let tokens: Vec<&str> = tokens.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
     if tokens.is_empty() {
         anyhow::bail!(
             "gavin-relay: no admission token is set — a Relay admits only the daemons and Devices that hold its token, so it will not start without one"
@@ -335,15 +376,15 @@ fn admission_digests(config: &RelayConfig) -> anyhow::Result<Vec<[u8; 32]>> {
     Ok(tokens.into_iter().map(digest).collect())
 }
 
-fn shared_for(config: &RelayConfig, counters: Arc<Counters>) -> anyhow::Result<Shared> {
-    Ok(Shared {
-        tokens: admission_digests(config)?,
+fn shared_for(config: &RelayConfig, tokens: AdmissionTokens, counters: Arc<Counters>) -> Shared {
+    Shared {
+        tokens,
         limits: config.limits.clone(),
         counters,
         registrations: Mutex::new(HashMap::new()),
         waiting: Mutex::new(HashMap::new()),
         next_registration: AtomicU64::new(0),
-    })
+    }
 }
 
 /// One connection, from the socket to whatever it turned out to be.
@@ -727,7 +768,14 @@ impl RunningRelay {
                 let stop = async {
                     let _ = stop.await;
                 };
-                if let Err(e) = serve_counting(listener, config, serving, stop).await {
+                let tokens = match AdmissionTokens::of(&config) {
+                    Ok(tokens) => tokens,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return;
+                    }
+                };
+                if let Err(e) = serve_counting(listener, config, tokens, serving, stop).await {
                     eprintln!("{e}");
                 }
             });

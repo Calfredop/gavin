@@ -11,7 +11,7 @@
   import { bundlesToKeep, nativeBundleStore, rememberBundle, type BundleMemory } from "$shell/bundle/store";
   import { trustedKeys } from "$shell/bundle/trust";
   import { combinedInbox, type InboxRow } from "$shell/hub/inbox";
-  import { pairedStore, type PairedWorkstation } from "$shell/hub/paired";
+  import { pairedStore, withAdmission, type PairedWorkstation } from "$shell/hub/paired";
   import { createUnlockedHub } from "$shell/hub/unlockedHub";
   import { hubWorkstations } from "$shell/hub/workstations";
   import { runKeysCheck } from "$shell/keys/keysCheck";
@@ -126,6 +126,14 @@
         core,
         open: webSocketOpener(WebSocket as unknown as WebSocketConstructor),
         random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+        // A refreshed token (v73) is kept natively, so the next dial --
+        // after a relaunch too -- presents it.
+        onAdmission: (record) => {
+          const kept = withAdmission(paired, record.id, record.relayAdmission ?? "");
+          if (!kept) return;
+          paired = kept.paired;
+          void store.save(kept.record).catch((e) => console.warn(`[gavin-hub] could not keep the new admission token: ${e}`));
+        },
         // A debug build says what the Unlock and each Workstation do.
         log: (line) => {
           if (debugBuild) console.log(line);

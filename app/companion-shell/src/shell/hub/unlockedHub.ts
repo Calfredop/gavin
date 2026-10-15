@@ -38,6 +38,8 @@ export interface UnlockedHubDeps {
   log?(line: string): void;
   /// The live hub's clock and timers, for tests.
   hub?: Partial<Pick<LiveHubDeps, "now" | "after" | "pollMs" | "reconnect" | "tryNowGapMs">>;
+  /// A Workstation handed this phone a new admission token (v73).
+  onAdmission?(record: PairedWorkstation): void;
 }
 
 export interface UnlockedHub {
@@ -103,6 +105,7 @@ export function createUnlockedHub(deps: UnlockedHubDeps): UnlockedHub {
     onConnection: (id, connection) => {
       for (const listener of [...(connectionListeners.get(id) ?? [])]) listener(connection);
     },
+    onAdmission: deps.onAdmission,
     onNotHeld: () => dispatch({ type: "not-held" }),
     onLapsed: () => dispatch({ type: "lapsed" }),
     log: deps.log,

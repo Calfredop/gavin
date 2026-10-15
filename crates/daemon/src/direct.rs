@@ -9,8 +9,9 @@
 //! `remote::serve_pairing` for a pairing, `remote::serve_device` for a
 //! connection, which runs `IK` and the hardware proof and hands the
 //! connection to `adopt_device` with `ClientIdentity::remote`. What a
-//! Relay adds -- matching, registering, the admission token -- a Device
-//! that already holds this daemon's key has no use for.
+//! Relay adds -- matching, registering -- a Device that already holds
+//! this daemon's key has no use for. The admission token it keeps: while
+//! the desk holds one, a direct hello must present it too.
 //!
 //! **TLS, pinned.** The listener serves a self-signed certificate the
 //! trust store keeps (`trust::DirectIdentity`), and the pairing QR carries
@@ -32,7 +33,8 @@
 //! - `OPEN` sockets at once, of every kind; one over is closed on.
 //! - TLS, the WebSocket handshake and the hello inside `HELLO` together.
 //! - A hello that is not a Device's for THIS Workstation's key is refused
-//!   by name, as a Relay refuses it. From there the Relay's own ceilings
+//!   by name, as a Relay refuses it, and so is one whose token is not the
+//!   desk's while the desk holds one. From there the Relay's own ceilings
 //!   apply: `remote::Serving`'s places for pairings and for connections
 //!   being let in, which the Relay's streams draw on as well.
 
@@ -47,12 +49,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The port a release build's daemon listens on.
-const PORT_RELEASE: u16 = 8445;
-/// The port a dev build's daemon listens on. Its own, because the two
-/// daemons share one trust store and therefore one switch: with it on,
-/// both listen.
-const PORT_DEV: u16 = 8446;
+/// The port a release build's daemon listens on, and the one a dev
+/// build's does: `protocol::relay`'s, because a Relay URL naming either
+/// on this machine is refused there (`RelayUrl::refuse_direct_listener`).
+const PORT_RELEASE: u16 = relay::DIRECT_PORT_RELEASE;
+const PORT_DEV: u16 = relay::DIRECT_PORT_DEV;
 
 /// Overrides the port; `0` lets the system choose. What lets seam 1 run
 /// many isolated daemons at once, each reading its port back from
@@ -123,6 +124,52 @@ fn port(manager: &SessionManager) -> u16 {
         protocol::BuildProfile::Dev => PORT_DEV,
         protocol::BuildProfile::Release => PORT_RELEASE,
     }
+}
+
+/// The ports a Relay URL must not name on this machine: both builds'
+/// direct listeners', and this daemon's own when `GAVIN_DIRECT_PORT`
+/// moved it (read back from the bound socket when it chose `0`).
+pub(crate) fn direct_ports(manager: &SessionManager) -> Vec<u16> {
+    let mut ports = vec![PORT_RELEASE, PORT_DEV];
+    let own = match manager.direct_state() {
+        DirectState::Listening { port, .. } => port,
+        _ => port(manager),
+    };
+    if own != 0 && !ports.contains(&own) {
+        ports.push(own);
+    }
+    ports
+}
+
+/// Why `url` may not be dialled as a Relay, if it is one of this
+/// machine's direct listeners: a Relay URL of `ws://<this Mac>:8445` had
+/// the daemon dial itself (2026-10-14), and the QR offer the port twice.
+///
+/// What this machine is, it is asked: an address the URL's host resolves
+/// to is this machine's if a socket can be bound to it. Asked only for a
+/// URL on a direct port whose host is on this machine or network by its
+/// text (`RelayUrl::local`): an address, or `localhost` / a `.local`
+/// name, which this machine answers for itself. A public name is never
+/// looked up, so a request thread never waits on DNS.
+pub(crate) fn names_a_direct_listener_here(
+    manager: &SessionManager,
+    url: &str,
+) -> Option<relay::RelayUrlError> {
+    let parsed = relay::RelayUrl::parse(url).ok()?;
+    let ports = direct_ports(manager);
+    if !ports.contains(&parsed.port) {
+        return None;
+    }
+    let here =
+        if parsed.local && held_here(&parsed.host) { vec![parsed.host.clone()] } else { Vec::new() };
+    parsed.refuse_direct_listener(&here, &ports).err()
+}
+
+/// Whether `host` resolves to an address this machine holds.
+fn held_here(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(resolved) = (host, 0).to_socket_addrs() else { return false };
+    resolved.into_iter().any(|a| UdpSocket::bind(SocketAddr::new(a.ip(), 0)).is_ok())
 }
 
 /// What the listener should be, or `None` for no listener at all.
@@ -289,7 +336,7 @@ fn admit(
 
 /// What a connection is let in as, or the refusal it is told.
 fn verdict(manager: &SessionManager, want: &Want, hello: &RelayHello) -> Result<Purpose, RefusalReason> {
-    let RelayHello::Device { v, rendezvous, purpose, .. } = hello else {
+    let RelayHello::Device { v, token, rendezvous, purpose } = hello else {
         // A Workstation registering, a stream being picked up: roles a
         // Relay has and this listener does not.
         return Err(RefusalReason::Version);
@@ -301,6 +348,23 @@ fn verdict(manager: &SessionManager, want: &Want, hello: &RelayHello) -> Result<
     // key "Revoke all" has since rotated.
     if *rendezvous != want.rendezvous {
         return Err(RefusalReason::Offline);
+    }
+    // While the desk holds an admission token, the direct path asks for
+    // it as the Relay does (ADR 0009, amended 2026-10-15): rotating it
+    // keeps off a phone that knows the key but was not given the new
+    // one. Read now rather than kept in `want`, so a new token takes
+    // effect at the next hello without dropping what is carried. A
+    // store that cannot be read admits nothing. Inside a Refresh's grace
+    // window the token it replaced is still one (`admissions_at`).
+    let now = (crate::trust::now_us() / 1_000_000).max(0) as u64;
+    let held = manager
+        .trust()
+        .and_then(|trust| trust.admissions_at(now).ok())
+        .ok_or(RefusalReason::Offline)?;
+    // Every one compared, for `admission_matches`'s reason.
+    let admitted = held.iter().fold(false, |found, h| found | relay::admission_matches(h, token));
+    if !held.is_empty() && !admitted {
+        return Err(RefusalReason::Admission);
     }
     // A pairing with no offer on screen, or a purpose this build does
     // not serve: a Relay would leave it to lapse unclaimed.
@@ -360,6 +424,15 @@ pub fn addresses(port: u16) -> Vec<String> {
         }
     }
     found.into_iter().map(|address| url(address, port)).collect()
+}
+
+/// The address of this machine's default route, if it is one a Device on
+/// this network could dial: what the desk's own Relay puts in its URL
+/// (`desk_relay.rs`). Not the Tailscale address, for the reason ADR 0009
+/// gives: a phone's cleartext exception covers the LAN, and `ws://` to a
+/// tailnet address never connected.
+pub(crate) fn lan_address() -> Option<IpAddr> {
+    sending_address("192.0.2.1:9").filter(|address| dialable(*address))
 }
 
 fn sending_address(probe: &str) -> Option<IpAddr> {
@@ -426,8 +499,33 @@ mod tests {
     fn the_dev_and_release_daemons_listen_on_ports_of_their_own() {
         assert_ne!(PORT_DEV, PORT_RELEASE);
         // Neither is the Relay's.
-        assert_ne!(PORT_RELEASE, 8443);
-        assert_ne!(PORT_DEV, 8443);
+        assert_ne!(PORT_RELEASE, relay::RELAY_DEFAULT_PORT);
+        assert_ne!(PORT_DEV, relay::RELAY_DEFAULT_PORT);
+    }
+
+    /// The address this machine is known by on its LAN or tailnet is
+    /// found by binding to it, as loopback and `localhost` are; an
+    /// address it does not hold, and any other port, are left alone.
+    #[test]
+    fn a_relay_url_naming_a_direct_port_here_is_one_of_this_machines_listeners() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(
+            crate::registry::Registry::open(&dir.path().join("registry.sqlite")).unwrap(),
+            crate::kanban::KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            crate::orchestration::OrchestrationStore::open(&dir.path().join("orchestration.sqlite"))
+                .unwrap(),
+        );
+        let mut here = vec!["ws://127.0.0.1:8445".to_string(), "ws://localhost:8446/relay".into()];
+        // This machine's own addresses, as a QR would list them -- none on
+        // a machine with no network, which leaves loopback to prove it.
+        here.extend(addresses(PORT_RELEASE).iter().map(|a| a.replacen("wss://", "ws://", 1)));
+        for url in &here {
+            let refused = names_a_direct_listener_here(&manager, url);
+            assert!(matches!(refused, Some(relay::RelayUrlError::DirectListener(_))), "{url}");
+        }
+        for url in ["ws://127.0.0.1:8443", "ws://192.0.2.1:8445", "wss://relay.example:443"] {
+            assert_eq!(names_a_direct_listener_here(&manager, url), None, "{url}");
+        }
     }
 
     #[test]

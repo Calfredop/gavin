@@ -37,12 +37,17 @@ const item = (id: string): AttentionItem => ({
 
 /// A connection the test can drop.
 function fakeConnection() {
+  const admissionHandlers = new Set<(token: string) => void>();
   let settle!: (why: string) => void;
   let isClosed = false;
   const closed = new Promise<string>((resolve) => (settle = resolve));
   const connection: Connection = {
     request: vi.fn(),
     onPush: () => () => {},
+    onAdmission: (handler: (token: string) => void) => {
+      admissionHandlers.add(handler);
+      return () => admissionHandlers.delete(handler);
+    },
     close: vi.fn((why = "closed") => {
       if (isClosed) return;
       isClosed = true;
@@ -53,7 +58,11 @@ function fakeConnection() {
       return isClosed;
     },
   };
-  return { connection, drop: (why: string) => connection.close(why) };
+  return {
+    connection,
+    drop: (why: string) => connection.close(why),
+    handAdmission: (token: string) => [...admissionHandlers].forEach((h) => h(token)),
+  };
 }
 
 /// Scripted Workstations: what connecting answers, by Workstation key, and
@@ -115,6 +124,27 @@ afterEach(() => {
 
 /// Lets every pending promise run.
 const settle = () => vi.advanceTimersByTimeAsync(0);
+
+describe("a refreshed admission token", () => {
+  // v73: kept by the caller, and presented by the next dial.
+  it("is handed to onAdmission and dialled with after a drop", async () => {
+    const b = bench();
+    const kept: PairedWorkstation[] = [];
+    const hub = createLiveHub({ ...b.deps, onAdmission: (r) => kept.push(r) });
+    hub.setPaired([STUDIO]);
+    b.willConnect(STUDIO);
+    b.willConnect(STUDIO);
+    hub.setAllowed(true);
+    await settle();
+    const [first] = b.connectionsTo(STUDIO);
+    first.handAdmission("new-token");
+    expect(kept).toEqual([{ ...STUDIO, relayAdmission: "new-token" }]);
+    first.drop("gone");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(b.connect).toHaveBeenLastCalledWith(expect.objectContaining({ relayAdmission: "new-token" }), expect.anything());
+    hub.dispose();
+  });
+});
 
 describe("the live hub", () => {
   it("stays locked, connecting nothing, until the Unlock allows it", async () => {

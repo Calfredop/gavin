@@ -122,12 +122,21 @@ export interface DeviceList {
   /// Whether direct connection is switched on (v69, ADR 0009). Absent
   /// from an older daemon, which listens for nobody.
   directAccessEnabled?: boolean;
+  /// Whether "Run a Relay on this Mac" is on (v73). Absent from an older
+  /// daemon, which runs no Relay.
+  deskRelayEnabled?: boolean;
+  /// When the token held was set, epoch seconds (v73). Null when none is
+  /// held; absent from an older daemon, which never kept the time.
+  relayAdmissionSetAt?: number | null;
+  /// Whether the token held is one the desk minted for its own Relay
+  /// (v73), and so one Refresh can replace.
+  relayAdmissionByDesk?: boolean;
 }
 
 /// `BeginPairing`'s answer.
 export interface PairingOffer {
-  /// `protocol::PairingQr`'s compact JSON. Opaque here: this module draws
-  /// it and never reads inside it.
+  /// `protocol::PairingQr`'s compact JSON. This module draws it, and
+  /// reads only its lists of URLs, for the sheet under it (`pairingSheet`).
   qr: string;
   /// Wall-clock epoch SECONDS, the daemon's clock.
   expiresAt: number;
@@ -257,6 +266,82 @@ export function qrDraw(payload: string): QrDraw {
   } catch (e) {
     return { size: 0, path: "", error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/// One way in that a pairing QR carries, in the order the phone tries it.
+/// `lan` and `tailnet` are the direct listener (ADR 0009); a `tailnet`
+/// address is Tailscale's (100.64.0.0/10), which the phone reaches from
+/// anywhere it is on that tailnet.
+export interface PairingPath {
+  kind: "lan" | "tailnet" | "relay";
+  label: string;
+  url: string;
+}
+
+/// What the sheet under the QR says: every way in it carries, and what
+/// each needs to keep working afterwards.
+export interface PairingSheet {
+  paths: PairingPath[];
+  notes: string[];
+}
+
+const PATH_LABEL: Record<PairingPath["kind"], string> = {
+  lan: "This network",
+  tailnet: "Tailnet",
+  relay: "Relay",
+};
+
+/// The sheet for one QR, read from the payload the daemon drew it from.
+/// The payload rather than the desk's own state, because what it carries
+/// is what the daemon chose: it leaves out a Relay URL naming this Mac's
+/// own direct port, and works the addresses out afresh. Only the two
+/// lists of URLs are read; the secret and the token are never touched.
+/// One QR carries both paths (decided 2026-10-15), so this is where
+/// the human learns which ones it carries, and that a direct-only
+/// pairing stops working once the phone leaves the network or this Mac's
+/// address changes.
+export function pairingSheet(payload: string): PairingSheet {
+  let qr: unknown;
+  try {
+    qr = JSON.parse(payload);
+  } catch {
+    return { paths: [], notes: [] };
+  }
+  const urls = (key: string): string[] => {
+    const value = typeof qr === "object" && qr !== null ? (qr as Record<string, unknown>)[key] : null;
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  };
+  const path = (kind: PairingPath["kind"], url: string): PairingPath => ({ kind, label: PATH_LABEL[kind], url });
+  const paths = [
+    ...urls("direct").map((url) => path(isTailnetAddress(hostOfUrl(url)) ? "tailnet" : "lan", url)),
+    ...urls("rendezvous").map((url) => path("relay", url)),
+  ];
+  const has = (kind: PairingPath["kind"]) => paths.some((p) => p.kind === kind);
+  const direct = has("lan") || has("tailnet");
+  const notes: string[] = [];
+  if (direct && has("relay")) notes.push("The phone tries this Mac directly first, then the Relay.");
+  if (has("lan")) {
+    notes.push(
+      "On this network, directly: while the phone is on the same network and this Mac keeps that address. Give this Mac a DHCP reservation or a static IP on the router — if the address changes, the phone cannot find it directly until it pairs again."
+    );
+  }
+  if (has("tailnet")) {
+    notes.push(
+      "Over the tailnet, directly: wherever the phone is on the same Tailscale tailnet as this Mac, at home or away."
+    );
+  } else if (direct) {
+    notes.push(
+      "Away from this network, the direct path needs a VPN such as Tailscale on both the phone and this Mac. Pair again once it is on, so the code carries this Mac's tailnet address."
+    );
+  }
+  if (has("relay")) {
+    notes.push("Through the Relay: anywhere the phone is online, whatever this Mac's address is.");
+  } else if (direct) {
+    notes.push(
+      "This code carries no Relay, so the phone reaches this Mac only on the network or tailnet above. A Relay URL in Settings adds a way in that works from anywhere."
+    );
+  }
+  return { paths, notes };
 }
 
 // -- the device list ---------------------------------------------------
@@ -437,7 +522,7 @@ export const RELAY_NOTE =
 /// write-only, because the first thing a human does with a credential
 /// field that comes back empty is assume the save failed.
 export const ADMISSION_NOTE =
-  "What the Relay asks of everything it carries: whoever runs the Relay gives it to you. The daemon keeps it and presents it when it dials, and it goes into the pairing QR beside the Relay URL. Once saved it is not shown again. Changing the Relay URL forgets it — a token belongs to the Relay that issued it.";
+  "What the Relay asks of everything it carries: whoever runs the Relay gives it to you. The daemon keeps it and presents it when it dials, and it goes into the pairing QR beside the Relay URL. Once saved it is not shown again. Changing the Relay URL forgets it — a token belongs to the Relay that issued it. Clear token forgets it and keeps the URL. While one is held, the direct connection asks for it too, so a phone paired before it was set pairs again to connect directly.";
 
 /// The relay URL to send, or null for "no relay".
 export function relayUrlToSave(draft: string): string | null {
@@ -463,8 +548,62 @@ export interface RelayUrlProblem {
     | "host"
     | "port"
     | "credentials"
-    | "plain-to-public-host";
+    | "plain-to-public-host"
+    | "direct-listener";
   message: string;
+}
+
+/// The ports the daemons' direct listeners take (ADR 0009):
+/// `protocol::relay::DIRECT_PORT_RELEASE` and `DIRECT_PORT_DEV`.
+export const DIRECT_PORTS: readonly number[] = [8445, 8446];
+
+/// The port `gavin-relay` binds unless told otherwise
+/// (`protocol::relay::RELAY_DEFAULT_PORT`).
+export const RELAY_DEFAULT_PORT = 8443;
+
+/// What this machine is, as far as the Relay URL check needs to know:
+/// the hosts it answers to (addresses or names) and the ports its direct
+/// listeners take. `relayUrlProblem`'s mirror of the two arguments
+/// `RelayUrl::refuse_direct_listener` takes.
+export interface ThisMachine {
+  hosts: string[];
+  directPorts: number[];
+}
+
+/// What the desk knows of this Mac: the addresses the direct listener
+/// says a phone would be given, and its port, beside both builds' ports.
+/// Loopback is this Mac whatever this says. With the listener off the
+/// desk knows no address, and the daemon's own check -- which can --
+/// is what says so, in the Relay's status line.
+export function thisMachine(direct: DirectState | null): ThisMachine {
+  const directPorts = [...DIRECT_PORTS];
+  const hosts: string[] = [];
+  if (direct?.state === "listening") {
+    if (!directPorts.includes(direct.port)) directPorts.push(direct.port);
+    for (const address of direct.addresses) {
+      const host = hostOfUrl(address);
+      if (host !== "") hosts.push(host);
+    }
+  }
+  return { hosts, directPorts };
+}
+
+/// The host of a URL as written, brackets off an IPv6 address; empty for
+/// none.
+function hostOfUrl(url: string): string {
+  const authority = url.slice(url.indexOf("://") + 3).split(/[/?#]/)[0];
+  const colon = authority.lastIndexOf(":");
+  return authority.startsWith("[")
+    ? authority.slice(1, authority.indexOf("]"))
+    : colon < 0
+      ? authority
+      : authority.slice(0, colon);
+}
+
+/// Whether `host` is an address Tailscale hands out (100.64.0.0/10).
+function isTailnetAddress(host: string): boolean {
+  const v4 = parseIpv4(host);
+  return v4 !== null && v4[0] === 100 && v4[1] >= 64 && v4[1] <= 127;
 }
 
 /// Four decimal parts from 0 to 255, none with a leading zero. Nothing
@@ -532,6 +671,41 @@ function ipv4IsLocal([a, b]: number[]): boolean {
   );
 }
 
+/// A host as a thing to compare, `machine_of`'s mirror: an address (an
+/// IPv4-mapped IPv6 address read as the IPv4 address it maps), or a name
+/// with its case and one trailing dot set aside. Null for neither.
+function machineOf(host: string): string | null {
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const v6 = parseIpv6(bare);
+  if (v6 !== null) {
+    const mapped = v6.slice(0, 5).every((g) => g === 0) && v6[5] === 0xffff;
+    if (mapped) return `4:${v6[6] >> 8}.${v6[6] & 255}.${v6[7] >> 8}.${v6[7] & 255}`;
+    return `6:${v6.join(":")}`;
+  }
+  const judged = nameOrIpv4(bare);
+  if (judged === null) return null;
+  if (judged === "name") return `n:${(bare.endsWith(".") ? bare.slice(0, -1) : bare).toLowerCase()}`;
+  return `4:${judged.join(".")}`;
+}
+
+/// Whether `host` is this machine: loopback, `localhost`, the unspecified
+/// address, or one of `hosts`. `host_is_this_machine`'s mirror.
+function hostIsThisMachine(host: string, hosts: string[]): boolean {
+  const machine = machineOf(host);
+  if (machine === null) return false;
+  if (
+    machine.startsWith("4:127.") ||
+    machine === "4:0.0.0.0" ||
+    machine === "6:0:0:0:0:0:0:0:1" ||
+    machine === "6:0:0:0:0:0:0:0:0" ||
+    machine === "n:localhost" ||
+    machine.endsWith(".localhost")
+  ) {
+    return true;
+  }
+  return hosts.some((h) => machineOf(h) === machine);
+}
+
 function ipv6IsLocal(groups: number[]): boolean {
   const loopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
   return loopback || (groups[0] & 0xffc0) === 0xfe80 || (groups[0] & 0xfe00) === 0xfc00;
@@ -563,8 +737,10 @@ const NOT_A_HOST =
   "The Relay URL's host is not a host name or an address — letters, digits, dots and hyphens, or an address written plainly.";
 
 /// What is wrong with a Relay URL, as the daemon would find it, or null
-/// when the daemon will dial it.
-export function relayUrlProblem(draft: string): RelayUrlProblem | null {
+/// when the daemon will dial it. Given `here`, a URL naming one of this
+/// machine's direct listeners is a problem too
+/// (`RelayUrl::refuse_direct_listener`).
+export function relayUrlProblem(draft: string, here?: ThisMachine): RelayUrlProblem | null {
   const url = draft.trim();
   const at = url.indexOf("://");
   if (at < 0) return { kind: "no-scheme", message: "No scheme — a Relay URL starts wss://." };
@@ -590,6 +766,7 @@ export function relayUrlProblem(draft: string): RelayUrlProblem | null {
 
   let port: string | null;
   let local: boolean;
+  let hostText: string;
   if (authority.startsWith("[")) {
     const close = authority.indexOf("]");
     if (close < 0) return noHost;
@@ -601,6 +778,7 @@ export function relayUrlProblem(draft: string): RelayUrlProblem | null {
     if (after !== "" && !after.startsWith(":")) return badPort;
     port = after === "" ? null : after.slice(1);
     local = ipv6IsLocal(groups);
+    hostText = host;
   } else {
     const colon = authority.lastIndexOf(":");
     const host = colon < 0 ? authority : authority.slice(0, colon);
@@ -609,6 +787,7 @@ export function relayUrlProblem(draft: string): RelayUrlProblem | null {
     const judged = nameOrIpv4(host);
     if (judged === null) return badHost;
     local = judged === "name" ? nameIsLocal(host) : ipv4IsLocal(judged);
+    hostText = host;
   }
 
   if (port !== null) {
@@ -623,15 +802,24 @@ export function relayUrlProblem(draft: string): RelayUrlProblem | null {
         "ws:// would send the admission token unencrypted — use wss:// for a Relay that is not on this machine or this network.",
     };
   }
+  if (here !== undefined) {
+    const portNumber = port !== null ? Number(port) : scheme === "wss" ? 443 : 80;
+    if (here.directPorts.includes(portNumber) && hostIsThisMachine(hostText, here.hosts)) {
+      return {
+        kind: "direct-listener",
+        message: `Port ${portNumber} on this Mac is its direct connection, not a Relay — the daemon would be dialling itself. A Relay run on this Mac listens on a port of its own (${RELAY_DEFAULT_PORT} unless GAVIN_RELAY_LISTEN says otherwise).`,
+      };
+    }
+  }
   return null;
 }
 
 /// A hint, never a refusal to save. The daemon stores the string as
 /// typed (§11 Q2) — but it will only DIAL one it can read and may dial,
 /// and its one other way of saying so is a line in its log.
-export function relayUrlHint(draft: string): string | null {
+export function relayUrlHint(draft: string, here?: ThisMachine): string | null {
   if (draft.trim() === "") return null;
-  const problem = relayUrlProblem(draft);
+  const problem = relayUrlProblem(draft, here);
   return problem === null
     ? null
     : `${problem.message} Saved as typed, but the daemon will not dial it.`;
@@ -675,6 +863,29 @@ export function admissionAfterSave(
 /// there is one.
 export function admissionPlaceholder(set: boolean): string {
   return set ? "A token is stored — type a new one to replace it" : "No token stored";
+}
+
+/// The Refresh button's gate: a daemon older than v73 cannot rotate a
+/// token. Null when new enough or no verdict yet.
+export function admissionRefreshBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "admissionRefresh");
+}
+
+/// What Settings says about the token held, in place of the token: that
+/// one is held, since when, and whose it is. Null when none is held.
+/// Never the token, which the desk does not read back.
+export function admissionHeldLine(list: DeviceList | null, nowMs: number): string | null {
+  if (!list?.relayAdmissionSet) return null;
+  const since =
+    typeof list.relayAdmissionSetAt === "number" ? `, set ${relativeTime(list.relayAdmissionSetAt * 1000, nowMs)}` : "";
+  return list.relayAdmissionByDesk
+    ? `A token is held${since}. This Mac made it for its own Relay, so Refresh token replaces it: phones connected now are handed the new one, and the old one keeps working for a day for any that are not. A phone off the whole day pairs again.`
+    : `A token is held${since}. Whoever runs the Relay gave it to you, so only they can issue a new one — paste it into the field above.`;
+}
+
+/// Whether Refresh token can replace the token held: one the desk minted.
+export function admissionRefreshable(list: DeviceList | null): boolean {
+  return list?.relayAdmissionSet === true && list.relayAdmissionByDesk === true;
 }
 
 // -- where the desk posts notifications ---------------------------------
@@ -828,6 +1039,80 @@ function directPairable(direct: DirectState | null): boolean {
   return direct?.state === "listening" && direct.addresses.length > 0;
 }
 
+// -- this Mac's own Relay (v73) -----------------------------------------
+
+/// Where the Relay the desk runs stands, as `protocol::DeskRelayState`
+/// puts it on the wire. `unknown` is a state a newer daemon reports.
+export type DeskRelayState =
+  | { state: "not_wanted" }
+  | { state: "other_build" }
+  | { state: "running"; port: number; url: string; note?: string }
+  | { state: "failed"; why: string }
+  | { state: "unknown" };
+
+/// The option's gate, and the state's: a daemon older than v73 answers
+/// `Unsupported` to both, and runs no Relay whatever it is told. Null
+/// when the daemon is new enough or no verdict yet.
+export function deskRelayBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "deskRelay");
+}
+
+/// The option's own line.
+export const DESK_RELAY_NOTE =
+  "Runs a Relay on this Mac, so a phone on this network pairs and connects with no Relay to set up and no token to copy. While remote access is on, the daemon starts it, mints its admission token, and fills in the Relay URL above with this Mac's network address. Only the installed gavin runs it: a development build connects to the one the installed gavin runs. Turning it off stops it and clears the URL. The token is kept, so a phone paired with it gets back in once it is on again.";
+
+/// What macOS does the first time it starts, which nothing else on the
+/// screen would explain: until the prompt is answered, phones and the
+/// daemon both wait and time out with nothing said.
+export const DESK_RELAY_FIREWALL_NOTE =
+  "With the macOS firewall on, the first start asks whether gavin-relay may accept incoming network connections. Choose Allow. Until you do, a phone trying to reach it waits and times out with no message. If you chose Don't Allow, change it in System Settings → Network → Firewall → Options.";
+
+/// What the row under the option says, `DirectStatus`'s shape. `detail`
+/// is the URL a phone paired now will be given, or what the human should
+/// know about it.
+export interface DeskRelayStatus {
+  badge: "not_wanted" | "other_build" | "running" | "failed" | null;
+  text: string;
+  detail: string | null;
+}
+
+export function deskRelayStatus(state: DeskRelayState | null, enabled: boolean): DeskRelayStatus {
+  if (state === null) return { badge: null, text: "", detail: null };
+  switch (state.state) {
+    case "not_wanted":
+      return {
+        badge: "not_wanted",
+        text: "Not running",
+        detail: enabled ? "Turn remote access on to start it." : null,
+      };
+    case "other_build":
+      return {
+        badge: "other_build",
+        text: "Run by the installed gavin",
+        detail:
+          "This is a development build. The installed gavin's daemon runs this Mac's Relay, and this one connects to it. Start the installed gavin for the Relay to run.",
+      };
+    case "running":
+      return {
+        badge: "running",
+        text: `Running on port ${state.port}`,
+        detail: state.note ?? `A phone paired now connects through ${state.url}.`,
+      };
+    case "failed":
+      return { badge: "failed", text: "Could not run", detail: `${state.why}. Trying again.` };
+    default:
+      // A state a newer daemon reports: say nothing rather than guess.
+      return { badge: null, text: "", detail: null };
+  }
+}
+
+/// Whether the Relay URL and token fields are the desk's to fill: while
+/// the option is on, the daemon writes them and puts them back if they
+/// are changed, so typing into them would only be overwritten.
+export function deskFillsRelay(list: DeviceList | null): boolean {
+  return list?.deskRelayEnabled === true;
+}
+
 // -- whether pairing can work -------------------------------------------
 
 /// Why a QR drawn now could not pair anything, or null when it could.
@@ -862,7 +1147,7 @@ export function pairingUnavailable(
   if (list.relayUrl === null) {
     return "Set a Relay URL first — a Device pairs through the Relay.";
   }
-  if (relayUrlHint(list.relayUrl) !== null) {
+  if (relayUrlHint(list.relayUrl, thisMachine(direct)) !== null) {
     return "The daemon will not dial the Relay URL above, so a Device has nowhere to pair through.";
   }
   // Offered only while the daemon is connected. Unknown (no read yet, or

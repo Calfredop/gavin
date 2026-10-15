@@ -3,6 +3,7 @@ mod browser;
 mod card_rank;
 mod changes_only;
 mod connect;
+mod desk_relay;
 mod direct;
 mod gavin;
 mod git_status;
@@ -176,6 +177,10 @@ fn serve() -> anyhow::Result<()> {
     // only while the store says remote access AND direct connection are
     // on, and otherwise sleeps.
     direct::spawn(&manager);
+    // This Mac's own Relay (v73), on the same terms again: it starts
+    // `gavin-relay` only while the store says remote access AND "Run a
+    // Relay on this Mac" are on, and only in a release build's daemon.
+    desk_relay::spawn(&manager);
     // Hands a pocketed phone's sessions back to the desk once its grace
     // runs out (v68, `ownership.rs`).
     server::spawn_owner_lapse(&manager);

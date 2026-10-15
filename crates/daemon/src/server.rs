@@ -1809,6 +1809,10 @@ pub struct SessionManager {
     /// `direct.rs` and read by `GetDirectState`, for `relay_state`'s
     /// reasons.
     direct_state: Mutex<protocol::DirectState>,
+    /// Where the Relay the desk runs stands (v73), written by
+    /// `desk_relay.rs` and read by `GetDeskRelayState`, for
+    /// `relay_state`'s reasons.
+    desk_relay_state: Mutex<protocol::DeskRelayState>,
     /// Hands out `PendingPairing::ticket`.
     next_pairing_ticket: AtomicU64,
     /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
@@ -1983,6 +1987,10 @@ pub const MAX_CONNECTIONS_PER_DEVICE: usize = 4;
 struct DeviceConnection {
     device_id: String,
     stream: Stream,
+    /// What the connection's own answers are written through, so a push
+    /// meant for every Device (`push_to_devices`) never lands in the middle
+    /// of one.
+    writer: Arc<Mutex<Stream>>,
 }
 
 /// Removes a connection's `device_connections` entry when its thread ends,
@@ -2207,6 +2215,7 @@ impl SessionManager {
             build_profile: Mutex::new(protocol::BuildProfile::current()),
             relay_state: Mutex::new(protocol::RelayState::NotWanted),
             direct_state: Mutex::new(protocol::DirectState::NotWanted),
+            desk_relay_state: Mutex::new(protocol::DeskRelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(None),
@@ -2257,6 +2266,27 @@ impl SessionManager {
         self.push_to_apps_speaking(
             protocol::DIRECT_ACCESS_MIN_VERSION,
             &Response::DirectStateChanged { state },
+        );
+    }
+
+    /// Where the desk's own Relay stands. See `desk_relay_state`.
+    pub fn desk_relay_state(&self) -> protocol::DeskRelayState {
+        self.desk_relay_state.lock().unwrap().clone()
+    }
+
+    /// Records where the desk's Relay stands and, if that is a change,
+    /// tells every live app that speaks v73. A repeat pushes nothing.
+    pub fn set_desk_relay_state(&self, state: protocol::DeskRelayState) {
+        {
+            let mut held = self.desk_relay_state.lock().unwrap();
+            if *held == state {
+                return;
+            }
+            *held = state.clone();
+        }
+        self.push_to_apps_speaking(
+            protocol::DESK_RELAY_MIN_VERSION,
+            &Response::DeskRelayStateChanged { state },
         );
     }
 
@@ -2451,6 +2481,7 @@ impl SessionManager {
         &self,
         device_id: &str,
         stream: Stream,
+        writer: Arc<Mutex<Stream>>,
     ) -> Result<u64, protocol::device_wire::ConnectRefusal> {
         use protocol::device_wire::ConnectRefusal;
 
@@ -2461,7 +2492,7 @@ impl SessionManager {
             if held >= MAX_CONNECTIONS_PER_DEVICE {
                 return Err(ConnectRefusal::Busy);
             }
-            live.insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+            live.insert(token, DeviceConnection { device_id: device_id.to_string(), stream, writer });
         }
         // The row is read AFTER the entry exists, and that order is the
         // point. A revocation marks the row and then shuts the
@@ -2848,6 +2879,15 @@ impl SessionManager {
             .count()
     }
 
+    /// Writes `resp` to every live Device connection. Returns how many it
+    /// reached. A Device sends no `Hello`, so nothing holds a push back by
+    /// version: only a push an older shell passes over belongs here.
+    pub(crate) fn push_to_devices(&self, resp: &Response) -> usize {
+        let writers: Vec<Arc<Mutex<Stream>>> =
+            self.device_connections.lock().unwrap().values().map(|c| Arc::clone(&c.writer)).collect();
+        writers.iter().filter(|writer| write_message(&mut *writer.lock().unwrap(), resp).is_ok()).count()
+    }
+
     /// Records that `device_id` was refused a connection for `reason`, and
     /// tells the desks that can be told (v62).
     ///
@@ -3113,11 +3153,16 @@ impl SessionManager {
             let trust = self.trust_or_err()?;
             (trust.static_public_key()?, trust.remote_access()?, trust.direct_identity()?)
         };
-        let rendezvous = settings.rendezvous();
-        // The token goes with the Relay it admits to. With no Relay to
-        // present it to, it would be a credential drawn on a screen for
-        // nothing.
-        let relay_admission = if rendezvous.is_empty() { None } else { settings.relay_admission };
+        // A Relay URL naming this machine's own direct listener is not a
+        // Relay: a Device given it spends a try on the listener under the
+        // wrong name, and the human reads one port offered twice
+        // (2026-10-14). Left out -- the direct addresses below are that
+        // listener under its right one.
+        let rendezvous: Vec<String> = settings
+            .rendezvous()
+            .into_iter()
+            .filter(|url| crate::direct::names_a_direct_listener_here(self, url).is_none())
+            .collect();
         // The direct listener's addresses, if it is listening now (ADR
         // 0009): worked out afresh, since the one the QR is drawn from is
         // the one the Device will keep. A listener that is switched on
@@ -3128,6 +3173,12 @@ impl SessionManager {
             _ => Vec::new(),
         };
         let direct_pin = (!direct.is_empty()).then(|| direct_identity.pin());
+        // The token goes with every way in that asks for it: the Relay,
+        // and the direct listener while the desk holds one (ADR 0009,
+        // amended 2026-10-15). Carried once, for both. With neither, it
+        // would be a credential drawn on a screen for nothing.
+        let relay_admission =
+            if rendezvous.is_empty() && direct.is_empty() { None } else { settings.relay_admission };
         let offer = crate::pairing::PairingOffer::mint(crate::trust::now_us())?;
         let qr = protocol::PairingQr {
             daemon_public_key: crate::pairing::hex_encode(&daemon_public_key),
@@ -3463,6 +3514,9 @@ impl SessionManager {
             relay_admission_set: settings.relay_admission.is_some(),
             push_gateway_url: trust.push_gateway_url()?,
             direct_access_enabled: trust.direct_enabled()?,
+            desk_relay_enabled: trust.desk_relay_enabled()?,
+            relay_admission_set_at: trust.admission_set_at()?,
+            relay_admission_by_desk: trust.admission_by_desk()?,
         })
     }
 
@@ -3539,6 +3593,29 @@ impl SessionManager {
                 trust.direct_identity()?;
             }
         }
+        self.remote_wake.poke();
+        Ok(())
+    }
+
+    /// `SetDeskRelay`: store "Run a Relay on this Mac", and wake the
+    /// daemon's Relay supervisor (v73). As with `set_direct_access`,
+    /// nothing here starts a process: `desk_relay.rs` re-reads the store
+    /// and starts `gavin-relay`, or stops it, on its own -- and only in a
+    /// release build's daemon.
+    pub fn set_desk_relay(&self, enabled: bool) -> anyhow::Result<()> {
+        self.trust_or_err()?.set_desk_relay_enabled(enabled)?;
+        self.remote_wake.poke();
+        Ok(())
+    }
+
+    /// `RefreshRelayAdmission`: replaces the token the desk minted (v73).
+    /// The old one stays accepted for `desk_relay::admission_grace()`.
+    /// The desk's Relay reads the new set, and every Device connected to
+    /// either daemon is handed the new token, by `desk_relay.rs`, which
+    /// sees the rotation in the store either daemon may have written.
+    pub fn refresh_relay_admission(&self) -> anyhow::Result<()> {
+        let now = (crate::trust::now_us() / 1_000_000).max(0) as u64;
+        self.trust_or_err()?.rotate_desk_admission(now, crate::desk_relay::admission_grace())?;
         self.remote_wake.poke();
         Ok(())
     }
@@ -6806,6 +6883,11 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetDirectAccess { enabled } => {
             manager.set_direct_access(enabled).map(|_| Response::Ok)
         }
+        Request::GetDeskRelayState => {
+            Ok(Response::DeskRelayState { state: manager.desk_relay_state() })
+        }
+        Request::SetDeskRelay { enabled } => manager.set_desk_relay(enabled).map(|_| Response::Ok),
+        Request::RefreshRelayAdmission => manager.refresh_relay_admission().map(|_| Response::Ok),
         // Answered `Ok` rather than with what changed: the app refetches
         // the list, which is the only account of the store that cannot
         // disagree with the store.
@@ -7312,10 +7394,13 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ListDevices
         | Request::GetRelayState
         | Request::GetDirectState
+        | Request::GetDeskRelayState
+        | Request::RefreshRelayAdmission
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }
         | Request::SetDirectAccess { .. }
+        | Request::SetDeskRelay { .. }
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. }
         | Request::PushCompanionNotify { .. }
@@ -7520,6 +7605,8 @@ fn is_privileged(req: &Request) -> bool {
             | Request::RevokeAllDevices
             | Request::SetRemoteAccess { .. }
             | Request::SetDirectAccess { .. }
+            | Request::SetDeskRelay { .. }
+            | Request::RefreshRelayAdmission
             | Request::SetPushGatewayUrl { .. }
             | Request::SetDeviceSendPermission { .. }
             | Request::PushCompanionNotify { .. }
@@ -7837,7 +7924,7 @@ fn serve_connection(
     // an ordinary local connection pays nothing for it.
     let device_slot = match initial_identity.device_id.as_deref() {
         Some(device_id) => {
-            match manager.register_device_connection(device_id, stream.try_clone()?) {
+            match manager.register_device_connection(device_id, stream.try_clone()?, Arc::clone(&writer)) {
                 Ok(token) => Some(DeviceConnectionSlot { manager: &manager, token }),
                 // Not one to serve: revoked or removed since it was
                 // judged, or one connection more than a Device may hold.
@@ -13634,6 +13721,25 @@ mod tests {
         let qr = offer(&mut app);
         assert!(qr.rendezvous.is_empty());
         assert_eq!(qr.relay_admission, None);
+    }
+
+    /// A Relay URL that is this machine's own direct listener is left out
+    /// of the QR, and its token with it: the phone would otherwise be
+    /// handed the same port twice, once under the wrong name (2026-10-14).
+    #[test]
+    fn the_qr_leaves_out_a_relay_url_naming_this_machines_direct_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        set_remote_access(&mut app, true, Some("ws://127.0.0.1:8445"), Some("let-me-in"));
+        match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => {
+                let qr = protocol::PairingQr::parse(&qr).unwrap();
+                assert!(qr.rendezvous.is_empty(), "{:?}", qr.rendezvous);
+                assert_eq!(qr.relay_admission, None);
+            }
+            other => panic!("expected PairingOffer, got {other:?}"),
+        }
     }
 
     /// `remote.rs` sleeps until something it dials from has changed.

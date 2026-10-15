@@ -224,13 +224,25 @@ waiting on its item.
 
 ## Pair with a local Relay
 
-For a phone on your LAN against a desktop on this Mac:
+For a phone on your LAN against the installed desktop on this Mac:
 
-1. Deploy or run a Relay the phone can reach — see [`relay.md`](relay.md)
-   (dev cleartext section, or a real `wss://` host).
-2. Desktop Settings → Remote access on, URL + admission token, Pair a
-   device.
-3. Scan the QR from the Companion.
+1. Desktop Settings → Remote access on, then **Run a Relay on this Mac**.
+   The daemon starts `gavin-relay` beside itself, mints its admission token
+   and fills in the Relay URL (`ws://<this Mac's LAN address>:8443`, or the
+   next free port). The status line under the option says which. Nothing is
+   copied by hand.
+2. The first time, with the macOS firewall on, answer **Allow** to "accept
+   incoming network connections" for gavin-relay. Until you do, the phone
+   waits and times out with no message.
+3. Devices → Pair a device, and scan the QR from the Companion.
+
+Only the installed (release) gavin runs it. A development build's daemon
+shares the installed one's settings and connects to the Relay that one
+runs. Its status line says "Run by the installed gavin".
+
+To use a Relay you run yourself instead, deploy one the phone can reach (see
+[`relay.md`](relay.md), the dev cleartext section or a real `wss://` host),
+leave the option off, and enter its URL and admission token in Settings.
 
 Scripted end-to-end (loopback Relay + temp daemon):
 

@@ -20,6 +20,19 @@ const kept = (key = "4a".repeat(32)): KeptWorkstation => ({
   notificationKey: "5a".repeat(32),
 });
 
+describe("a refreshed admission token", () => {
+  // Only the token changes: a rename since the hub read the record stays.
+  it("replaces that record's token and nothing else", async () => {
+    const { withAdmission } = await import("$shell/hub/paired");
+    const a = { id: "ws-a", name: "Renamed", relayAdmission: "old" } as unknown as import("$shell/hub/paired").PairedWorkstation;
+    const b = { id: "ws-b", name: "Other", relayAdmission: "b" } as unknown as import("$shell/hub/paired").PairedWorkstation;
+    const kept = withAdmission([a, b], "ws-a", "new")!;
+    expect(kept.record).toEqual({ ...a, relayAdmission: "new" });
+    expect(kept.paired).toEqual([{ ...a, relayAdmission: "new" }, b]);
+    expect(withAdmission([a, b], "ws-c", "new")).toBeNull();
+  });
+});
+
 describe("a paired Workstation, as the hub keeps it", () => {
   it("takes an id from the Workstation's key that can be its bundle's host", () => {
     const id = workstationId("4A".repeat(32));

@@ -39,6 +39,10 @@ export interface LiveHubDeps {
   /// A Workstation's connection came up (`connection`) or went away
   /// (`null`): what a visit to it invokes and listens over (companion-23).
   onConnection?(id: string, connection: Connection | null): void;
+  /// The Workstation handed this phone a new admission token (v73):
+  /// `record` is the one tracked, now holding it. Kept by the caller, so
+  /// the next dial presents it.
+  onAdmission?(record: PairedWorkstation): void;
   /// A new connection found no Unlock held natively.
   onNotHeld(): void;
   /// A new connection found the Unlock no longer covers it.
@@ -194,7 +198,16 @@ export function createLiveHub(deps: LiveHubDeps): LiveHub {
         t.connectedAt = deps.now();
         deps.log?.(`[gavin-hub] ${t.record.id}: connected as ${outcome.deviceId}`);
         deps.onConnection?.(t.record.id, connection);
+        // A refreshed token is this phone's from now on: the next dial,
+        // from this hub or after a relaunch, presents it.
+        const stopAdmission = connection.onAdmission?.((token) => {
+          if (!current(t, generation) || t.connection !== connection) return;
+          t.record = { ...t.record, relayAdmission: token };
+          deps.log?.(`[gavin-hub] ${t.record.id}: handed a new admission token`);
+          deps.onAdmission?.(t.record);
+        });
         void connection.closed.then((why) => {
+          stopAdmission?.();
           if (current(t, generation) && t.connection === connection) lost(t, why);
         });
         await ask(t);

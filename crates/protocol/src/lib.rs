@@ -86,6 +86,29 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v73 lets the desk run this Mac's own Relay
+/// (`desk-runs-the-local-relay-itself.md`). The "Run a Relay on this Mac"
+/// option in Settings is `SetDeskRelay`, and `GetDeskRelayState` answers
+/// where it stands. Every change after that is pushed as
+/// `DeskRelayStateChanged`, but only to an app whose `Hello` speaks 73
+/// (`DESK_RELAY_MIN_VERSION`). Only a release daemon runs the process. A
+/// dev daemon reports `other_build` and dials the URL and token the
+/// release one stored. `Response::Devices` gains `desk_relay_enabled`
+/// with a default, so an older daemon's reply reads as off. No request
+/// changed shape, so `MIN_COMPATIBLE_VERSION` stands. The Settings option
+/// still owes `FEATURE_MIN_VERSION.deskRelay` for its copy, because an
+/// older daemon answers the new types `Unsupported`.
+///
+/// The same version rotates a token the desk minted
+/// (`companion-relay-token-refresh.md`). `RefreshRelayAdmission` is a new
+/// TYPE. The old token is still accepted for a grace window, and the new
+/// one is pushed to every live Device connection as
+/// `RelayAdmissionChanged`. A Device sends no `Hello`, so the push cannot
+/// be held back by version. An older shell's push handlers match on type
+/// and pass over one they do not know. `Devices` gains
+/// `relay_admission_set_at` and `relay_admission_by_desk`, both defaulted.
+/// The Refresh button owes `FEATURE_MIN_VERSION.admissionRefresh`.
+///
 /// v72 records what each shell call of an agent wrote
 /// (`feat-touched-files-shell-hook.md`): `RecordShellWrites`, sent by the
 /// `gavin-mcp shell-writes` hook a Claude Code or kimi launch runs around
@@ -911,7 +934,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 72;
+pub const PROTOCOL_VERSION: u32 = 73;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1005,6 +1028,40 @@ pub enum DirectState {
 /// `direct` and `directPin`. The daemon compares an app's `Hello` version
 /// with this before it writes the push.
 pub const DIRECT_ACCESS_MIN_VERSION: u32 = 69;
+
+/// Where the Relay the desk runs on this Mac stands (v73,
+/// `desk-runs-the-local-relay-itself.md`), as `GetDeskRelayState`
+/// answers and `DeskRelayStateChanged` pushes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DeskRelayState {
+    /// The option is off, or remote access is: nothing runs.
+    NotWanted,
+    /// Wanted, but this is a dev build's daemon, and only the release
+    /// build's runs the Relay. This one dials the URL and token that one
+    /// stored, as it would any Relay's.
+    OtherBuild,
+    /// `gavin-relay` is running on `port` and the stored Relay URL is
+    /// `url`. `note` names something the human should know, such as the
+    /// Mac's address having changed so that phones paired before must
+    /// pair again.
+    Running {
+        port: u16,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// It could not be started or it stopped, and another try is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The first version whose daemon can run this Mac's Relay:
+/// `SetDeskRelay`, `GetDeskRelayState`, the `DeskRelayStateChanged` push,
+/// and `Devices.desk_relay_enabled`.
+pub const DESK_RELAY_MIN_VERSION: u32 = 73;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -2008,6 +2065,24 @@ pub enum Request {
     /// `Response::DirectState`; every change after is pushed as
     /// `DirectStateChanged`.
     GetDirectState,
+    /// "Run a Relay on this Mac" (v73). While this and remote access are
+    /// both on, a release daemon runs `gavin-relay`, mints its admission
+    /// token, and fills in the Relay URL. A dev daemon never starts one.
+    /// It is a request of its own rather than a field on
+    /// `SetRemoteAccess`, for the reason `SetDirectAccess` is.
+    SetDeskRelay {
+        enabled: bool,
+    },
+    /// Where the desk's own Relay stands (v73). Answered with
+    /// `Response::DeskRelayState`. Every change after that is pushed as
+    /// `DeskRelayStateChanged`.
+    GetDeskRelayState,
+    /// Replaces the admission token the desk minted with a new one (v73).
+    /// The old one is still accepted for a grace window, while the new
+    /// one is pushed to each live Device as `RelayAdmissionChanged`.
+    /// Refused for a token someone else's Relay issued: that Relay would
+    /// not know the new one.
+    RefreshRelayAdmission,
 
     /// A Device removes itself from this Workstation (v53): its row is
     /// deleted and every connection it holds is dropped.
@@ -2717,6 +2792,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // arms are the wire gate; the Settings switch owes
         // FEATURE_MIN_VERSION.directAccess for its copy.
         Request::SetDirectAccess { .. } | Request::GetDirectState => 69,
+        // The desk-run Relay (v73). Two new TYPES; the Settings option
+        // owes FEATURE_MIN_VERSION.deskRelay for its copy.
+        Request::SetDeskRelay { .. } | Request::GetDeskRelayState => 73,
+        // Rotating the desk's token (v73). One new TYPE; the Refresh
+        // button owes FEATURE_MIN_VERSION.admissionRefresh for its copy.
+        Request::RefreshRelayAdmission => 73,
 
         Request::Shutdown => 12,
 
@@ -3416,11 +3497,27 @@ pub enum Response {
         /// listens for nobody.
         #[serde(default)]
         direct_access_enabled: bool,
+        /// Whether "Run a Relay on this Mac" is on (v73). Absent from an
+        /// older daemon's reply, which reads as off, and that daemon runs
+        /// no Relay.
+        #[serde(default)]
+        desk_relay_enabled: bool,
+        /// When the admission token held was set, in epoch seconds (v73).
+        /// `None` when none is held, and from an older daemon, which never
+        /// kept the time.
+        #[serde(default)]
+        relay_admission_set_at: Option<i64>,
+        /// Whether the token held is one the desk minted for its own Relay
+        /// (v73), and so one Refresh can replace.
+        #[serde(default)]
+        relay_admission_by_desk: bool,
     },
     /// The answer to `GetRelayState` (v61).
     RelayState { state: RelayState },
     /// The answer to `GetDirectState` (v69).
     DirectState { state: DirectState },
+    /// The answer to `GetDeskRelayState` (v73).
+    DeskRelayState { state: DeskRelayState },
     /// Push (v62): a paired Device was refused a connection, and this is
     /// its new last refusal. Not cleared by the Device connecting later:
     /// a copied key that failed its proof and then the real phone
@@ -3474,6 +3571,17 @@ pub enum Response {
     /// speaks `DIRECT_ACCESS_MIN_VERSION` or more, for the reason
     /// `DeviceRefusalChanged` is.
     DirectStateChanged { state: DirectState },
+    /// Push (v73): the desk-run Relay's state changed. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` speaks
+    /// `DESK_RELAY_MIN_VERSION` or more.
+    DeskRelayStateChanged { state: DeskRelayState },
+    /// Push to every live Device connection (v73): the admission token the
+    /// desk minted was replaced, and this is the new one. The Device
+    /// keeps it, as it kept the one the QR carried, and presents it from
+    /// its next dial on. The old one is accepted for a while longer, so a
+    /// Device that hears this before then never fails to get in. Inside
+    /// the Noise channel, like everything else on a Device connection.
+    RelayAdmissionChanged { token: String },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -6123,6 +6231,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_desk_relay_requests_are_gated_at_73_and_its_state_round_trips() {
+        assert_eq!(min_version_for(&Request::SetDeskRelay { enabled: true }), 73);
+        assert_eq!(min_version_for(&Request::GetDeskRelayState), 73);
+        assert_eq!(min_version_for(&Request::RefreshRelayAdmission), 73);
+        assert_eq!(
+            serde_json::to_value(Response::RelayAdmissionChanged { token: "t".into() }).unwrap(),
+            serde_json::json!({ "type": "RelayAdmissionChanged", "token": "t" })
+        );
+        assert_eq!(DESK_RELAY_MIN_VERSION, 73);
+        assert!(DESK_RELAY_MIN_VERSION <= PROTOCOL_VERSION);
+        assert_eq!(
+            serde_json::to_string(&Request::SetDeskRelay { enabled: false }).unwrap(),
+            r#"{"type":"SetDeskRelay","enabled":false}"#
+        );
+
+        let running =
+            DeskRelayState::Running { port: 8443, url: "ws://192.168.1.20:8443".into(), note: None };
+        let v = serde_json::to_value(&running).unwrap();
+        assert_eq!(v, serde_json::json!({ "state": "running", "port": 8443, "url": "ws://192.168.1.20:8443" }));
+        assert_eq!(serde_json::from_value::<DeskRelayState>(v).unwrap(), running);
+        assert_eq!(
+            serde_json::to_value(DeskRelayState::OtherBuild).unwrap(),
+            serde_json::json!({ "state": "other_build" })
+        );
+        let newer: DeskRelayState = serde_json::from_str(r#"{"state":"paused"}"#).unwrap();
+        assert_eq!(newer, DeskRelayState::Unknown);
+
+        // An older daemon's `Devices` has no option, and reads as off.
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices {
+                desk_relay_enabled, relay_admission_set_at, relay_admission_by_desk, ..
+            } => {
+                assert!(!desk_relay_enabled);
+                assert_eq!(relay_admission_set_at, None);
+                assert!(!relay_admission_by_desk);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     /// A Device deleting its own row: it names no Device, because the
     /// connection it arrives on already is one.
     #[test]
@@ -8076,7 +8226,11 @@ mod tests {
         // meaning, for gavin-mcp's gavin_find_cards. One new TYPE.
         // v72: RecordShellWrites + ShellWrites -- what each shell call of
         // an agent wrote, recorded by its CLI's hook. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 72);
+        // v73: SetDeskRelay + GetDeskRelayState and the
+        // DeskRelayStateChanged push -- the desk running this Mac's Relay.
+        // Two new TYPES; `Devices.desk_relay_enabled` widens a reply,
+        // behind FEATURE_MIN_VERSION.deskRelay.
+        assert_eq!(PROTOCOL_VERSION, 73);
     }
 
     #[test]

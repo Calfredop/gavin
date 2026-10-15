@@ -131,10 +131,13 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("list_devices", RemoteAllowance::Refused), // Trust
     ("get_relay_state", RemoteAllowance::Refused), // Trust: the desk's own dial
     ("get_direct_state", RemoteAllowance::Refused), // Trust: the desk's own listener
+    ("get_desk_relay_state", RemoteAllowance::Refused), // Trust: the desk's own Relay
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust
     ("set_direct_access", RemoteAllowance::Refused), // Trust
+    ("set_desk_relay", RemoteAllowance::Refused), // Trust
+    ("refresh_relay_admission", RemoteAllowance::Refused), // Trust: the token every Device holds
     ("set_push_gateway_url", RemoteAllowance::Refused), // Trust: where the desk posts
     ("push_companion_notify", RemoteAllowance::Refused), // the desk decides what to notify
     ("daemon_compat", RemoteAllowance::Allowed),
@@ -351,6 +354,9 @@ mod tests {
             "set_remote_access",
             "set_direct_access",
             "get_direct_state",
+            "set_desk_relay",
+            "get_desk_relay_state",
+            "refresh_relay_admission",
             "set_push_gateway_url",
             "push_companion_notify",
             "set_workspaces_state",

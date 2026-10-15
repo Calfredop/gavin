@@ -28,7 +28,9 @@ const KEPT: KeptWorkstation = {
 /// Frames on the stream are one byte, naming what the scripted
 /// Workstation said: 2 message two, 4 the acknowledgement, 5-7 a verdict,
 /// 9 a Workstation that is not the one scanned.
-function scriptedCore(dials = [{ url: "ws://127.0.0.1:8443", hello: '{"role":"device"}' }]): CoreModule & {
+function scriptedCore(
+  dials: Array<{ url: string; hello: string; pin?: string }> = [{ url: "ws://127.0.0.1:8443", hello: '{"role":"device"}' }]
+): CoreModule & {
   started: Array<Record<string, unknown>>;
 } {
   const started: Array<Record<string, unknown>> = [];
@@ -235,6 +237,22 @@ describe("pairing a phone with a Workstation", () => {
       problem: "The Relay turned the pairing away: refused for being offline. Is remote access still on at the desk?",
     });
     expect(refused.isClosed()).toBe(true);
+  });
+
+  // An older desk could put its own direct port in the QR as its Relay
+  // (2026-10-14). That is the listener under the wrong name: not dialled.
+  it("does not dial a Relay URL that is the Workstation's own direct port, and says so", async () => {
+    const core = scriptedCore([
+      { url: "wss://192.168.68.125:8445", hello: "h1", pin: "ab".repeat(32) },
+      { url: "ws://192.168.68.125:8445", hello: "h2" },
+    ]);
+    const { d, opened } = deps({ core, sockets: [new RelayLegError("unreachable", "no route")] });
+    const outcome = await pair("qr", d);
+    expect(opened).toEqual(["wss://192.168.68.125:8445"]);
+    expect(outcome).toMatchObject({
+      outcome: "failed",
+      problem: expect.stringContaining("is the Workstation’s own direct port, not a Relay"),
+    });
   });
 
   it("pairs nothing when the owner does not confirm on the phone", async () => {

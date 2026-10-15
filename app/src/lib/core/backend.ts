@@ -40,7 +40,7 @@ import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/works
 import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
-import type { DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
+import type { DeskRelayState, DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
@@ -154,6 +154,25 @@ export function getDirectState(): Promise<DirectState> {
 /// access is on too, it listens for Devices on this network or tailnet.
 export function setDirectAccess(enabled: boolean): Promise<void> {
   return invoke("set_direct_access", { enabled });
+}
+
+/// Where this Mac's own Relay stands (v73). Every change after this read
+/// arrives as the `desk-relay-state-changed` event.
+export function getDeskRelayState(): Promise<DeskRelayState> {
+  return invoke("get_desk_relay_state");
+}
+
+/// "Run a Relay on this Mac" (v73). The daemon acts on it: on, while
+/// remote access is on, a release daemon runs `gavin-relay`, mints its
+/// token and fills in the Relay URL. A dev daemon never starts one.
+export function setDeskRelay(enabled: boolean): Promise<void> {
+  return invoke("set_desk_relay", { enabled });
+}
+
+/// Replace the admission token the desk minted (v73). The old one is still
+/// accepted for a day, while every connected Device is handed the new one.
+export function refreshRelayAdmission(): Promise<void> {
+  return invoke("refresh_relay_admission");
 }
 
 export function revokeDevice(deviceId: string): Promise<void> {

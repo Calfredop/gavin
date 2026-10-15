@@ -12,13 +12,22 @@
 //! | `GAVIN_RELAY_TLS_CERT` | the certificate chain, PEM |
 //! | `GAVIN_RELAY_TLS_KEY` | its private key, PEM |
 //! | `GAVIN_RELAY_TLS_TERMINATED=1` | something in front of the Relay does TLS |
+//! | `GAVIN_RELAY_EXIT_WITH_STDIN=1` | read commands from stdin, and stop when it closes |
+//!
+//! The last one is for the daemon that runs this Mac's own Relay
+//! (`crates/daemon/src/desk_relay.rs`). It holds the other end of the
+//! pipe, so a daemon that dies, however it dies, takes its Relay with it
+//! instead of leaving the port held. A line `reload` on that pipe reads
+//! the admission tokens again, from `GAVIN_RELAY_TOKENS_FILE` and
+//! `GAVIN_RELAY_TOKENS`, without dropping any stream already carried.
+//! That is how the desk rotates its token.
 //!
 //! It will not start without an admission token, and it will not start
 //! without TLS unless it is told that TLS is someone else's: a Relay that
 //! came up in the clear because a variable was misspelt would carry every
 //! admission token in the clear too.
 
-use gavin_relay::server::{serve, Limits, RelayConfig, Tls};
+use gavin_relay::server::{serve_with, AdmissionTokens, Limits, RelayConfig, Tls};
 use std::net::SocketAddr;
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8443";
@@ -68,8 +77,52 @@ fn config() -> anyhow::Result<RelayConfig> {
     Ok(RelayConfig { listen, tokens: tokens()?, tls: tls()?, limits: Limits::default() })
 }
 
-/// Ctrl-C at a terminal, SIGTERM from a container runtime.
-async fn stopped() {
+/// With `GAVIN_RELAY_EXIT_WITH_STDIN=1`, reads stdin a line at a time on
+/// a thread of its own: `reload` replaces `admission` with the tokens read
+/// again, and the end of stdin is what the receiver hears. Without it,
+/// nothing is read and the receiver never hears.
+///
+/// A thread rather than a blocking task, which the runtime would wait on
+/// at shutdown for as long as stdin stayed open.
+fn commands(admission: AdmissionTokens) -> tokio::sync::oneshot::Receiver<()> {
+    let (closed, gone) = tokio::sync::oneshot::channel::<()>();
+    if var("GAVIN_RELAY_EXIT_WITH_STDIN").as_deref() != Some("1") {
+        // Kept, so the receiver waits for good rather than hearing a drop.
+        std::mem::forget(closed);
+        return gone;
+    }
+    let reading = std::thread::Builder::new().name("stdin".into()).spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if line.trim() != "reload" {
+                eprintln!("gavin-relay: unknown command on stdin: {:?}", line.trim());
+                continue;
+            }
+            match tokens().and_then(|tokens| admission.replace(&tokens)) {
+                Ok(()) => println!("gavin-relay: admission tokens read again"),
+                // The tokens held are kept: a Relay that dropped to none
+                // would refuse everyone, the desk included.
+                Err(e) => eprintln!("{e} — keeping the tokens held"),
+            }
+        }
+        let _ = closed.send(());
+    });
+    if let Err(e) = reading {
+        eprintln!("gavin-relay: could not read stdin: {e}");
+    }
+    gone
+}
+
+/// Resolves when `gone` is heard: the daemon that started this one has
+/// closed its end of stdin.
+async fn parent_gone(gone: tokio::sync::oneshot::Receiver<()>) {
+    let _ = gone.await;
+}
+
+/// Ctrl-C at a terminal, SIGTERM from a container runtime, or the daemon
+/// that started this one gone.
+async fn stopped(gone: tokio::sync::oneshot::Receiver<()>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -78,16 +131,23 @@ async fn stopped() {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {}
                     _ = terminate.recv() => {}
+                    _ = parent_gone(gone) => {}
                 }
             }
             Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = parent_gone(gone) => {}
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = parent_gone(gone) => {}
+        }
     }
 }
 
@@ -100,6 +160,7 @@ fn main() -> anyhow::Result<()> {
     let config = config()?;
     // Before the port is bound, and before anything is printed.
     config.validate()?;
+    let admission = AdmissionTokens::of(&config)?;
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(config.listen).await.map_err(|e| {
@@ -110,6 +171,7 @@ fn main() -> anyhow::Result<()> {
             listener.local_addr()?,
             if config.tls.is_some() { "TLS" } else { "TLS terminated in front" }
         );
-        serve(listener, config, stopped()).await
+        let gone = commands(admission.clone());
+        serve_with(listener, config, admission, stopped(gone)).await
     })
 }

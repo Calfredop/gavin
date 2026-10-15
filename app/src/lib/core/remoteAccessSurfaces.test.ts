@@ -319,6 +319,33 @@ describe("Direct connection", () => {
   });
 });
 
+describe("Run a Relay on this Mac", () => {
+  // The entry and its consumer: the option, and the state read, are
+  // both behind it.
+  it("is greyed against a daemon older than v73", () => {
+    expect(FEATURE_MIN_VERSION.deskRelay).toBe(73);
+    expect(MODULE).toContain('featureBlockedReason(compat, "deskRelay")');
+    expect(VIEW).toContain("deskRelayBlocked($daemonCompat)");
+    expect(VIEW).toMatch(/disabled=\{remoteAccessGate !== null \|\| deskRelayGate !== null \|\| devices === null\}/);
+    expect(VIEW).toContain("void saveDeskRelay(e.currentTarget.checked)");
+    expect(VIEW).toContain('listen<DeskRelayState>("desk-relay-state-changed"');
+  });
+
+  it("offers Refresh token behind its own gate, for the desk's token only", () => {
+    expect(MODULE).toContain('featureBlockedReason(compat, "admissionRefresh")');
+    expect(VIEW).toContain("admissionRefreshBlocked($daemonCompat)");
+    expect(VIEW).toContain("!admissionRefreshable(devices)");
+    expect(VIEW).toContain("void refreshAdmission()");
+  });
+
+  // While the desk fills them, typing into them would only be put back.
+  it("leaves the Relay URL and the token to the desk while it runs the Relay", () => {
+    expect(VIEW).toMatch(/disabled=\{remoteAccessGate !== null \|\| devices === null \|\| deskFills\}/);
+    expect(VIEW).toMatch(/admissionGate !== null \|\| devices === null \|\| deskFills\}/);
+    expect(VIEW).toContain("{DESK_RELAY_FIREWALL_NOTE}");
+  });
+});
+
 describe("Pair a device", () => {
   // A QR drawn with remote access off points a Device at a Relay the
   // daemon is not connected to.

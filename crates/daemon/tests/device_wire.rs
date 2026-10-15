@@ -27,8 +27,8 @@ use protocol::device_wire::{ConnectRefusal, PairingVerdict};
 use protocol::relay::{rendezvous_id, RefusalReason, RelayHello, PURPOSE_CONNECT, PURPOSE_PAIR};
 use protocol::transport::{Endpoint, Stream};
 use protocol::{
-    read_message, write_message, ConnectionKind, DeviceInfo, DirectState, HelloAuth, PairingQr,
-    Request, Response,
+    read_message, write_message, ConnectionKind, DeskRelayState, DeviceInfo, DirectState, HelloAuth,
+    PairingQr, Request, Response,
 };
 use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -155,7 +155,9 @@ impl Desk {
     fn next(&mut self) -> Response {
         loop {
             match self.next_raw() {
-                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -176,7 +178,9 @@ impl Desk {
                 return heard;
             }
             match self.next_raw() {
-                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -210,7 +214,9 @@ impl Desk {
             }
             assert!(Instant::now() < deadline, "no presence push for {device_id} came true");
             match self.next_raw() {
-                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -249,7 +255,9 @@ impl Desk {
                 return heard;
             }
             match self.next_raw() {
-                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     return (device_id, refusal)
                 }
@@ -278,7 +286,9 @@ impl Desk {
             }
             assert!(Instant::now() < deadline, "no ownership push for {session_id} came true");
             match self.next_raw() {
-                Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. } => {}
+                Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. } => {}
                 Response::DeviceRefusalChanged { device_id, refusal } => {
                     self.refusals.push_back((device_id, refusal))
                 }
@@ -316,9 +326,11 @@ impl Desk {
         self.stream.set_read_timeout(Some(within)).unwrap();
         let heard = loop {
             match read_message::<_, Response>(&mut self.reader) {
-                Ok(Some(Response::RelayStateChanged { .. } | Response::DirectStateChanged { .. })) => {
-                    continue
-                }
+                Ok(Some(
+                    Response::RelayStateChanged { .. }
+                    | Response::DirectStateChanged { .. }
+                    | Response::DeskRelayStateChanged { .. },
+                )) => continue,
                 Ok(Some(Response::DeviceRefusalChanged { device_id, refusal })) => {
                     self.refusals.push_back((device_id, refusal));
                     continue;
@@ -365,6 +377,15 @@ impl Workstation {
     }
 
     fn launch(certificate_pem: &str, browsers: Option<&std::path::Path>) -> Self {
+        Self::launch_with(certificate_pem, browsers, &[])
+    }
+
+    /// `launch`, with `env` set on the daemon as well.
+    fn launch_with(
+        certificate_pem: &str,
+        browsers: Option<&std::path::Path>,
+        env: &[(&str, &std::ffi::OsStr)],
+    ) -> Self {
         // Under /tmp on unix, for the reason `tests/shutdown.rs` gives:
         // the default temporary directory is long enough on macOS to
         // overflow a socket path.
@@ -403,6 +424,7 @@ impl Workstation {
             // these daemons run at once, and the developer's own dev
             // daemon may hold the dev build's port.
             .env("GAVIN_DIRECT_PORT", "0")
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
         // The browsers stay where the machine keeps them: the temporary
@@ -4117,6 +4139,271 @@ fn a_device_whose_direct_address_does_not_answer_falls_back_to_the_relay() {
     assert_eq!(workstation.connected(), paired.device_id);
     assert_eq!(relay.relay.stats().streams, 1, "the connection came through the Relay");
     assert_refused(&mut connection, &Request::ListSessions);
+}
+
+/// While the desk holds an admission token, the direct listener asks for
+/// it as the Relay does (ADR 0009, amended 2026-10-15). The QR carries it
+/// once, for both ways in. A Device presenting it pairs and connects
+/// directly, and a hello presenting none, or another, is refused by name
+/// before anything is touched. Clear token, and the listener asks for
+/// nothing again.
+#[test]
+fn the_direct_listener_asks_for_the_desks_admission_token() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let port = workstation.listen_directly();
+
+    let offer = workstation.direct_offer(port);
+    assert_eq!(offer.relay_admission.as_deref(), Some(TOKEN), "one token, for both ways in");
+    let device = device(&relay, "Direct iPhone");
+    let paired = workstation.pair_through(&device, &offer);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_eq!(relay.relay.stats().streams, 0, "the pairing and the connection went direct");
+    connection.close();
+    assert_eq!(workstation.disconnected(), paired.device_id);
+
+    let url = format!("wss://127.0.0.1:{port}");
+    let options = DialOptions { pin: Some(workstation.direct_pin()), ..DialOptions::default() };
+    let ours = rendezvous_id(&workstation.key());
+    for token in ["", "not-the-desks"] {
+        match dial(&url, &RelayHello::device(token, &ours, PURPOSE_CONNECT), &options) {
+            Err(DialError::Refused(reason)) => assert_eq!(reason, RefusalReason::Admission, "{token:?}"),
+            Err(other) => panic!("{token:?} was not refused by name: {other}"),
+            Ok(_) => panic!("{token:?} was let in"),
+        }
+    }
+    // Refused before anything is touched: the desk heard of neither.
+    assert!(workstation.push.hears_nothing_for(Duration::from_millis(300)));
+
+    // Clear token, the URL kept: nothing to ask for.
+    workstation.set_remote_access(true, Some(&relay.url()), Some(""));
+    let answered = dial(&url, &RelayHello::device("", &ours, PURPOSE_CONNECT), &options);
+    assert!(answered.is_ok(), "a hello with no token was refused with none held: {:?}", answered.err());
+}
+
+// -- this Mac's own Relay (v73) ----------------------------------------------
+
+/// `gavin-relay`, built for this run: another package's binary, which
+/// `cargo test -p gavin-daemon` does not build on its own. Beside
+/// gavin-daemon, in the same profile, as a bundle ships it.
+fn gavin_relay_binary() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let mut build = Command::new(env!("CARGO"));
+            build.args(["build", "--quiet", "-p", "gavin-relay", "--bin", "gavin-relay"]);
+            if !cfg!(debug_assertions) {
+                build.arg("--release");
+            }
+            let status = build.status().expect("could not run cargo to build gavin-relay");
+            assert!(status.success(), "cargo build -p gavin-relay failed");
+            std::path::Path::new(env!("CARGO_BIN_EXE_gavin-daemon"))
+                .with_file_name(format!("gavin-relay{}", std::env::consts::EXE_SUFFIX))
+        })
+        .clone()
+}
+
+impl Workstation {
+    /// A daemon that runs this Mac's Relay when told to: a test daemon is
+    /// a dev build, which on its own never does.
+    fn start_running_a_relay() -> Self {
+        Self::start_running_a_relay_with(&[])
+    }
+
+    /// `start_running_a_relay`, with `env` set as well.
+    fn start_running_a_relay_with(env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        let binary = gavin_relay_binary();
+        let mut all = vec![
+            ("GAVIN_DESK_RELAY_BIN", binary.as_os_str()),
+            ("GAVIN_DESK_RELAY_PORT", std::ffi::OsStr::new("0")),
+        ];
+        all.extend_from_slice(env);
+        Self::launch_with("", None, &all)
+    }
+
+    /// Remote access and "Run a Relay on this Mac" on, and the desk's
+    /// Relay running with the daemon registered at it: its port and URL.
+    fn run_the_desks_relay(&mut self) -> (u16, String) {
+        self.set_remote_access(true, None, None);
+        let resp = self.command.request(&Request::SetDeskRelay { enabled: true });
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let deadline = Instant::now() + SOON;
+        let running = loop {
+            match self.desk_relay_state() {
+                DeskRelayState::Running { port, url, .. } => break (port, url),
+                other => assert!(
+                    Instant::now() < deadline,
+                    "the desk's Relay never ran: {other:?}; the daemon's log:\n{}",
+                    self.log()
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        eventually_state(self, "the daemon reached the desk's Relay", |s| {
+            matches!(s, protocol::RelayState::Connected { .. })
+        });
+        running
+    }
+
+    fn admission(&self) -> String {
+        String::from_utf8(stored(self, "remote_access_relay_admission")).unwrap()
+    }
+
+    fn desk_relay_state(&mut self) -> DeskRelayState {
+        match self.command.request(&Request::GetDeskRelayState) {
+            Response::DeskRelayState { state } => state,
+            other => panic!("expected DeskRelayState, got {other:?}"),
+        }
+    }
+
+    fn desk_relay_list(&mut self) -> (Option<String>, bool, bool) {
+        match self.command.request(&Request::ListDevices) {
+            Response::Devices { relay_url, relay_admission_set, desk_relay_enabled, .. } => {
+                (relay_url, relay_admission_set, desk_relay_enabled)
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+}
+
+/// "Run a Relay on this Mac": the desk starts `gavin-relay`, mints its
+/// admission token, fills in the Relay URL and dials it, and a Device
+/// pairs and connects through it. Nobody copies a token or a URL by
+/// hand. Turned off, the process stops and the URL is cleared, but the
+/// token stays, so phones paired with it still get in once it is back.
+#[test]
+fn a_device_pairs_and_connects_through_the_relay_the_desk_runs() {
+    let mut workstation = Workstation::start_running_a_relay();
+    workstation.set_remote_access(true, None, None);
+    assert_eq!(workstation.desk_relay_state(), DeskRelayState::NotWanted);
+    let resp = workstation.command.request(&Request::SetDeskRelay { enabled: true });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+
+    let deadline = Instant::now() + SOON;
+    let (port, url) = loop {
+        match workstation.desk_relay_state() {
+            DeskRelayState::Running { port, url, .. } => break (port, url),
+            other => assert!(
+                Instant::now() < deadline,
+                "the desk's Relay never ran: {other:?}; the daemon's log:\n{}",
+                workstation.log()
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(url.starts_with("ws://") && url.ends_with(&format!(":{port}")), "{url}");
+    let (relay_url, admission_set, enabled) = workstation.desk_relay_list();
+    assert_eq!(relay_url.as_deref(), Some(url.as_str()), "the desk filled the URL in");
+    assert!(admission_set, "and minted the token");
+    assert!(enabled);
+
+    // The token the daemon dials with is the one the Relay was given, in
+    // a file only this user can read.
+    let token = String::from_utf8(stored(&workstation, "remote_access_relay_admission")).unwrap();
+    assert_eq!(token.len(), 64);
+    let tokens = workstation.data.join("desk-relay-tokens");
+    assert_eq!(std::fs::read_to_string(&tokens).unwrap(), format!("{token}\n"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&tokens).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+    }
+    eventually_state(&mut workstation, "the daemon reached the desk's Relay", |s| {
+        matches!(s, protocol::RelayState::Connected { .. })
+    });
+
+    let offer = PairingQr::parse(&workstation.offer()).unwrap();
+    assert_eq!(offer.rendezvous, vec![url.clone()]);
+    assert_eq!(offer.relay_admission.as_deref(), Some(token.as_str()), "the QR carries the token");
+    let device = TestDevice::new("Relay iPhone").unwrap();
+    let paired = workstation.pair_through(&device, &offer);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_refused(&mut connection, &Request::ListSessions);
+    connection.close();
+    assert_eq!(workstation.disconnected(), paired.device_id);
+
+    // Off: the process stops and the URL goes, and the token is kept.
+    let resp = workstation.command.request(&Request::SetDeskRelay { enabled: false });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    eventually("the desk's Relay stopped", || TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert_eq!(workstation.desk_relay_state(), DeskRelayState::NotWanted);
+    let (relay_url, admission_set, enabled) = workstation.desk_relay_list();
+    assert_eq!(relay_url, None, "nothing dials a Relay that is not there");
+    assert!(admission_set, "the token stays for when it comes back");
+    assert!(!enabled);
+}
+
+/// Refresh (v73) while a Device is connected through the desk's Relay: the
+/// Device stays connected and is handed the new token over that same
+/// connection. It connects again with the new token. The old one gets in
+/// only until its grace window closes, and the Relay is never restarted.
+#[test]
+fn refreshing_the_desks_token_keeps_a_connected_device_and_hands_it_the_new_one() {
+    // Long enough that a loaded machine still tries the old token inside
+    // it; the end of the test waits it out.
+    let grace = std::ffi::OsStr::new("10");
+    let mut workstation = Workstation::start_running_a_relay_with(&[("GAVIN_ADMISSION_GRACE_SECS", grace)]);
+    let (port, _) = workstation.run_the_desks_relay();
+    let old = workstation.admission();
+    let offer = PairingQr::parse(&workstation.offer()).unwrap();
+    let device = TestDevice::new("Relay iPhone").unwrap();
+    let mut paired = workstation.pair_through(&device, &offer);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    let resp = workstation.command.request(&Request::RefreshRelayAdmission);
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    let new = match connection.next(SOON).unwrap() {
+        Response::RelayAdmissionChanged { token } => token,
+        other => panic!("expected RelayAdmissionChanged, got {other:?}"),
+    };
+    assert_ne!(new, old);
+    assert_eq!(workstation.admission(), new, "the Device was handed the token the desk now holds");
+    assert_refused(&mut connection, &Request::ListSessions);
+    // Handed over first, then the file written: waited for, not raced.
+    let tokens = workstation.data.join("desk-relay-tokens");
+    eventually("the Relay was given both tokens for the window", || {
+        std::fs::read_to_string(&tokens).unwrap() == format!("{new}\n{old}\n")
+    });
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok(), "the same Relay, on the same port");
+
+    // A Device connects again with either token inside the window. The
+    // daemon is dialling its Relay again with the new one meanwhile, so
+    // a try that finds it between the two is tried again.
+    let mut kept_old = paired.clone();
+    kept_old.relay_admission = Some(old.clone());
+    paired.relay_admission = Some(new.clone());
+    // The old one first: its window is the one that closes.
+    for (which, kept) in [("the old token, in its window", &kept_old), ("the new token", &paired)] {
+        let deadline = Instant::now() + SOON;
+        loop {
+            match device.connect(kept) {
+                Ok(again) => {
+                    again.close();
+                    break;
+                }
+                Err(e) => assert!(Instant::now() < deadline, "{which} did not get in: {e:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    // The window closes: the old token is forgotten and refused at the
+    // Relay, and the Device that was handed the new one is still there.
+    eventually("the old token was retired", || {
+        std::fs::read_to_string(&tokens).unwrap() == format!("{new}\n")
+    });
+    match device.connect(&kept_old) {
+        Err(TestDeviceError::Dial(DialError::Refused(RefusalReason::Admission))) => {}
+        Ok(_) => panic!("the old token got in after its window"),
+        Err(other) => panic!("expected an admission refusal, got {other:?}"),
+    }
+    assert_refused(&mut connection, &Request::ListSessions);
+    connection.close();
 }
 
 /// Off unless asked for: remote access on is not enough, and direct

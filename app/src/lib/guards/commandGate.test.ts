@@ -121,6 +121,18 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // addresses and a port, which the QR prints anyway.
   get_direct_state: ["ordinary"],
   set_direct_access: ["ordinary"],
+  // This Mac's own Relay (v73), by the same reasoning. Turning it on
+  // starts `gavin-relay`, a process that admits only the token the desk
+  // minted, and a Device it carries still needs `confirm_pairing`. Gating
+  // it would gate turning the Relay off. The state read carries a port
+  // and a URL, which the QR prints anyway, and never the token.
+  get_desk_relay_state: ["ordinary"],
+  set_desk_relay: ["ordinary"],
+  // Rotating the desk's token removes no work and ends no process: the
+  // Relay reads its tokens again in place, connected Devices are handed
+  // the new one, and the old one is accepted for a day. The new token is
+  // in no answer.
+  refresh_relay_admission: ["ordinary"],
   // Where the daemon posts notifications, and what it posts (v49/v67).
   // Neither removes work or ends a process. A gateway of a script's
   // choosing is handed sealed payloads it holds no key for, and the send

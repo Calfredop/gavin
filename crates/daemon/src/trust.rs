@@ -105,6 +105,46 @@ const META_DIRECT_ENABLED: &str = "remote_access_direct";
 /// (`DirectIdentity::to_row`) so that two daemons minting at once cannot
 /// end up holding one's certificate and the other's key.
 const META_DIRECT_TLS: &str = "direct_tls";
+/// Whether "Run a Relay on this Mac" is wanted (v73). Rows of their own,
+/// for `META_DIRECT_ENABLED`'s reason. The port is the last one the desk's
+/// Relay took, so that the URL a phone kept from pairing keeps working
+/// across restarts. The URL is the one the desk last filled in, so the
+/// desk knows the stored Relay URL is its own and can fill it in again
+/// when the Mac's address changes.
+const META_DESK_RELAY: &str = "desk_relay";
+const META_DESK_RELAY_PORT: &str = "desk_relay_port";
+const META_DESK_RELAY_URL: &str = "desk_relay_url";
+/// The SHA-256 of the admission token the desk minted for its own Relay,
+/// hex. The stored token is the desk's exactly when its hash is this, so
+/// a token typed in by hand afterwards, or forgotten with a URL change,
+/// stops counting as the desk's with nothing to clear.
+const META_RELAY_ADMISSION_BY_DESK: &str = "remote_access_relay_admission_by_desk";
+/// When the stored admission token was set, epoch seconds: what Settings
+/// shows in place of the token itself.
+const META_RELAY_ADMISSION_SET_AT: &str = "remote_access_relay_admission_set_at";
+/// The token a Refresh replaced, and until when (epoch seconds) it is
+/// still accepted beside the new one: the grace window in which a
+/// connected Device is handed the new token before the old stops working.
+const META_RELAY_ADMISSION_PREVIOUS: &str = "remote_access_relay_admission_previous";
+const META_RELAY_ADMISSION_PREVIOUS_UNTIL: &str = "remote_access_relay_admission_previous_until";
+
+/// The admission tokens accepted at `now` (epoch seconds): the one held,
+/// and the one a Refresh replaced while its grace window is open. A pure
+/// rule, so the window is tested without a clock.
+pub(crate) fn accepted_admissions(
+    current: Option<String>,
+    previous: Option<String>,
+    until: Option<u64>,
+    now: u64,
+) -> Vec<String> {
+    let mut accepted: Vec<String> = current.into_iter().collect();
+    if let (Some(previous), Some(until)) = (previous, until) {
+        if now < until && !accepted.is_empty() && !accepted.contains(&previous) {
+            accepted.push(previous);
+        }
+    }
+    accepted
+}
 
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
@@ -621,16 +661,95 @@ impl TrustStore {
     /// caller that read the request (`SessionManager::set_remote_access`);
     /// by the time a value reaches here it is the value to store.
     pub fn set_remote_access(&self, settings: &RemoteAccess) -> anyhow::Result<()> {
+        let before = self.meta_text(META_RELAY_ADMISSION)?;
+        let after = settings.relay_admission.as_deref().map(str::trim).filter(|t| !t.is_empty());
         self.set_meta(META_REMOTE_ENABLED, if settings.enabled { b"1" } else { b"0" })?;
         self.set_meta(
             META_RELAY_URL,
             settings.relay_url.as_deref().unwrap_or("").trim().as_bytes(),
         )?;
-        self.set_meta(
-            META_RELAY_ADMISSION,
-            settings.relay_admission.as_deref().unwrap_or("").trim().as_bytes(),
-        )?;
+        self.set_meta(META_RELAY_ADMISSION, after.unwrap_or("").as_bytes())?;
+        // A different token -- typed in, cleared, or forgotten with the URL
+        // -- is a new one: stamped now, and with no grace for any token
+        // before it. A Refresh writes its grace after this.
+        if before.as_deref() != after {
+            let stamp = if after.is_some() { (now_us() / 1_000_000).to_string() } else { String::new() };
+            self.set_meta(META_RELAY_ADMISSION_SET_AT, stamp.as_bytes())?;
+            self.set_meta(META_RELAY_ADMISSION_PREVIOUS, b"")?;
+            self.set_meta(META_RELAY_ADMISSION_PREVIOUS_UNTIL, b"")?;
+        }
         Ok(())
+    }
+
+    /// When the admission token held was set, epoch seconds, if one is
+    /// held and the time was kept.
+    pub fn admission_set_at(&self) -> anyhow::Result<Option<i64>> {
+        if self.remote_access()?.relay_admission.is_none() {
+            return Ok(None);
+        }
+        Ok(self.meta_text(META_RELAY_ADMISSION_SET_AT)?.and_then(|t| t.parse().ok()))
+    }
+
+    /// The admission tokens accepted at `now` (epoch seconds). See
+    /// `accepted_admissions`.
+    pub fn admissions_at(&self, now: u64) -> anyhow::Result<Vec<String>> {
+        let until = self.meta_text(META_RELAY_ADMISSION_PREVIOUS_UNTIL)?.and_then(|t| t.parse().ok());
+        Ok(accepted_admissions(
+            self.remote_access()?.relay_admission,
+            self.meta_text(META_RELAY_ADMISSION_PREVIOUS)?,
+            until,
+            now,
+        ))
+    }
+
+    /// The token a Refresh replaced, while its grace window is open at
+    /// `now`.
+    pub fn admission_in_grace(&self, now: u64) -> anyhow::Result<Option<String>> {
+        let accepted = self.admissions_at(now)?;
+        Ok(accepted.into_iter().nth(1))
+    }
+
+    /// Replaces the token the desk minted with a new one (v73), and
+    /// keeps the old one accepted until `now + grace`. The new token,
+    /// or a refusal for a token the desk did not mint: someone else's
+    /// Relay would not know a new one.
+    pub fn rotate_desk_admission(&self, now: u64, grace: std::time::Duration) -> anyhow::Result<String> {
+        if !self.admission_by_desk()? {
+            anyhow::bail!(
+                "gavin-daemon: this admission token was given to you by whoever runs your Relay, so only they can issue a new one — paste it into the field instead"
+            );
+        }
+        let Some(old) = self.remote_access()?.relay_admission else {
+            anyhow::bail!("gavin-daemon: there is no admission token to refresh");
+        };
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes)
+            .map_err(|e| anyhow::anyhow!("could not draw an admission token: {e}"))?;
+        let token = protocol::hex_encode(&bytes);
+        let settings = self.remote_access()?;
+        self.set_remote_access(&RemoteAccess { relay_admission: Some(token.clone()), ..settings })?;
+        self.set_meta(META_RELAY_ADMISSION_BY_DESK, protocol::hash_token_hex(&token).as_bytes())?;
+        self.set_meta(META_RELAY_ADMISSION_PREVIOUS, old.as_bytes())?;
+        self.set_meta(
+            META_RELAY_ADMISSION_PREVIOUS_UNTIL,
+            now.saturating_add(grace.as_secs()).to_string().as_bytes(),
+        )?;
+        Ok(token)
+    }
+
+    /// Forgets the token a Refresh replaced once its window has closed at
+    /// `now`. Whether one was forgotten.
+    pub fn retire_admission_if_due(&self, now: u64) -> anyhow::Result<bool> {
+        let until: Option<u64> =
+            self.meta_text(META_RELAY_ADMISSION_PREVIOUS_UNTIL)?.and_then(|t| t.parse().ok());
+        match until {
+            Some(until) if now >= until => {
+                self.set_meta(META_RELAY_ADMISSION_PREVIOUS, b"")?;
+                self.set_meta(META_RELAY_ADMISSION_PREVIOUS_UNTIL, b"")?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// Base URL of the Push gateway this daemon posts ciphertext to.
@@ -650,6 +769,63 @@ impl TrustStore {
 
     pub fn set_direct_enabled(&self, enabled: bool) -> anyhow::Result<()> {
         self.set_meta(META_DIRECT_ENABLED, if enabled { b"1" } else { b"0" })
+    }
+
+    /// Whether "Run a Relay on this Mac" is switched on. The desk's Relay
+    /// runs only while remote access is on as well; absent means off.
+    pub fn desk_relay_enabled(&self) -> anyhow::Result<bool> {
+        Ok(self.meta(META_DESK_RELAY)?.map(|v| v == b"1").unwrap_or(false))
+    }
+
+    pub fn set_desk_relay_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        self.set_meta(META_DESK_RELAY, if enabled { b"1" } else { b"0" })
+    }
+
+    /// The port the desk's Relay took last, if any.
+    pub fn desk_relay_port(&self) -> anyhow::Result<Option<u16>> {
+        Ok(self.meta_text(META_DESK_RELAY_PORT)?.and_then(|p| p.parse().ok()))
+    }
+
+    pub fn set_desk_relay_port(&self, port: u16) -> anyhow::Result<()> {
+        self.set_meta(META_DESK_RELAY_PORT, port.to_string().as_bytes())
+    }
+
+    /// The Relay URL the desk filled in last, if any.
+    pub fn desk_relay_url(&self) -> anyhow::Result<Option<String>> {
+        self.meta_text(META_DESK_RELAY_URL)
+    }
+
+    pub fn set_desk_relay_url(&self, url: Option<&str>) -> anyhow::Result<()> {
+        self.set_meta(META_DESK_RELAY_URL, url.unwrap_or("").as_bytes())
+    }
+
+    /// Whether the stored admission token is one the desk minted.
+    pub fn admission_by_desk(&self) -> anyhow::Result<bool> {
+        let Some(token) = self.remote_access()?.relay_admission else { return Ok(false) };
+        let minted = self.meta_text(META_RELAY_ADMISSION_BY_DESK)?;
+        Ok(minted.as_deref() == Some(protocol::hash_token_hex(&token).as_str()))
+    }
+
+    /// The admission token for the desk's own Relay: the stored one if
+    /// the desk minted it, or else a new one, minted from the OS's random
+    /// source and stored as THE admission token, the one the daemon dials
+    /// with, the QR carries and the direct listener asks for. Nobody
+    /// copies it by hand. A token someone else's Relay issued is
+    /// replaced, because the desk's Relay would not know it.
+    pub fn desk_admission(&self) -> anyhow::Result<String> {
+        if self.admission_by_desk()? {
+            if let Some(token) = self.remote_access()?.relay_admission {
+                return Ok(token);
+            }
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes)
+            .map_err(|e| anyhow::anyhow!("could not draw an admission token: {e}"))?;
+        let token = protocol::hex_encode(&bytes);
+        let settings = self.remote_access()?;
+        self.set_remote_access(&RemoteAccess { relay_admission: Some(token.clone()), ..settings })?;
+        self.set_meta(META_RELAY_ADMISSION_BY_DESK, protocol::hash_token_hex(&token).as_bytes())?;
+        Ok(token)
     }
 
     /// The direct listener's certificate and key, minted the first time
@@ -1885,6 +2061,106 @@ mod tests {
 
         assert_ne!(before, after, "revoke_all must rotate the key");
         assert_eq!(store.remote_access().unwrap(), settings);
+    }
+
+    /// The desk mints its own Relay's token once and keeps it, and a token
+    /// typed in by hand afterwards is not the desk's any more.
+    #[test]
+    fn the_desk_mints_its_relays_token_once_and_knows_it_from_one_typed_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into()),
+                relay_admission: Some("someone-elses".into()),
+            })
+            .unwrap();
+        assert!(!store.admission_by_desk().unwrap());
+
+        let minted = store.desk_admission().unwrap();
+        assert_eq!(minted.len(), 64, "32 random bytes, hex");
+        assert_ne!(minted, "someone-elses", "another Relay's token is replaced");
+        let settings = store.remote_access().unwrap();
+        assert_eq!(settings.relay_admission.as_deref(), Some(minted.as_str()));
+        assert!(settings.enabled, "the switch is left alone");
+        assert_eq!(settings.relay_url.as_deref(), Some("wss://relay.example/gavin"));
+        assert!(store.admission_by_desk().unwrap());
+        assert_eq!(store.desk_admission().unwrap(), minted, "kept, not minted again");
+
+        store
+            .set_remote_access(&RemoteAccess { relay_admission: Some("typed-in".into()), ..settings })
+            .unwrap();
+        assert!(!store.admission_by_desk().unwrap());
+        assert_ne!(store.desk_admission().unwrap(), minted, "a fresh one, not the old one back");
+    }
+
+    /// The grace window: both tokens inside it, only the new one after.
+    #[test]
+    fn a_refreshed_token_is_accepted_beside_the_new_one_until_its_window_closes() {
+        let t = |s: &str| Some(s.to_string());
+        assert_eq!(accepted_admissions(t("new"), t("old"), Some(100), 99), vec!["new", "old"]);
+        assert_eq!(accepted_admissions(t("new"), t("old"), Some(100), 100), vec!["new"]);
+        assert_eq!(accepted_admissions(t("new"), None, Some(100), 0), vec!["new"]);
+        assert_eq!(accepted_admissions(t("new"), t("old"), None, 0), vec!["new"]);
+        // No token held: nothing is accepted, the old one included.
+        assert!(accepted_admissions(None, t("old"), Some(100), 0).is_empty());
+        assert_eq!(accepted_admissions(t("same"), t("same"), Some(100), 0), vec!["same"]);
+    }
+
+    #[test]
+    fn refresh_rotates_only_the_desks_token_and_keeps_the_old_one_for_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: true,
+                relay_url: Some("ws://192.168.1.20:8443".into()),
+                relay_admission: Some("someone-elses".into()),
+            })
+            .unwrap();
+        assert!(store.admission_set_at().unwrap().is_some(), "a token held is stamped");
+        let grace = std::time::Duration::from_secs(60);
+        let refused = store.rotate_desk_admission(1_000, grace).unwrap_err().to_string();
+        assert!(refused.contains("paste it into the field"), "{refused}");
+
+        let old = store.desk_admission().unwrap();
+        let new = store.rotate_desk_admission(1_000, grace).unwrap();
+        assert_ne!(new, old);
+        assert!(store.admission_by_desk().unwrap(), "the new one is the desk's too");
+        assert_eq!(store.remote_access().unwrap().relay_admission.as_deref(), Some(new.as_str()));
+        assert_eq!(store.admissions_at(1_059).unwrap(), vec![new.clone(), old.clone()]);
+        assert_eq!(store.admission_in_grace(1_059).unwrap().as_deref(), Some(old.as_str()));
+        assert!(!store.retire_admission_if_due(1_059).unwrap());
+        assert!(store.retire_admission_if_due(1_060).unwrap());
+        assert_eq!(store.admissions_at(1_000).unwrap(), vec![new.clone()], "forgotten, not just expired");
+
+        // A token typed in afterwards is a new one, with no grace for any
+        // before it.
+        store.rotate_desk_admission(2_000, grace).unwrap();
+        let settings = store.remote_access().unwrap();
+        store.set_remote_access(&RemoteAccess { relay_admission: Some("typed".into()), ..settings }).unwrap();
+        assert_eq!(store.admissions_at(2_001).unwrap(), vec!["typed".to_string()]);
+        let settings = store.remote_access().unwrap();
+        store.set_remote_access(&RemoteAccess { relay_admission: None, ..settings }).unwrap();
+        assert_eq!(store.admission_set_at().unwrap(), None);
+    }
+
+    #[test]
+    fn the_desk_relay_option_port_and_url_are_rows_absent_means_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert!(!store.desk_relay_enabled().unwrap());
+        assert_eq!(store.desk_relay_port().unwrap(), None);
+        assert_eq!(store.desk_relay_url().unwrap(), None);
+        store.set_desk_relay_enabled(true).unwrap();
+        store.set_desk_relay_port(8444).unwrap();
+        store.set_desk_relay_url(Some("ws://192.168.1.20:8444")).unwrap();
+        assert!(store.desk_relay_enabled().unwrap());
+        assert_eq!(store.desk_relay_port().unwrap(), Some(8444));
+        assert_eq!(store.desk_relay_url().unwrap().as_deref(), Some("ws://192.168.1.20:8444"));
+        store.set_desk_relay_url(None).unwrap();
+        assert_eq!(store.desk_relay_url().unwrap(), None);
     }
 
     /// The Relay's admission token is the third remote-access setting,

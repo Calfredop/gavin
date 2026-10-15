@@ -102,5 +102,30 @@
 
   { "url": "wss://token@relay.example", "refuse": "credentials" },
   { "url": "wss://user:password@relay.example:8443/gavin", "refuse": "credentials" },
-  { "url": "ws://relay.example@127.0.0.1", "refuse": "credentials" }
+  { "url": "ws://relay.example@127.0.0.1", "refuse": "credentials" },
+
+  { "url": "ws://192.168.68.125:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "wss://192.168.68.125:8446/gavin", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://100.79.93.51:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://mbp16pro.local:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://MBP16PRO.LOCAL.:8446", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "wss://[fe80:0:0:0:0:0:0:1]:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "wss://[::ffff:192.168.68.125]:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://127.0.0.1:8445", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://127.4.5.6:8446", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://localhost:8446/relay", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://app.localhost:8445", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://[::1]:8445", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "wss://0.0.0.0:8445", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "wss://[::]:8446", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "refuse": "direct-listener" },
+  { "url": "ws://192.168.68.125:9445", "thisMachine": { "hosts": ["192.168.68.125"], "directPorts": [8445, 8446, 9445] }, "refuse": "direct-listener" },
+  { "url": "ws://8.8.8.8:8445", "thisMachine": { "hosts": ["8.8.8.8"], "directPorts": [8445, 8446] }, "refuse": "plain-to-public-host" },
+
+  { "url": "ws://192.168.68.125:8443", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "dial": { "secure": false, "host": "192.168.68.125", "port": 8443, "local": true } },
+  { "url": "ws://192.168.68.126:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "dial": { "secure": false, "host": "192.168.68.126", "port": 8445, "local": true } },
+  { "url": "ws://other.local:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "dial": { "secure": false, "host": "other.local", "port": 8445, "local": true } },
+  { "url": "wss://[fe80::2]:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "dial": { "secure": true, "host": "fe80::2", "port": 8445, "local": true } },
+  { "url": "ws://127.0.0.1:9000", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "dial": { "secure": false, "host": "127.0.0.1", "port": 9000, "local": true } },
+  { "url": "wss://192.168.68.125:8445", "thisMachine": { "hosts": [], "directPorts": [8445, 8446] }, "dial": { "secure": true, "host": "192.168.68.125", "port": 8445, "local": true } },
+  { "url": "wss://relay.example:8445", "thisMachine": { "hosts": ["192.168.68.125", "100.79.93.51", "MBP16Pro.local", "fe80::1"], "directPorts": [8445, 8446] }, "dial": { "secure": true, "host": "relay.example", "port": 8445, "local": false } }
 ]

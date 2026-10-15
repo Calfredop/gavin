@@ -636,6 +636,22 @@ export const FEATURE_MIN_VERSION = {
   // `pairingUnavailable` reads before it lets a listener stand in for the
   // Relay.
   directAccess: 69,
+  // This Mac's own Relay (v73): `SetDeskRelay` and `GetDeskRelayState`
+  // are new request TYPES an older daemon answers `Unsupported`, and
+  // `Devices.deskRelayEnabled` is a widened reply it never sends. That
+  // would read as "off" for a daemon that has no option to be off.
+  //
+  // Consumer: `remoteAccess.ts`'s `deskRelayBlocked`, which the Settings
+  // section reads before it draws or sends "Run a Relay on this Mac" and
+  // before it asks where that Relay stands.
+  deskRelay: 73,
+  // Refreshing the desk's token (v73): `RefreshRelayAdmission` is a new
+  // request TYPE, and `Devices.relayAdmissionSetAt`/`relayAdmissionByDesk`
+  // are widened replies an older daemon never sends.
+  //
+  // Consumer: `remoteAccess.ts`'s `admissionRefreshBlocked`, which the
+  // Settings section reads before it offers Refresh token.
+  admissionRefresh: 73,
   // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
   // and the `DeviceRefusalChanged` push are v62. An older daemon sends
   // neither, and a row with no refusal reads as "nothing was refused" --

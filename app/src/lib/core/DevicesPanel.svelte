@@ -19,6 +19,7 @@
     pairingOpen,
     pairingRejected,
     pairingRequested,
+    pairingSheet,
     pairingTick,
     pairingUnavailable,
     pushGatewayBlocked,
@@ -244,6 +245,7 @@
       <div class="pairing">
         {#if pairing.phase === "offer" || pairing.phase === "requested"}
           {@const drawn = qrDraw(pairing.qr)}
+          {@const sheet = pairingSheet(pairing.qr)}
           {#if drawn.error}
             <p class="hint warn">Couldn't draw the QR: {drawn.error}</p>
           {:else}
@@ -271,6 +273,17 @@
               and scanning it is not enough on its own — you confirm a six-digit code here, on the
               desktop, before the device exists.
             </p>
+            {#if sheet.paths.length > 0}
+              <p>It carries these ways in:</p>
+              <ul class="paths">
+                {#each sheet.paths as path (path.url)}
+                  <li><span class="path-kind">{path.label}</span> <code>{path.url}</code></li>
+                {/each}
+              </ul>
+              {#each sheet.notes as note (note)}
+                <p class="hint">{note}</p>
+              {/each}
+            {/if}
           </div>
         {:else if pairing.phase === "confirmed"}
           <p>“{pairing.request.name}” is paired.</p>
@@ -420,6 +433,19 @@
   }
   .pairing p {
     margin: 0 0 6px;
+  }
+  .paths {
+    list-style: none;
+    margin: 0 0 6px;
+    padding: 0;
+  }
+  .paths li {
+    overflow-wrap: anywhere;
+  }
+  .path-kind {
+    display: inline-block;
+    min-width: 7em;
+    color: var(--text-subtle);
   }
   .devices {
     list-style: none;

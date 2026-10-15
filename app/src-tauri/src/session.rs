@@ -3493,6 +3493,15 @@ pub struct DeviceList {
     /// Whether direct connection is switched on (v69); `false` from an
     /// older daemon, which has no listener (FEATURE_MIN_VERSION.directAccess).
     pub direct_access_enabled: bool,
+    /// Whether "Run a Relay on this Mac" is on (v73); `false` from an older
+    /// daemon, which runs none (FEATURE_MIN_VERSION.deskRelay).
+    pub desk_relay_enabled: bool,
+    /// When the admission token held was set, epoch seconds (v73); `None`
+    /// when none is held and from an older daemon.
+    pub relay_admission_set_at: Option<i64>,
+    /// Whether the token held is one the desk minted (v73), and so one
+    /// Refresh can replace.
+    pub relay_admission_by_desk: bool,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3584,6 +3593,9 @@ pub async fn list_devices(
             relay_admission_set,
             push_gateway_url,
             direct_access_enabled,
+            desk_relay_enabled,
+            relay_admission_set_at,
+            relay_admission_by_desk,
         } => Ok(DeviceList {
             devices,
             remote_access_enabled,
@@ -3591,6 +3603,9 @@ pub async fn list_devices(
             relay_admission_set,
             push_gateway_url,
             direct_access_enabled,
+            desk_relay_enabled,
+            relay_admission_set_at,
+            relay_admission_by_desk,
         }),
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
@@ -3648,6 +3663,59 @@ pub async fn set_direct_access(
     let resp = state
         .lanes(current_compat(&compat))
         .request(Request::SetDirectAccess { enabled })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// Where this Mac's own Relay stands (v73). The Settings section's read
+/// on open; every change after arrives as the `desk-relay-state-changed`
+/// event.
+#[tauri::command]
+pub async fn get_desk_relay_state(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::DeskRelayState, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetDeskRelayState)
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::DeskRelayState { state } => Ok(state),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected DeskRelayState, got {other:?}")),
+    }
+}
+
+/// "Run a Relay on this Mac" (v73). A release daemon runs `gavin-relay`
+/// while this and remote access are both on, and stops it when either
+/// goes off. A dev daemon never starts one.
+#[tauri::command]
+pub async fn set_desk_relay(
+    enabled: bool,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetDeskRelay { enabled })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// Refresh the admission token the desk minted (v73). The old one is still
+/// accepted for a grace window, while every connected Device is handed the
+/// new one.
+#[tauri::command]
+pub async fn refresh_relay_admission(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::RefreshRelayAdmission)
         .await
         .map_err(|e| e.to_string())?;
     expect_ok(resp)
@@ -5547,6 +5615,11 @@ pub(crate) fn attach_and_relay(
                 // the dial's; only sent to an app that speaks 69.
                 Response::DirectStateChanged { state } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "direct-state-changed", state);
+                }
+                // This Mac's own Relay's state changed (v73). Whole, like
+                // the listener's; only sent to an app that speaks 73.
+                Response::DeskRelayStateChanged { state } => {
+                    let _ = crate::forwarding::emit(&reader_app_handle, "desk-relay-state-changed", state);
                 }
                 // A session's browser launched, navigated, changed tab or
                 // (`None`) stopped (v65): what lights the tab's browser chip

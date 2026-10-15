@@ -121,6 +121,21 @@ export interface PairedStore {
   remove(id: string): Promise<void>;
 }
 
+/// The records with `id`'s admission token replaced by `token`, and that
+/// record, to keep: what a refreshed token (v73) changes and nothing else,
+/// so a rename since the hub read the record is not undone. Null when no
+/// record has that id.
+export function withAdmission(
+  paired: PairedWorkstation[],
+  id: string,
+  token: string
+): { paired: PairedWorkstation[]; record: PairedWorkstation } | null {
+  const before = paired.find((ws) => ws.id === id);
+  if (!before) return null;
+  const record = { ...before, relayAdmission: token };
+  return { paired: paired.map((ws) => (ws.id === id ? record : ws)), record };
+}
+
 export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save" | "remove">): PairedStore {
   return {
     async list() {
