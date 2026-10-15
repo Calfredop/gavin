@@ -41,6 +41,11 @@ so packaging is the only thing that pays for them: the base config stays
 clean and `npm run bundle` merges this file in (the CLI passes the merged
 config to the build script through `TAURI_CONFIG`).
 
+`gavin-relay` ships the same way, beside `gavin-daemon`: a release
+daemon runs it as this Mac's own Relay when Settings → Remote access →
+"Run a Relay on this Mac" is on (`crates/daemon/src/desk_relay.rs`). A
+dev daemon never runs one, so dev needs no copy of it.
+
 `tauri dev` needs nothing from this file. In dev the app resolves its
 siblings out of `target/debug/`, where cargo has already put them —
 which is what `beforeDevCommand`'s `cargo build -p gavin-daemon -p

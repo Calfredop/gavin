@@ -409,7 +409,7 @@ jobs:
           deb=$(find target/release/bundle -name '*.deb' | head -1)
           listing=$(dpkg-deb -c "$deb")
           missing=0
-          for bin in gavin-daemon gavin-mcp; do
+          for bin in gavin-daemon gavin-mcp gavin-relay; do
             if printf '%s' "$listing" | grep -qE "/$bin\$"; then
               echo "ok    $bin is in the package"
             else

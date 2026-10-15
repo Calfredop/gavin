@@ -18,7 +18,7 @@ describe("sidecarBuild", () => {
         triple: "aarch64-apple-darwin",
         exe: "",
         command: "cargo",
-        args: ["build", "--locked", "--release", "--manifest-path", manifest, "-p", "gavin-daemon", "-p", "gavin-mcp"],
+        args: ["build", "--locked", "--release", "--manifest-path", manifest, "-p", "gavin-daemon", "-p", "gavin-mcp", "-p", "gavin-relay"],
         outDir: join("/repo/target", "release"),
       });
     }
@@ -40,7 +40,7 @@ describe("sidecarBuild", () => {
       command: "cargo-xwin",
       args: [
         "build", "--locked", "--release", "--manifest-path", manifest,
-        "--target", "x86_64-pc-windows-msvc", "-p", "gavin-daemon", "-p", "gavin-mcp",
+        "--target", "x86_64-pc-windows-msvc", "-p", "gavin-daemon", "-p", "gavin-mcp", "-p", "gavin-relay",
       ],
       outDir: join("/repo/target", "x86_64-pc-windows-msvc", "release"),
     });

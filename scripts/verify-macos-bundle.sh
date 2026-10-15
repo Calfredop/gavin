@@ -67,7 +67,7 @@ fail() { printf '  FAIL  %s\n' "$1"; FAILED=1; }
 warn() { printf '  warn  %s\n' "$1"; }
 
 MACOS_DIR="$APP/Contents/MacOS"
-SIDECARS="gavin-daemon gavin-mcp"
+SIDECARS="gavin-daemon gavin-mcp gavin-relay"
 BINARIES="Gavin $SIDECARS"
 
 echo "verifying $APP"

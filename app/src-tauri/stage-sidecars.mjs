@@ -1,7 +1,12 @@
-// Build gavin-daemon and gavin-mcp and put them where Tauri's
+// Build gavin-daemon, gavin-mcp and gavin-relay and put them where Tauri's
 // `bundle.externalBin` expects to find them.
 //
-// The two binaries have to ship INSIDE the bundle:
+// gavin-relay is there because a release daemon runs it as this Mac's own
+// Relay ("Run a Relay on this Mac", `crates/daemon/src/desk_relay.rs`),
+// beside itself. A dev daemon never does, so `dev-sidecars.mjs` builds
+// only the other two.
+//
+// The first two binaries have to ship INSIDE the bundle:
 // `resolve_daemon_binary_path` and `resolve_mcp_binary_path` both join
 // against `current_exe().parent()`, and the absolute gavin-mcp path gavin
 // writes into a workspace's agent config has to keep resolving after an
@@ -64,7 +69,7 @@ export function sidecarBuild({ host, target, runner, release, root, targetDir })
       "build", "--locked", ...(release ? ["--release"] : []),
       "--manifest-path", join(root, "Cargo.toml"),
       ...(cross ? ["--target", triple] : []),
-      "-p", "gavin-daemon", "-p", "gavin-mcp",
+      "-p", "gavin-daemon", "-p", "gavin-mcp", "-p", "gavin-relay",
     ],
     outDir: cross ? join(targetDir, triple, profileDir) : join(targetDir, profileDir),
   };
@@ -97,7 +102,7 @@ function main() {
   const binaries = join(here, "binaries");
   mkdirSync(binaries, { recursive: true });
 
-  for (const bin of ["gavin-daemon", "gavin-mcp"]) {
+  for (const bin of ["gavin-daemon", "gavin-mcp", "gavin-relay"]) {
     const src = join(build.outDir, `${bin}${build.exe}`);
     if (!existsSync(src)) {
       console.error(`stage-sidecars: ${src} is missing after a successful cargo build`);
