@@ -35,7 +35,7 @@ every piece of work should trace back to it.
 ## 2. Cards: note, task, plan
 
 Create cards with `gavin_create_plan` (`context_folder`, kebab-case
-`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`) or
+`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`/`labels`) or
 author the file directly. `kind` picks what the card IS:
 
 - **note** — a reminder; title (+ optional body).
@@ -83,8 +83,10 @@ The board's COLUMN NAMES are the status vocabulary — check them with
 case/spacing-insensitive; an empty value removes the line — that is how a
 task returns to nesting). Do this when you start, finish, or get blocked. If
 a human ran your card, the app already set it In Progress — you set the done
-column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
-ui")` referencing the board's label names.
+column when finished. Labels: pass `labels` to `gavin_create_plan` when you
+file a card, and `gavin_set_plan_field(path, "labels", "bug, ui")` while you
+work, using the board's label names. That write replaces the whole list, so
+keep the labels the card already carries (`gavin_find_cards` shows them).
 
 **In Progress claims the card for your tab.** A card in that column belongs
 to the session that put it there: the board shows your session instead of a

@@ -16,7 +16,7 @@ Issues and specs for this repo live as gavin cards: markdown files with a YAML h
 - **A task with `parent:` and no `status:` nests inside its plan and takes the plan's status.** A ticket that must be worked on its own needs its own `status:`.
 - **Specs:** the full text goes in `docs/superpowers/specs/<YYYY-MM-DD>-<slug>.md`. A `kind: plan` card summarises the spec and links to it.
 - **Blocking:** the first line of the body is `Blocked by: <card>.md, <card>.md`. A card is unblocked once every card it lists is Done. Rails (the `gavin-orchestrate` skill) sequence cards so they respect these edges.
-- **Triage state:** a label in the `labels:` field (see `triage-labels.md`). `gavin_set_plan_field` cannot write labels, so edit the `labels:` header line directly, and keep a card's existing labels when adding one.
+- **Triage state:** a label in the `labels:` field (see `triage-labels.md`). Set it with `gavin_set_plan_field(path, "labels", ...)`. That write replaces the whole list, so keep a card's existing labels when adding one.
 - **Comments:** append them, dated, at the bottom of the body under a `## Comments` heading.
 - **Questions or checks only a person can answer:** `gavin_request_human(card, "decision" | "test", text)`.
 
@@ -28,8 +28,7 @@ Issues and specs for this repo live as gavin cards: markdown files with a YAML h
   - `parent: <plan file>`
   - `status: To Do`
   - a body that is a self-contained prompt, whose first line is `Blocked by:` when the ticket has blockers.
-
-  Neither `gavin_create_plan` nor `gavin_set_plan_field` takes labels, so add the `labels:` header line by editing the file.
+  - `labels`, when the ticket carries any (`gavin_create_plan` writes them with the card).
 
 ## When a skill says "fetch the relevant ticket"
 

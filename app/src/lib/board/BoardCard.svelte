@@ -537,18 +537,18 @@
   }
   .card.kind-task {
     background: var(--surface-accent);
-    border: 1px dashed var(--border-accent);
+    border: 1px solid var(--border-accent);
   }
   .card.kind-plan {
     background: var(--surface-success);
-    border: 1px dashed var(--border-success);
+    border: 1px solid var(--border-success);
   }
   .card:hover {
     border-color: var(--border-strong);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
-  /* A ring rather than a border swap: the kind borders (dashed task,
-     dashed plan) still have to read through the selection. */
+  /* A ring rather than a border swap: the kind borders (accent task,
+     success plan) still have to read through the selection. */
   .card.selected {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent);

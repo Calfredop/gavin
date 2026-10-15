@@ -714,11 +714,12 @@ fn tool_definitions() -> Value {
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" },
-            "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" }
+            "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" },
+            "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels the card carries, e.g. [\"bug\", \"ready-for-agent\"]; prefer the board's label names (gavin_get_board). A comma-separated string works too" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, labels, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `labels` is the card's WHOLE comma-separated list, so to add one keep the labels it already carries (gavin_find_cards shows them); an empty value removes them all. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
-            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "agent", "model", "effort"] },
+            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "labels", "agent", "model", "effort"] },
             "value": { "type": "string" }
         }, "required": ["path", "key", "value"] } },
         { "name": "gavin_create_context", "description": "Turn a folder into a gavin context (.gavin scaffold) for a feature/library.", "inputSchema": { "type": "object", "properties": {
@@ -777,6 +778,27 @@ fn str_arg(args: &Value, key: &str) -> Option<String> {
 
 fn require_arg(args: &Value, key: &str) -> anyhow::Result<String> {
     str_arg(args, key).ok_or_else(|| anyhow::anyhow!("missing required argument: {key}"))
+}
+
+/// A `labels:` line as the daemon stores it: entries trimmed, empty ones
+/// dropped and repeats -- ignoring case, the way `gavin_find_cards`
+/// matches a label -- kept once, joined with ", ". Takes an array or one
+/// comma-separated string, since both are what an agent sends; an entry
+/// is split on commas either way, because the line is and an entry
+/// holding one would read back as two.
+fn labels_line(value: Option<&Value>) -> String {
+    let raw: Vec<&str> = match value {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        Some(Value::String(list)) => vec![list.as_str()],
+        _ => vec![],
+    };
+    let mut kept: Vec<&str> = Vec::new();
+    for label in raw.iter().flat_map(|entry| entry.split(',')).map(str::trim) {
+        if !label.is_empty() && !kept.iter().any(|k| k.eq_ignore_ascii_case(label)) {
+            kept.push(label);
+        }
+    }
+    kept.join(", ")
 }
 
 /// Maps one tool call to a daemon request, shapes the result as text.
@@ -878,13 +900,21 @@ fn dispatch_tool(
             attachments: str_arg(args, "attachments"),
             complexity: str_arg(args, "complexity"),
         },
-        "gavin_set_plan_field" => Request::SetPlanFrontmatterField {
-            path: resolve_against_root(root, &require_arg(args, "path")?)
-                .to_string_lossy()
-                .to_string(),
-            key: require_arg(args, "key")?,
-            value: require_arg(args, "value")?,
-        },
+        "gavin_set_plan_field" => {
+            let key = require_arg(args, "key")?;
+            let value = if key == "labels" {
+                labels_line(Some(&Value::String(require_arg(args, "value")?)))
+            } else {
+                require_arg(args, "value")?
+            };
+            Request::SetPlanFrontmatterField {
+                path: resolve_against_root(root, &require_arg(args, "path")?)
+                    .to_string_lossy()
+                    .to_string(),
+                key,
+                value,
+            }
+        }
         "gavin_create_context" => Request::CreateGavinContext {
             parent_folder: resolve_against_root(root, &require_arg(args, "parent_folder")?)
                 .to_string_lossy()
@@ -976,6 +1006,33 @@ fn dispatch_tool(
         _ => "Decisions",
     };
     let resp = transport.request(&req)?;
+    // A new card's labels are a second write rather than a field of
+    // `CreatePlan`: every daemon already writes `labels:` through
+    // `SetPlanFrontmatterField`, where a widened `CreatePlan` would be
+    // dropped silently by a daemon older than the field (the compat gate
+    // is per request type, not per field). Written before the claim, so
+    // the card the board shows as taken already carries them.
+    let labels_failure = match (&req, &resp) {
+        (Request::CreatePlan { .. }, Response::PlanCreated { path }) => {
+            let labels = labels_line(args.get("labels"));
+            if labels.is_empty() {
+                None
+            } else {
+                let write = Request::SetPlanFrontmatterField {
+                    path: path.clone(),
+                    key: "labels".into(),
+                    value: labels,
+                };
+                match transport.request(&write) {
+                    Ok(Response::PlanFieldSet { .. }) => None,
+                    Ok(Response::Error { message }) => Some(message),
+                    Ok(other) => Some(format!("unexpected response: {other:?}")),
+                    Err(e) => Some(e.to_string()),
+                }
+            }
+        }
+        _ => None,
+    };
     // Before the reply is shaped, and its outcome deliberately dropped:
     // see `claim_card`.
     if let Some(card) = claim_target(&req, &resp) {
@@ -984,7 +1041,16 @@ fn dispatch_tool(
     match resp {
         Response::GavinTreeScanned { tree } => Ok(cards::board(&tree)),
         Response::PrdContent { content } => Ok(content),
-        Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
+        // An error, so the agent sees it, but one that says the card
+        // exists: retrying the create would only be refused as an
+        // overwrite.
+        Response::PlanCreated { path } => match labels_failure {
+            None => Ok(format!("created plan: {path}")),
+            Some(why) => Err(anyhow::anyhow!(
+                "created plan: {path} — but its labels were not written ({why}); set them with \
+                 gavin_set_plan_field(path, \"labels\", ...) rather than creating it again"
+            )),
+        },
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
         Response::HumanItemFiled { rearmed } => Ok(if rearmed {
             format!(
@@ -4199,6 +4265,114 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_labels_line_is_trimmed_split_and_kept_once() {
+        assert_eq!(labels_line(Some(&json!(["bug", " ui ", "", "BUG"]))), "bug, ui");
+        // One string is a list too, and so is an array entry holding a
+        // comma: the line would read it back as two labels anyway.
+        assert_eq!(labels_line(Some(&json!("bug,  ui , "))), "bug, ui");
+        assert_eq!(labels_line(Some(&json!(["a, b", "c"]))), "a, b, c");
+        assert_eq!(labels_line(Some(&json!([]))), "");
+        assert_eq!(labels_line(None), "");
+        assert_eq!(labels_line(Some(&json!(7))), "");
+    }
+
+    /// Labels on a new card are the daemon's `labels` field write, sent
+    /// right after the create and before any claim: every daemon knows
+    /// that write, where a field added to `CreatePlan` would be dropped
+    /// by an older one without a word.
+    #[test]
+    fn create_plan_writes_its_labels_after_the_card() {
+        let mut t = mock(vec![
+            Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() },
+            Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() },
+        ]);
+        let text = call_with(
+            "gavin_create_plan",
+            json!({ "context_folder": ".", "file_name": "a.md", "title": "A", "labels": ["bug", "Bug", "ready-for-agent"] }),
+            &mut t,
+        );
+        assert_eq!(text, "created plan: /ws/.gavin-root/plans/a.md");
+        assert!(matches!(t.requests[0], Request::CreatePlan { .. }), "{:?}", t.requests[0]);
+        match &t.requests[1] {
+            Request::SetPlanFrontmatterField { path, key, value } => {
+                assert_eq!(path, "/ws/.gavin-root/plans/a.md");
+                assert_eq!(key, "labels");
+                assert_eq!(value, "bug, ready-for-agent");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_plan_without_labels_writes_nothing_more() {
+        for labels in [None, Some(json!([])), Some(json!(" , "))] {
+            let mut t = mock(vec![Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() }]);
+            let mut args = json!({ "context_folder": ".", "file_name": "a.md", "title": "A" });
+            if let Some(l) = labels {
+                args["labels"] = l;
+            }
+            call_with("gavin_create_plan", args, &mut t);
+            assert!(
+                !t.requests.iter().any(|r| matches!(r, Request::SetPlanFrontmatterField { .. })),
+                "{:?}",
+                t.requests
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_labels_write_says_the_card_was_still_created() {
+        let mut t = mock(vec![
+            Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() },
+            Response::Error { message: "labels must be a single line".into() },
+        ]);
+        let reply = handle_line(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "gavin_create_plan", "arguments": {
+                    "context_folder": ".", "file_name": "a.md", "title": "A", "labels": "bug"
+                } },
+            })
+            .to_string(),
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), true, "{reply}");
+        let text = v.pointer("/result/content/0/text").unwrap().as_str().unwrap();
+        assert!(text.contains("created plan: /ws/.gavin-root/plans/a.md"), "{text}");
+        assert!(text.contains("labels must be a single line"), "{text}");
+        assert!(text.contains("gavin_set_plan_field"), "{text}");
+    }
+
+    #[test]
+    fn set_plan_field_writes_labels_as_one_clean_line() {
+        let mut t = mock(vec![Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() }]);
+        let text = call_with(
+            "gavin_set_plan_field",
+            json!({ "path": ".gavin-root/plans/a.md", "key": "labels", "value": " bug,, ui ,BUG" }),
+            &mut t,
+        );
+        assert_eq!(text, "ok");
+        match &t.requests[0] {
+            Request::SetPlanFrontmatterField { key, value, .. } => {
+                assert_eq!(key, "labels");
+                assert_eq!(value, "bug, ui");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+        // Empty still clears the line, as for every other clearable key.
+        let mut t = mock(vec![Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() }]);
+        call_with(
+            "gavin_set_plan_field",
+            json!({ "path": ".gavin-root/plans/a.md", "key": "labels", "value": "" }),
+            &mut t,
+        );
+        assert!(matches!(&t.requests[0], Request::SetPlanFrontmatterField { value, .. } if value.is_empty()));
     }
 
     /// The search tool asks for this workspace's root, takes topics as
