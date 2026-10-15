@@ -259,6 +259,19 @@
     for (const clear of clears) void Push.clearDelivered(clear).catch(() => {});
   });
 
+  /// A long-pressed Workstation, forgotten on this phone: its record and
+  /// notification key go, and the live hub and the handover follow
+  /// `paired`. Its cached bundle is pruned with the next one installed.
+  async function removePaired(ws: { id: string; name: string }): Promise<void> {
+    try {
+      await store.remove(ws.id);
+    } catch (e) {
+      notice = `${ws.name} could not be removed: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
+    paired = paired.filter((p) => p.id !== ws.id);
+  }
+
   async function loadPaired(): Promise<void> {
     try {
       paired = await store.list();
@@ -325,6 +338,7 @@
   onOpen={(ws) => void visits.open(ws)}
   onTryNow={(ws) => unlocked?.tryNow(ws.id)}
   onDismiss={() => void visits.close()}
+  onRemove={native ? (ws) => void removePaired(ws) : null}
   onPair={native ? () => void pairing.start() : null}
   {inbox}
   onOpenItem={openItem}

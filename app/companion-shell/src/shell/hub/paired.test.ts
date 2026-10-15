@@ -97,6 +97,7 @@ describe("a paired Workstation, as the hub keeps it", () => {
     const store = pairedStore({
       list: async () => ({ records: [...held.values(), "garbage"] }),
       save: async ({ id, record }) => void held.set(id, record),
+      remove: async ({ id }) => void held.delete(id),
     });
     const late = keepPairing(kept("02".repeat(32)), [], 2000);
     const early = keepPairing(kept("01".repeat(32)), [], 1000);
@@ -104,5 +105,7 @@ describe("a paired Workstation, as the hub keeps it", () => {
     await store.save(early);
     expect([...held.keys()]).toEqual([late.id, early.id]);
     expect(await store.list()).toEqual<PairedWorkstation[]>([early, late]);
+    await store.remove(early.id);
+    expect(await store.list()).toEqual<PairedWorkstation[]>([late]);
   });
 });

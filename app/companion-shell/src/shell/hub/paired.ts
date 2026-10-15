@@ -117,9 +117,11 @@ export interface PairedStore {
   /// Every usable record, oldest pairing first.
   list(): Promise<PairedWorkstation[]>;
   save(record: PairedWorkstation): Promise<void>;
+  /// Forgets one: its record, and with it the notification key.
+  remove(id: string): Promise<void>;
 }
 
-export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save">): PairedStore {
+export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save" | "remove">): PairedStore {
   return {
     async list() {
       const { records } = await plugin.list();
@@ -129,5 +131,6 @@ export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save">): 
         .sort((a, b) => a.pairedAt - b.pairedAt);
     },
     save: (record) => plugin.save({ id: record.id, record: JSON.stringify(record) }),
+    remove: (id) => plugin.remove({ id }),
   };
 }
