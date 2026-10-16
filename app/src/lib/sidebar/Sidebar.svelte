@@ -13,7 +13,13 @@
   import { deviceNameBySessionId, devicesBadgeText, watchDevices } from "$lib/core/devicesState";
   import { watchSessionOwners } from "$lib/core/sessionOwnershipState";
   import { watchPtyBorrows } from "$lib/terminal/ptyBorrowState";
-  import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import {
+    activePause,
+    nowStore,
+    profilesInUse,
+    usageProjections,
+    usageRefreshingStore,
+  } from "$lib/agents/agentPauseState";
   import {
     armRequest,
     completeArmRequest,
@@ -22,7 +28,10 @@
   } from "$lib/agents/agentFallbackState";
   import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
-  import { projectionTooltip } from "$lib/agents/usageProjection";
+  import {
+    runningAgentProfiles,
+    usageRowBadges,
+  } from "$lib/sidebar/usageRow";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
   // two panels and a flag inside Sidebar.svelte can only be flipped from
@@ -49,6 +58,7 @@
     openAppSettings,
     agentProfilesStore,
     gitTrackingDefault,
+    resolvedAgentFor,
   } from "$lib/core/layoutState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionState } from "$lib/agents/verdictAttention";
@@ -112,7 +122,6 @@
     agentIndicator,
     agentIndicatorByState,
     gitIndicator,
-    usageProjectionIndicator,
   } from "$lib/ui/indicators";
 
   import { sessionLabel, folderName } from "$lib/core/paths";
@@ -147,6 +156,7 @@
   } from "$lib/core/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
+    allSessionIdsInWorkspace,
     getActiveView,
     isPinned,
     sidebarPageOrder,
@@ -438,25 +448,32 @@
   /// spins per agent inside the panel.
   const usageUpdating = $derived(Object.values($usageRefreshingStore).some(Boolean));
 
-  /// The usage semaphore: whether the limits gavin can see will survive
-  /// to their own reset at the burn it has measured. Null until there is
-  /// something honest to draw, which is also what the pause badge beside
-  /// it reads to decide who owns the push to the end of the row.
-  ///
-  /// The agent's display name is looked up here rather than carried on
-  /// the projection (usageProjection.ts): naming the agents is the
-  /// surface's job, and keeping it out is what stops the pause module
-  /// importing the profile table into its whole dependency graph.
-  const usageSemaphore = $derived.by(() => {
-    const projection = $worstUsageProjection;
-    if (!projection) return null;
-    const label =
-      $agentProfilesStore.find((p) => p.id === projection.profileId)?.label ??
-      projection.profileId;
-    return usageProjectionIndicator(
-      projection.band,
-      projectionTooltip(projection, label, $nowStore)
-    );
+  /// One badge per linked agent: letter avatar (collision-grown so Claude
+  /// Code and Codex read Cl / Co), toned by that agent's own usage
+  /// semaphore, pulsing while any of its sessions is working. Empty
+  /// until something is linked, which is also what the pause badge
+  /// beside them reads to decide who owns the push to the end of the row.
+  const usageBadges = $derived.by(() => {
+    const ids = profilesInUse();
+    const profiles = $agentProfilesStore;
+    const agents = ids.map((id) => ({
+      id,
+      label: profiles.find((p) => p.id === id)?.label ?? id,
+    }));
+    const state = $layoutState;
+    const sessions = state.workspaces.flatMap((ws) => {
+      const profileId = resolvedAgentFor(ws.id).profileId || null;
+      return allSessionIdsInWorkspace(ws).map((sessionId) => ({
+        profileId,
+        status: state.sessionStatusById[sessionId],
+      }));
+    });
+    return usageRowBadges({
+      agents,
+      projections: $usageProjections,
+      runningProfileIds: runningAgentProfiles(sessions),
+      nowMs: $nowStore,
+    });
   });
 
   const searchOpen = $derived($sidebarSearchOpen && !showsRail);
@@ -1839,17 +1856,26 @@
     >
       <Gauge size={12} />
       <span>Usage</span>
-      <!-- The semaphore, and the one thing on this row that is about the
-           FUTURE: whether the limits gavin can see will survive to their
-           own reset at the burn it has measured (usageProjection.ts).
-           Nothing is drawn until there is a rate, so an ordinary start-up
-           shows an unadorned row rather than a mark meaning "wait".
+      <!-- One letter-avatar badge per linked agent, toned by that agent's
+           own usage semaphore (usageRow.ts). Replaces the single fleet-
+           worst hourglass: naming who is tight matters more than the
+           worst tone alone, and a working session pulses its badge.
 
-           It sits before the pause badge because it is the earlier
+           They sit before the pause badge because they are the earlier
            warning of the two: amber here is the moment to throttle, and
            "At limit" is what happens to somebody who did not. -->
-      {#if usageSemaphore}
-        <StatusBadge indicator={usageSemaphore} size={11} class="footer-semaphore" />
+      {#if usageBadges.length > 0}
+        <span class="usage-agent-badges" role="group" aria-label="Agent usage">
+          {#each usageBadges as badge (badge.profileId)}
+            <span
+              class="usage-agent-badge tone-{badge.tone}"
+              class:running={badge.running}
+              role="img"
+              aria-label={badge.running ? `${badge.label}, running` : badge.tip}
+              use:tooltip={badge.tip}>{badge.avatar}</span
+            >
+          {/each}
+        </span>
       {/if}
       <!-- The pause state lives on the row that explains it. A workspace
            holding for a limit or a scheduled window is the one thing here
@@ -1857,7 +1883,7 @@
       {#if pauseLabel($activePause)}
         <span
           class="footer-badge"
-          class:after-semaphore={usageSemaphore !== null}
+          class:after-semaphore={usageBadges.length > 0}
           use:tooltip={$activePause.why ?? ""}>{pauseLabel($activePause)}</span
         >
       {/if}
@@ -2230,8 +2256,8 @@
   .sidebar.collapsed .footer-row span {
     display: none;
   }
-  /* Collapsed, this row is the Gauge alone -- the label and the
-     semaphore are spans, and those hide. Spin that glyph from the same
+  /* Collapsed, this row is the Gauge alone -- the label and the agent
+     badges are spans, and those hide. Spin that glyph from the same
      store Check again reads, so a probe in flight is visible without
      opening the column. */
   .sidebar.collapsed .footer-row.usage-updating :global(> svg) {
@@ -2753,12 +2779,65 @@
     opacity: 0.45;
     cursor: default;
   }
-  /* Pushed to the end of the row. Anchored to .footer-row rather than
-     left as a bare :global: the class rides on StatusBadge's own element,
-     so only :global can reach it, and only the anchor keeps the reach
-     inside this component. */
-  .footer-row :global(.footer-semaphore) {
+  /* Pushed to the end of the row: the agent avatar strip owns the slack,
+     and the pause badge follows it when both are drawn. */
+  .usage-agent-badges {
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .usage-agent-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.35em;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--surface-sunken);
+    color: var(--badge-fg, var(--text-muted));
+    font-size: 0.78em;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+    letter-spacing: 0.02em;
+  }
+  .usage-agent-badge.tone-neutral {
+    --badge-fg: var(--text-muted);
+  }
+  .usage-agent-badge.tone-accent {
+    --badge-fg: var(--accent-text);
+  }
+  .usage-agent-badge.tone-success {
+    --badge-fg: var(--success-text);
+  }
+  .usage-agent-badge.tone-warning {
+    --badge-fg: var(--warning-text);
+  }
+  .usage-agent-badge.tone-danger {
+    --badge-fg: var(--danger-text);
+  }
+  /* Slow fade out, fast fade in — a working agent on this profile. The
+     tone and the letters already say which agent; motion only claims
+     "happening now", and prefers-reduced-motion drops it. */
+  .usage-agent-badge.running {
+    animation: usage-agent-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes usage-agent-pulse {
+    0% {
+      opacity: 1;
+    }
+    70% {
+      opacity: 0.2;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .usage-agent-badge.running {
+      animation: none;
+    }
   }
   .footer-badge {
     margin-left: auto;
@@ -2768,12 +2847,9 @@
     color: var(--warning-text);
     font-size: 0.85em;
   }
-  /* Two `margin-left: auto` in one flex row split the slack between them,
-     which would strand the semaphore in the middle of the row. With both
-     drawn it is the semaphore that owns the push and the badge follows
-     it -- said with a class rather than a sibling selector, because the
-     semaphore's class rides on StatusBadge's element and :global() may
-     not sit in the middle of a selector. */
+  /* Two `margin-left: auto` in one flex row split the slack between them.
+     With both drawn the agent strip owns the push and the pause badge
+     follows it. */
   .footer-badge.after-semaphore {
     margin-left: 4px;
   }
