@@ -1,5 +1,5 @@
 ---
-order: 19456
+order: 17920
 title: Companion on a real iPhone: smoke test lists
 status: In Progress
 priority: medium

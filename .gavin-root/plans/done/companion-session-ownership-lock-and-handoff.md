@@ -1,7 +1,7 @@
 ---
-order: 14336
+order: 1536
 title: Sessions worked by a Device lock for everyone else, with a take-over CTA and Device-to-Device hand-off
-status: In Progress
+status: Done
 priority: high
 attachments: docs/superpowers/specs/2026-09-27-companion-design.md,docs/adr/0003-companion-drives-the-desktop-app.md,docs/adr/0004-one-unlock-gives-full-control.md,CONTEXT.md,.gavin-root/plans/archive/companion-16-presence-and-phone-sessions.md,crates/daemon/src/presence.rs
 complexity: intricate

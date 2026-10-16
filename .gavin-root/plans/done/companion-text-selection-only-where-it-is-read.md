@@ -1,4 +1,5 @@
 ---
+order: 6144
 kind: task
 title: Companion: turn text selection off on controls and chrome, keep it where text is read
 status: Done

@@ -1,9 +1,9 @@
 ---
 complexity: complex
-order: 16384
+order: 4608
 kind: plan
 title: [feat][rework] agent’s settings
-status: In Progress
+status: Done
 ---
 Centralize agent management in one Agents settings hub (app + workspace),
 with multiple named custom agents as first-class profiles, and the same hub

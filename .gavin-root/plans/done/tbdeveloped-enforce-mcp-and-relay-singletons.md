@@ -1,9 +1,9 @@
 ---
 complexity: moderate
-order: 12288
+order: 1280
 kind: plan
 title: [enforce] daemon singleton + gavin-mcp connect diagnosis
-status: In Progress
+status: Done
 ---
 My guess was that the "gavin daemon isn't running — open the gavin app (…: Connection refused)" errors, which hit mid-session at random and stay failed, came from duplicate daemon, mcp or relay processes. Reading the code settled three things. The relay is out of scope, because nothing in the product spawns one. gavin-mcp is one per agent session by design. The daemon is the one real singleton hole: a second copy of the same build runs `Registry::open`, `recover()`, the browser sweep and Headroom resume, and rewrites the token, before it finds out at `bind_server` that the socket is taken. So this plan closes that hole and makes the next connect failure name its own cause.
 

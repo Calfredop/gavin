@@ -1,7 +1,7 @@
 ---
-order: 23552
+order: 7168
 title: Relay deploy and mobile compile guide
-status: In Progress
+status: Done
 ---
 Write a full operator guide for deploying the Relay and compiling the Companion mobile app, plus any missing helper scripts the guide needs.
 

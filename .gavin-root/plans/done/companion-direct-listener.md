@@ -1,7 +1,7 @@
 ---
-order: 10240
+order: 1216
 title: Companion: direct connection, no Relay
-status: In Progress
+status: Done
 priority: medium
 attachments: docs/superpowers/specs/2026-09-27-companion-design.md,docs/self-hosting-relay.md,docs/relay.md,CONTEXT.md
 complexity: intricate

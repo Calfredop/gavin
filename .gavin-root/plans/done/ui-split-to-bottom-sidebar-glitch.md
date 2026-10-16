@@ -1,5 +1,5 @@
 ---
-order: 15360
+order: 3072
 kind: task
 title: [ui] split to bottom sidebar glitch
 status: Done

@@ -1,7 +1,7 @@
 ---
-order: 21504
+order: 6656
 title: [fix] daemon deadlocks: a guard held across the session screen lock
-status: In Progress
+status: Done
 priority: urgent
 ---
 Every terminal tab came up blank and a fresh shell never printed its prompt. Cause, measured on the live dev daemon (v57, up 5.5 days) with `sample` and an lldb register probe: an ABBA deadlock between the PTY pump and two other paths, in `crates/daemon/src/server.rs`.

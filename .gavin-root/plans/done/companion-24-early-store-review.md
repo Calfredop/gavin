@@ -1,8 +1,7 @@
 ---
-order: 3072
+order: 1024
 kind: task
 title: Companion 24: early store review
-status: In Progress
 labels: ready-for-human
 parent: companion.md
 complexity: moderate

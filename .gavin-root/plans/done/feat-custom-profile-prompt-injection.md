@@ -1,7 +1,7 @@
 ---
-order: 6144
+order: 1088
 title: [feat] MCP-ready prompt injection for custom profiles
-status: In Progress
+status: Done
 ---
 The kimi integration (feat-kimi-integration.md, K3) introduces a "MCP initialize = agent ready" callback: gavin-mcp signals the daemon when a session's agent has connected, and the daemon writes the queued card prompt into the PTY. That mechanism is profile-agnostic.
 

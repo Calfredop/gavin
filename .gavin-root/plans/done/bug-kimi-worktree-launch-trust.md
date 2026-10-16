@@ -1,8 +1,8 @@
 ---
-order: 7168
+order: 1168
 kind: task
 title: [bug] kimi runs in gavin worktrees still stop at the trust screen (or drop the gavin MCP server)
-status: In Progress
+status: Done
 parent: bug-kimi-launch-integrations.md
 priority: high
 ---

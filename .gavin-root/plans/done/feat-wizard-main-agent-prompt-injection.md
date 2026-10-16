@@ -1,8 +1,8 @@
 ---
-order: 8192
+order: 1200
 kind: task
 title: [feat] setup wizard can start kimi (and other prompt-injection profiles) on the PRD
-status: In Progress
+status: Done
 parent: bug-kimi-launch-integrations.md
 priority: low
 ---

@@ -1,9 +1,9 @@
 ---
 complexity: complex
-order: 9216
+order: 1184
 kind: plan
 title: [feat] vectorized memory
-status: In Progress
+status: Done
 ---
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

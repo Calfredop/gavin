@@ -1,9 +1,9 @@
 ---
 complexity: moderate
-order: 11264
+order: 1152
 kind: plan
 title: [feat] installers
-status: In Progress
+status: Done
 ---
 Create a pipeline that compiles macOS and Windows installer upon remote main push and publishes a release.
 

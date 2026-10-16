@@ -1,5 +1,5 @@
 ---
-order: 15360
+order: 2048
 kind: task
 title: [ui] companion session connect
 status: Done
