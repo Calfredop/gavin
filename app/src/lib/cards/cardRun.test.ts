@@ -10,6 +10,8 @@ import {
   composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
   withPromptExtras,
   buildResumeCommand,
   unresumableConversationReason,
@@ -626,6 +628,35 @@ describe("withRelaunchNote", () => {
   it("leaves a command with no quoted prompt alone", () => {
     expect(withRelaunchNote("kimi", "/p/t.md")).toBe("kimi");
     expect(withRelaunchNote(null, "/p/t.md")).toBeNull();
+  });
+});
+
+describe("isGavinBuiltCommand", () => {
+  const claude = { launchCommand: "claude --model opus", promptArgs: "", sessionIdArgs: "" };
+  const withId = { ...claude, sessionIdArgs: "--session-id" };
+  const opencode = { launchCommand: "opencode", promptArgs: "--prompt=", sessionIdArgs: "" };
+
+  it("accepts what buildRunCommand writes", () => {
+    expect(isGavinBuiltCommand(buildRunCommand(claude.launchCommand, "", "do it")!, claude)).toBe(true);
+    expect(
+      isGavinBuiltCommand(
+        buildRunCommand(withId.launchCommand, "", "do it", "--session-id", "u1")!,
+        withId
+      )
+    ).toBe(true);
+    expect(isGavinBuiltCommand(buildRunCommand("opencode", "--prompt=", "do it")!, opencode)).toBe(true);
+  });
+
+  it("accepts a stored command that already carries a re-launch note", () => {
+    const once = withRelaunchNote(buildRunCommand(claude.launchCommand, "", "do it"), "/p/t.md")!;
+    expect(isGavinBuiltCommand(once, claude)).toBe(true);
+  });
+
+  it("refuses a command no gavin launch could have built", () => {
+    expect(isGavinBuiltCommand("sh -c 'touch x'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude --model opus 'ok'; sh -c 'bad'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude 'x'", claude)).toBe(false);
+    expect(FOREIGN_RELAUNCH_COMMAND).toMatch(/Launch as new session/);
   });
 });
 

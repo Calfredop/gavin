@@ -29,6 +29,8 @@ import {
   buildResumeCommand,
   withFreshConversationId,
   withRelaunchNote,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
   relaunchNote,
   noPromptReason,
   usesPromptInjection,
@@ -1187,12 +1189,6 @@ export async function relaunchCard(
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
   // least.
-  //
-  // And no first-Run review, for the opposite reason to develop's: this
-  // replays the command the binding STORED, so the bytes it sends are the
-  // ones a human already read before the first launch. Re-reading the
-  // card here would be the wrong question -- the file may have moved on,
-  // and none of it is going anywhere.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
   const remote = sshLaunchBlocker(workspaceId);
@@ -1232,6 +1228,12 @@ export async function relaunchCard(
   // The command itself, whatever the board said: a daemon too old to
   // say anything reads as replayable there.
   if (!binding.command?.trim()) return NOTHING_TO_REPLAY;
+  // Link/Claim can store an arbitrary string on the binding. withRelaunchNote
+  // and withFreshConversationId hand unrecognised commands back unchanged,
+  // so anything that is not one buildRunCommand wrote for this agent is
+  // refused here -- before createSession -- and Launch as new session is
+  // the way to compose a fresh, gated command from the card now.
+  if (!isGavinBuiltCommand(binding.command, agent)) return FOREIGN_RELAUNCH_COMMAND;
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is
@@ -1246,8 +1248,39 @@ export async function relaunchCard(
   // where its status is recorded: the original was written for a card
   // nobody had started. Not a direct prompt's, which carries no word of
   // gavin's -- a note naming the card would be the first.
-  const replayed =
-    relaunched && isDirectPrompt(relaunched) ? binding.command : withRelaunchNote(binding.command, path);
+  const verbatim = Boolean(relaunched && isDirectPrompt(relaunched));
+  const replayed = verbatim ? binding.command : withRelaunchNote(binding.command, path);
+  // A direct prompt's replayed bytes are the stored, already-reviewed
+  // body and get no relaunch note. Every other card -- a plan whose
+  // stored prompt only names the file, a task whose framing points at
+  // it, anything withRelaunchNote extends -- tells the agent to read the
+  // card at its CURRENT path. That is the card's content reaching the
+  // agent, so the first-Run review applies the same way new-session mode
+  // gates the identical note: read the file, digest it, ask or refuse
+  // unattended, before createSession and before the binding is rewritten.
+  if (!verbatim) {
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    const content = {
+      title: relaunched?.title ?? "",
+      body: stripFrontmatter(file.content).trim(),
+      attachments: relaunched?.attachments ?? [],
+    };
+    if (options.queued && !cardReviewed(workspaceId, path, content)) return UNREVIEWED_UNATTENDED;
+    const resolved = await resolveAttachmentsForRun(workspaceId, content.attachments);
+    if ("error" in resolved) return resolved.error;
+    if (
+      !(await ensureCardReviewed({
+        workspaceId,
+        path,
+        content,
+        statuses: resolved.statuses,
+        prompt: replayed ?? binding.command,
+      }))
+    ) {
+      return null;
+    }
+  }
   const fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
