@@ -1,7 +1,8 @@
 ---
+order: 2048
 kind: plan
 title: Re-launch opens an empty terminal when the card's session has no stored command; add "Launch as new session"
-status: In Progress
+status: Done
 priority: medium
 complexity: moderate
 attachments: app/src/lib/cards/cardRunActions.ts
@@ -47,4 +48,4 @@ This also covers the bug above: it is the action to offer when Re-launch has not
   - Detail bar ("Launch as new session", beside Re-launch, enabled whenever the session is not live), card menu (exited binding), phone card (`DEVICE_ACTIONS`, `state/cards.ts` `launch`).
 - [x] Tests: re-launch with a command-less binding doesn't spawn and doesn't re-bind; "Launch as new session" replaces the binding with a fresh conversation id.
   - `cardRunActions.test.ts` (both refusal paths; new session: prompt, binding replacement, review gate, live refusal), `cardDetail.test.ts`, `cardMenu.test.ts`, `kanbanState.test.ts`, companion `seam/cards.test.ts`, daemon `kanban::tests::the_board_says_which_bindings_have_a_launch_to_replay`.
-- [ ] Human test: After a daemon rebuild+restart, open the mandragora card fix-cardtrader-troll-guard.md: the session bar shows Re-launch greyed with the "linked, not launched" line under it, and "Launch as new session" starts a real agent (not a bare zsh) bound to the card; same card on the phone shows both buttons the same way
+- [x] Human test: After a daemon rebuild+restart, open the mandragora card fix-cardtrader-troll-guard.md: the session bar shows Re-launch greyed with the "linked, not launched" line under it, and "Launch as new session" starts a real agent (not a bare zsh) bound to the card; same card on the phone shows both buttons the same way
