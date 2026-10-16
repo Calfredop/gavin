@@ -26,6 +26,8 @@ const VIEW = source("GlobalSettingsView.svelte");
 // Pairing, the Device list and revocation moved out of Settings into the
 // Devices panel; the Settings section keeps the switch, Relay and token.
 const PANEL = source("DevicesPanel.svelte");
+// The QR and its sheet: a wide dialog of its own over the panel.
+const PAIRING = source("PairingDialog.svelte");
 const MODULE = source("remoteAccess.ts");
 const BACKEND = source("backend.ts");
 
@@ -178,19 +180,25 @@ describe("the Settings section", () => {
     expect(VIEW).not.toMatch(/<button[^>]*use:tooltip=\{remoteAccessGate/);
   });
 
+  it("opens the QR in a wide dialog of its own, not inside the panel's column", () => {
+    expect(PANEL).toContain("<PairingDialog {pairing} {nowMs}");
+    expect(PANEL).not.toContain("<svg");
+    expect(PAIRING).toContain("<Modal {onClose} wide>");
+  });
+
   it("draws the QR inline, from the payload, with no network anywhere", () => {
-    expect(PANEL).toContain("qrDraw(pairing.qr)");
-    expect(PANEL).toContain("<svg");
-    expect(PANEL).toContain("<path d={drawn.path}");
+    expect(PAIRING).toContain("qrDraw(pairing.qr)");
+    expect(PAIRING).toContain("<svg");
+    expect(PAIRING).toContain("<path d={drawn.path}");
     // No image service, no CDN, no <img>: the thing being drawn is a
     // pairing secret, and a URL is a copy of it leaving the machine.
-    expect(PANEL).not.toMatch(/<img[^>]*qr/i);
+    expect(PAIRING).not.toMatch(/<img[^>]*qr/i);
     expect(MODULE).not.toContain("http://");
     expect(source("qr.ts")).not.toContain("https://");
   });
 
   it("shows the countdown beside it", () => {
-    expect(PANEL).toContain("countdownLabel(pairing.expiresAt, nowMs)");
+    expect(PAIRING).toContain("countdownLabel(pairing.expiresAt, nowMs)");
   });
 
   // Every prompt's words come from the module, so the copy the unit

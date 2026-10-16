@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import Modal from "$lib/core/Modal.svelte";
+  import PairingDialog from "$lib/core/PairingDialog.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import * as backend from "$lib/core/backend";
   import { tooltip } from "$lib/core/tooltip";
@@ -10,7 +11,6 @@
   import {
     NO_DEVICES,
     PAIRING_IDLE,
-    countdownLabel,
     knownDevice,
     pairingClosed,
     pairingConfirmCopy,
@@ -19,11 +19,9 @@
     pairingOpen,
     pairingRejected,
     pairingRequested,
-    pairingSheet,
     pairingTick,
     pairingUnavailable,
     pushGatewayBlocked,
-    qrDraw,
     relayStatus,
     revokeAllCopy,
     revokeDeviceCopy,
@@ -242,60 +240,7 @@
     {/if}
 
     {#if pairingOpen(pairing)}
-      <div class="pairing">
-        {#if pairing.phase === "offer" || pairing.phase === "requested"}
-          {@const drawn = qrDraw(pairing.qr)}
-          {@const sheet = pairingSheet(pairing.qr)}
-          {#if drawn.error}
-            <p class="hint warn">Couldn't draw the QR: {drawn.error}</p>
-          {:else}
-            <!-- Inline SVG drawn from the payload by qr.ts: no image
-                 service, no CDN, no dependency -- what is being drawn is a
-                 pairing secret. -->
-            <svg
-              class="qr"
-              viewBox="0 0 {drawn.size} {drawn.size}"
-              role="img"
-              aria-label="Pairing QR code"
-            >
-              <rect width={drawn.size} height={drawn.size} fill="#fff" />
-              <path d={drawn.path} fill="#000" />
-            </svg>
-          {/if}
-          <div class="pairing-text">
-            {#if pairing.phase === "requested"}
-              <p>Waiting for your answer on the prompt.</p>
-            {:else}
-              <p>Scan this with the phone you want to pair.</p>
-            {/if}
-            <p class="hint">
-              This code expires in {countdownLabel(pairing.expiresAt, nowMs)}. It is one use only,
-              and scanning it is not enough on its own — you confirm a six-digit code here, on the
-              desktop, before the device exists.
-            </p>
-            {#if sheet.paths.length > 0}
-              <p>It carries these ways in:</p>
-              <ul class="paths">
-                {#each sheet.paths as path (path.url)}
-                  <li><span class="path-kind">{path.label}</span> <code>{path.url}</code></li>
-                {/each}
-              </ul>
-              {#each sheet.notes as note (note)}
-                <p class="hint">{note}</p>
-              {/each}
-            {/if}
-          </div>
-        {:else if pairing.phase === "confirmed"}
-          <p>“{pairing.request.name}” is paired.</p>
-        {:else if pairing.phase === "rejected"}
-          <p>“{pairing.request.name}” was rejected. Nothing was written.</p>
-        {:else}
-          <p>That pairing code expired. Press Pair a device for a new one.</p>
-        {/if}
-        <button type="button" class="manage" onclick={() => (pairing = pairingClosed())}>
-          Close
-        </button>
-      </div>
+      <PairingDialog {pairing} {nowMs} onClose={() => (pairing = pairingClosed())} />
     {/if}
 
     {#if actionError ?? $devicesFailure}
@@ -409,43 +354,6 @@
   }
   button.manage.danger {
     color: var(--danger-text);
-  }
-  .pairing {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    margin: 6px 0;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  /* A fixed box rather than one sized by the symbol, so the panel does not
-     jump when the Relay URL changes length. White ground in both themes: a
-     dark-on-dark QR is one no camera reads. */
-  .pairing svg.qr {
-    flex: 0 0 auto;
-    width: 168px;
-    height: 168px;
-    border-radius: 4px;
-  }
-  .pairing-text {
-    min-width: 0;
-  }
-  .pairing p {
-    margin: 0 0 6px;
-  }
-  .paths {
-    list-style: none;
-    margin: 0 0 6px;
-    padding: 0;
-  }
-  .paths li {
-    overflow-wrap: anywhere;
-  }
-  .path-kind {
-    display: inline-block;
-    min-width: 7em;
-    color: var(--text-subtle);
   }
   .devices {
     list-style: none;
