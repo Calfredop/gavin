@@ -52,6 +52,23 @@ One-shot sync + native compile (debug or `--release`):
 scripts/compile.sh ios|android|both [--release] [--install <udid-or-serial>] …
 ```
 
+A debug build from this checkout on every phone plugged into the Mac:
+
+```
+scripts/usb-install.sh [--list] [--only <serial-or-udid>] [--network] [--team <TEAM_ID>] [--no-launch]
+```
+
+It finds Android phones on a cable through adb (`usb:` in `adb devices -l`;
+emulators and wireless debugging are left out) and physical iPhones through
+`devicectl` (USB only unless `--network`), says why it skips any it found,
+then syncs and builds only the platforms it found, once each, installs and
+launches. An iPhone build signs with `--team`, `DEVELOPMENT_TEAM`, or else
+the team the last iPhone build here succeeded with. It must be a paid team
+Xcode is signed in to (push needs one); the script checks that before
+building and, if not, leaves the iPhones out and still installs on the
+Android phones. It never uninstalls a store build in the way: that would
+delete the Device's keys.
+
 From `app/`:
 
 ```
