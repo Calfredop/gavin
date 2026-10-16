@@ -30,6 +30,8 @@ import {
   withFreshConversationId,
   withRelaunchNote,
   relaunchNote,
+  commandUsesLaunchAgent,
+  rebindRunCommand,
   noPromptReason,
   usesPromptInjection,
   withPromptExtras,
@@ -1212,13 +1214,15 @@ export async function relaunchCard(
     });
     if (!held.go) return held.error;
   }
-  // Through the card's OWN agent, not the workspace's, because the
-  // command being replayed is the one that card LAUNCHED with -- and
-  // `sessionIdArgs` below has to describe that binary. Resolving the
-  // workspace's agent here would hand codex's replay claude's
-  // `--session-id`, which is garbage in its argv.
+  // Re-decide the agent the same way Run does. A prior limit-hit walk
+  // stored the FALLBACK's binary on the binding; replaying that verbatim
+  // kept spawning Gemini (or whoever) after the human removed them from
+  // the chain. The remembered prompt still rides; only the binary is
+  // rebound when launchDecision picks someone else.
   const relaunched = cardViewForPath(get(gavinTrees)[workspaceId], path);
-  const agent = agentForCard(workspaceId, relaunched);
+  const { decision, agent } = agentForNewLaunch(workspaceId, relaunched, false);
+  const fallbackHold = holdLaunch(workspaceId, decision);
+  if (fallbackHold) return fallbackHold;
   // The binding WHOLE, read by card: the board carries no launch command
   // (v43), and this is the one action that replays it. Read after the
   // gates, so a re-launch that queued reads it when it finally runs.
@@ -1246,9 +1250,30 @@ export async function relaunchCard(
   // where its status is recorded: the original was written for a card
   // nobody had started. Not a direct prompt's, which carries no word of
   // gavin's -- a note naming the card would be the first.
-  const replayed =
-    relaunched && isDirectPrompt(relaunched) ? binding.command : withRelaunchNote(binding.command, path);
-  const fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
+  //
+  // When the stored binary is not the agent launchDecision picked
+  // (stale fallback, or the workspace agent changed), rebuild around
+  // the remembered prompt on the decided agent rather than replaying
+  // a CLI the chain no longer names.
+  let fresh: { command: string | null; conversationId: string | null };
+  if (commandUsesLaunchAgent(binding.command, agent.launchCommand)) {
+    const replayed =
+      relaunched && isDirectPrompt(relaunched) ? binding.command : withRelaunchNote(binding.command, path);
+    fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
+  } else {
+    const rebound = rebindRunCommand(binding.command, agent);
+    if (!rebound) {
+      return (
+        "This card's remembered launch was on a different agent, and gavin could not " +
+        "rebuild it for the one that should run now — use Launch as new session."
+      );
+    }
+    const withNote =
+      relaunched && isDirectPrompt(relaunched)
+        ? rebound.command
+        : withRelaunchNote(rebound.command, path);
+    fresh = { command: withNote, conversationId: rebound.conversationId };
+  }
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
   // was launched in, which is where it is about to run again.
@@ -1259,8 +1284,8 @@ export async function relaunchCard(
       binding.cwd,
       fresh.command ?? undefined,
       workspaceRootPath(workspaceId) ?? undefined,
-      // The card's own agent, for the reason `agent` above is: it is
-      // what the remembered command is taken to have launched with.
+      // The agent launchDecision picked, which may be a fallback — and
+      // which may differ from the binary the binding stored.
       profileIdForLaunch(agent)
     );
   } catch (e) {

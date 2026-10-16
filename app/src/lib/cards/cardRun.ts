@@ -373,6 +373,85 @@ export function withRelaunchNote(command: string | null, path: string): string |
   return base + shellQuote(relaunchNote(path));
 }
 
+/// Drop a relaunch note an earlier re-launch appended, leaving the original
+/// quoted prompt closed. Used when rebinding a stored command onto a
+/// different agent so the note is not baked into the extracted prompt twice.
+export function commandWithoutRelaunchNote(command: string): string {
+  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
+  return earlier === -1 ? command : command.slice(0, earlier);
+}
+
+/// Undo one `shellQuote` suffix. Null when `s` is not a complete quoted
+/// string (unclosed, or leftover bytes after the closing quote).
+function tryUnquoteShell(s: string): { value: string; quotedLength: number } | null {
+  if (!s.startsWith("'")) return null;
+  let i = 1;
+  let value = "";
+  while (i < s.length) {
+    if (s.startsWith("'\\''", i)) {
+      value += "'";
+      i += 4;
+      continue;
+    }
+    if (s[i] === "'") {
+      return { value, quotedLength: i + 1 };
+    }
+    value += s[i];
+    i += 1;
+  }
+  return null;
+}
+
+/// The prompt text inside a stored `buildRunCommand` line, or null when
+/// the command carries no trailing shell-quoted prompt (an injection
+/// launch's bare line, or something gavin did not build).
+export function promptFromRunCommand(command: string): string | null {
+  if (!command.endsWith("'")) return null;
+  // Leftmost opening quote that unquotes through to the end — the outer
+  // shellQuote around the prompt. A later match would be an embedded
+  // `'\''` fragment (e.g. reading "s fine" out of "it's fine").
+  for (let start = 0; start < command.length; start++) {
+    if (command[start] !== "'") continue;
+    const parsed = tryUnquoteShell(command.slice(start));
+    if (parsed && start + parsed.quotedLength === command.length) {
+      return parsed.value;
+    }
+  }
+  return null;
+}
+
+/// Whether `command` was built for this agent's launch binary (exact match
+/// or the binary as a whole first token sequence).
+export function commandUsesLaunchAgent(command: string, launchCommand: string): boolean {
+  const cmd = launchCommand.trim();
+  if (!cmd) return false;
+  const line = command.trimStart();
+  return line === cmd || line.startsWith(`${cmd} `);
+}
+
+/// Rebuild a stored run's prompt onto a different agent's binary — what
+/// Re-launch does when the remembered command is a stale fallback walk.
+/// Null when there is no quoted prompt to carry, or the next agent takes
+/// no prompt at all.
+export function rebindRunCommand(
+  command: string,
+  next: { launchCommand: string; promptArgs: string | null; sessionIdArgs: string }
+): { command: string; conversationId: string | null } | null {
+  if (next.promptArgs === null) return null;
+  const prompt = promptFromRunCommand(commandWithoutRelaunchNote(command));
+  if (prompt == null) return null;
+  const conversationId = mintConversationId(next.sessionIdArgs);
+  const built = buildRunCommand(
+    next.launchCommand,
+    next.promptArgs,
+    prompt,
+    next.sessionIdArgs,
+    conversationId
+  );
+  if (built == null) return null;
+  return { command: built, conversationId };
+}
+
 /// `<command> <resume_args> <uuid>` -- the agent reopening the
 /// conversation it was having, rather than a new agent reading an
 /// account of it.

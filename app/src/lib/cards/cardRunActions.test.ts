@@ -1296,7 +1296,7 @@ describe("the run's baseline", () => {
 
 describe("relaunchCard", () => {
   it("recreates from the stored binding and re-links", async () => {
-    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" });
+    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude --model opus 'x'" });
     vi.mocked(backend.createSession).mockResolvedValue("s-new");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
 
@@ -1307,7 +1307,7 @@ describe("relaunchCard", () => {
     expect(backend.cardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
     expect(backend.createSession).toHaveBeenCalledWith(
       "/p",
-      `claude 'x'${shellQuote(relaunchNote("/p/t.md"))}`,
+      `claude --model opus 'x'${shellQuote(relaunchNote("/p/t.md"))}`,
       "/ws",
       "claude-code"
     );
@@ -1411,12 +1411,37 @@ describe("relaunchCard", () => {
   });
 
   it("records on the board whether the new binding can be replayed", async () => {
-    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" });
+    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude --model opus 'x'" });
     vi.mocked(backend.createSession).mockResolvedValue("s-new");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
 
     expect(await relaunchCard("ws-1", "/p/t.md")).toBeNull();
     expect(get(kanbanState)["ws-1"].cardSessions[0].replayable).toBe(true);
+  });
+
+  // A prior limit-hit walk stored Gemini's binary. The human then removed
+  // Gemini from the fallback chain (or the primary is under threshold
+  // again). Re-launch must not keep spawning that stale binary — it
+  // re-decides the agent and rebuilds the command around the remembered
+  // prompt. Changing fallback settings used to do nothing here.
+  it("rebinds a stored fallback binary onto the agent launchDecision picks now", async () => {
+    remembered({
+      path: "/p/t.md",
+      sessionId: "s-dead",
+      cwd: "/p",
+      command: "gemini --yolo 'do the thing'",
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBeNull();
+
+    const [, command, , profileId] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toMatch(/^claude --model opus /);
+    expect(command).not.toContain("gemini");
+    expect(command).toContain("do the thing");
+    expect(command).toContain(relaunchNote("/p/t.md").trim());
+    expect(profileId).toBe("claude-code");
   });
 });
 

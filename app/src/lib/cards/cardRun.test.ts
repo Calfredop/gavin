@@ -17,6 +17,9 @@ import {
   withFreshConversationId,
   withRelaunchNote,
   relaunchNote,
+  promptFromRunCommand,
+  commandUsesLaunchAgent,
+  rebindRunCommand,
   noPromptReason,
   agentPromptBlocker,
   usesPromptInjection,
@@ -626,6 +629,32 @@ describe("withRelaunchNote", () => {
   it("leaves a command with no quoted prompt alone", () => {
     expect(withRelaunchNote("kimi", "/p/t.md")).toBe("kimi");
     expect(withRelaunchNote(null, "/p/t.md")).toBeNull();
+  });
+});
+
+describe("promptFromRunCommand / commandUsesLaunchAgent / rebindRunCommand", () => {
+  it("reads the prompt out of a stored buildRunCommand line", () => {
+    expect(promptFromRunCommand("claude 'do it'")).toBe("do it");
+    expect(promptFromRunCommand("gemini --yolo --prompt='attached'")).toBe("attached");
+    expect(promptFromRunCommand(`claude ${shellQuote("it's fine")}`)).toBe("it's fine");
+    expect(promptFromRunCommand("kimi")).toBeNull();
+  });
+
+  it("recognises whether a stored line was built for this launch binary", () => {
+    expect(commandUsesLaunchAgent("claude --model opus 'x'", "claude --model opus")).toBe(true);
+    expect(commandUsesLaunchAgent("gemini --yolo 'x'", "claude --model opus")).toBe(false);
+  });
+
+  it("rebuilds a stored prompt onto a different agent's binary", () => {
+    const rebound = rebindRunCommand("gemini --yolo 'do the thing'", {
+      launchCommand: "claude --model opus",
+      promptArgs: "",
+      sessionIdArgs: "",
+    });
+    expect(rebound).toEqual({
+      command: "claude --model opus 'do the thing'",
+      conversationId: null,
+    });
   });
 });
 
