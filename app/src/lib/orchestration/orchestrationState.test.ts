@@ -114,6 +114,14 @@ vi.mock("$lib/core/layoutState", () => ({
   // nobody has read. True by default, since almost every fixture here is
   // about scheduling rather than about provenance.
   cardReviewed: vi.fn(() => true),
+  // Organize/Reorganize also read config trust for the worktree-setup
+  // block they put in the prompt. Approved by default.
+  configTrustFor: vi.fn(() => ({
+    trusted: true,
+    keys: { command: "", file: "", setup: [] },
+    hash: "",
+    needsApproval: false,
+  })),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   retainTabOnExit: vi.fn(),
   // tick() reads this through get(), so it has to be a real store.
@@ -218,6 +226,8 @@ vi.mock("$lib/core/gavinState", () => ({
   },
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
+  // Organize/Reorganize read the trusted setup list from this store.
+  worktreeSetups: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
 }));
 // The daemon's own pushes, capturable: initOrchestrationListeners is the
 // third place a plan can arrive, and the only one that needs a real

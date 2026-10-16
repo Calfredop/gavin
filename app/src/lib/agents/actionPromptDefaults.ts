@@ -84,6 +84,7 @@ export const DEFAULT_ORGANIZE =
   "over a longer one, and give each rail that must run at the same time its own isolation — create\n" +
   "the worktree and the branch yourself with git, then send worktreePath and branch on the rail.\n" +
   "An unbound rail is not isolated, and a worktreePath nothing created is a stalled rail.\n\n" +
+  "{{worktree_setup_block}}\n\n" +
   "{{read_first}}\n" +
   "{{carry_through}}";
 
@@ -95,6 +96,7 @@ export const DEFAULT_REORGANIZE =
   "Reorganize this rail's stages: reorder them, split a stage whose steps would collide in one\n" +
   "checkout, merge stages that are genuinely independent. Keep the steps it already holds — this\n" +
   "is not the place to add or drop work — and send every OTHER rail back exactly as you read it.\n\n" +
+  "{{worktree_setup_block}}\n\n" +
   "{{read_first}}\n" +
   "{{carry_through}}";
 

@@ -138,6 +138,25 @@ describe("composeOrganizePrompt", () => {
     expect(p).toContain("create");
     expect(p).toContain("worktreePath and branch on the rail");
   });
+
+  // Config trust (AG-05): the skill used to tell the agent to read
+  // `[worktree] setup` from config.toml itself. The prompt now hands the
+  // approved list (empty when untrusted), so a cloned repo's lines never
+  // reach the shell through the organize agent.
+  it("hands the approved worktree setup lines, and forbids reading config.toml", () => {
+    const withSetup = composeOrganizePrompt(null, unplaced, [], undefined, undefined, [
+      "npm install",
+      "cargo fetch",
+    ]);
+    expect(withSetup).toContain("npm install");
+    expect(withSetup).toContain("cargo fetch");
+    expect(withSetup).toContain("never read");
+    expect(withSetup).toContain("[worktree] setup");
+
+    const none = composeOrganizePrompt(null, unplaced, [], undefined, undefined, []);
+    expect(none).toContain("no approved worktree setup");
+    expect(none).toContain("never read");
+  });
 });
 
 describe("composeRailPrompt", () => {

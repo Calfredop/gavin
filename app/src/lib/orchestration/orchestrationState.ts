@@ -108,6 +108,7 @@ import {
   armFailureDetection,
   baseShaForLaunch,
   cardReviewed,
+  configTrustFor,
   conversationIdForLaunch,
   createSessionOnPage,
   createSessionOnNewPage,
@@ -135,7 +136,7 @@ import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
 import { fetchTools, libraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
-import { gavinTrees, patchPlanField } from "$lib/core/gavinState";
+import { gavinTrees, patchPlanField, worktreeSetups } from "$lib/core/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/git/gitState";
 import { branchResolvable } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
@@ -192,6 +193,7 @@ import {
   mayLaunch,
   type OrchestrationIntent,
 } from "$lib/agents/launchQueue";
+import { trustedSetup } from "$lib/workspace/workspaceTrust";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -3198,16 +3200,60 @@ async function launchOrchestrationAgent(
   return null;
 }
 
+/// Titles of cards whose content this run would hand an agent, and which
+/// the first-Run review has not cleared. Empty when every entry is
+/// reviewed (or when `requireReview` resolves off — `cardReviewed` is
+/// true then). Reads each body from disk so the digest covers what the
+/// skill will open, not only the title the prompt inlines.
+async function unreviewedTitles(workspaceId: string, entries: CardEntry[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of entries) {
+    const file = await backend.readFileForViewer(e.plan.path);
+    const body = file.exists ? stripFrontmatter(file.content).trim() : "";
+    if (
+      !cardReviewed(workspaceId, e.plan.path, {
+        title: e.plan.title,
+        body,
+        attachments: e.plan.attachments ?? [],
+      })
+    ) {
+      out.push(e.plan.title);
+    }
+  }
+  return out;
+}
+
+function organizeReviewRefusal(titles: string[]): string {
+  return `Review these cards before an agent reads them: ${titles.join(", ")}`;
+}
+
+/// The `[worktree] setup` lines this Organize/Reorganize launch may tell
+/// the agent to run — already gated by config trust. Off the store, not
+/// a fresh disk read: that is the list the trust digest hashed.
+function trustedWorktreeSetupLines(workspaceId: string): string[] {
+  return trustedSetup(
+    get(worktreeSetups)[workspaceId] ?? [],
+    configTrustFor(workspaceId).trusted
+  );
+}
+
 /// The GENERATE request: the cards nobody has placed, plus a summary of
 /// what the tab currently shows, so the agent starts from the same
 /// picture the human is looking at -- it still calls
 /// gavin_get_orchestration for the authoritative read.
-export function requestOrganize(
+///
+/// The first-Run review clears HERE, before `host.hold` and before any
+/// session is spawned: the prompt inlines titles and the skill weighs
+/// bodies, so an unreviewed cloned card must not reach this agent. The
+/// Device path inherits the check because it calls the same function.
+export async function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
   conflictSummary: string[],
   host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
+  const unreviewed = await unreviewedTitles(workspaceId, unplaced);
+  if (unreviewed.length > 0) return organizeReviewRefusal(unreviewed);
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
     workspaceId,
@@ -3217,7 +3263,8 @@ export function requestOrganize(
       unplaced,
       conflictSummary,
       mustPromptBody("action:organize", workspaceId),
-      mustPromptBody("action:name-tab-first", workspaceId)
+      mustPromptBody("action:name-tab-first", workspaceId),
+      trustedWorktreeSetupLines(workspaceId)
     ),
     host
   );
@@ -3227,7 +3274,11 @@ export function requestOrganize(
 /// the rail out of the store rather than taking it from the caller, so a
 /// rail deleted between render and click is caught here instead of
 /// launching an agent at work that no longer exists.
-export function requestRailReorganize(
+///
+/// Same first-Run review as Organize, over the rail's card steps (tool
+/// steps carry no card content). Queued intents only exist after this
+/// check, so a drain cannot bypass it.
+export async function requestRailReorganize(
   workspaceId: string,
   railId: string,
   cards: Map<string, CardEntry>,
@@ -3237,7 +3288,14 @@ export function requestRailReorganize(
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
-  if (!orch || !rail) return Promise.resolve("That rail is gone");
+  if (!orch || !rail) return "That rail is gone";
+  const stepCards = rail.stages
+    .flatMap((s) => s.steps)
+    .filter((s) => !isToolStep(s))
+    .map((s) => cards.get(s.cardPath))
+    .filter((e): e is CardEntry => e != null);
+  const unreviewed = await unreviewedTitles(workspaceId, stepCards);
+  if (unreviewed.length > 0) return organizeReviewRefusal(unreviewed);
   return launchOrchestrationAgent(
     workspaceId,
     { railId, label: reorganizeLabel(rail.name) },
@@ -3248,7 +3306,8 @@ export function requestRailReorganize(
       tools,
       conflictSummary,
       mustPromptBody("action:reorganize", workspaceId),
-      mustPromptBody("action:name-tab-first", workspaceId)
+      mustPromptBody("action:name-tab-first", workspaceId),
+      trustedWorktreeSetupLines(workspaceId)
     ),
     host
   );
