@@ -372,7 +372,7 @@ import { appDuty } from "$lib/shell/appDuty";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
-import { noPromptReason } from "$lib/cards/cardRun";
+import { noPromptReason, shellQuote } from "$lib/cards/cardRun";
 import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
@@ -963,7 +963,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1"
+      `claude --resume ${shellQuote("conv-1")}`
     );
     // The same conversation id, the new session, and the budget
     // UNTOUCHED: a human's press is not an automatic attempt.
@@ -1004,7 +1004,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       { profileId: "claude-code", withoutHeadroom: true }
     );
     expect(isAwaitingFirstSubmit("sess-2")).toBe(true);
@@ -1030,7 +1030,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       "claude-code"
     );
   });
@@ -1582,7 +1582,7 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     await setRailRunAction("ws-1", "r1", "paused", "s1");
     expect(await resumeStep("ws-1", "t1")).toBeNull();
     expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
-      ...pageArgs("claude --resume conv-1")
+      ...pageArgs(`claude --resume ${shellQuote("conv-1")}`)
     );
   });
 });

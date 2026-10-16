@@ -515,10 +515,12 @@ describe("mintConversationId", () => {
 describe("buildResumeCommand", () => {
   // No prompt. Resume puts the agent back at the end of its OWN
   // transcript; a prompt here would be a fresh instruction on top of a
-  // conversation that already holds the whole task.
+  // conversation that already holds the whole task. The id is one
+  // shell-quoted token so a stored value cannot change the line's shape
+  // under `sh -c` (sec-fix-conversation-id-token-grammar).
   it("reopens the conversation and hands the agent nothing else", () => {
     expect(buildResumeCommand("claude --model opus", "--resume", "u1")).toBe(
-      "claude --model opus --resume u1"
+      `claude --model opus --resume ${shellQuote("u1")}`
     );
   });
 
@@ -544,9 +546,32 @@ describe("buildResumeCommand", () => {
   // a CLAUDE_CONFIG_DIR pointed elsewhere, the check itself failing -- is
   // today's behaviour: build the command and let the CLI answer.
   it("reopens a conversation whose log is present or unknowable", () => {
-    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1")).toBe("claude --resume u1");
+    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+  });
+
+  // An agent can overwrite card_sessions.conversation_id via NameSession.
+  // A stored id outside the opaque-token grammar must not reach `sh -c`
+  // as extra argv or a second command — fall through to reconstruction.
+  it("refuses a stored id outside the opaque token grammar", () => {
+    expect(buildResumeCommand("claude", "--resume", "u1; touch /tmp/pwned")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "id with spaces")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "a".repeat(129))).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "")).toBeNull();
+  });
+
+  it("shell-quotes a grammar-valid id so metacharacters cannot split the line", () => {
+    const id = "rollout-abc123._:OK";
+    expect(buildResumeCommand("claude", "--resume", id)).toBe(
+      `claude --resume ${shellQuote(id)}`
+    );
   });
 });
 

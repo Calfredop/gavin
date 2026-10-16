@@ -4242,6 +4242,11 @@ impl SessionManager {
     /// resume treats a self-reported id and a minted one alike. A
     /// session with no bound card is a no-op, not an error: there is
     /// nothing yet to link it to, and the tab still gets renamed.
+    ///
+    /// The id must be an opaque token (`[A-Za-z0-9._:-]`, ≤128 bytes):
+    /// this is the last trusted writer an agent can reach for that
+    /// column, and a Resume line splices it into `sh -c`
+    /// (sec-fix-conversation-id-token-grammar).
     pub fn name_session(
         &self,
         session_id: &str,
@@ -4250,6 +4255,13 @@ impl SessionManager {
     ) -> anyhow::Result<()> {
         if self.registry.lock().unwrap().get(session_id)?.is_none() {
             anyhow::bail!("no such session: {session_id}");
+        }
+        if let Some(conversation_id) = agent_conversation_id {
+            if !is_opaque_conversation_id(conversation_id) {
+                anyhow::bail!(
+                    "agent_conversation_id must be an opaque token ([A-Za-z0-9._:-], at most 128 bytes)"
+                );
+            }
         }
         // Cloned out of the map first: this file never holds a lock
         // across the blocking write below.
@@ -7294,6 +7306,19 @@ fn agent_root_in_scope(id: &ClientIdentity, arg: &str) -> bool {
 
 fn agent_owns_session(id: &ClientIdentity, session_id: &str) -> bool {
     id.session_id.as_deref() == Some(session_id)
+}
+
+/// Opaque token grammar for a self-reported agent conversation id
+/// (sec-fix-conversation-id-token-grammar). NameSession is the last
+/// trusted writer an agent can reach for `card_sessions.conversation_id`,
+/// and Resume splices that column into `sh -c` — so only these bytes,
+/// at most 128 of them.
+fn is_opaque_conversation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
 /// What an `agent` connection may do, as an EXHAUSTIVE match over every
@@ -10933,6 +10958,20 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let mut cmd = Stream::connect(&socket_path).unwrap();
+        // App role so CreateSession works whether or not require_local_token
+        // is on for this machine.
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+
         // A session id this daemon never issued is refused rather than
         // pushed anywhere: an agent outliving its tab must hear about it.
         let resp = request(
@@ -10969,6 +11008,17 @@ mod tests {
         // watches a root -- naming is deliberately independent of that,
         // so an agent in a rail's worktree can still name its tab.
         let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
         let mut app_reader = line_reader(app.try_clone().unwrap());
 
@@ -11049,6 +11099,17 @@ mod tests {
     fn a_self_reported_conversation_id_for_an_unbound_session_is_still_a_successful_rename() {
         let (socket_path, _dir) = start_test_server();
         let mut cmd = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
 
         let resp = request(
             &mut cmd,
@@ -11067,6 +11128,17 @@ mod tests {
         };
 
         let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -11084,6 +11156,137 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
+    fn opaque_conversation_id_token_grammar() {
+        assert!(is_opaque_conversation_id("rollout-abc123"));
+        assert!(is_opaque_conversation_id("a.b_c:d-1"));
+        assert!(is_opaque_conversation_id(&"a".repeat(128)));
+        assert!(!is_opaque_conversation_id(""));
+        assert!(!is_opaque_conversation_id("u1; touch /tmp/pwned"));
+        assert!(!is_opaque_conversation_id("id with spaces"));
+        assert!(!is_opaque_conversation_id(&"a".repeat(129)));
+        assert!(!is_opaque_conversation_id("has/slash"));
+    }
+
+    /// sec-fix-conversation-id-token-grammar: NameSession is the last
+    /// trusted writer of card_sessions.conversation_id an agent can reach.
+    /// An id that would change a Resume line under `sh -c` must be refused
+    /// here, before the kanban write.
+    #[test]
+    fn name_session_rejects_an_agent_conversation_id_outside_the_opaque_token_grammar() {
+        let (socket_path, _dir) = start_test_server();
+        // App role: CreateSession is privileged once require_local_token is
+        // on (a machine-local switch), and these tests must pass either way.
+        let mut cmd = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+                profile_id: None,
+                api_family: None,
+                without_headroom: false,
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id, .. } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+        write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        // Wait until Attach has registered so a rejection is about the id,
+        // not "that session is not open in gavin".
+        loop {
+            let resp = request(
+                &mut cmd,
+                &Request::NameSession {
+                    session_id: session_id.clone(),
+                    name: "probe".to_string(),
+                    agent_conversation_id: None,
+                },
+            );
+            if matches!(resp, Response::Ok) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let resp = request(
+            &mut cmd,
+            &Request::LinkCardSession {
+                workspace_id: "ws-1".to_string(),
+                path: "/p/t.md".to_string(),
+                session_id: session_id.clone(),
+                cwd: "/tmp".to_string(),
+                command: None,
+                conversation_id: Some("minted-before".to_string()),
+                launch_cwd: None,
+                resume_attempts: None,
+                base_sha: None,
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession {
+                session_id: session_id.clone(),
+                name: "attack".to_string(),
+                agent_conversation_id: Some("u1; touch /tmp/pwned".to_string()),
+            },
+        );
+        match resp {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("opaque token") || message.contains("agent_conversation_id"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected Error refusing out-of-grammar id, got {other:?}"),
+        }
+
+        // The minted id must still be on the card — the write never ran.
+        let resp = request(&mut cmd, &Request::GetBoard { workspace_id: "ws-1".to_string() });
+        match resp {
+            Response::Board { card_sessions, .. } => {
+                let bound = card_sessions.iter().find(|s| s.path == "/p/t.md").expect("card not bound");
+                assert_eq!(bound.conversation_id, Some("minted-before".to_string()));
+            }
+            other => panic!("expected Board, got {other:?}"),
         }
 
         let resp = request(&mut cmd, &Request::KillSession { id: session_id });

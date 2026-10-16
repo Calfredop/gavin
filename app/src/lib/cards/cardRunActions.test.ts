@@ -369,7 +369,9 @@ describe("the first-Run review", () => {
     expect(ensureCardReviewed).not.toHaveBeenCalled();
     // Not even read: there is nothing to show, because nothing is sent.
     expect(backend.readFileForViewer).not.toHaveBeenCalled();
-    expect(vi.mocked(backend.createSession).mock.calls[0][1]).toContain("--resume conv-1");
+    expect(vi.mocked(backend.createSession).mock.calls[0][1]).toContain(
+      `--resume ${shellQuote("conv-1")}`
+    );
   });
 
   // sec-fix-develop-run-review: `composeDevelopPrompt` carries no body of
@@ -881,7 +883,7 @@ describe("reviewCardSession", () => {
     expect(await reviewCardSession("ws-1", card("plan", "Done"))).toBeNull();
 
     const [, command] = vi.mocked(backend.createSession).mock.calls[0];
-    expect(command).toContain("--resume conv-1");
+    expect(command).toContain(`--resume ${shellQuote("conv-1")}`);
     expect(command).not.toContain("is being reviewed");
     // The same conversation, and still no status write.
     expect(vi.mocked(backend.linkCardSession).mock.calls[0][5]).toBe("conv-1");
@@ -1742,7 +1744,7 @@ describe("a failed binding", () => {
     // agent needs the daemon to hold at once.
     expect(backend.createSession).toHaveBeenCalledWith(
       "/ws/worktree",
-      "claude --resume u-1",
+      `claude --resume ${shellQuote("u-1")}`,
       "/ws",
       "claude-code"
     );
@@ -1787,7 +1789,7 @@ describe("a failed binding", () => {
     expect(err).toBeNull();
     expect(backend.createSession).toHaveBeenCalledWith(
       "/ws/worktree",
-      "claude --resume u-1",
+      `claude --resume ${shellQuote("u-1")}`,
       "/ws",
       { profileId: "claude-code", withoutHeadroom: true }
     );
@@ -1916,7 +1918,7 @@ describe("a failed binding", () => {
       expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
       expect(backend.createSession).toHaveBeenCalledWith(
         "/ws",
-        "claude --resume u-1",
+        `claude --resume ${shellQuote("u-1")}`,
         "/ws",
         "claude-code"
       );
@@ -1927,7 +1929,7 @@ describe("a failed binding", () => {
     expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
     expect(backend.createSession).toHaveBeenCalledWith(
       "/ws",
-      "claude --resume u-1",
+      `claude --resume ${shellQuote("u-1")}`,
       "/ws",
       "claude-code"
     );
@@ -2046,7 +2048,7 @@ describe("the launching profile", () => {
 
     expect(vi.mocked(backend.createSession).mock.calls[0]).toEqual([
       "/ws",
-      "claude --resume u-1",
+      `claude --resume ${shellQuote("u-1")}`,
       "/ws",
       "claude-code",
     ]);

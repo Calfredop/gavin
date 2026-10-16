@@ -470,6 +470,12 @@ export function isGavinBuiltCommand(
 /// everywhere else -- a profile with no `TokenLog`, a CLI pointed at
 /// another config dir, the check itself failing -- the CLI is the one
 /// that answers, which is what it always did.
+/// Opaque conversation-id token an agent may self-report, and that a
+/// Resume line may splice in. Matches the daemon/MCP NameSession grammar
+/// (sec-fix-conversation-id-token-grammar): only these characters, at
+/// most 128 bytes, so a stored value cannot change a `sh -c` line's shape.
+const CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
 export function buildResumeCommand(
   agentCommand: string,
   resumeArgs: string,
@@ -477,9 +483,11 @@ export function buildResumeCommand(
   log: ConversationLog = "unknown"
 ): string | null {
   const args = resumeArgs.trim();
-  if (!args || !conversationId?.trim()) return null;
+  const id = conversationId?.trim() ?? "";
+  if (!args || !id) return null;
+  if (!CONVERSATION_ID.test(id)) return null;
   if (log === "missing") return null;
-  return `${agentCommand} ${args} ${conversationId.trim()}`;
+  return `${agentCommand} ${args} ${shellQuote(id)}`;
 }
 
 /// Whether the conversation a binding recorded is still on this machine
