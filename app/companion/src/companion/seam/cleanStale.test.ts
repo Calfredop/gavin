@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
 import { answerDialog, dialogRequest } from "$lib/core/dialog";
+import { REVIEW_CONFIRM_LABEL } from "$lib/cards/cardReview";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
 import type { CleanKind } from "$lib/decisions/cleanStale";
@@ -66,9 +67,15 @@ function sentSince(demo: DemoWorkstation, from: number): { cmd: string; args: Re
     .filter((s) => !s.cmd.startsWith("get_"));
 }
 
-/// Answers the confirm the press put up, and lets the launch finish.
-async function confirm(yes: boolean): Promise<void> {
+/// Accepts every first-run review sheet still up, then answers the clean
+/// confirm. Clean stale raises the same review sheet a card Run does for
+/// each unreviewed card before it asks whether to start the agent.
+async function confirmClean(yes: boolean): Promise<void> {
   await settle();
+  while (get(dialogRequest)?.confirmLabel === REVIEW_CONFIRM_LABEL) {
+    answerDialog(get(dialogRequest)!.id, true, false);
+    await settle();
+  }
   const request = get(dialogRequest);
   if (!request) throw new Error("no dialog is up");
   answerDialog(request.id, yes, false);
@@ -81,10 +88,12 @@ describe("cleaning stale items from the phone", () => {
     const at = demo.received().length;
     const pressed = cleanStale(DEMO.atlas, "decisions", list("decisions"));
     await settle();
-    expect(get(dialogRequest)?.title).toBe("Clean stale decisions?");
+    // First-run review: the agent is told to read each listed card.
+    expect(get(dialogRequest)?.confirmLabel).toBe(REVIEW_CONFIRM_LABEL);
+    expect(get(dialogRequest)?.block?.text).toContain("Redis and Postgres");
     expect(sentSince(demo, at).map((s) => s.cmd)).not.toContain("create_session");
 
-    await confirm(true);
+    await confirmClean(true);
     expect(await pressed).toBeNull();
     const created = sentSince(demo, at).find((s) => s.cmd === "create_session")!;
     expect(created.args).toMatchObject({ cwd: DEMO.atlasRoot, workspaceRoot: DEMO.atlasRoot });
@@ -101,8 +110,8 @@ describe("cleaning stale items from the phone", () => {
     const at = demo.received().length;
     const pressed = cleanStale(DEMO.atlas, "tests", list("tests"));
     await settle();
-    expect(get(dialogRequest)?.title).toBe("Clean stale tests?");
-    await confirm(true);
+    expect(get(dialogRequest)?.confirmLabel).toBe(REVIEW_CONFIRM_LABEL);
+    await confirmClean(true);
     expect(await pressed).toBeNull();
     const command = String(sentSince(demo, at).find((s) => s.cmd === "create_session")!.args.command);
     expect(command).toContain("Human test: Open a sample invoice PDF on a phone");
@@ -113,7 +122,7 @@ describe("cleaning stale items from the phone", () => {
     const demo = await visit("decisions");
     const at = demo.received().length;
     const pressed = cleanStale(DEMO.atlas, "decisions", list("decisions"));
-    await confirm(false);
+    await confirmClean(false);
     expect(await pressed).toBeNull();
     expect(sentSince(demo, at).map((s) => s.cmd)).not.toContain("create_session");
     expect(get(view).sessionId).toBeNull();

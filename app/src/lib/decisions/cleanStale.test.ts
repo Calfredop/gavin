@@ -156,6 +156,12 @@ describe("cleanConfirm", () => {
     expect(confirm.title).toBe("Clean stale tests?");
     expect(confirm.lines[0]).toContain("1 open human test on 1 card");
   });
+
+  it("names cards the first-run review withheld from the run", () => {
+    const confirm = cleanConfirm("decisions", [card("/p/a.md", [item()])], ["Fix login", "Hostile"]);
+    expect(confirm.lines.some((l) => /Fix login/.test(l) && /Hostile/.test(l))).toBe(true);
+    expect(confirm.lines.some((l) => /Left out until you review/.test(l))).toBe(true);
+  });
 });
 
 describe("CLEAN_LABEL", () => {
