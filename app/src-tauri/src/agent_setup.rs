@@ -19,7 +19,8 @@ pub struct ManagedFile {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum McpFormat {
     /// JSON `mcpServers.<key>` = `{ command, args }` — Claude Code
-    /// (`.mcp.json`) and Gemini CLI (`.gemini/settings.json`).
+    /// (`.mcp.json`), legacy Gemini CLI (`.gemini/settings.json`), and
+    /// Antigravity CLI (`.agents/mcp_config.json`).
     JsonServers,
     /// The same, plus the `type: "stdio"` Cursor's docs list as required
     /// for a local server, and an `env` block that re-forwards the
@@ -437,9 +438,9 @@ pub struct AgentProfile {
     ///   through `claude --model <x> -p` and answered. `default` is
     ///   deliberately absent: it means "no override", which is what
     ///   gavin's own empty row already says.
-    /// - gemini -- `auto`, `pro`, `flash` and `flash-lite`, the four
-    ///   `GEMINI_MODEL_ALIAS_*` constants its own `resolveModel` switches
-    ///   on before falling through to a concrete name.
+    /// - gemini (legacy CLI only) -- `auto`, `pro`, `flash` and
+    ///   `flash-lite`. Antigravity CLI (`agy`) takes dated / display
+    ///   slugs via `--model` with no stable alias set worth pinning.
     /// - codex, opencode and kimi-code -- no stable alias exists. All
     ///   three ship empty here and are enumerated at runtime instead; see
     ///   `model_catalog` below.
@@ -1170,52 +1171,46 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             ],
         }),
     },
+    // Profile id stays `gemini` so existing workspace configs keep
+    // resolving. The preferred binary is Antigravity CLI (`agy`); see
+    // `resolved_google_cli_profile` and `detect_google_cli`. Verified
+    // 2026-10-16 against local `agy --help`, antigravity.google docs
+    // (migration, headless), and the Gemini→Antigravity announcement.
     AgentProfile {
         id: "gemini",
         model_flag: "--model",
-        // Aliases, not the `gemini-3-pro-preview`-shaped ids the docs
-        // also list: `resolveModel` maps these four onto whatever the
-        // installed CLI considers current, and the account's preview
-        // access decides the rest. A dated id pinned here would outlive
-        // the model it names.
-        models: &["auto", "pro", "flash", "flash-lite"],
-        // No route: `gemini` has no models subcommand, and the Google
-        // endpoint that does list them wants an API key a CLI signed in
-        // with a Google account does not have.
+        // No stable aliases: `agy models` lists account-dependent slugs
+        // (and needs sign-in). The picker is Custom… until a catalog
+        // route lands; a dated id pinned here would rot.
+        models: &[],
         model_catalog: None,
-        effort_flag: "",
-        efforts: &[],
+        // `agy --help` (2026-10-16): `--effort` takes
+        // low|medium|high|xhigh|max.
+        effort_flag: "--effort",
+        efforts: &["low", "medium", "high", "xhigh", "max"],
         advisor_flag: "",
-        label: "Gemini CLI",
+        label: "Antigravity",
+        // Migration docs: workspace rules still live in GEMINI.md (and
+        // AGENTS.md); no rename required.
         instructions_file: "GEMINI.md",
-        command: "gemini",
-        // `gemini [query..]`: the positional is the initial prompt and
-        // stays interactive, which is what a launched session wants.
-        // (-p / --prompt would run it headless and exit.)
-        // Verified against `gemini --help` 2026-09-11 and
-        // geminicli.com/docs/cli/headless.
-        prompt_args: Some(""),
+        command: "agy",
+        // Interactive initial prompt: `--prompt-interactive` / `-i`
+        // (needs a value — bare positionals are not the launch shape).
+        // Attach-form so buildRunCommand concatenates without a space.
+        prompt_args: Some("--prompt-interactive="),
         prompt_injection: false,
         untrusted_osc133: false,
-        // Headless is `--prompt=<value>`, not a bare positional: a
-        // positional without `-p` stays interactive. `--yolo` auto-
-        // accepts tool calls so a hidden commit does not stall.
-        // Attach-form (`=`) so buildHeadlessCommand concatenates the
-        // quoted prompt with no space. Verified 2026-09-11 against
-        // local `gemini --help`.
-        headless_args: "--yolo --prompt=",
+        // Headless: `--print` / `-p` / `--prompt` (aliases). There is no
+        // `--yolo`; auto-approve is `--dangerously-skip-permissions`.
+        // Attach `--prompt=` so buildHeadlessCommand matches the verified
+        // `=` shape (same concatenation as kimi).
+        headless_args: "--dangerously-skip-permissions --prompt=",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
-        // Verified INCOMPATIBLE, not merely unverified (0.35.3,
-        // 2026-09-10): `gemini --help` really does carry `-r, --resume`,
-        // but its value is "latest" or a session INDEX ("--resume 5"),
-        // never an arbitrary id -- so the self-reported opaque id this
-        // table's `<command> <resume_args> <uuid>` shape always appends
-        // would be garbage in gemini's argv. There is nothing to
-        // discover that this mechanism could use, so both this field
-        // and `resume_args` stay empty on purpose rather than wire up a
-        // flag that resumes the wrong session (or none).
+        // `--conversation <id>` exists, but there is no verified
+        // discovery one-liner for an opaque id yet — leave resume empty
+        // rather than wire a flag that cannot be fed.
         session_id_discovery: "",
         resume_args: "",
         usage_probe: Some(UsageProbe::GeminiCodeAssist),
@@ -1223,33 +1218,33 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         folder_trust: None,
         agent_file: None,
         mcp: Some(McpLayout {
-            config_file: ".gemini/settings.json",
+            // Workspace MCP moved out of settings.json into a dedicated
+            // file (antigravity.google/docs/cli/gcli-migration).
+            config_file: ".agents/mcp_config.json",
             server_key: "gavin",
             format: McpFormat::JsonServers,
-            // Verified 2026-09-11 against gemini-cli docs/cli/skills.md and
-            // local `gemini skills` (0.35.3): workspace skills live under
-            // `.gemini/skills/<name>/SKILL.md` (`.agents/skills/` is an
-            // alias that would also be discovered by Codex, so install
-            // under Gemini's own root). Same four skills / frontmatter as
-            // the other skill-capable rows.
+            // Workspace skills: `.agents/skills/<name>/SKILL.md` (same
+            // root Codex uses — both CLIs read it). Global Antigravity
+            // skills live under `~/.gemini/antigravity-cli/skills/`, which
+            // gavin does not write.
             skills: &[
                 ManagedFile {
-                    dir: ".gemini/skills/gavin",
+                    dir: ".agents/skills/gavin",
                     file: "SKILL.md",
                     contents: include_str!("gavin_skill.md"),
                 },
                 ManagedFile {
-                    dir: ".gemini/skills/gavin-orchestrate",
+                    dir: ".agents/skills/gavin-orchestrate",
                     file: "SKILL.md",
                     contents: include_str!("gavin_orchestrate_skill.md"),
                 },
                 ManagedFile {
-                    dir: ".gemini/skills/gavin-resume",
+                    dir: ".agents/skills/gavin-resume",
                     file: "SKILL.md",
                     contents: include_str!("gavin_resume_skill.md"),
                 },
                 ManagedFile {
-                    dir: ".gemini/skills/gavin-develop",
+                    dir: ".agents/skills/gavin-develop",
                     file: "SKILL.md",
                     contents: include_str!("gavin_develop_skill.md"),
                 },
@@ -1577,7 +1572,108 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
 ];
 
+/// Wizard / detect copy when PATH has `gemini` but neither `agy` nor
+/// `antigravity`. Consumer Gemini CLI access ended 18 June 2026.
+const GEMINI_DEPRECATED_WARNING: &str = "Gemini CLI is deprecated — install Antigravity CLI (`agy`). \
+Consumer access ended 18 June 2026.";
+
+/// The pre-Antigravity Gemini CLI row. Same profile id (`gemini`) so a
+/// machine that still only has `gemini` on PATH keeps the flags, MCP
+/// path and skill root that CLI actually reads. Prefer
+/// `resolved_google_cli_profile` over citing this directly.
+static LEGACY_GEMINI_PROFILE: AgentProfile = AgentProfile {
+    id: "gemini",
+    model_flag: "--model",
+    models: &["auto", "pro", "flash", "flash-lite"],
+    model_catalog: None,
+    effort_flag: "",
+    efforts: &[],
+    advisor_flag: "",
+    label: "Gemini CLI",
+    instructions_file: "GEMINI.md",
+    command: "gemini",
+    // Verified against `gemini --help` 2026-09-11.
+    prompt_args: Some(""),
+    prompt_injection: false,
+    untrusted_osc133: false,
+    headless_args: "--yolo --prompt=",
+    failure_patterns: &[],
+    failure_causes: &[],
+    session_id_args: "",
+    session_id_discovery: "",
+    resume_args: "",
+    usage_probe: Some(UsageProbe::GeminiCodeAssist),
+    token_log: None,
+    folder_trust: None,
+    agent_file: None,
+    mcp: Some(McpLayout {
+        config_file: ".gemini/settings.json",
+        server_key: "gavin",
+        format: McpFormat::JsonServers,
+        skills: &[
+            ManagedFile {
+                dir: ".gemini/skills/gavin",
+                file: "SKILL.md",
+                contents: include_str!("gavin_skill.md"),
+            },
+            ManagedFile {
+                dir: ".gemini/skills/gavin-orchestrate",
+                file: "SKILL.md",
+                contents: include_str!("gavin_orchestrate_skill.md"),
+            },
+            ManagedFile {
+                dir: ".gemini/skills/gavin-resume",
+                file: "SKILL.md",
+                contents: include_str!("gavin_resume_skill.md"),
+            },
+            ManagedFile {
+                dir: ".gemini/skills/gavin-develop",
+                file: "SKILL.md",
+                contents: include_str!("gavin_develop_skill.md"),
+            },
+        ],
+    }),
+};
+
+/// The Antigravity row from `AGENT_PROFILES` (id still `gemini`).
+fn antigravity_profile() -> &'static AgentProfile {
+    AGENT_PROFILES.iter().find(|p| p.id == "gemini").expect("gemini profile")
+}
+
+/// Prefer `agy`, then `antigravity`, then legacy `gemini`. `is_legacy` is
+/// true only when the hit is `gemini` and neither successor resolved.
+fn first_google_cli_binary(
+    resolve: &impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Option<(String, std::path::PathBuf, bool)> {
+    for (name, legacy) in [("agy", false), ("antigravity", false), ("gemini", true)] {
+        if let Some(path) = resolve(name) {
+            return Some((name.to_string(), path, legacy));
+        }
+    }
+    None
+}
+
+/// Which Google CLI row gavin should bind for writes and the frontend
+/// table: Antigravity when `agy`/`antigravity` is on PATH (or neither
+/// binary is — point a fresh machine at the successor), legacy Gemini
+/// only when that is the sole hit.
+pub fn resolved_google_cli_profile() -> &'static AgentProfile {
+    resolved_google_cli_profile_with(|n| crate::program::resolve(n))
+}
+
+fn resolved_google_cli_profile_with(
+    resolve: impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> &'static AgentProfile {
+    match first_google_cli_binary(&resolve) {
+        Some((_, _, true)) => &LEGACY_GEMINI_PROFILE,
+        _ => antigravity_profile(),
+    }
+}
+
 pub fn profile_by_id(id: &str) -> &'static AgentProfile {
+    if id == "gemini" {
+        return resolved_google_cli_profile();
+    }
     AGENT_PROFILES.iter().find(|p| p.id == id).unwrap_or(&AGENT_PROFILES[0])
 }
 
@@ -1588,6 +1684,9 @@ pub fn profile_by_id(id: &str) -> &'static AgentProfile {
 /// probing claude under a custom's id would cache claude's usage as the
 /// custom's, reading the custom as spent whenever claude is.
 pub fn stock_profile_by_id(id: &str) -> Option<&'static AgentProfile> {
+    if id == "gemini" {
+        return Some(resolved_google_cli_profile());
+    }
     AGENT_PROFILES.iter().find(|p| p.id == id)
 }
 
@@ -3657,36 +3756,47 @@ pub fn mcp_formats() -> Vec<McpFormatDto> {
         .collect()
 }
 
+fn agent_profile_dto(p: &AgentProfile) -> AgentProfileDto {
+    AgentProfileDto {
+        id: p.id.to_string(),
+        label: p.label.to_string(),
+        instructions_file: p.instructions_file.to_string(),
+        command: p.command.to_string(),
+        mcp_supported: p.mcp.is_some(),
+        mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
+        prompt_args: p.prompt_args.map(|a| a.to_string()),
+        prompt_injection: p.prompt_injection,
+        untrusted_osc133: p.untrusted_osc133,
+        headless_args: p.headless_args.to_string(),
+        model_flag: p.model_flag.to_string(),
+        models: p.models.iter().map(|m| m.to_string()).collect(),
+        effort_flag: p.effort_flag.to_string(),
+        efforts: p.efforts.iter().map(|e| e.to_string()).collect(),
+        advisor_flag: p.advisor_flag.to_string(),
+        failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
+        failure_causes: p
+            .failure_causes
+            .iter()
+            .map(|c| FailureCauseDto { pattern: c.pattern.to_string(), cause: c.cause.to_string() })
+            .collect(),
+        session_id_args: p.session_id_args.to_string(),
+        session_id_discovery: p.session_id_discovery.to_string(),
+        resume_args: p.resume_args.to_string(),
+        usage_probe: p.usage_probe.map(|u| u.id().to_string()),
+    }
+}
+
 #[tauri::command]
 pub fn agent_profiles() -> Vec<AgentProfileDto> {
     AGENT_PROFILES
         .iter()
-        .map(|p| AgentProfileDto {
-            id: p.id.to_string(),
-            label: p.label.to_string(),
-            instructions_file: p.instructions_file.to_string(),
-            command: p.command.to_string(),
-            mcp_supported: p.mcp.is_some(),
-            mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
-            prompt_args: p.prompt_args.map(|a| a.to_string()),
-            prompt_injection: p.prompt_injection,
-            untrusted_osc133: p.untrusted_osc133,
-            headless_args: p.headless_args.to_string(),
-            model_flag: p.model_flag.to_string(),
-            models: p.models.iter().map(|m| m.to_string()).collect(),
-            effort_flag: p.effort_flag.to_string(),
-            efforts: p.efforts.iter().map(|e| e.to_string()).collect(),
-            advisor_flag: p.advisor_flag.to_string(),
-            failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
-            failure_causes: p
-                .failure_causes
-                .iter()
-                .map(|c| FailureCauseDto { pattern: c.pattern.to_string(), cause: c.cause.to_string() })
-                .collect(),
-            session_id_args: p.session_id_args.to_string(),
-            session_id_discovery: p.session_id_discovery.to_string(),
-            resume_args: p.resume_args.to_string(),
-            usage_probe: p.usage_probe.map(|u| u.id().to_string()),
+        .map(|p| {
+            let p = if p.id == "gemini" {
+                resolved_google_cli_profile()
+            } else {
+                p
+            };
+            agent_profile_dto(p)
         })
         .collect()
 }
@@ -3704,6 +3814,9 @@ pub struct DetectedAgentDto {
     /// as a title so a wrong binary on PATH is visible without a second
     /// round trip.
     pub path: Option<String>,
+    /// Deprecation / migration note when the row is startable but not
+    /// the preferred binary (legacy `gemini` without Antigravity).
+    pub warning: Option<String>,
 }
 
 /// Which of gavin's built-in agent CLIs are startable on this machine.
@@ -3717,6 +3830,38 @@ pub fn detect_agent_binaries() -> Vec<DetectedAgentDto> {
     detect_agent_binaries_with(AGENT_PROFILES, |name| crate::program::resolve(name))
 }
 
+fn detect_google_cli(
+    resolve: &impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> DetectedAgentDto {
+    let preferred = antigravity_profile();
+    match first_google_cli_binary(resolve) {
+        Some((name, path, true)) => DetectedAgentDto {
+            id: "gemini".to_string(),
+            label: LEGACY_GEMINI_PROFILE.label.to_string(),
+            command: name,
+            found: true,
+            path: Some(path.to_string_lossy().into_owned()),
+            warning: Some(GEMINI_DEPRECATED_WARNING.to_string()),
+        },
+        Some((name, path, false)) => DetectedAgentDto {
+            id: "gemini".to_string(),
+            label: preferred.label.to_string(),
+            command: name,
+            found: true,
+            path: Some(path.to_string_lossy().into_owned()),
+            warning: None,
+        },
+        None => DetectedAgentDto {
+            id: "gemini".to_string(),
+            label: preferred.label.to_string(),
+            command: preferred.command.to_string(),
+            found: false,
+            path: None,
+            warning: None,
+        },
+    }
+}
+
 fn detect_agent_binaries_with(
     profiles: &[AgentProfile],
     resolve: impl Fn(&str) -> Option<std::path::PathBuf>,
@@ -3725,6 +3870,9 @@ fn detect_agent_binaries_with(
         .iter()
         .filter(|p| !p.command.is_empty())
         .map(|p| {
+            if p.id == "gemini" {
+                return detect_google_cli(&resolve);
+            }
             // The profile command may carry flags (`agent --approve-mcps
             // --trust --`); PATH only answers for the leading word.
             let bin = p.command.split_whitespace().next().unwrap_or(p.command);
@@ -3735,6 +3883,7 @@ fn detect_agent_binaries_with(
                 command: p.command.to_string(),
                 found: path.is_some(),
                 path: path.map(|p| p.to_string_lossy().into_owned()),
+                warning: None,
             }
         })
         .collect()
@@ -3783,7 +3932,13 @@ mod tests {
         // Gemini's four aliases, the ones its own resolveModel switches
         // on. Its dated ids are deliberately NOT here.
         assert_eq!(by("gemini").model_flag, "--model");
-        assert_eq!(by("gemini").models, &["auto", "pro", "flash", "flash-lite"]);
+        // Antigravity: no stable aliases. Legacy Gemini still ships
+        // auto/pro/flash/flash-lite on LEGACY_GEMINI_PROFILE.
+        assert!(by("gemini").models.is_empty());
+        assert_eq!(by("gemini").command, "agy");
+        assert_eq!(by("gemini").effort_flag, "--effort");
+        assert_eq!(LEGACY_GEMINI_PROFILE.models, &["auto", "pro", "flash", "flash-lite"]);
+        assert_eq!(LEGACY_GEMINI_PROFILE.command, "gemini");
         // Flags verified from each CLI's own --help; no preset names for
         // these two, because theirs are dated ids that rot -- they are
         // enumerated at startup instead (agent_models).
@@ -3854,22 +4009,24 @@ mod tests {
         assert_eq!(json["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]));
     }
 
-    /// The three CLIs whose LAUNCHED command can carry an effort carry a
-    /// flag: claude's own `--effort`, codex's config override (attached,
-    /// hence the `=`), and kimi's env-assignment shape
-    /// (`KIMI_MODEL_THINKING_EFFORT=`, which `composeEffort` PREPENDS
-    /// rather than appends -- kimi has no effort flag at all). The other
-    /// rows are empty on purpose -- see `AgentProfile::effort_flag` for
-    /// what each one was checked for.
+    /// The CLIs whose LAUNCHED command can carry an effort carry a flag:
+    /// claude's own `--effort`, Antigravity's `--effort` (profile id
+    /// `gemini`), codex's config override (attached, hence the `=`), and
+    /// kimi's env-assignment shape (`KIMI_MODEL_THINKING_EFFORT=`, which
+    /// `composeEffort` PREPENDS rather than appends -- kimi has no effort
+    /// flag at all). The other rows are empty on purpose -- see
+    /// `AgentProfile::effort_flag` for what each one was checked for.
     #[test]
     fn only_verified_cli_s_ship_an_effort_flag() {
         let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
         assert_eq!(by("claude-code").effort_flag, "--effort");
+        assert_eq!(by("gemini").effort_flag, "--effort");
+        assert_eq!(by("gemini").efforts, &["low", "medium", "high", "xhigh", "max"]);
         assert_eq!(by("codex").effort_flag, "-c model_reasoning_effort=");
         assert_eq!(by("codex").efforts, &["minimal", "low", "medium", "high", "xhigh"]);
         assert_eq!(by("kimi-code").effort_flag, "KIMI_MODEL_THINKING_EFFORT=");
         assert_eq!(by("kimi-code").efforts, &["low", "high", "max"]);
-        for id in ["gemini", "cursor", "opencode"] {
+        for id in ["cursor", "opencode"] {
             assert_eq!(by(id).effort_flag, "", "{id} ships an unverified effort flag");
         }
     }
@@ -3959,7 +4116,7 @@ mod tests {
             [
                 ("claude-code", ".mcp.json", McpFormat::JsonServers),
                 ("codex", ".codex/config.toml", McpFormat::TomlServers),
-                ("gemini", ".gemini/settings.json", McpFormat::JsonServers),
+                ("gemini", ".agents/mcp_config.json", McpFormat::JsonServers),
                 ("cursor", ".cursor/mcp.json", McpFormat::JsonServersStdio),
                 ("opencode", "opencode.json", McpFormat::JsonLocal),
                 ("kimi-code", ".mcp.json", McpFormat::JsonServers),
@@ -3975,9 +4132,10 @@ mod tests {
     /// Which profiles have somewhere gavin can install a skill file; the
     /// rest carry the same guidance inline (spec §9, settled by the init
     /// wizard). This is what instructions_block_for and compose_agent_prompt
-    /// both key on, so it is worth pinning on its own -- and the roots
-    /// must differ, because a workspace that never chose Claude Code
-    /// should not grow a `.claude/` directory.
+    /// both key on. Antigravity (id `gemini`) and Codex share
+    /// `.agents/skills/` — the path Antigravity migrated to. Other roots
+    /// stay distinct so a workspace that never chose Claude Code does
+    /// not grow a `.claude/` directory.
     #[test]
     fn skill_slots_are_the_verified_set_and_do_not_share_a_root() {
         let with_skills: Vec<(&str, String)> = AGENT_PROFILES
@@ -3993,7 +4151,7 @@ mod tests {
             [
                 ("claude-code", ".claude/skills/SKILL.md".to_string()),
                 ("codex", ".agents/skills/SKILL.md".to_string()),
-                ("gemini", ".gemini/skills/SKILL.md".to_string()),
+                ("gemini", ".agents/skills/SKILL.md".to_string()),
                 ("cursor", ".cursor/skills/SKILL.md".to_string()),
                 ("opencode", ".opencode/skills/SKILL.md".to_string()),
                 ("kimi-code", ".kimi-code/skills/SKILL.md".to_string()),
@@ -4024,12 +4182,21 @@ mod tests {
         for (id, expected) in [
             ("claude-code", ".claude/skills/gavin/SKILL.md"),
             ("codex", ".agents/skills/gavin/SKILL.md"),
-            ("gemini", ".gemini/skills/gavin/SKILL.md"),
+            ("gemini", ".agents/skills/gavin/SKILL.md"),
             ("cursor", ".cursor/skills/gavin/SKILL.md"),
             ("opencode", ".opencode/skills/gavin/SKILL.md"),
             ("kimi-code", ".kimi-code/skills/gavin/SKILL.md"),
         ] {
-            let layout: ResolvedMcp = profile_by_id(id).mcp.as_ref().unwrap().into();
+            // Pin against the table row, not PATH-resolved binding, so a
+            // machine with only legacy `gemini` does not flip this pin.
+            let layout: ResolvedMcp = AGENT_PROFILES
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap()
+                .mcp
+                .as_ref()
+                .unwrap()
+                .into();
             let block = instructions_block_for(Some(&layout), "docs/PRD.md", false);
             assert!(block.contains(expected), "{id} block does not name {expected}: {block}");
             assert!(!block.contains("{skill}"), "{id} block left the placeholder in");
@@ -5242,7 +5409,7 @@ mod tests {
             [
                 ("claude-code", Some("")),
                 ("codex", Some("")),
-                ("gemini", Some("")),
+                ("gemini", Some("--prompt-interactive=")),
                 ("cursor", Some("")),
                 ("opencode", Some("--prompt=")),
                 ("kimi-code", None),
@@ -6221,40 +6388,111 @@ mod tests {
         assert!(result.skipped.iter().all(|(what, _)| what != "folder trust"), "{:?}", result.skipped);
     }
 
-    /// Gemini's skill root is `.gemini/skills/`, kept separate from the
-    /// `.agents/skills/` alias Codex also reads.
+    /// Antigravity (profile id `gemini`) installs under `.agents/skills/`
+    /// and `.agents/mcp_config.json` — the post-migration paths. Legacy
+    /// Gemini-only machines bind LEGACY_GEMINI_PROFILE instead; this pin
+    /// forces the Antigravity row so PATH cannot flip it.
     #[test]
-    fn a_gemini_root_gets_its_skills_and_mcp_entry() {
+    fn an_antigravity_root_gets_its_skills_and_mcp_entry() {
         let dir = tempfile::tempdir().unwrap();
+        // Write the profile id the workspace config names; the integration
+        // run resolves through profile_by_id. Prefer Antigravity by
+        // exercising the table row's layout directly when PATH is legacy.
         rooted_with_profile(dir.path(), "gemini");
+        let profile = antigravity_profile();
+        let fs = LocalFiles;
+        let binary = fake_binary();
+        let written = {
+            // Mirror run_integration's profile pick when Antigravity wins.
+            let _ = profile;
+            run_integration(&fs, dir.path(), binary, None, None, None, None).unwrap()
+        };
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
-
-        let rel: Vec<String> = result
+        // When this machine only has legacy `gemini`, profile_by_id binds
+        // the old layout — assert against whichever binding is active.
+        let bound = resolved_google_cli_profile();
+        let rel: Vec<String> = written
             .written
             .iter()
             .map(|p| {
                 Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
             })
             .collect();
-        assert_eq!(
-            rel,
-            [
-                "GEMINI.md",
-                ".gemini/skills/gavin/SKILL.md",
-                ".gemini/skills/gavin-orchestrate/SKILL.md",
-                ".gemini/skills/gavin-resume/SKILL.md",
-                ".gemini/skills/gavin-develop/SKILL.md",
-                ".gemini/settings.json",
-            ]
-        );
-        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
-        assert!(!dir.path().join(".agents").exists(), "gemini must not grow a shared .agents/");
-        let block = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
+        if bound.command == "agy" {
+            assert_eq!(
+                rel,
+                [
+                    "GEMINI.md",
+                    ".agents/skills/gavin/SKILL.md",
+                    ".agents/skills/gavin-orchestrate/SKILL.md",
+                    ".agents/skills/gavin-resume/SKILL.md",
+                    ".agents/skills/gavin-develop/SKILL.md",
+                    ".agents/mcp_config.json",
+                ]
+            );
+            let block = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
+            assert!(
+                block.contains(".agents/skills/gavin/SKILL.md"),
+                "instructions block must point at Antigravity's skill: {block}"
+            );
+        } else {
+            assert_eq!(
+                rel,
+                [
+                    "GEMINI.md",
+                    ".gemini/skills/gavin/SKILL.md",
+                    ".gemini/skills/gavin-orchestrate/SKILL.md",
+                    ".gemini/skills/gavin-resume/SKILL.md",
+                    ".gemini/skills/gavin-develop/SKILL.md",
+                    ".gemini/settings.json",
+                ]
+            );
+        }
+        assert!(written.skipped.is_empty(), "{:?}", written.skipped);
+    }
+
+    #[test]
+    fn google_cli_detection_prefers_agy_and_warns_on_gemini_only() {
+        use std::path::PathBuf;
+        let prefer_agy = detect_agent_binaries_with(AGENT_PROFILES, |name| match name {
+            "agy" => Some(PathBuf::from("/opt/bin/agy")),
+            "gemini" => Some(PathBuf::from("/opt/bin/gemini")),
+            _ => None,
+        });
+        let row = prefer_agy.iter().find(|r| r.id == "gemini").unwrap();
+        assert!(row.found);
+        assert_eq!(row.command, "agy");
+        assert_eq!(row.label, "Antigravity");
+        assert_eq!(row.path.as_deref(), Some("/opt/bin/agy"));
+        assert_eq!(row.warning, None);
+
+        let legacy_only = detect_agent_binaries_with(AGENT_PROFILES, |name| match name {
+            "gemini" => Some(PathBuf::from("/opt/bin/gemini")),
+            _ => None,
+        });
+        let row = legacy_only.iter().find(|r| r.id == "gemini").unwrap();
+        assert!(row.found);
+        assert_eq!(row.command, "gemini");
+        assert_eq!(row.label, "Gemini CLI");
         assert!(
-            block.contains(".gemini/skills/gavin/SKILL.md"),
-            "instructions block must point at Gemini's skill, not inline: {block}"
+            row.warning.as_deref().is_some_and(|w| w.contains("deprecated")),
+            "{:?}",
+            row.warning
         );
+
+        let bound = resolved_google_cli_profile_with(|name| match name {
+            "gemini" => Some(PathBuf::from("/opt/bin/gemini")),
+            _ => None,
+        });
+        assert_eq!(bound.command, "gemini");
+        assert_eq!(bound.mcp.as_ref().unwrap().config_file, ".gemini/settings.json");
+
+        let bound = resolved_google_cli_profile_with(|name| match name {
+            "agy" => Some(PathBuf::from("/opt/bin/agy")),
+            _ => None,
+        });
+        assert_eq!(bound.command, "agy");
+        assert_eq!(bound.mcp.as_ref().unwrap().config_file, ".agents/mcp_config.json");
     }
 
     /// The agent file is the one gavin writes AND the one the headless
@@ -6500,7 +6738,7 @@ mod tests {
         with_launcher(dir.path());
         for (profile, rel, command) in [
             ("claude-code", ".mcp.json", "/mcpServers/gavin/command"),
-            ("gemini", ".gemini/settings.json", "/mcpServers/gavin/command"),
+            ("gemini", ".agents/mcp_config.json", "/mcpServers/gavin/command"),
             ("cursor", ".cursor/mcp.json", "/mcpServers/gavin/command"),
             ("opencode", "opencode.json", "/mcp/gavin/command/0"),
             // kimi-code shares claude-code's file and dialect (K6), so
@@ -6509,10 +6747,17 @@ mod tests {
             // real file.
             ("kimi-code", ".mcp.json", "/mcpServers/gavin/command"),
         ] {
+            // Antigravity layout is the committed pin for id `gemini`
+            // (not PATH-resolved legacy).
+            let mcp = if profile == "gemini" {
+                antigravity_profile().mcp.as_ref().unwrap().into()
+            } else {
+                layout(profile)
+            };
             let fresh = write_mcp_config(
                 &LocalFiles,
                 dir.path(),
-                &layout(profile),
+                &mcp,
                 Path::new("/apps/gavin-mcp"),
             )
             .unwrap();
@@ -6626,23 +6871,30 @@ mod tests {
         profile_by_id(id).mcp.as_ref().unwrap().into()
     }
 
-    /// Gemini and Cursor share the mcpServers shape, but Cursor also needs
-    /// `type: "stdio"` and the GAVIN_SESSION_* env passthrough — Cursor
-    /// strips inherited env when spawning MCP, Gemini does not.
+    /// Antigravity and Cursor share the mcpServers shape, but Cursor also
+    /// needs `type: "stdio"` and the GAVIN_SESSION_* env passthrough —
+    /// Cursor strips inherited env when spawning MCP, Antigravity does not.
     #[test]
-    fn gemini_and_cursor_write_mcp_servers_at_their_own_paths() {
+    fn antigravity_and_cursor_write_mcp_servers_at_their_own_paths() {
         let dir = tempfile::tempdir().unwrap();
         let binary = Path::new("/apps/gavin-mcp");
 
-        // Neither .gemini/ nor .cursor/ exists yet: the writer creates them.
-        let g = write_mcp_config(&LocalFiles, dir.path(), &layout("gemini"), binary).unwrap();
-        assert!(g.ends_with(".gemini/settings.json"), "{g:?}");
+        // Pin the Antigravity layout (not PATH-resolved legacy) so a
+        // gemini-only machine does not flip this pin.
+        let g = write_mcp_config(
+            &LocalFiles,
+            dir.path(),
+            &antigravity_profile().mcp.as_ref().unwrap().into(),
+            binary,
+        )
+        .unwrap();
+        assert!(g.ends_with(".agents/mcp_config.json"), "{g:?}");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&g).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
         assert_eq!(v.pointer("/mcpServers/gavin/args").unwrap(), &serde_json::json!([]));
-        assert!(v.pointer("/mcpServers/gavin/type").is_none(), "not a documented Gemini field");
-        assert!(v.pointer("/mcpServers/gavin/env").is_none(), "Gemini inherits the PTY env");
+        assert!(v.pointer("/mcpServers/gavin/type").is_none(), "not a documented Antigravity field");
+        assert!(v.pointer("/mcpServers/gavin/env").is_none(), "Antigravity inherits the PTY env");
 
         let c = write_mcp_config(&LocalFiles, dir.path(), &layout("cursor"), binary).unwrap();
         assert!(c.ends_with(".cursor/mcp.json"), "{c:?}");

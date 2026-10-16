@@ -148,7 +148,18 @@ fn route(profile_id: &str) -> Route {
     match profile_id {
         "claude-code" => Route::Plugin,
         "codex" => Route::SkillsCli("codex"),
-        "gemini" => Route::SkillsCli("gemini-cli"),
+        // Prefer antigravity-cli whenever Antigravity is on PATH (or
+        // neither Google CLI is — point installs at the successor).
+        // Legacy `gemini-cli` only when that binary is the sole hit.
+        "gemini" => {
+            let agy = crate::program::on_path("agy") || crate::program::on_path("antigravity");
+            let gemini = crate::program::on_path("gemini");
+            if gemini && !agy {
+                Route::SkillsCli("gemini-cli")
+            } else {
+                Route::SkillsCli("antigravity-cli")
+            }
+        }
         "cursor" => Route::SkillsCli("cursor"),
         "opencode" => Route::SkillsCli("opencode"),
         _ => Route::Manual,
@@ -863,7 +874,16 @@ mod tests {
     fn every_known_profile_has_an_install_route_and_custom_has_none() {
         assert_eq!(route("claude-code"), Route::Plugin);
         assert_eq!(route("codex"), Route::SkillsCli("codex"));
-        assert_eq!(route("gemini"), Route::SkillsCli("gemini-cli"));
+        // PATH-dependent: Antigravity when agy/antigravity is present (or
+        // neither Google CLI is); gemini-cli only on a gemini-only box.
+        let agy = crate::program::on_path("agy") || crate::program::on_path("antigravity");
+        let gemini = crate::program::on_path("gemini");
+        let expected = if gemini && !agy {
+            Route::SkillsCli("gemini-cli")
+        } else {
+            Route::SkillsCli("antigravity-cli")
+        };
+        assert_eq!(route("gemini"), expected);
         assert_eq!(route("cursor"), Route::SkillsCli("cursor"));
         assert_eq!(route("opencode"), Route::SkillsCli("opencode"));
         assert_eq!(route("custom"), Route::Manual);
@@ -873,7 +893,11 @@ mod tests {
     /// What the row shows is what gavin runs, word for word.
     #[test]
     fn the_shown_command_is_the_run_command() {
-        let quoted: Vec<String> = skills_cli_args("gemini-cli")
+        let agent = match route("gemini") {
+            Route::SkillsCli(a) => a,
+            _ => panic!("gemini installs via the skills CLI"),
+        };
+        let quoted: Vec<String> = skills_cli_args(agent)
             .iter().map(|a| if *a == "*" { "'*'".to_string() } else { a.to_string() }).collect();
         assert_eq!(command_for("gemini"), format!("npx {}", quoted.join(" ")));
         assert_eq!(command_for("claude-code"), "claude plugin install mattpocock-skills --scope project -y");

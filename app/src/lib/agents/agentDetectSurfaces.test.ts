@@ -15,6 +15,7 @@ describe("init wizard agent PATH sweep", () => {
     const step = source("AgentStep.svelte");
     expect(step).toContain("detectAgentBinaries");
     expect(step).toContain("foundAgentsSummary");
+    expect(step).toContain("detectWarnings");
     expect(step).toContain("suggestMainProfile");
     expect(step).toContain("suggestFallbackChain");
     expect(step).toContain("missingFromAppFallback");

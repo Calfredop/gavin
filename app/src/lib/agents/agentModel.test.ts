@@ -78,9 +78,7 @@ describe("composeLaunchCommand", () => {
     // what needs no quoting is noise. Every stable alias and every
     // `provider/model` opencode prints is inert as written.
     expect(composeLaunchCommand("claude", "--model", "opusplan")).toBe("claude --model opusplan");
-    expect(composeLaunchCommand("gemini", "--model", "flash-lite")).toBe(
-      "gemini --model flash-lite"
-    );
+    expect(composeLaunchCommand("agy", "--model", "flash-lite")).toBe("agy --model flash-lite");
     expect(composeLaunchCommand("opencode", "--model", "google/gemini-2.5-pro")).toBe(
       "opencode --model google/gemini-2.5-pro"
     );

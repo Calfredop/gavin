@@ -10,6 +10,8 @@ export interface DetectedAgent {
   command: string;
   found: boolean;
   path: string | null;
+  /** Deprecation note when startable but not the preferred binary. */
+  warning?: string | null;
 }
 
 /// Profile ids whose default command resolved on PATH.
@@ -100,4 +102,15 @@ export function foundAgentsSummary(detected: readonly DetectedAgent[]): string {
     return "None of gavin's built-in agent CLIs were found on PATH.";
   }
   return `Found: ${labels.join(", ")}.`;
+}
+
+/// Deprecation / migration warnings from the PATH sweep (e.g. legacy
+/// Gemini CLI without Antigravity).
+export function detectWarnings(detected: readonly DetectedAgent[]): string[] {
+  const out: string[] = [];
+  for (const row of detected) {
+    const warning = row.warning?.trim();
+    if (warning) out.push(warning);
+  }
+  return out;
 }

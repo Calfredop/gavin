@@ -776,7 +776,16 @@ mod tests {
             let p = root.path();
             match profile {
                 "claude-code" | "kimi-code" | "gemini" => {
-                    let file = if profile == "gemini" { p.join(".gemini/settings.json") } else { p.join(".mcp.json") };
+                    let file = if profile == "gemini" {
+                        let mcp = crate::agent_setup::profile_by_id("gemini")
+                            .mcp
+                            .as_ref()
+                            .unwrap()
+                            .config_file;
+                        p.join(mcp)
+                    } else {
+                        p.join(".mcp.json")
+                    };
                     assert_eq!(
                         json(&file)["mcpServers"]["playwright"],
                         serde_json::json!({ "command": BINARY, "args": ["playwright"] }),

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { editableCycle, saveAgentPauseFor } from "$lib/agents/agentPauseState";
   import {
+    detectWarnings,
     foundAgentsSummary,
     isAgentFound,
     missingFromAppFallback,
@@ -81,6 +82,7 @@
       ? missingFromAppFallback(detected, $agentDefaultsStore.fallbackChains, fallbackPrimary)
       : []
   );
+  const pathWarnings = $derived(detected ? detectWarnings(detected) : []);
 
   $effect(() => {
     let cancelled = false;
@@ -224,6 +226,9 @@
   <p class="found" class:empty={foundIds && foundIds.size === 0}>
     {foundAgentsSummary(detected)}
   </p>
+  {#each pathWarnings as warning}
+    <p class="warn">{warning}</p>
+  {/each}
   {#if missingFallback.length > 0}
     <p class="hint indent">
       App fallback includes

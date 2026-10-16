@@ -673,8 +673,8 @@ describe("buildHeadlessCommand", () => {
   // shape interactive `--prompt=` rows use -- a space before the quote
   // would make `-p` / `--prompt` eat the next flag instead.
   it("attaches the prompt with no space when the argv ends in =", () => {
-    expect(buildHeadlessCommand("gemini", "--yolo --prompt=", "do it")).toBe(
-      "gemini --yolo --prompt='do it'"
+    expect(buildHeadlessCommand("agy", "--dangerously-skip-permissions --prompt=", "do it")).toBe(
+      "agy --dangerously-skip-permissions --prompt='do it'"
     );
   });
 

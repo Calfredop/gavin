@@ -1620,6 +1620,7 @@ export function detectAgentBinaries(): Promise<
     command: string;
     found: boolean;
     path: string | null;
+    warning?: string | null;
   }>
 > {
   return invoke("detect_agent_binaries");
