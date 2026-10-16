@@ -172,6 +172,12 @@ fn connect(url: &RelayUrl, timeout: Duration) -> Result<TcpStream, DialError> {
             Err(e) => last = e,
         }
     }
+    // The host answered and nothing was on the port. Settings shows this
+    // sentence under the Relay URL, where "os error 61" says nothing.
+    if last.kind() == io::ErrorKind::ConnectionRefused {
+        let why = format!("nothing is listening at {}:{}", url.host, url.port);
+        last = io::Error::new(io::ErrorKind::ConnectionRefused, why);
+    }
     Err(DialError::Connect(last))
 }
 

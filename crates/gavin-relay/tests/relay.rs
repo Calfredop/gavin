@@ -716,3 +716,19 @@ fn a_relay_that_is_not_there_is_an_error_not_a_hang() {
     assert!(matches!(result, Err(DialError::Connect(_))), "{:?}", result.err().map(|e| e.to_string()));
     assert!(started.elapsed() < SOON);
 }
+
+#[test]
+fn a_relay_that_is_not_there_is_named_by_its_address() {
+    // What Settings shows under the Relay URL: the address nothing is
+    // listening on, not the OS's errno.
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let why = match dial(
+        &format!("ws://127.0.0.1:{port}"),
+        &RelayHello::workstation(TOKEN, &rendezvous(1)),
+        &options(),
+    ) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a port nothing listens on was dialled"),
+    };
+    assert_eq!(why, format!("could not reach the Relay: nothing is listening at 127.0.0.1:{port}"));
+}
