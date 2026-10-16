@@ -4,13 +4,26 @@ import type { CardView } from "$lib/core/planBoard";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
+vi.mock("$lib/core/dialog", () => ({
+  askConfirm: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock("$lib/core/backend", () => ({
   gitRefs: vi.fn(async () => ({
     branches: [{ name: "main", current: false, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "" }],
     tags: [],
     worktrees: [],
   })),
-  readFileForViewer: vi.fn(async () => ({ exists: true, content: "", truncated: false })),
+  readFileForViewer: vi.fn(async (path: string) => {
+    if (String(path).includes("/plans/")) {
+      return {
+        exists: true,
+        content: "---\nkind: plan\ntitle: Fix login\n---\nDo the work.\n",
+        truncated: false,
+      };
+    }
+    return { exists: true, content: "", truncated: false };
+  }),
   writeFileForEditor: vi.fn(async () => {}),
 }));
 
@@ -60,6 +73,14 @@ vi.mock("$lib/core/layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/repo"),
+  // First-run review: true by default so every other case here is about
+  // the critical-review dialog itself. The gate regression flips this.
+  cardReviewed: vi.fn(() => true),
+  stampCardReview: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("$lib/cards/cardRunActions", () => ({
+  resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
 }));
 
 vi.mock("$lib/core/gavinState", () => ({
@@ -89,7 +110,8 @@ vi.mock("$lib/review/criticalReviewState", () => ({
 }));
 
 import * as backend from "$lib/core/backend";
-import { profileIdForLaunch } from "$lib/core/layoutState";
+import { askConfirm } from "$lib/core/dialog";
+import { profileIdForLaunch, cardReviewed } from "$lib/core/layoutState";
 import {
   cancelCriticalReview,
   confirmCriticalReview,
@@ -97,6 +119,7 @@ import {
   requestCardCriticalReview,
   requestRailCriticalReview,
 } from "$lib/review/criticalReviewActions";
+import { REVIEW_CONFIRM_LABEL } from "$lib/cards/cardReview";
 
 function card(over: Partial<CardView> = {}): CardView {
   return {
@@ -119,6 +142,8 @@ beforeEach(() => {
   cancelCriticalReview();
   createTiledPage.mockClear();
   vi.mocked(backend.gitRefs).mockClear();
+  vi.mocked(cardReviewed).mockReturnValue(true);
+  vi.mocked(askConfirm).mockResolvedValue(true);
 });
 
 describe("requestCardCriticalReview", () => {
@@ -136,6 +161,41 @@ describe("requestCardCriticalReview", () => {
       /no work to review/
     );
     expect(get(criticalReviewRequest)).toBeNull();
+  });
+
+  // sec-fix-card-review-launch-gate: N reviewers are each told to read the
+  // card, so an unreviewed body must raise the first-run sheet before the
+  // critical-review dialog opens and before any tiled page is created.
+  it("raises the first-run review when requireReview is on and nothing is stamped", async () => {
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
+
+    expect(await requestCardCriticalReview("ws-1", card())).toBeNull();
+
+    expect(askConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmLabel: REVIEW_CONFIRM_LABEL })
+    );
+    expect(get(criticalReviewRequest)).toBeNull();
+    expect(createTiledPage).not.toHaveBeenCalled();
+  });
+
+  it("a declined first-run review leaves nothing pending and launches nothing", async () => {
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
+
+    expect(await requestCardCriticalReview("ws-1", card())).toBeNull();
+    expect(
+      await confirmCriticalReview({
+        base: "main",
+        reviewers: [
+          { profileId: "claude-code", model: "sonnet" },
+          { profileId: "codex", model: "gpt" },
+        ],
+      })
+    ).toBeNull();
+
+    expect(get(criticalReviewRequest)).toBeNull();
+    expect(createTiledPage).not.toHaveBeenCalled();
   });
 });
 

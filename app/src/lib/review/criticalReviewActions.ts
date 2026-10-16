@@ -22,6 +22,9 @@ import {
 } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
+import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
+import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
+import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { candidateLabel, type Candidate } from "$lib/cards/bestOfN";
@@ -160,11 +163,32 @@ async function open(
 }
 
 /// Card menu / Review tab: critique the work that card produced.
-export function requestCardCriticalReview(
+///
+/// First-run review, as developCard / requestCardReview: each reviewer
+/// is told to read this card, so an unreviewed body must raise the sheet
+/// before the dialog opens and before any tiled page is created.
+export async function requestCardCriticalReview(
   workspaceId: string,
   card: CardView
 ): Promise<string | null> {
-  if (card.kind === "note") return Promise.resolve("Notes have no work to review");
+  if (card.kind === "note") return "Notes have no work to review";
+  const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
+  if ("error" in resolved) return resolved.error;
+  const file = await backend.readFileForViewer(card.id);
+  if (!file.exists) return `Card file not found: ${card.id}`;
+  const body = stripFrontmatter(file.content).trim();
+  if (
+    !(await ensureCardReviewed({
+      workspaceId,
+      path: card.id,
+      content: { title: card.title, body, attachments: card.attachments ?? [] },
+      statuses: resolved.statuses,
+      prompt: body,
+      blockLabel: "The card body the reviewer agents will read:",
+    }))
+  ) {
+    return null;
+  }
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   return open(workspaceId, {
     cwd: binding?.launchCwd ?? card.contextFolder,

@@ -7,6 +7,9 @@ vi.mock("$lib/core/backend", () => ({
   writeFileForEditor: vi.fn(),
   gitRefs: vi.fn(),
 }));
+vi.mock("$lib/core/dialog", () => ({
+  askConfirm: vi.fn().mockResolvedValue(true),
+}));
 vi.mock("$lib/core/layoutState", () => ({
   // actionPromptsState derives appPromptOverrides from this at MODULE
   // scope, so a mock without it fails the whole file at import rather
@@ -24,13 +27,20 @@ vi.mock("$lib/core/layoutState", () => ({
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => null as string | null),
+  // First-run review: true by default so every other case here is about
+  // the review dialog itself. The gate regression flips this to false.
+  cardReviewed: vi.fn(() => true),
+  stampCardReview: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("$lib/core/gavinState", () => ({ gavinTrees: writable({}) }));
 vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable({}),
   cardSessionFor: vi.fn(() => null),
 }));
-vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/cards/cardRunActions", () => ({
+  revealSession: vi.fn().mockResolvedValue(true),
+  resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
+}));
 // The launch wall's queue, stubbed. It is a live module (a poller, a
 // drain loop, localStorage) that these tests are not about, and its
 // dependency cone reaches layoutState -- which this file replaces with a
@@ -43,12 +53,14 @@ vi.mock("$lib/agents/launchQueue", () => ({
 }));
 
 import * as backend from "$lib/core/backend";
+import { askConfirm } from "$lib/core/dialog";
 import {
   profileIdForLaunch,
   resolvedAgentFor,
   handleAgentSessionSpawned,
   setSessionName,
   workspaceRootPath,
+  cardReviewed,
 } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { cardSessionFor } from "$lib/board/kanbanState";
@@ -62,6 +74,7 @@ import {
   requestCardReview,
 } from "$lib/review/codeReviewActions";
 import { REVIEW_RULES_STARTER } from "$lib/review/codeReview";
+import { REVIEW_CONFIRM_LABEL } from "$lib/cards/cardReview";
 import type { CardView } from "$lib/core/planBoard";
 
 const AGENT = {
@@ -101,6 +114,12 @@ function rootTree(): void {
   } as never);
 }
 
+const CARD_FILE = {
+  content: "---\nkind: plan\ntitle: Thing\n---\nDo the work.\n",
+  truncated: false,
+  exists: true,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   cancelReview();
@@ -116,10 +135,17 @@ beforeEach(() => {
     worktrees: [],
     headBranch: "topic",
   } as never);
-  vi.mocked(backend.readFileForViewer).mockResolvedValue({ content: "", truncated: false, exists: false });
+  // Card paths exist; REVIEW.md does not — the dialog's "create rules"
+  // offer and the first-run gate both read through this one mock.
+  vi.mocked(backend.readFileForViewer).mockImplementation(async (path: string) => {
+    if (String(path).includes("/plans/")) return CARD_FILE;
+    return { content: "", truncated: false, exists: false };
+  });
   vi.mocked(backend.createSession).mockResolvedValue("s-1");
   vi.mocked(cardSessionFor).mockReturnValue(null as never);
   vi.mocked(workspaceRootPath).mockReturnValue(null);
+  vi.mocked(cardReviewed).mockReturnValue(true);
+  vi.mocked(askConfirm).mockResolvedValue(true);
 });
 
 describe("requestBranchReview", () => {
@@ -213,6 +239,33 @@ describe("requestCardReview", () => {
   it("refuses a note", async () => {
     expect(await requestCardReview("ws-1", card({ kind: "note" }))).toContain("no work to review");
     expect(get(reviewRequest)).toBeNull();
+  });
+
+  // sec-fix-card-review-launch-gate: the review agent is told to read the
+  // card, so an unreviewed body must raise the same first-run sheet
+  // develop raises — before the base dialog opens and before any session.
+  it("raises the first-run review when requireReview is on and nothing is stamped", async () => {
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
+
+    expect(await requestCardReview("ws-1", card())).toBeNull();
+
+    expect(askConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmLabel: REVIEW_CONFIRM_LABEL })
+    );
+    expect(get(reviewRequest)).toBeNull();
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("a declined first-run review leaves nothing pending and launches nothing", async () => {
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
+
+    expect(await requestCardReview("ws-1", card())).toBeNull();
+    expect(await confirmReview("main")).toBeNull();
+
+    expect(get(reviewRequest)).toBeNull();
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 });
 
