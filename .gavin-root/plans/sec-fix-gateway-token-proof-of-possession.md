@@ -53,6 +53,19 @@ fn retire_token_holders(tx: &rusqlite::Transaction, keep: Id, reg: &Registration
 // ALTER TABLE devices ADD COLUMN pending_token TEXT; ALTER TABLE devices ADD COLUMN token_nonce_hash BLOB;
 ```
 
+## While here: the push allowance multiplies with free registrations (needs-validation lead)
+
+The audit also left a needs-validation lead on the same unauthenticated registration path: "Per-Device push allowance is multiplied by free unauthenticated registrations, so one caller can drive unbounded upstream sends on the operator's APNs/FCM credentials". Fingerprint: `push-gateway:rate.rs:Limiter:allowance-keyed-by-free-registration`. Full record in `NEEDS-VALIDATION.md`, same run dir.
+
+The only bound on `POST /v1/push` is the GCRA in `rate.rs`, keyed by the permission's Device id (`limiter.take` at `gateway.rs:203`, before the target check). A Device id costs nothing: `POST /v1/devices` takes any well-shaped token, and fresh random hex never collides with an existing holder, so each call adds a Device row and a full allowance. Each Device can mint up to 64 permissions, and `PUT /v1/devices/{id}/token` re-arms a token the gateway cleared after APNs or FCM answered it gone, with no limit. So one caller with N registrations gets N allowances, and every accepted push is one request to Apple or Google signed with the operator's credentials. The caller reaches only tokens it registered, and one push request is one upstream request, so the harm is to the shared provider credentials (throttling or penalties for volume or invalid-token sends) and to the single-instance gateway. `docs/push-gateway.md:232-235` lists the gap as unsettled and puts a per-address limit in front of the public instance, but no proxy configuration is in the repository.
+
+Observed locally by the audit, in dry run on loopback with `GAVIN_PUSH_RATE_BURST=2` and `GAVIN_PUSH_RATE_PER_HOUR=1`: one unauthenticated caller registered three iOS Devices with random 64-hex tokens (201 each), minted one permission on each (201), and pushed three times per Device, getting `[202, 202, 429]` on every Device, six accepted in all. Three `PUT /token` calls on one Device all returned 204. What it could not observe is the deployed ingress and the providers' policy.
+
+The proof of possession this card adds also bounds that multiplier, if a Device may not mint permissions until it has echoed the nonce from a verification push to its token. A random token reaches no phone, so it never confirms, never mints a permission and never gets an allowance; the multiplier drops to the number of real tokens the caller holds. Registration itself still triggers one verification push per call, so it needs a per-address limit of its own whichever option is chosen.
+
+- [ ] Decision: Does the public push gateway's ingress already limit POST /v1/devices, PUT /v1/devices/{id}/token and POST /v1/push per address, or should the gateway add its own per-address and global limits?
+  Options: A) Ingress already limits these; record it in docs/push-gateway.md B) Add per-address limits on registration and token replacement plus a global upstream send limit in the gateway C) Rely on proof of token possession alone
+
 ## Done when
 
 - The fix enforces the invariant above at the last trusted decision point, not in a caller.

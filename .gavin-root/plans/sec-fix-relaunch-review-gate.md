@@ -53,6 +53,8 @@ Gate relaunchCard the way new-session mode is gated. After the developing, ssh a
   }
 ```
 
+While here, a hardening note from the same audit (entry 162 of `results/hardening-all.json`): make relaunchCard refuse a stored command that no gavin launch could have built. withRelaunchNote and withFreshConversationId (cardRun.ts:318-374) hand back any command they do not recognise unchanged, so whatever sits in the binding's command column replays as it is, and an untokened local connection can store an arbitrary replayable command on any card through LinkCardSession or ClaimCardForSession (that broader gap is carried on `sec-fix-invoke-desktop-remote-only.md`). Before createSession, check that the stored command is the card's resolved agent command (agentForCard), optionally followed by the profile's session-id argv and an id, then a single shell-quoted prompt as buildRunCommand (cardRun.ts:291) writes it; refuse anything else with a message saying the remembered command was not one gavin built and offering Launch as new session. Pass the exact replayed command to ensureCardReviewed as its `prompt`, so the sheet shows what is about to run. Add a vitest case: a binding whose command is `sh -c 'touch x'` is refused and createSession is not called.
+
 ## Done when
 
 - relaunchCard reads the current card file and gates it before createSession and before the binding is rewritten; a queued drain refuses with UNREVIEWED_UNATTENDED.
