@@ -85,14 +85,18 @@ describe("usage cache surfaces", () => {
     expect(sidebar).toContain(".sidebar.collapsed .footer-row.usage-updating");
   });
 
-  // Per-agent letter avatars on the Usage row, not one fleet-worst
-  // hourglass: naming who is tight is the point of the refinement.
-  it("draws one usage-row avatar badge per linked agent", () => {
+  // Fleet hourglass stays as the row's first status icon; per-agent
+  // letter avatars sit beside it. At limit is gone — the avatars already
+  // carry each agent's semaphore. Running is attributed by launch argv0.
+  it("draws the hourglass then one avatar badge per linked agent", () => {
     const sidebar = source("Sidebar.svelte");
+    expect(sidebar).toContain("worstUsageProjection");
+    expect(sidebar).toContain("footer-semaphore");
     expect(sidebar).toContain("usageRowBadges");
     expect(sidebar).toContain("usage-agent-badge");
+    expect(sidebar).toContain("profileIdForCommand");
     expect(sidebar).toContain("class:running={badge.running}");
-    expect(sidebar).not.toContain("worstUsageProjection");
-    expect(sidebar).not.toContain("footer-semaphore");
+    expect(sidebar).not.toContain("pauseLabel");
+    expect(sidebar).not.toContain("activePause");
   });
 });

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { UsageProjection } from "$lib/agents/usageProjection";
 import {
   agentAvatarLabels,
+  commandArgv0,
+  profileIdForCommand,
   runningAgentProfiles,
   usageRowBadges,
 } from "$lib/sidebar/usageRow";
@@ -48,6 +50,29 @@ describe("agentAvatarLabels", () => {
         { id: "b", label: "Codex" },
       ])
     ).toEqual({ a: "Codex", b: "Codex" });
+  });
+});
+
+describe("commandArgv0 / profileIdForCommand", () => {
+  const profiles = [
+    { id: "claude-code", command: "claude" },
+    { id: "cursor", command: "agent --approve-mcps --trust" },
+    { id: "codex", command: "codex" },
+  ];
+
+  it("takes the basename of the first token", () => {
+    expect(commandArgv0("/usr/local/bin/claude --model opus")).toBe("claude");
+    expect(commandArgv0("agent --approve-mcps --trust")).toBe("agent");
+    expect(commandArgv0("C:\\Tools\\claude.exe -p hi")).toBe("claude");
+  });
+
+  it("matches a session to its profile by argv0, not the workspace default", () => {
+    expect(profileIdForCommand("agent --approve-mcps --trust", profiles)).toBe("cursor");
+    expect(profileIdForCommand("claude --model opus 'mention agent'", profiles)).toBe(
+      "claude-code"
+    );
+    expect(profileIdForCommand(null, profiles)).toBeNull();
+    expect(profileIdForCommand("bash", profiles)).toBeNull();
   });
 });
 

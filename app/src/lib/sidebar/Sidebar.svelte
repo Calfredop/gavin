@@ -14,11 +14,11 @@
   import { watchSessionOwners } from "$lib/core/sessionOwnershipState";
   import { watchPtyBorrows } from "$lib/terminal/ptyBorrowState";
   import {
-    activePause,
     nowStore,
     profilesInUse,
     usageProjections,
     usageRefreshingStore,
+    worstUsageProjection,
   } from "$lib/agents/agentPauseState";
   import {
     armRequest,
@@ -26,9 +26,11 @@
     declineArmRequest,
     dismissArmRequest,
   } from "$lib/agents/agentFallbackState";
-  import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
+  import { agentSessions } from "$lib/agents/memoryState";
+  import { projectionTooltip } from "$lib/agents/usageProjection";
   import {
+    profileIdForCommand,
     runningAgentProfiles,
     usageRowBadges,
   } from "$lib/sidebar/usageRow";
@@ -58,7 +60,6 @@
     openAppSettings,
     agentProfilesStore,
     gitTrackingDefault,
-    resolvedAgentFor,
   } from "$lib/core/layoutState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionState } from "$lib/agents/verdictAttention";
@@ -122,6 +123,7 @@
     agentIndicator,
     agentIndicatorByState,
     gitIndicator,
+    usageProjectionIndicator,
   } from "$lib/ui/indicators";
 
   import { sessionLabel, folderName } from "$lib/core/paths";
@@ -448,11 +450,28 @@
   /// spins per agent inside the panel.
   const usageUpdating = $derived(Object.values($usageRefreshingStore).some(Boolean));
 
+  /// Fleet-worst hourglass: the row's first status icon, whether the
+  /// limits gavin can see will survive their reset. Per-agent letter
+  /// badges sit beside it; At limit is gone — those badges already say
+  /// who is tight.
+  const usageSemaphore = $derived.by(() => {
+    const projection = $worstUsageProjection;
+    if (!projection) return null;
+    const label =
+      $agentProfilesStore.find((p) => p.id === projection.profileId)?.label ??
+      projection.profileId;
+    return usageProjectionIndicator(
+      projection.band,
+      projectionTooltip(projection, label, $nowStore)
+    );
+  });
+
   /// One badge per linked agent: letter avatar (collision-grown so Claude
   /// Code and Codex read Cl / Co), toned by that agent's own usage
-  /// semaphore, pulsing while any of its sessions is working. Empty
-  /// until something is linked, which is also what the pause badge
-  /// beside them reads to decide who owns the push to the end of the row.
+  /// semaphore, pulsing while any of its sessions is working. A session
+  /// is attributed by its launch argv0 (`profileIdForCommand`), never by
+  /// the workspace's default agent — that is what made Cl flash while
+  /// Cursor was the one actually running.
   const usageBadges = $derived.by(() => {
     const ids = profilesInUse();
     const profiles = $agentProfilesStore;
@@ -461,13 +480,13 @@
       label: profiles.find((p) => p.id === id)?.label ?? id,
     }));
     const state = $layoutState;
-    const sessions = state.workspaces.flatMap((ws) => {
-      const profileId = resolvedAgentFor(ws.id).profileId || null;
-      return allSessionIdsInWorkspace(ws).map((sessionId) => ({
-        profileId,
+    const samples = $agentSessions;
+    const sessions = state.workspaces.flatMap((ws) =>
+      allSessionIdsInWorkspace(ws).map((sessionId) => ({
+        profileId: profileIdForCommand(samples[sessionId]?.command, profiles),
         status: state.sessionStatusById[sessionId],
-      }));
-    });
+      }))
+    );
     return usageRowBadges({
       agents,
       projections: $usageProjections,
@@ -1856,16 +1875,20 @@
     >
       <Gauge size={12} />
       <span>Usage</span>
-      <!-- One letter-avatar badge per linked agent, toned by that agent's
-           own usage semaphore (usageRow.ts). Replaces the single fleet-
-           worst hourglass: naming who is tight matters more than the
-           worst tone alone, and a working session pulses its badge.
-
-           They sit before the pause badge because they are the earlier
-           warning of the two: amber here is the moment to throttle, and
-           "At limit" is what happens to somebody who did not. -->
+      <!-- Fleet-worst hourglass first (the row's leading status icon),
+           then one letter-avatar per linked agent. At limit used to sit
+           here too; the avatars already carry each agent's semaphore, so
+           a second "at limit" word added nothing. -->
+      {#if usageSemaphore}
+        <StatusBadge indicator={usageSemaphore} size={11} class="footer-semaphore" />
+      {/if}
       {#if usageBadges.length > 0}
-        <span class="usage-agent-badges" role="group" aria-label="Agent usage">
+        <span
+          class="usage-agent-badges"
+          class:after-semaphore={usageSemaphore !== null}
+          role="group"
+          aria-label="Agent usage"
+        >
           {#each usageBadges as badge (badge.profileId)}
             <span
               class="usage-agent-badge tone-{badge.tone}"
@@ -1876,16 +1899,6 @@
             >
           {/each}
         </span>
-      {/if}
-      <!-- The pause state lives on the row that explains it. A workspace
-           holding for a limit or a scheduled window is the one thing here
-           worth seeing without opening anything. -->
-      {#if pauseLabel($activePause)}
-        <span
-          class="footer-badge"
-          class:after-semaphore={usageBadges.length > 0}
-          use:tooltip={$activePause.why ?? ""}>{pauseLabel($activePause)}</span
-        >
       {/if}
     </button>
     <button class="footer-row" onclick={() => showAppPanel("devices")}>
@@ -2256,10 +2269,10 @@
   .sidebar.collapsed .footer-row span {
     display: none;
   }
-  /* Collapsed, this row is the Gauge alone -- the label and the agent
-     badges are spans, and those hide. Spin that glyph from the same
-     store Check again reads, so a probe in flight is visible without
-     opening the column. */
+  /* Collapsed, this row is the Gauge alone -- the label, the hourglass
+     and the agent badges are spans, and those hide. Spin that glyph from
+     the same store Check again reads, so a probe in flight is visible
+     without opening the column. */
   .sidebar.collapsed .footer-row.usage-updating :global(> svg) {
     animation: recap-spin 0.8s linear infinite;
   }
@@ -2779,13 +2792,19 @@
     opacity: 0.45;
     cursor: default;
   }
-  /* Pushed to the end of the row: the agent avatar strip owns the slack,
-     and the pause badge follows it when both are drawn. */
+  /* Hourglass owns the push to the end of the row; the avatar strip
+     follows it (or takes the push itself when there is no band yet). */
+  .footer-row :global(.footer-semaphore) {
+    margin-left: auto;
+  }
   .usage-agent-badges {
     margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 3px;
+  }
+  .usage-agent-badges.after-semaphore {
+    margin-left: 4px;
   }
   .usage-agent-badge {
     display: inline-flex;
@@ -2846,12 +2865,6 @@
     background: var(--surface-sunken);
     color: var(--warning-text);
     font-size: 0.85em;
-  }
-  /* Two `margin-left: auto` in one flex row split the slack between them.
-     With both drawn the agent strip owns the push and the pause badge
-     follows it. */
-  .footer-badge.after-semaphore {
-    margin-left: 4px;
   }
   /* The fleet strip carries its own tone: quiet by default, and only
      coloured when the machine is actually saying something. Same three

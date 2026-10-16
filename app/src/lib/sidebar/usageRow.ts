@@ -92,10 +92,40 @@ export function agentAvatarLabels(agents: readonly UsageAgentRef[]): Record<stri
   return out;
 }
 
-/// Profile ids with at least one `working` session. Callers attribute a
-/// session to a profile the same way the memory sampler does — by the
-/// workspace that holds it — so this stays a set filter rather than a
-/// second attribution policy.
+/// Basename of the launch line's first token, lowercased. Paths and a
+/// Windows `.exe` drop off so `/usr/local/bin/claude` and `claude.exe`
+/// both read as `claude`. Only the argv0 — never the rest of the line —
+/// so a prompt that happens to mention another agent cannot re-attribute
+/// the session (the trap that kept memoryState off command matching).
+export function commandArgv0(command: string): string {
+  const token = command.trim().split(/\s+/)[0] ?? "";
+  const base = token.split(/[/\\]/).pop() ?? token;
+  return base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+}
+
+/// Which profile launched a session, by matching the session's argv0 to
+/// a profile's own command argv0 (`claude`, `agent`, `codex`, …). Null
+/// when nothing matches — including a bare shell — rather than guessing
+/// the workspace default, which is what made Claude's badge pulse while
+/// a Cursor session was the one actually working.
+export function profileIdForCommand(
+  command: string | null | undefined,
+  profiles: readonly { id: string; command: string }[]
+): string | null {
+  if (!command?.trim()) return null;
+  const want = commandArgv0(command);
+  if (!want) return null;
+  for (const p of profiles) {
+    if (!p.command.trim()) continue;
+    if (commandArgv0(p.command) === want) return p.id;
+  }
+  return null;
+}
+
+/// Profile ids with at least one `working` session. `profileId` must
+/// already be the session's own agent (via `profileIdForCommand`); a
+/// null id is skipped so an unattributed working session never lights
+/// the wrong badge.
 export function runningAgentProfiles(
   sessions: readonly { profileId: string | null | undefined; status: string | undefined | null }[]
 ): Set<string> {
