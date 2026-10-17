@@ -1605,18 +1605,39 @@ export function nextActions(
       // of this branch can tell "this pass corrected nothing about this
       // rail" from "this pass is repairing it".
       const before = actions.length;
-      // Reconciliation is about what the SESSIONS say, not about whether
-      // the rail is advancing (spec §4.4). A step left `running` on an
-      // idle or paused rail -- the app quit mid-run, or a stall paused
-      // the rail around it -- gets no tick that would ever correct it,
-      // and the daemon refuses every plan write that drops a `running`
-      // step: the stale row wedges the rail shut, uneditable and
-      // undeletable. So write the truth about dead sessions here. Only
-      // that: nothing is launched and no stage advances, because the
-      // rail is not running.
+      // Reconciliation is about what is TRUE, not about whether the rail
+      // is advancing (spec §4.4). Two truths land here:
+      //
+      // 1. A step left `running` on an idle or paused rail -- the app
+      //    quit mid-run, or a stall paused the rail around it -- gets no
+      //    tick that would ever correct it, and the daemon refuses every
+      //    plan write that drops a `running` step: the stale row wedges
+      //    the rail shut, uneditable and undeletable. Write the truth
+      //    about dead sessions.
+      // 2. A step that stalled because its session died a tick before
+      //    the board showed Done (Rule 5 paused the rail on that stall)
+      //    must be marked done once the card is Done -- Rule 1 would
+      //    clear it on a running rail, and without this pass the obsolete
+      //    stall sits until a human presses Play. A `skipped` step is
+      //    left alone: that was a human decision that the rail is past
+      //    the step, not a failure waiting on the card.
+      //
+      // Only those truth-writes: nothing is launched and no stage
+      // advances, because the rail is not running.
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
-          if (stepStateOf(orch, step.id) !== "running") continue;
+          const state = stepStateOf(orch, step.id);
+          // Stalled + card in Done: same Rule 1 truth a running rail
+          // would write. Tool steps have no card, so they stay stalled
+          // until Retry or Skip.
+          if (state === "stalled" && !isToolStep(step) && doneSlug) {
+            const cardStatus = statusOf(cards.get(step.cardPath));
+            if (cardStatus !== null && slugStatus(cardStatus) === doneSlug) {
+              actions.push({ kind: "markDone", stepId: step.id });
+              continue;
+            }
+          }
+          if (state !== "running") continue;
           // A `pr` step has NO session, so every rule below -- all of
           // which ask what a session did -- would speak for it wrongly,
           // and `deadSessionAction` would report a session that ended

@@ -2061,10 +2061,32 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       if (!mayLaunch()) continue;
       again = (await executeLaunch(workspaceId, action.stepId)) || again;
     } else if (action.kind === "markDone") {
-      const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
+      const prior = orch.stepRuns.find((r) => r.stepId === action.stepId);
+      const sessionId = prior?.sessionId ?? null;
+      // Read BEFORE the write: once the row is `done`, the stall that
+      // paused the rail is no longer visible, and the unpause below
+      // would never fire.
+      const wasStalled = prior?.state === "stalled";
       // The session id is kept deliberately: the step is finished, but
       // its transcript stays reachable from the chip.
       await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
+      // Rule 5 pauses around a stall. When reconciliation later marks
+      // that stalled step done (card reached Done a tick after the
+      // session died), leave the rail paused and the sequence advances
+      // nothing -- the same trap skipStep documents. Only from
+      // `stalled`, and only from `paused`: clearing a running row must
+      // not override a human pause, and an idle rail stays idle.
+      const rail = wasStalled ? railOwning(orch, action.stepId) : null;
+      if (rail && railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+        const current = get(orchestrations)[workspaceId].railRuns.find(
+          (r) => r.railId === rail.id
+        )?.currentStageId;
+        const owning = rail.stages.find((g) => g.steps.some((t) => t.id === action.stepId))?.id ?? null;
+        await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+        // The next tick has to see the rail running, or Rule 2 never
+        // launches the step after this one.
+        again = true;
+      }
       // A step finishing on an IDLE rail -- the reconciling markDone
       // above -- can be the last one that rail owed, and no `complete`
       // follows it: the rail is already idle. So this is the other half

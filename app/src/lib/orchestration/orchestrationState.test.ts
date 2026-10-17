@@ -1623,6 +1623,35 @@ describe("executeActions", () => {
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null, null, null, null, "ws-1");
   });
 
+  // Rule 5 pauses around a stall. When reconciliation later learns the
+  // card reached Done (session died a tick early), markDone has to put
+  // the rail back to running -- otherwise the sequence advances nothing,
+  // the same trap Skip documents. Only from a STALLED step: clearing a
+  // running row on a paused rail is a different story (human pause).
+  it("markDone of a stalled step puts a paused rail back to running", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1", "ws-1");
+  });
+
+  it("markDone of a stalled step does not start an idle rail", async () => {
+    await setRailRunAction("ws-1", "r1", "idle", null);
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+
+  it("markDone of a running step leaves a paused rail paused", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+
   it("advance moves the rail's current stage", async () => {
     await executeActions("ws-1", [{ kind: "advance", railId: "r1", stageId: "s2" }]);
     expect(backend.setRailRun).toHaveBeenLastCalledWith("r1", "running", "s2", "ws-1");

@@ -755,6 +755,63 @@ describe("nextActions", () => {
     expect(nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set())).toEqual([]);
   });
 
+  // The race Rule 5 creates: the session dies a tick before the board
+  // shows Done, the step stalls and the rail pauses, then the card
+  // lands in Done. Without this, the obsolete stall sits forever on a
+  // paused rail because Rule 1 only walks running rails.
+  it("marks a stalled step done on a paused rail when its card has since reached Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [
+        {
+          stepId: "t1",
+          state: "stalled",
+          sessionId: null,
+          reason: "agent exited before the card reached Done",
+        },
+      ],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([
+      { kind: "markDone", stepId: "t1" },
+    ]);
+  });
+
+  it("marks a stalled step done on an idle rail when its card has since reached Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "idle", currentStageId: null }],
+      stepRuns: [
+        {
+          stepId: "t1",
+          state: "stalled",
+          sessionId: null,
+          reason: "agent exited before the card reached Done",
+        },
+      ],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([
+      { kind: "markDone", stepId: "t1" },
+    ]);
+  });
+
+  // Skip is a human decision that the rail is past this step. A card
+  // that later reaches Done must not quietly rewrite that as delivered.
+  it("leaves a skipped step alone on a paused rail even when its card reaches Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([]);
+  });
+
   it("launches every step of a parallel stage at once", () => {
     const r = rail("r1", [[
       ["t1", "/ws/.gavin-root/plans/a.md"],
