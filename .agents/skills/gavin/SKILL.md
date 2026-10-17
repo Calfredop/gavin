@@ -35,12 +35,16 @@ every piece of work should trace back to it.
 ## 2. Cards: note, task, plan
 
 Create cards with `gavin_create_plan` (`context_folder`, kebab-case
-`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`) or
+`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`/`labels`) or
 author the file directly. `kind` picks what the card IS:
 
 - **note** — a reminder; title (+ optional body).
 - **task** — one unit of agent work; **the body is the prompt**. A human may
   run your card with the workspace agent at any time.
+  Add `direct: true` (or pass `direct` to `gavin_create_plan`) and the body
+  is sent to the agent **exactly as written** — no card path, no status
+  instructions, no attachment list around it. That agent is never told
+  which card it is working, so nothing moves the card when it finishes.
 - **plan** (the default) — multi-step work; the body holds ordinary markdown
   checklists (`- [ ] step`).
 
@@ -83,8 +87,10 @@ The board's COLUMN NAMES are the status vocabulary — check them with
 case/spacing-insensitive; an empty value removes the line — that is how a
 task returns to nesting). Do this when you start, finish, or get blocked. If
 a human ran your card, the app already set it In Progress — you set the done
-column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
-ui")` referencing the board's label names.
+column when finished. Labels: pass `labels` to `gavin_create_plan` when you
+file a card, and `gavin_set_plan_field(path, "labels", "bug, ui")` while you
+work, using the board's label names. That write replaces the whole list, so
+keep the labels the card already carries (`gavin_find_cards` shows them).
 
 **In Progress claims the card for your tab.** A card in that column belongs
 to the session that put it there: the board shows your session instead of a
@@ -176,6 +182,21 @@ keep each memory to one fact worth carrying.
 Looking for something a past session learned? `gavin_search_memories(query,
 topics?, limit?)` searches the adopted memories by meaning, not by words —
 ask in your own phrasing, and narrow by topic when you know one.
+
+## 9. Checking what a page does: the browser
+
+If this workspace has Playwright installed (gavin's setup has a Playwright
+step), you have `browser_*` tools: `browser_navigate`, `browser_snapshot`,
+`browser_click`, `browser_type`, `browser_console_messages`,
+`browser_take_screenshot` and the rest. They drive a headless browser that
+belongs to your session alone, and the human can watch it live beside your
+tab; it ends when your session does.
+
+When you change something a person sees in a page, use them to check it
+before you call the work done: open the page, do what a user would, and read
+the snapshot and the console. Report what you saw, not what you expected. If
+the tools are not there, Playwright is not installed for this workspace — say
+you could not check in a browser rather than implying you did.
 
 ## Notes
 
