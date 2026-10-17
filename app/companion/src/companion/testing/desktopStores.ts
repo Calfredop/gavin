@@ -20,11 +20,15 @@ import {
   terminalFontSizeDefault,
 } from "$lib/core/layoutState";
 import { __resetForTesting as resetOrchestration } from "$lib/orchestration/orchestrationState";
+import { __resetForTesting as resetToolRuns } from "$lib/orchestration/toolRunsState";
+import { __resetForTesting as resetTools } from "$lib/orchestration/toolsState";
 import { themeState } from "$lib/ui/themeState.svelte";
 
 export function resetDesktopStores(): void {
   resetTurnVerdict();
   resetOrchestration();
+  resetTools();
+  resetToolRuns();
   resetGavinState();
   resetDialogs();
   kanbanState.set({});

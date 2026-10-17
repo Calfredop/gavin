@@ -55,7 +55,9 @@ import {
   confirmToolRun,
   initWorkspaceToolListeners,
   requestToolRun,
+  runToolWith,
   toolRunRequest,
+  type ToolLaunchHost,
   __resetForTesting,
 } from "$lib/workspace/workspaceToolsActions";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
@@ -423,5 +425,53 @@ describe("an agent tool's verdict", () => {
     setLayout({ sessionStatusById: { "sess-1": "idle" } });
     await Promise.resolve();
     expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
+  });
+});
+
+describe("runToolWith", () => {
+  function host(over: Partial<ToolLaunchHost> = {}): ToolLaunchHost {
+    return {
+      hold: vi.fn(() => ({ go: true as const })),
+      place: vi.fn(),
+      reveal: vi.fn().mockResolvedValue(undefined),
+      ...over,
+    };
+  }
+
+  // A Device's launch: the values are its page's, and the session is
+  // the host's to place and show -- never the desk's Tools page or tab.
+  it("launches with the values given, and places and reveals through the host", async () => {
+    const device = host();
+    const withParams = tool({ body: "./deploy.sh {{env}}", params: [{ name: "env", label: "", default: "" }] });
+    expect(await runToolWith("ws-1", withParams, { env: "prod" }, device)).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/repo",
+      expect.stringContaining("./deploy.sh prod"),
+      "/repo",
+      undefined
+    );
+    expect(device.place).toHaveBeenCalledWith("ws-1", "sess-1", "command");
+    expect(device.reveal).toHaveBeenCalledWith("sess-1", "command");
+    expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
+    expect(retainTabOnExit).not.toHaveBeenCalled();
+    expect(revealSession).not.toHaveBeenCalled();
+    expect(get(toolRunRequest)).toBeNull();
+    expect(backend.startToolRun).toHaveBeenCalledWith(expect.objectContaining({ toolId: "u1", sessionId: "sess-1" }));
+  });
+
+  it("stops at the host's launch wall with the host's own sentence", async () => {
+    const device = host({ hold: vi.fn(() => ({ go: false as const, error: "held: memory" })) });
+    expect(await runToolWith("ws-1", tool(), {}, device)).toBe("held: memory");
+    expect(device.hold).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "tool", workspaceId: "ws-1", toolId: "u1" })
+    );
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses what the Run button refuses", async () => {
+    expect(await runToolWith("ws-1", tool({ kind: "until" }), {}, host())).toMatch(/rail/);
+    vi.mocked(workspaceRootPath).mockReturnValue(null);
+    expect(await runToolWith("ws-1", tool(), {}, host())).toMatch(/root folder/);
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Orchestration } from "$lib/orchestration/orchestration";
+import { BUILTIN_TOOLS, toolLibrary } from "$lib/orchestration/orchestrationTools";
+import { sampleTools } from "$companion/demo/toolCommands";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
 import type { Workspace } from "$lib/core/workspace";
 import {
@@ -173,5 +175,24 @@ describe("Organize and a rail's Reorganize", () => {
     expect(rootless.reorganize("rail-fixes").kind).toBe("blocked");
     const old = agentPresses({ workspace: workspace(), daemonBlocked: "Needs a newer daemon", unplacedCount: 2 });
     expect(old.organize).toEqual({ kind: "blocked", tip: "Needs a newer daemon" });
+  });
+});
+
+describe("a tool step's row", () => {
+  function withLintStep(orch: Orchestration): void {
+    orch.rails[1].stages[0].steps.push({ id: "step-lint", position: 99, cardPath: "", toolId: "demo-tool-lint" });
+  }
+
+  it("is named from the library the phone holds", () => {
+    const input = { ...atlas(withLintStep), tools: toolLibrary(sampleTools()) };
+    const step = railRows(input)[1].stages[0].steps.find((s) => s.id === "step-lint");
+    expect(step).toMatchObject({ title: "Lint", cardPath: null, column: null });
+  });
+
+  it("is named by its id while only the built-ins are held", () => {
+    const step = railRows({ ...atlas(withLintStep), tools: BUILTIN_TOOLS })[1].stages[0].steps.find(
+      (s) => s.id === "step-lint"
+    );
+    expect(step?.title).toBe("demo-tool-lint");
   });
 });

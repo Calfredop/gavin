@@ -48,6 +48,7 @@ import { channel, connectChannel, disconnectChannel } from "$companion/remote/co
 import { browserSessionEnded, reassertBrowserViews, startBrowserViews } from "$companion/state/browser";
 import { connectionChanged, onReconnect, resetReachability } from "$companion/state/reachability";
 import { forgetSession, resetSessions, startedHere } from "$companion/state/sessions";
+import { toolSessionEnded, watchTools } from "$companion/state/tools";
 import { resetTurns, turnMovedOn } from "$companion/state/turn";
 import {
   backToWorkspaces,
@@ -419,6 +420,8 @@ function sessionEnded(sessionId: string): void {
   browserSessionEnded(sessionId);
   if (get(viewStore).sessionId === sessionId) show(closeTerminalIn(get(viewStore)));
   destroyTerminal(sessionId);
+  // A command or a script tool's run ends with its session.
+  toolSessionEnded();
 }
 
 /// Every session's status as the Workstation holds it now. Written
@@ -570,6 +573,9 @@ export async function connectWorkstation(
     // Which Device each session takes input from (v68): the lock on a
     // terminal another Device owns, and the keys it drops.
     stops.push(watchSessionOwners());
+    // The tool library an agent rewrote, and the verdicts of the agent
+    // tools this phone ran, whichever surface is up.
+    stops.push(await watchTools());
     // The Workstation's daemon as its desk classified it, which every
     // `featureBlockedReason` the desk's modules ask reads. Best-effort, as
     // at the desk: a desk that cannot say leaves the gates open.

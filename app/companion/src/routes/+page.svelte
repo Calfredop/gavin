@@ -34,6 +34,7 @@
   import PhoneRails from "$companion/surfaces/PhoneRails.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
   import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
+  import PhoneTools from "$companion/surfaces/PhoneTools.svelte";
   import PhoneWorkspaceSettings from "$companion/surfaces/PhoneWorkspaceSettings.svelte";
   import SurfaceTabs from "$companion/surfaces/SurfaceTabs.svelte";
   import { trackVisibleArea } from "$companion/surfaces/viewport";
@@ -159,6 +160,10 @@
             </div>
           {:else if $view.surface === "rails"}
             <PhoneRails workspace={open} />
+          {:else if $view.surface === "tools"}
+            <div class="scroll">
+              <PhoneTools workspace={open} />
+            </div>
           {:else if $view.surface === "decisions"}
             <PhoneItems workspace={open} kind="decisions" />
           {:else if $view.surface === "review"}

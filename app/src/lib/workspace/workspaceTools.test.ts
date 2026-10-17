@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   RUNNABLE_TOOL_KINDS,
+  agentToolVerdict,
   cannotRunAloneReason,
   editDraftFor,
   isRunnableStandalone,
@@ -397,5 +398,23 @@ describe("search and the empty state", () => {
   it("distinguishes an empty library from an empty search", () => {
     expect(toolsEmptyMessage([], "")).toMatch(/New tool/);
     expect(toolsEmptyMessage([], "zzz")).toMatch(/zzz/);
+  });
+});
+
+describe("agentToolVerdict", () => {
+  it("fails a session failure detection flagged, worked or not", () => {
+    expect(agentToolVerdict("failed", false)).toBe("failed");
+    expect(agentToolVerdict("failed", true)).toBe("failed");
+  });
+
+  // Idle at the first prompt is an agent that has not started yet.
+  it("passes only an idle session that has worked", () => {
+    expect(agentToolVerdict("idle", true)).toBe("passed");
+    expect(agentToolVerdict("idle", false)).toBeNull();
+  });
+
+  it("says nothing while the agent works, or before a status is heard", () => {
+    expect(agentToolVerdict("working", true)).toBeNull();
+    expect(agentToolVerdict(undefined, true)).toBeNull();
   });
 });

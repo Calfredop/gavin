@@ -9,8 +9,9 @@
 // here rather than a demo that quietly renders nothing.
 //
 // A board's and a card's commands have a table of their own
-// (cardCommands.ts), as do a workspace's rails (railCommands.ts), the Git
-// tab's and the Files tab's (gitCommands.ts, fileCommands.ts), the desk's
+// (cardCommands.ts), as do a workspace's rails (railCommands.ts) and its
+// tools (toolCommands.ts), the Git tab's and the Files tab's
+// (gitCommands.ts, fileCommands.ts), the desk's
 // commit agent a phone asks for (agentCommit.ts), the
 // settings (settingsCommands.ts) and the workspaces as Workstation data
 // (workspaceCommands.ts), gathered in with the rest below.
@@ -26,6 +27,7 @@ import { GIT_COMMANDS } from "$companion/demo/gitCommands";
 import { RAIL_COMMANDS } from "$companion/demo/railCommands";
 import { end, launch, repaint, screenText, type } from "$companion/demo/sessions";
 import { SETTINGS_COMMANDS } from "$companion/demo/settingsCommands";
+import { TOOL_COMMANDS } from "$companion/demo/toolCommands";
 import { WORKSPACE_COMMANDS } from "$companion/demo/workspaceCommands";
 
 export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
@@ -282,6 +284,7 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...FILE_COMMANDS,
   ...CARD_COMMANDS,
   ...RAIL_COMMANDS,
+  ...TOOL_COMMANDS,
   ...BROWSER_COMMANDS,
   ...OWNER_COMMANDS,
 };

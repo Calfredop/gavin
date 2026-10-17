@@ -37,7 +37,7 @@ import {
   reorganizeAction,
   type OrchestrationAgentAction,
 } from "$lib/orchestration/orchestrationAgent";
-import { BUILTIN_TOOLS, findTool } from "$lib/orchestration/orchestrationTools";
+import { BUILTIN_TOOLS, findTool, type Tool } from "$lib/orchestration/orchestrationTools";
 import type { Workspace } from "$lib/core/workspace";
 
 /// The one press that moves a rail, as the desk's header offers it:
@@ -92,6 +92,11 @@ export interface RailsInput {
   orch: Orchestration;
   tree: GavinTree | undefined;
   board: Board | undefined;
+  /// The tool library as the phone holds it, which names a tool step: the
+  /// built-ins until the Tools surface has read the workspace's own. Never
+  /// fetched for this -- a Rails surface asking for the library is what a
+  /// scheduler pass does (`seam/rails.test.ts`).
+  tools?: Tool[];
 }
 
 function pressFor(orch: Orchestration, rail: Rail): RailPress | null {
@@ -101,7 +106,7 @@ function pressFor(orch: Orchestration, rail: Rail): RailPress | null {
   return firstUnfinishedStageId(rail, orch) ? "start" : null;
 }
 
-export function railRows({ orch, tree }: RailsInput): RailRow[] {
+export function railRows({ orch, tree, tools = BUILTIN_TOOLS }: RailsInput): RailRow[] {
   const cards = cardIndex(tree);
   const plans = planIndex(cards);
   return [...orch.rails]
@@ -130,7 +135,7 @@ export function railRows({ orch, tree }: RailsInput): RailRow[] {
             .map((step) => {
               const run = orch.stepRuns.find((r) => r.stepId === step.id);
               const entry = isToolStep(step) ? undefined : cards.get(step.cardPath);
-              const tool = isToolStep(step) ? findTool(BUILTIN_TOOLS, step.toolId as string) : undefined;
+              const tool = isToolStep(step) ? findTool(tools, step.toolId as string) : undefined;
               return {
                 id: step.id,
                 title: isToolStep(step)

@@ -10,13 +10,14 @@
 // elsewhere (workstation.ts).
 
 /// The surfaces a workspace opens on, in the order the strip shows them.
-export const SURFACES = ["board", "rails", "sessions", "decisions", "review", "git", "files", "settings"] as const;
+export const SURFACES = ["board", "rails", "sessions", "tools", "decisions", "review", "git", "files", "settings"] as const;
 export type Surface = (typeof SURFACES)[number];
 
 export const SURFACE_LABELS: Record<Surface, string> = {
   board: "Board",
   rails: "Rails",
   sessions: "Sessions",
+  tools: "Tools",
   decisions: "Decisions",
   review: "Review",
   git: "Git",

@@ -203,6 +203,11 @@ sample data — the thing App Review explores, and the suites' only fixture.
   rail on -- and announces what it wrote as `orchestration-written`, as a
   desk's host does. It ticks as time passes too (`advance`), so a card moved
   to Done from the phone moves its rail on.
+- `toolCommands.ts` — a workspace's tool library and its runs: atlas-api's
+  own three tools and a global one, a passed and a failed run. A command or
+  a script tool the phone runs prints, is filed `passed` and exits on the
+  next step of the activity loop, in that order, as the daemon closes a
+  shell tool's run off its exit.
 - `cardCommands.ts` — a board's and a card's commands over those files: a
   write edits one, then reports through `watches.ts` like every other write
   -- the trees read again and pushed as `gavin-tree-changed`, a watched file
@@ -640,3 +645,34 @@ daemon's side: `device_wire.rs` has the workspace-settings commands and
 How this bundle reaches a phone — built and signed by the desktop build,
 served by the Workstation, verified and cached by the shell — is the shell's
 README's ("Served bundles").
+
+## Tools
+
+The Tools surface is the desk's Tools tab as a list a thumb can use
+(`surfaces/PhoneTools.svelte`, over `surfaces/phoneTools.ts`): the
+workspace's own tools, then the global ones, then the built-ins, in the
+desk's order (`listedTools`) and under the desk's search. Each row opens in
+place: what the tool is and where it runs, its last run in the desk's words
+(`toolRunChip`, `toolRunSentence`), its parameters seeded from their
+defaults, Run, and what it runs. A kind that only means something on a rail
+is listed with Run dark and the desk's reason (`runBlockedReason`). Writing
+and editing tools stays at the desk.
+
+The library and the runs are the desk's own stores, read fresh each time the
+surface opens (`state/tools.ts`), and a run is the desk's one tool launch
+(`runToolWith` in `workspaceToolsActions.ts`) with `DEVICE_TOOL_HOST` in place
+of the desk's (`ToolLaunchHost`): the launch wall refuses rather than queues,
+the session is the desk's to place (companion-16), and only an agent tool's
+terminal opens on the phone -- a command or a script can end in a moment, and
+the Tools surface is where its verdict lands.
+
+Two things the desk does for every run, the phone does for its own, for the
+whole visit whichever surface is up (`watchTools`): a session ending reads the
+runs again, since the daemon closes a shell tool's run off that exit and
+pushes nothing; and an agent tool this phone started is filed `passed` or
+`failed` by the desk's rule (`agentToolVerdict`), since its session never
+exits and the desk files only the runs of workspaces whose Tools tab it has
+read. An agent's `tools-changed` lands the whole library, as at the desk.
+
+`seam/tools.test.ts` lists the Demo Workstation's tools, runs each kind and
+reads what the Workstation was asked.

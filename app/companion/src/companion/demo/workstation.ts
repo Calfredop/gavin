@@ -24,6 +24,7 @@ import { runCommitAgents } from "$companion/demo/agentCommit";
 import { turnPage } from "$companion/demo/browser";
 import { COMMANDS, DemoFailure, type DemoContext } from "$companion/demo/commands";
 import { runAllRails } from "$companion/demo/railCommands";
+import { finishToolRuns } from "$companion/demo/toolCommands";
 import { DEMO, sampleState, type DemoState } from "$companion/demo/sampleData";
 import { refusedToRemoteRole } from "$companion/remote/remoteRole";
 
@@ -132,6 +133,9 @@ export function createDemoWorkstation(options: DemoOptions = {}): DemoWorkstatio
       // ...and a commit agent the phone asked the desk for moves on,
       // after anything the step above changed, so its commit takes it.
       runCommitAgents(demo);
+      // ...and a command or a script tool the phone ran finishes, as a
+      // shell does in a moment.
+      finishToolRuns(demo);
     },
 
     reach(next) {

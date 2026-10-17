@@ -32,7 +32,7 @@
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { buildRunCommand, buildToolCommand, withPromptExtras } from "$lib/cards/cardRun";
-import { revealSession } from "$lib/cards/cardRunActions";
+import { revealSession, type CardLaunchHost } from "$lib/cards/cardRunActions";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { TOOLS_PAGE_NAME } from "$lib/core/workspace";
 import {
@@ -63,7 +63,12 @@ import {
 import { currentPlatform } from "$lib/core/platform";
 import { holdOrQueue, type ToolIntent } from "$lib/agents/launchQueue";
 import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
-import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspace/workspaceTools";
+import {
+  agentToolVerdict,
+  cannotRunAloneReason,
+  isRunnableStandalone,
+  runBlockedReason,
+} from "$lib/workspace/workspaceTools";
 
 /// A launch the human has been asked to fill the parameters of.
 /// Everything the launch needs is resolved when the dialog OPENS -- the
@@ -80,6 +85,40 @@ export interface ToolRunRequest {
   /// answer -- `confirmToolRun` takes what the dialog hands back.
   values: Record<string, string>;
 }
+
+/// What a tool launch does around the session it starts: the launch
+/// wall, placing the session, and putting the human in front of it. The
+/// desk's is its queue, its Tools page and its tab; a Device hands in its
+/// own (the Companion's `state/tools.ts`), for the reasons the card launch
+/// gives (`CardLaunchHost`).
+export interface ToolLaunchHost extends Pick<CardLaunchHost, "hold"> {
+  /// Places a session the launch started. `kind` because the desk keeps a
+  /// shell tool's tab past its exit, and only a shell tool's.
+  place(workspaceId: string, sessionId: string, kind: "agent" | "command" | "script"): void;
+  reveal(sessionId: string, kind: "agent" | "command" | "script"): Promise<void>;
+}
+
+export const DESK_TOOL_HOST: ToolLaunchHost = {
+  hold: (intent) => (holdOrQueue(intent) ? { go: false, error: null } : { go: true }),
+  place(workspaceId, sessionId, kind) {
+    // A shell tool's PTY can exit in under a second. Without this the
+    // session-exited handler closes the tab before the human can read
+    // the epilogue, and a script that refused in 50ms looks like a
+    // no-op that only jumped focus around.
+    if (kind !== "agent") retainTabOnExit(sessionId);
+    // On the Tools page, not Agents: a run started on its own is not a
+    // card's agent, and a rail's tool step never comes through here.
+    handleAgentSessionSpawned(workspaceId, sessionId, TOOLS_PAGE_NAME);
+  },
+  // Revealed for the reason a review is: nothing else on screen would
+  // show that a tool is running, and an agent's first question would be
+  // asked in a tab nobody is looking at. A shell tool's PTY can close in
+  // well under a second, so this is also the only chance to see what it
+  // printed.
+  reveal: async (sessionId) => {
+    await revealSession(sessionId);
+  },
+};
 
 const pending = writable<ToolRunRequest | null>(null);
 
@@ -99,18 +138,10 @@ export function cancelToolRun(): void {
 /// definition is on the row in front of the human is a click that buys
 /// nothing.
 export async function requestToolRun(workspaceId: string, tool: Tool): Promise<string | null> {
-  const rootPath = workspaceRootPath(workspaceId);
-  const blocked = runBlockedReason({
-    compat: get(daemonCompat),
-    rootPath,
-    tool,
-    lastRun: undefined,
-    platform: currentPlatform(),
-  });
-  if (blocked) return blocked;
-  const cwd = resolveToolCwd(tool, rootPath);
-  if (!cwd) return "This workspace has no root folder, so there is nowhere to run a tool.";
-  if (tool.params.length === 0) return launch(workspaceId, tool, {}, cwd);
+  const where = launchableAt(workspaceId, tool);
+  if ("error" in where) return where.error;
+  const { cwd } = where;
+  if (tool.params.length === 0) return launch(workspaceId, tool, {}, cwd, DESK_TOOL_HOST);
   pending.set({
     workspaceId,
     tool,
@@ -120,6 +151,39 @@ export async function requestToolRun(workspaceId: string, tool: Tool): Promise<s
   return null;
 }
 
+/// Where a tool would run now, or why it cannot. The Run button's gate,
+/// asked again at the press: the button was drawn from a store that may
+/// have moved since.
+function launchableAt(workspaceId: string, tool: Tool): { cwd: string } | { error: string } {
+  const rootPath = workspaceRootPath(workspaceId);
+  const blocked = runBlockedReason({
+    compat: get(daemonCompat),
+    rootPath,
+    tool,
+    lastRun: undefined,
+    platform: currentPlatform(),
+  });
+  if (blocked) return { error: blocked };
+  const cwd = resolveToolCwd(tool, rootPath);
+  if (!cwd) return { error: "This workspace has no root folder, so there is nowhere to run a tool." };
+  return { cwd };
+}
+
+/// A launch whose parameters are already answered, through a host of the
+/// caller's own: a Device, whose page asks for the values itself and
+/// whose session is the desk's to place. Returns an error string, or null
+/// once the tool is running.
+export async function runToolWith(
+  workspaceId: string,
+  tool: Tool,
+  values: Record<string, string>,
+  host: ToolLaunchHost
+): Promise<string | null> {
+  const where = launchableAt(workspaceId, tool);
+  if ("error" in where) return where.error;
+  return launch(workspaceId, tool, values, where.cwd, host);
+}
+
 /// Launches the tool the dialog was asking about, with the values it
 /// collected. Returns an error string (the dialog stays up and shows
 /// it), or null (the dialog closes and the human is looking at the
@@ -127,7 +191,7 @@ export async function requestToolRun(workspaceId: string, tool: Tool): Promise<s
 export async function confirmToolRun(values: Record<string, string>): Promise<string | null> {
   const request = get(pending);
   if (!request) return null;
-  const failure = await launch(request.workspaceId, request.tool, values, request.cwd);
+  const failure = await launch(request.workspaceId, request.tool, values, request.cwd, DESK_TOOL_HOST);
   if (!failure) pending.set(null);
   return failure;
 }
@@ -143,6 +207,7 @@ async function launch(
   tool: Tool,
   values: Record<string, string>,
   cwd: string,
+  host: ToolLaunchHost,
   /// The drain calling back in with an intent that has already cleared
   /// the launch wall. Asking again there would re-queue it for ever.
   queued = false
@@ -165,8 +230,9 @@ async function launch(
   // pressure is exactly what the hold exists for. Before the command is
   // composed, so a queued run composes its body from the tool as it is
   // when it actually starts.
-  if (!queued && holdOrQueue({ kind: "tool", workspaceId, label: tool.name, toolId: tool.id, values })) {
-    return null;
+  if (!queued) {
+    const held = host.hold({ kind: "tool", workspaceId, label: tool.name, toolId: tool.id, values });
+    if (!held.go) return held.error;
   }
   const body = resolveToolBody(tool, values);
   const agent = resolvedAgentFor(workspaceId);
@@ -208,22 +274,9 @@ async function launch(
 
   if (tool.kind === "agent") {
     void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
-  } else {
-    // A shell tool's PTY can exit in under a second. Without this the
-    // session-exited handler closes the tab before the human can read
-    // the epilogue, and a script that refused in 50ms looks like a
-    // no-op that only jumped focus around.
-    retainTabOnExit(sessionId);
   }
-  // On the Tools page, not Agents: a run started on its own is not a
-  // card's agent, and a rail's tool step never comes through here.
-  handleAgentSessionSpawned(workspaceId, sessionId, TOOLS_PAGE_NAME);
-  // Revealed for the reason a review is: nothing else on screen would
-  // show that a tool is running, and an agent's first question would be
-  // asked in a tab nobody is looking at. A shell tool's PTY can close in
-  // well under a second, so this is also the only chance to see what it
-  // printed.
-  await revealSession(sessionId);
+  host.place(workspaceId, sessionId, tool.kind);
+  await host.reveal(sessionId, tool.kind);
   try {
     // The store, not backend.setSessionName: the backend command only
     // persists the name to config and pushes nothing back, so a tab
@@ -301,19 +354,13 @@ export function startToolVerdictWatch(): () => void {
         // as a rail step does.
         const tool = library.find((t) => t.id === run.toolId);
         if (tool?.kind !== "agent") continue;
-        const status = state.sessionStatusById[run.sessionId];
-        if (status === "failed") {
-          filed.add(run.sessionId);
-          void fileVerdict(workspaceId, run.sessionId, "failed");
-          continue;
-        }
-        // Idle at the first prompt is not a finished turn — the same
-        // rule a rail's agent-prompt step runs on (agentTurnEnded).
-        if (status !== "idle") continue;
-        const seenWorking = state.sessionsSeenWorking ?? new Set<string>();
-        if (!seenWorking.has(run.sessionId)) continue;
+        const verdict = agentToolVerdict(
+          state.sessionStatusById[run.sessionId],
+          (state.sessionsSeenWorking ?? new Set<string>()).has(run.sessionId)
+        );
+        if (!verdict) continue;
         filed.add(run.sessionId);
-        void fileVerdict(workspaceId, run.sessionId, "passed");
+        void fileVerdict(workspaceId, run.sessionId, verdict);
       }
     }
   });
@@ -379,5 +426,5 @@ export async function launchQueuedTool(intent: ToolIntent): Promise<void> {
   if (!tool) return;
   const cwd = resolveToolCwd(tool, rootPath);
   if (!cwd) return;
-  await launch(intent.workspaceId, tool, intent.values, cwd, true);
+  await launch(intent.workspaceId, tool, intent.values, cwd, DESK_TOOL_HOST, true);
 }
