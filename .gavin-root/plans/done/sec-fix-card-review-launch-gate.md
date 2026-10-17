@@ -1,7 +1,8 @@
 ---
+order: 22528
 kind: task
 title: "[sec] 'Review with agent…' and 'Critical review…' on a card send agents to read an unreviewed cloned card with no first-run review"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -110,3 +111,6 @@ export async function requestCardCriticalReview(workspaceId: string, card: CardV
 - The fix enforces the invariant above at the last trusted decision point, not in a caller.
 - The regression cases named in the fix are tests, and they fail before the change.
 - The checks in CLAUDE.md pass for every part you touched, and you commit only your own files.
+
+- [ ] Decision: Should the repo-shipped REVIEW.md (which the review prompt says 'wins') get its own digest gate, as a separate follow-up card?
+  Options: A) Yes — file a follow-up To Do B) No — leave REVIEW.md ungated C) Defer — open a tracking note only

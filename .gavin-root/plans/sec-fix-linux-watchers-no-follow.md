@@ -1,4 +1,5 @@
 ---
+order: 43008
 kind: task
 title: "[sec] A directory symlink committed in a cloned repo makes gavin's Linux inotify watchers walk and watch trees outside the worktree, using up the user's shared inotify watch quota"
 status: To Do

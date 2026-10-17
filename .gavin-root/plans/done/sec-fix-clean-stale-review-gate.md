@@ -1,7 +1,8 @@
 ---
+order: 23552
 kind: task
 title: "[sec] Clean stale decisions/tests hands unreviewed cloned-card text to an unsandboxed agent with no first-run review"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---

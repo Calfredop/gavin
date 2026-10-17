@@ -1,7 +1,8 @@
 ---
+order: 36864
 kind: task
 title: "[sec] Any repo that ships crates/gavin-mcp/Cargo.toml and scripts/gavin-mcp gets gavin's own MCP entry pointed at the repo's script, with no disclosure and with kimi folder trust granted"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 labels: security, ready-for-agent
@@ -85,3 +86,5 @@ Regression tests, in agent_setup.rs's test module:
 - The regression test fails before the change and passes after it.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "Under a throwaway HOME and KIMI_CODE_HOME, a fixture repo with a stub crates/gavin-mcp/Cargo.toml and a scripts/gavin-mcp that only touches /tmp/gavin-launcher-marker, run through Integration with the kimi-code profile and then a kimi session, leaves no marker file and names the absolute gavin-mcp in .mcp.json."
+
+- [ ] Human test: Under a throwaway HOME and KIMI_CODE_HOME, a fixture repo with a stub crates/gavin-mcp/Cargo.toml and a scripts/gavin-mcp that only touches /tmp/gavin-launcher-marker, run through Integration with the kimi-code profile and then a kimi session, leaves no marker file and names the absolute gavin-mcp in .mcp.json.

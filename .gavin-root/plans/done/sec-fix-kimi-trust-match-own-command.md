@@ -1,7 +1,8 @@
 ---
+order: 40960
 kind: task
 title: "[sec] Daemon and app write kimi folder trust for any .mcp.json whose entry is merely named `gavin`, whatever command it runs"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---

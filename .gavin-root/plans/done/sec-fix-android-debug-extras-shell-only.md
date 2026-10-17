@@ -1,7 +1,8 @@
 ---
+order: 20480
 kind: task
 title: "[sec] A debuggable Android Companion honours gavinKeysCheck and gavinPairCode from any app that starts its exported MainActivity, so any app can wipe the Device's keys and every pairing"
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 labels: security, ready-for-agent
@@ -66,3 +67,5 @@ Regression tests, written first:
 - The checks in CLAUDE.md pass for every part you touched.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "On a throwaway emulator with a debuggable Companion paired to an isolated Workstation, start MainActivity from a second test app with FLAG_ACTIVITY_NEW_TASK|FLAG_ACTIVITY_CLEAR_TASK and the extra gavinKeysCheck=true, and check that the Companion keeps its keys and still lists the paired Workstation, while scripts/keys.sh against the same emulator still runs the keys check."
+
+- [ ] Human test: On a throwaway emulator with a debuggable Companion paired to an isolated Workstation, start MainActivity from a second test app with FLAG_ACTIVITY_NEW_TASK|FLAG_ACTIVITY_CLEAR_TASK and the extra gavinKeysCheck=true, and check that the Companion keeps its keys and still lists the paired Workstation, while scripts/keys.sh against the same emulator still runs the keys check.

@@ -1,4 +1,5 @@
 ---
+order: 51200
 kind: task
 title: "[sec] Card and decision text carrying ESC[201~ ends the daemon's and the desk's bracketed paste early, so the rest reaches the agent TUI as typed keystrokes"
 status: To Do

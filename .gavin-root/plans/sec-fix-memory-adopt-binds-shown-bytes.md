@@ -1,4 +1,5 @@
 ---
+order: 46080
 kind: task
 title: "[sec] Adopt writes hidden memory-card text the human never saw into gavin's instruction block"
 status: To Do

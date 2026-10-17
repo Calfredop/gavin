@@ -1,7 +1,8 @@
 ---
+order: 24576
 kind: task
 title: "[sec] The Companion leaves the last Workstation frame in the iOS app switcher and Android Recents after the Unlock ends"
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 labels: security, ready-for-agent
@@ -68,3 +69,17 @@ The script fails before the change and passes after it on both platforms.
 - The checks in CLAUDE.md pass for every part you touched.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "On a physical iPhone and an Android phone paired to a Workstation showing dummy terminal text, open a terminal in the Companion, press Home, wait more than 3 s, open the app switcher or Recents, and check that the Companion's card shows no terminal text and that tapping it brings back the locked hub."
+
+## Comments
+
+### 2026-10-16
+
+**Confirmed.** Before the fix, an iOS Simulator SplashBoard `.ktx` (converted with `sips`) still held `SNAPSHOT-MARKER` from the unlocked hub after Preferences was brought forward and the Unlock's 2 s grace had ended. After the opaque window cover on `sceneWillResignActive`, the same check passes: the `.ktx` no longer contains the marker.
+
+**Android API 30–32 trade-off:** opaque cover in `onPause` / remove in `onResume`, not `FLAG_SECURE`. `FLAG_SECURE` would also block the owner's screenshots and `scripts/device-drive.sh` / README captures. API 33+ uses `setRecentsScreenshotEnabled(false)` on `MainActivity` and `BundleActivity`.
+
+**Android observation:** Play-store AVDs return a solid black frame from `screencap` of Recents (with or without the fix), so OCR of that capture is not a valid gate. `scripts/snapshot.sh` refuses to treat a blank Recents capture as a pass; it tries on-disk task bitmaps when `adb root` works (google_apis/userdebug). Physical-device Recents is the human test below. The script's iOS SplashBoard path is the automated OS-snapshot proof.
+
+**Regression:** `app/companion-shell/scripts/snapshot.sh` (desk mode in `devstack.mjs snapshot`). Fingerprint: `companion-shell:os-task-snapshot-retains-workstation-view-after-unlock-ends`.
+
+- [ ] Human test: On a physical iPhone and an Android phone paired to a Workstation showing dummy terminal text, open a terminal in the Companion, press Home, wait more than 3 s, open the app switcher or Recents, and check that the Companion's card shows no terminal text and that tapping it brings back the locked hub.

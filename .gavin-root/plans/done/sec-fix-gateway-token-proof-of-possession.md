@@ -1,7 +1,8 @@
 ---
+order: 35840
 kind: task
 title: "[sec] Unauthenticated Push gateway registration of a known push token deletes the victim Device and cancels all its Workstations' permissions"
-status: To Do
+status: Done
 priority: low
 complexity: complex
 ---

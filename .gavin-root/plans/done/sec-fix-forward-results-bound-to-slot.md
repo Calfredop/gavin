@@ -1,7 +1,8 @@
 ---
+order: 34816
 kind: task
 title: "[sec] Any local connection can answer a Device's pending forwarded call by its sequential call id"
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---

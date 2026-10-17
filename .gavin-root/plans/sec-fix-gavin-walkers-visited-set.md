@@ -1,4 +1,5 @@
 ---
+order: 37888
 kind: task
 title: "[sec] The workspace .gavin scan and the plans-tree walk follow directory-symlink loops inside the repo with no visited set or depth cap, so the work grows exponentially in the shared daemon"
 status: To Do

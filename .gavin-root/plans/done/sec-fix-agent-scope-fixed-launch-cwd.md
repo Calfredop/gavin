@@ -1,7 +1,8 @@
 ---
+order: 19456
 kind: task
 title: "[sec] OSC 7 cwd from PTY output becomes an agent's authorization scope root"
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---

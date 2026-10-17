@@ -1,7 +1,8 @@
 ---
+order: 21504
 kind: task
 title: "[sec] A cached Companion bundle opens under a forged manifest, so retiring a bundle-signing key never stops the bundles it already signed"
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 labels: security, ready-for-agent

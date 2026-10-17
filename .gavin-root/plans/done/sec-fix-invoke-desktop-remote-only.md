@@ -1,7 +1,8 @@
 ---
+order: 39936
 kind: task
 title: "[sec] InvokeDesktop lets an untokened local connection run privileged desk commands past the require_local_token narrowing"
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---

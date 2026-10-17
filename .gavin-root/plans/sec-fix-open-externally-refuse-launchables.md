@@ -1,4 +1,5 @@
 ---
+order: 49152
 kind: task
 title: "[sec] Clicking a card's attachment chip or a terminal path hands a repo-shipped .command, executable or symlinked file to the OS launcher, with no type check and under a viewable-looking name"
 status: To Do

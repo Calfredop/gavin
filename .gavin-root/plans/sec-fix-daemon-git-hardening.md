@@ -1,4 +1,5 @@
 ---
+order: 28672
 kind: task
 title: "[sec] Daemon's automatic git status runs an embedded repository's committed core.fsmonitor when terminal output (OSC 7) names a directory inside a cloned repo"
 status: To Do

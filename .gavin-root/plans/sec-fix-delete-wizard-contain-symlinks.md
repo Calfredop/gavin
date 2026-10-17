@@ -1,4 +1,5 @@
 ---
+order: 31744
 kind: task
 title: "[sec] The workspace delete wizard trashes and edits gavin files outside the workspace root through committed directory and file symlinks"
 status: To Do

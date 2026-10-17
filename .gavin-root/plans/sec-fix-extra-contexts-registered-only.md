@@ -1,4 +1,5 @@
 ---
+order: 33792
 kind: task
 title: "[sec] A cloned repository's committed extra_contexts makes the daemon hand another workspace's cards to agents through ScanGavinRoot and gavin_get_tree/gavin_find_cards"
 status: To Do

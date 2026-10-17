@@ -1,7 +1,8 @@
 ---
+order: 48128
 kind: task
 title: "[sec] The Matt Pocock skills install and the gavin-mcp playwright shim run npx from the workspace, so a cloned repo's .npmrc or node_modules decides what executes"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 labels: security, ready-for-agent
@@ -68,3 +69,5 @@ Regression tests, written first:
 - The regression test fails before the change and passes after it.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files. A rebuilt `gavin-mcp` reaches running sessions only through the app's install step, not `cargo build` alone.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "In the real app, a scratch workspace cloned from a marker repo (an `.npmrc` with `script-shell=./marker.sh`, and a committed `node_modules/@playwright/mcp` at the pinned version whose bin writes a marker) produces no marker when Install is clicked on the Matt Pocock skills row under a codex profile, and none when a Claude Code session starts with gavin's playwright entry, whose npx process `lsof -a -d cwd -p <pid>` shows running from the home directory."
+
+- [ ] Human test: In the real app, a scratch workspace cloned from a marker repo (an `.npmrc` with `script-shell=./marker.sh`, and a committed `node_modules/@playwright/mcp` at the pinned version whose bin writes a marker) produces no marker when Install is clicked on the Matt Pocock skills row under a codex profile, and none when a Claude Code session starts with gavin's playwright entry, whose npx process `lsof -a -d cwd -p <pid>` shows running from the home directory.

@@ -1,4 +1,5 @@
 ---
+order: 15360
 kind: task
 title: "[sec-check] An agent's headless browser keeps an unauthenticated loopback CDP port beside the secret-gated proxy, and the proxy secret travels in argv"
 status: To Do

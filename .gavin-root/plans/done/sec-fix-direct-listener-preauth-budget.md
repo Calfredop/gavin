@@ -1,7 +1,8 @@
 ---
+order: 32768
 kind: task
 title: "[sec] Any LAN or tailnet peer that sends nothing can fill the direct listener's single 16-socket cap and lock paired Devices out of the direct path"
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---

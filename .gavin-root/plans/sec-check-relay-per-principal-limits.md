@@ -1,4 +1,5 @@
 ---
+order: 17408
 kind: task
 title: "[sec-check] The Relay's 4096-socket pool and copied bandwidth have no per-IP, per-token or per-Workstation limit, though the docs promise a per-Workstation bandwidth limit on the public instance"
 status: To Do

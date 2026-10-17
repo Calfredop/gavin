@@ -1,7 +1,8 @@
 ---
+order: 56320
 kind: task
 title: "[sec] On Windows another local account can take the daemon's pipe name first, and the app accepts it as its daemon: no FILE_FLAG_FIRST_PIPE_INSTANCE, no check of the server's owner, and a server_proof keyed by the token the app just sent"
-status: To Do
+status: Done
 priority: low
 complexity: intricate
 labels: security, ready-for-agent, windows
@@ -89,3 +90,17 @@ Regression tests, written first:
 - The checks in CLAUDE.md pass for every part you touched, and the msvc cross-check compiles.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "On a disposable Windows VM with two standard accounts, have the second account create the first account's gavin daemon pipe name with a DACL granting Everyone access and answer ProtocolVersion 75 (and, in a second run, 34), then launch Gavin as the first account and check that the app names the pipe as held by another account and sends that server nothing, and that with no squatter Gavin starts and connects as usual."
+
+- [ ] Human test: On a disposable Windows VM with two standard accounts, have the second account create the first account's gavin daemon pipe name with a DACL granting Everyone access and answer ProtocolVersion 75 (and, in a second run, 34), then launch Gavin as the first account and check that the app names the pipe as held by another account and sends that server nothing, and that with no squatter Gavin starts and connects as usual.
+
+## Comments
+
+### 2026-10-16
+
+Lead confirmed: the three session regression tests failed before any fix (`a_peer_that_only_learns_the_token_from_hello_cannot_complete_handshake`, `a_daemon_reporting_version_34_is_refused`, `an_answering_peer_with_no_token_file_is_refused`), then passed after.
+
+**Compat.** `PROTOCOL_VERSION` is 76. An updated app meeting a still-running older local daemon refuses with "too old … restart it (quit gavin, then relaunch)" — not the degraded banner. No `FEATURE_MIN_VERSION` entry: `ServerChallenge` is Tauri-host only.
+
+**ssh.** Same refusal for a host daemon below 76 or a bridge banner with no token: the host's own endpoint is what the check protects, so the link does not fail open to `local`.
+
+**MSVC.** Plain `cargo check --target x86_64-pc-windows-msvc` hits `ring`'s need for an MSVC C toolchain on this Mac; `cargo xwin check -p protocol -p gavin-daemon -p gavin-mcp --tests --target x86_64-pc-windows-msvc` (with the LIBSQLITE3 env from the Windows-port notes) compiles clean, including the `#[cfg(windows)]` transport tests.

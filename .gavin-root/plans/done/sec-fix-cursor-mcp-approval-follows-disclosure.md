@@ -1,7 +1,8 @@
 ---
+order: 27648
 kind: task
 title: "[sec] The Cursor profile's fixed --approve-mcps --trust flags pre-approve every server in a cloned repo's .cursor/mcp.json, whatever gavin's foreign-server disclosure says"
-status: To Do
+status: Done
 priority: medium
 complexity: complex
 labels: security, ready-for-agent
@@ -66,3 +67,5 @@ Regression tests, written first:
 - The regression test fails before the change and passes after it.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files. A new host command that a Device could reach needs its row in `crates/protocol/src/remote_commands.rs`.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "With the Cursor agent CLI signed in to a throwaway account, a gavin Run in a scratch repo whose .cursor/mcp.json declares an undisclosed server running `touch /tmp/cursor-mcp-probe` shows Cursor's 'MCP Server Approval Required' dialog and leaves no /tmp/cursor-mcp-probe after 'Continue without approval', a hidden agent commit there is refused with the disclosure reason, and after answering Keep in Settings the same Run starts with no dialog."
+
+- [ ] Human test: With the Cursor agent CLI signed in to a throwaway account, a gavin Run in a scratch repo whose .cursor/mcp.json declares an undisclosed server running `touch /tmp/cursor-mcp-probe` shows Cursor's 'MCP Server Approval Required' dialog and leaves no /tmp/cursor-mcp-probe after 'Continue without approval', a hidden agent commit there is refused with the disclosure reason, and after answering Keep in Settings the same Run starts with no dialog.

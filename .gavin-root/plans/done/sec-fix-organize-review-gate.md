@@ -1,7 +1,8 @@
 ---
+order: 50176
 kind: task
 title: "[sec] Organize and Reorganize skip the first-run card review and hand unreviewed cloned cards to an unsandboxed agent"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---

@@ -1,7 +1,8 @@
 ---
+order: 44032
 kind: task
 title: "[sec] With require_local_token on, an untokened same-user connection can still type into any session, read its screen, read files under any root it names and store replayable launches, so it can borrow Gavin's macOS TCC grants"
-status: To Do
+status: Done
 priority: medium
 complexity: complex
 labels: security, ready-for-agent
@@ -81,3 +82,5 @@ Not in this card: the switch is off by default, so an untokened local connection
 - The regression test fails before the change and passes after it.
 - Follow the CLAUDE.md traps that apply: a new SQLite column needs its own `ALTER TABLE`, a widened request needs a compat-gate entry, and you commit only your own files.
 - Once the fix is in, file this check with `gavin_request_human(<this card>, "test", …)` using exactly this text: "On your own Mac, with Require a token for full local access turned on, a process that holds no Documents grant and connects untokened to daemon.sock gets Forbidden for ReadWorkspaceFile on ~/Documents/h54-canary.txt and for CreateSession, WriteInput and Attach, and the canary text never comes back, both while Gavin.app runs and after it quits."
+
+- [ ] Human test: On your own Mac, with Require a token for full local access turned on, a process that holds no Documents grant and connects untokened to daemon.sock gets Forbidden for ReadWorkspaceFile on ~/Documents/h54-canary.txt and for CreateSession, WriteInput and Attach, and the canary text never comes back, both while Gavin.app runs and after it quits.

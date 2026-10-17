@@ -1,4 +1,5 @@
 ---
+order: 54272
 kind: task
 title: "[sec] An ssh host's card tree can name a LOCAL file as a card, which the desktop reads from its own disk and sends back to the host inside the agent prompt"
 status: To Do

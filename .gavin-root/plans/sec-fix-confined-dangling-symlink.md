@@ -1,4 +1,5 @@
 ---
+order: 25600
 kind: task
 title: "[sec] WriteWorkspaceFile follows a dangling symlink out of the workspace root"
 status: To Do

@@ -1,4 +1,5 @@
 ---
+order: 30720
 kind: task
 title: "[sec] Daemon writers of .gavin-root/config.toml and plan cards follow repository-committed symlinks and write outside the workspace"
 status: To Do

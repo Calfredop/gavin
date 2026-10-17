@@ -1,4 +1,5 @@
 ---
+order: 55296
 kind: task
 title: "[sec] A repository's card tree serialized past 1 MiB tears down the desktop's streaming connection, stalls every attached terminal, and Restart daemon brings the same failure back"
 status: To Do

@@ -1,4 +1,5 @@
 ---
+order: 29696
 kind: task
 title: "[sec] gavin_read_prd and the .gavin* scan follow a committed symlink out of the workspace and return the outside file to the agent"
 status: To Do

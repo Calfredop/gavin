@@ -1,4 +1,5 @@
 ---
+order: 16384
 kind: task
 title: "[sec-check] Every daemon build accepts any P-256 key as a Device's hardware key: the release refusal of software-debug and unattested keys that ADR 0001 and 06 §5.7 require is not built"
 status: To Do

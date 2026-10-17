@@ -1,4 +1,5 @@
 ---
+order: 57344
 kind: plan
 title: "[sec] Hardening notes from the 2026-10-15 security audit"
 status: To Do

@@ -1,7 +1,8 @@
 ---
+order: 52224
 kind: task
 title: "[sec] Re-launch replays a card run that points the agent at the current card file, with no first-Run review check"
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---

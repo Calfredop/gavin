@@ -1,4 +1,5 @@
 ---
+order: 53248
 kind: task
 title: "[sec] An ssh host's Relay, direct-listener and pairing pushes reach the desk's Remote-access and Devices screens as the local Workstation's own state"
 status: To Do

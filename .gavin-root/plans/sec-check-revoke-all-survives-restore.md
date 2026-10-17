@@ -1,4 +1,5 @@
 ---
+order: 18432
 kind: task
 title: "[sec-check] Revoke all does not survive a restore of devices.sqlite: the rotated Workstation key and the revoked rows roll back together"
 status: To Do

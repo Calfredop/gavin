@@ -1,7 +1,8 @@
 ---
+order: 47104
 kind: task
 title: "[sec] A cloned repo's [agent] model_flag is spliced unquoted into every agent launch line, bypassing workspace trust"
-status: To Do
+status: Done
 priority: high
 complexity: complex
 ---

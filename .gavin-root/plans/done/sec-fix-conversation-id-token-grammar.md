@@ -1,7 +1,8 @@
 ---
+order: 26624
 kind: task
 title: "[sec] An agent's self-reported conversation id is spliced unquoted into the Resume / auto-resume shell line, which skips the first-run review"
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---
