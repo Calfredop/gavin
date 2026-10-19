@@ -36,6 +36,10 @@ services:
       # is handed to Apple or Google -- no credentials are configured, no
       # client for either is built, and no outbound request is made.
       GAVIN_PUSH_DELIVERY: dry-run
+      # Plain HTTP on a published port; the phone reaches it on the LAN the
+      # same way it reaches the Relay. Affirm that, as production does behind
+      # a TLS-terminating proxy.
+      GAVIN_PUSH_TLS_TERMINATED: "1"
     volumes:
       - push-data:/data
     ports:

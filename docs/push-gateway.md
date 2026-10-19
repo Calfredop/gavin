@@ -12,11 +12,14 @@ The Relay (byte-copy rendezvous, separate service) is [`relay.md`](relay.md).
 ## How a notification travels
 
 1. **The Device registers** its APNs or FCM token with the gateway and gets
-   back a Device id and a Device secret.
-2. **The Device mints one send permission per Workstation** and hands it to
-   that Workstation over their encrypted channel (`SetThisDeviceSendPermission`,
-   protocol v67, which the daemon stores on that Device's own row). The permission names the
-   Device, not its token, so it survives the token changing.
+   back a Device id and a Device secret. The token stays *pending* until the
+   Device proves it holds it by echoing a nonce the gateway pushed to that
+   token (`POST …/token/confirm`).
+2. **The Device mints one send permission per Workstation** (only after the
+   token is confirmed) and hands it to that Workstation over their encrypted
+   channel (`SetThisDeviceSendPermission`, protocol v67, which the daemon
+   stores on that Device's own row). The permission names the Device, not its
+   token, so it survives the token changing.
 3. **The Workstation's daemon posts ciphertext** with the permission. The
    ciphertext is sealed with the notification key that Workstation and Device
    agreed at pairing; the gateway cannot read it.
@@ -42,20 +45,41 @@ All bodies are JSON unless noted. Every refusal is
 development-signed build, whose tokens come from the APNs sandbox. Android
 ignores it.
 
-`201 {"device_id": "<32 hex>", "device_secret": "<base64url>"}`. The secret
-is shown once; the gateway keeps only its hash. Register once per install.
+`201 {"device_id": "<32 hex>", "device_secret": "<base64url>", "token_pending": true}`.
+The secret is shown once; the gateway keeps only its hash. Register once per
+install. A dry-run gateway also returns `verification_nonce` so a local stack
+can confirm without a real phone; live delivery sends that nonce only in the
+verification push to the claimed token (APNs/FCM field `v`).
 
-A token belongs to one Device. Registering a token another Device holds (a
-reinstall on the same phone gets the same token back) removes the older
-Device and cancels its permissions: the old install's keys are gone, so
-nothing sent to it could be decrypted anyway.
+The claim does **not** displace any other Device. Until
+`POST /v1/devices/{id}/token/confirm` succeeds, the new row has no deliverable
+token and cannot mint permissions. Confirming promotes the pending claim and
+clears the live token on every other Device that held it — their rows and
+permissions stay, so a Workstation whose Device lost the token gets
+`device_unreachable` rather than `permission_cancelled`, and recovers when that
+Device's next confirmed `PUT /token` restores delivery (or when the phone hands
+it a permission from a fresh Device after a reinstall).
 
 ### `PUT /v1/devices/{device_id}/token` — a newer token
 
 `Authorization: Bearer <device_secret>`, body `{"token": "…", "environment": "…"}`.
-`204`. Every permission the Device has minted keeps working. The Companion
-should call this whenever Apple or Google hand it a new token, and on every
-launch.
+`200 {"token_pending": true}` (dry-run may also include `verification_nonce`).
+The live token keeps delivering until the Device confirms the pending claim.
+Every permission the Device has minted keeps working. The Companion should
+call this whenever Apple or Google hand it a new token, and on every launch.
+
+### `GET /v1/devices/{device_id}/token` — is a claim still pending?
+
+`Authorization: Bearer <device_secret>`. `200 {"token_pending": true|false}`.
+The Companion polls this after a live registration while waiting for the
+verification push to be confirmed.
+
+### `POST /v1/devices/{device_id}/token/confirm` — prove possession
+
+`Authorization: Bearer <device_secret>`, body `{"nonce": "…"}` — the value from
+the verification push's `v` field (or dry-run's `verification_nonce`).
+`204`. Wrong or missing nonce is `401 device_unauthorized` (same shape as a
+wrong secret). Nothing pending is `400 nothing_pending`.
 
 ### `DELETE /v1/devices/{device_id}` — unregister
 
@@ -67,7 +91,9 @@ Device minted.
 `Authorization: Bearer <device_secret>`, no body.
 `201 {"permission_id": "<32 hex>", "permission": "v1.….…", "expires_at": <unix seconds>}`.
 
-Mint one per Workstation and hand it over the encrypted channel. A
+Mint one per Workstation and hand it over the encrypted channel. Refused with
+`409 token_unconfirmed` until the Device has confirmed a deliverable token, so
+a free registration of a random token never earns a push allowance. A
 permission lasts `GAVIN_PUSH_PERMISSION_TTL_DAYS` (90 by default, the trust
 store's unseen-Device expiry); mint a fresh one before it runs out and cancel
 the old. A Device may hold 64 live permissions.
@@ -104,11 +130,12 @@ payload cap APNs and FCM both enforce. It is eight of the Companion's
 
 ### Other answers
 
-- `401 device_unauthorized`: an unknown Device id, or a missing or wrong
-  secret. The two are indistinguishable on purpose.
-- `400`: `bad_json`, `unknown_platform`, `bad_token`, `unknown_environment`.
+- `401 device_unauthorized`: an unknown Device id, a missing or wrong secret,
+  or a wrong verification nonce. Those are indistinguishable on purpose.
+- `400`: `bad_json`, `unknown_platform`, `bad_token`, `unknown_environment`,
+  `bad_nonce`, `nothing_pending`.
 - `422 platform_unavailable`: this gateway has no credentials for that platform.
-- `409 too_many_permissions`.
+- `409 too_many_permissions`, `token_unconfirmed`.
 - `GET /healthz` answers `200 ok`.
 
 ## What reaches Apple and Google
@@ -149,6 +176,7 @@ credentials can be mounted as Docker secrets.
 | Variable | Default | |
 | --- | --- | --- |
 | `GAVIN_PUSH_LISTEN` | `0.0.0.0:8080` | Address and port to serve plain HTTP on. |
+| `GAVIN_PUSH_TLS_TERMINATED` | | Set to `1` when a proxy in front of the gateway terminates TLS. Required for any non-loopback listen; a loopback bind needs nothing. |
 | `GAVIN_PUSH_DATA_DIR` | `/data` | Holds `push-gateway.sqlite` and, by default, the permission key. |
 | `GAVIN_PUSH_PERMISSION_KEY_FILE` | `$GAVIN_PUSH_DATA_DIR/permission.key` | The key permissions are signed with: base64 of at least 32 bytes. Created with a random key on first start. |
 | `GAVIN_PUSH_PERMISSION_TTL_DAYS` | `90` | How long a permission lasts. |
@@ -177,7 +205,9 @@ A dry run, for development:
 
 ```sh
 docker run --rm -p 8080:8080 -v gavin-push-data:/data \
-  -e GAVIN_PUSH_DELIVERY=dry-run gavin-push-gateway
+  -e GAVIN_PUSH_DELIVERY=dry-run \
+  -e GAVIN_PUSH_TLS_TERMINATED=1 \
+  gavin-push-gateway
 ```
 
 Live, with the credentials mounted read-only:
@@ -186,6 +216,7 @@ Live, with the credentials mounted read-only:
 docker run -d --name gavin-push-gateway -p 8080:8080 \
   -v gavin-push-data:/data \
   -v /srv/gavin-push/secrets:/run/secrets:ro \
+  -e GAVIN_PUSH_TLS_TERMINATED=1 \
   -e GAVIN_PUSH_APNS_KEY_FILE=/run/secrets/AuthKey.p8 \
   -e GAVIN_PUSH_APNS_KEY_ID=ABC123DEFG \
   -e GAVIN_PUSH_APNS_TEAM_ID=TEAM123456 \
@@ -199,7 +230,10 @@ read the mounted credential files.
 
 - **TLS.** The gateway serves plain HTTP. Daemons and Devices reach it over
   HTTPS, so put it behind a TLS-terminating proxy or load balancer, and do not
-  publish port 8080 to the internet directly.
+  publish port 8080 to the internet directly. Set `GAVIN_PUSH_TLS_TERMINATED=1`
+  to affirm that arrangement — without it a non-loopback listen will not start.
+  An existing deployment must add the variable before upgrading, or the new
+  image will refuse to start.
 - **One instance.** The database is SQLite, and the rate limiter lives in
   memory, so it runs as a single instance. A restart forgets rate-limit state
   and nothing else.
@@ -230,6 +264,9 @@ suite checks this.
   entitlement (`docs/companion-mobile.md`, "Push notifications (iOS)"), and
   until then it shows as a passive line the hub clears.
 - **Registration abuse on a public instance.** Anyone can register a Device.
-  The permission cap bounds what one Device can store, but nothing bounds how
-  many Devices one caller registers. A per-address limit belongs in front of
-  the public instance.
+  Proof of token possession stops a random token from earning a push
+  allowance (no confirm → no mint → no `POST /v1/push`), but each registration
+  still triggers one verification push upstream. Whether the public instance's
+  ingress already limits `POST /v1/devices`, `PUT …/token` and `POST /v1/push`
+  per address, or the gateway should add its own limits, is an open Decision
+  on the proof-of-possession security card.
