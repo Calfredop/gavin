@@ -68,7 +68,13 @@ pub fn find_npx(dirs: &[PathBuf], windows: bool) -> Option<PathBuf> {
 
 /// The command that runs the pinned MCP against `endpoint`, with `extra`
 /// (anything after `playwright` in the MCP entry) passed on to it.
-pub fn mcp_command(npx: &Path, endpoint: &Endpoint, extra: &[OsString]) -> Command {
+///
+/// `neutral` is the working directory: never the workspace. `npx` reads
+/// the cwd's `.npmrc` and `node_modules`, so an inherited agent-CLI cwd
+/// in a cloned repo could name the registry or ship the pinned package.
+/// `--output-dir` is already absolute; `@playwright/mcp` does not use cwd
+/// for session state.
+pub fn mcp_command(npx: &Path, endpoint: &Endpoint, extra: &[OsString], neutral: &Path) -> Command {
     let args = protocol::playwright::mcp_args(&endpoint.endpoint, &endpoint.output_dir);
     // `npx.cmd` is a batch file, and a batch file's arguments are parsed
     // by cmd.exe, by rules no quoting from here survives. It is a thin
@@ -80,12 +86,12 @@ pub fn mcp_command(npx: &Path, endpoint: &Endpoint, extra: &[OsString]) -> Comma
         let cli = dir.join("node_modules").join("npm").join("bin").join("npx-cli.js");
         if node.is_file() && cli.is_file() {
             let mut command = Command::new(node);
-            command.arg(cli).args(&args).args(extra);
+            command.arg(cli).args(&args).args(extra).current_dir(neutral);
             return command;
         }
     }
     let mut command = Command::new(npx);
-    command.args(&args).args(extra);
+    command.args(&args).args(extra).current_dir(neutral);
     // `npx` is a `#!/usr/bin/env node` script, and found in a well-known
     // directory rather than on PATH, the node beside it is not on PATH
     // either.
@@ -122,7 +128,8 @@ pub fn run(transport: &mut dyn DaemonTransport, extra: &[OsString]) -> Result<i3
          install Node.js (https://nodejs.org), then restart this agent"
             .to_string()
     })?;
-    let mut command = mcp_command(&npx, &endpoint, extra);
+    let neutral = home.filter(|h| h.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let mut command = mcp_command(&npx, &endpoint, extra, &neutral);
     Ok(start(&mut command))
 }
 
@@ -228,7 +235,9 @@ mod tests {
             endpoint: "ws://127.0.0.1:4/devtools/browser/ab".into(),
             output_dir: PathBuf::from("/out"),
         };
-        let command = mcp_command(Path::new("/usr/bin/npx"), &endpoint, &[OsString::from("--caps=vision")]);
+        let neutral = PathBuf::from("/home/ada");
+        let command =
+            mcp_command(Path::new("/usr/bin/npx"), &endpoint, &[OsString::from("--caps=vision")], &neutral);
         let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(command.get_program(), "/usr/bin/npx");
         assert_eq!(
@@ -243,6 +252,20 @@ mod tests {
                 "--caps=vision"
             ]
         );
+    }
+
+    /// npx reads the cwd's `.npmrc` and `node_modules`. The shim must not
+    /// inherit the agent CLI's workspace cwd, or a cloned repo decides
+    /// what `@playwright/mcp@<pin>` runs.
+    #[test]
+    fn the_command_runs_from_the_neutral_directory() {
+        let endpoint = Endpoint {
+            endpoint: "ws://127.0.0.1:4/devtools/browser/ab".into(),
+            output_dir: PathBuf::from("/out"),
+        };
+        let neutral = PathBuf::from("/home/ada");
+        let command = mcp_command(Path::new("/usr/bin/npx"), &endpoint, &[], &neutral);
+        assert_eq!(command.get_current_dir(), Some(neutral.as_path()));
     }
 
     #[test]
@@ -261,10 +284,12 @@ mod tests {
         std::fs::write(cli.join("npx-cli.js"), "").unwrap();
         std::fs::write(dir.path().join("node.exe"), "").unwrap();
         let endpoint = Endpoint { endpoint: "ws://x".into(), output_dir: PathBuf::from("C:/Users/A B/out") };
-        let command = mcp_command(&dir.path().join("npx.cmd"), &endpoint, &[]);
+        let neutral = PathBuf::from(r"C:\Users\Ada");
+        let command = mcp_command(&dir.path().join("npx.cmd"), &endpoint, &[], &neutral);
         assert_eq!(command.get_program(), dir.path().join("node.exe").as_os_str());
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args[0], cli.join("npx-cli.js").as_os_str());
         assert_eq!(args.last().unwrap(), &std::ffi::OsStr::new("C:/Users/A B/out"));
+        assert_eq!(command.get_current_dir(), Some(neutral.as_path()));
     }
 }

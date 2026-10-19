@@ -37,6 +37,16 @@ pub fn home_dir() -> Option<PathBuf> {
     resolve(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"), cfg!(windows))
 }
 
+/// A directory no repository controls: the home directory when it is a
+/// real directory, otherwise the process temp dir.
+///
+/// Every `npx` / `npm` gavin spawns must run its config resolution from
+/// here (or name it with `--prefix`). In a workspace cwd, a cloned
+/// repo's `.npmrc` or `node_modules` could decide what executes.
+pub fn neutral_cwd() -> PathBuf {
+    home_dir().filter(|home| home.is_dir()).unwrap_or_else(std::env::temp_dir)
+}
+
 /// The home directory, with the environment and the platform passed in.
 ///
 /// `%USERPROFILE%` FIRST on Windows, and not merely as a fallback for an

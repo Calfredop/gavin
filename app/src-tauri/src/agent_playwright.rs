@@ -166,7 +166,7 @@ fn install_command() -> String {
 /// package of that name and version to run in its place, on one click
 /// of Install. The browser lands in the per-user cache whatever the cwd.
 fn neutral_cwd() -> PathBuf {
-    crate::home::home_dir().filter(|home| home.is_dir()).unwrap_or_else(std::env::temp_dir)
+    crate::home::neutral_cwd()
 }
 
 struct ThisMachine;
