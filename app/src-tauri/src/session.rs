@@ -5651,8 +5651,21 @@ impl RelayOwner {
             }
         }
     }
+
+    fn label(&self) -> String {
+        match self {
+            RelayOwner::Local => "local daemon".to_string(),
+            RelayOwner::Remote { host, .. } => format!("ssh host {host}"),
+        }
+    }
 }
 
+/// Whether a `read_message` failure ends the streaming relay. An over-long
+/// line was drained and the stream is back in sync — skip it, keep reading,
+/// the way the command lane does. Every other error is a real loss.
+fn relay_read_is_loss(err: &anyhow::Error) -> bool {
+    !err.is::<protocol::LineTooLong>()
+}
 
 /// Whether `workspace_id` is an ssh workspace whose `ssh.host` equals
 /// `host`. Every push that arrives on an ssh link — tree, orchestration,
@@ -5730,6 +5743,20 @@ pub(crate) fn attach_and_relay(
         loop {
             let resp: Option<Response> = match read_message(&mut reader) {
                 Ok(r) => r,
+                Err(e) if !relay_read_is_loss(&e) => {
+                    // Drained oversize line: stream is in sync again.
+                    // Skip it; do not tear the lane down into the overlay.
+                    eprintln!(
+                        "gavin: skipped oversize protocol line from {} (board update too large to show)",
+                        owner.label()
+                    );
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "daemon-request-error",
+                        "this board's update was too large to show".to_string(),
+                    );
+                    continue;
+                }
                 Err(e) => {
                     owner.lost(&reader_app_handle, epoch, e.to_string());
                     break;
@@ -8490,6 +8517,62 @@ mod restart_tests {
         conn.swapping.store(false, SeqCst);
         let (taken, reached) = write(&conn);
         assert!(taken.is_ok() && reached, "input stayed refused after the restart");
+    }
+
+    /// An over-long line on the streaming connection must not tear it
+    /// down: `read_message` drains past it, and the relay keeps reading
+    /// so a later `Output` still reaches the frontend. Today every
+    /// `read_message` Err becomes `daemon-error` — the whole-window overlay.
+    #[test]
+    fn an_oversize_streaming_line_is_skipped_and_pty_output_still_arrives() {
+        use protocol::MAX_LINE_BYTES;
+        use std::io::Cursor;
+
+        // Decision the relay loop must make: LineTooLong is not a loss.
+        let oversize: anyhow::Error = protocol::LineTooLong.into();
+        assert!(
+            !relay_read_is_loss(&oversize),
+            "a drained oversize line must not end the streaming relay"
+        );
+        assert!(relay_read_is_loss(&anyhow::anyhow!("connection reset")));
+
+        // End-to-end over a fake daemon stream: oversize, then Output.
+        // Exercises the same classify-and-continue path attach_and_relay uses.
+        let mut buf = Vec::new();
+        buf.extend(std::iter::repeat(b'x').take(MAX_LINE_BYTES as usize + 1));
+        buf.push(b'\n');
+        write_message(
+            &mut buf,
+            &Response::Output { id: "s1".into(), data: "hi".into() },
+        )
+        .unwrap();
+
+        let mut reader = Cursor::new(buf);
+        let mut outputs = Vec::new();
+        let mut lost = None::<String>;
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::Output { id, data })) => outputs.push((id, data)),
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    lost = Some("closed".into());
+                    break;
+                }
+                Err(e) if !relay_read_is_loss(&e) => continue,
+                Err(e) => {
+                    lost = Some(e.to_string());
+                    break;
+                }
+            }
+            if !outputs.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            lost.is_none(),
+            "oversize line tore down the streaming read: {lost:?}"
+        );
+        assert_eq!(outputs, vec![("s1".into(), "hi".into())]);
     }
 
     /// The streaming connection is handshaken under a deadline and then

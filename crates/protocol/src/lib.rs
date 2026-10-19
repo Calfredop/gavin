@@ -66,6 +66,21 @@ pub use session_owner::{
 /// carrying its own copy of the number.
 pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
+/// A protocol line reached [`MAX_LINE_BYTES`] without a newline. The
+/// excess was drained to the terminator, so the stream is back in sync
+/// and the caller can skip this one line without dropping the connection.
+/// Returned through `anyhow` so callers match with `e.is::<LineTooLong>()`.
+#[derive(Debug)]
+pub struct LineTooLong;
+
+impl std::fmt::Display for LineTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "protocol line exceeded {MAX_LINE_BYTES} bytes without a newline")
+    }
+}
+
+impl std::error::Error for LineTooLong {}
+
 /// Most stdout bytes a `GitRun` reply can carry as a JSON number array
 /// under [`MAX_LINE_BYTES`]. Worst case every byte is 255 (`"255,"` is
 /// four wire bytes); this leaves headroom for the envelope and a short
@@ -5526,9 +5541,11 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
         // The rest of the line is still in the socket. Drain it so the
         // next read starts on a fresh line; dropping the connection over
         // one oversize reply is how a link used to lose every later
-        // request until the human reconnected.
+        // request until the human reconnected. Typed so a caller can
+        // skip this one line (`e.is::<LineTooLong>()`) without matching
+        // on the error text.
         drain_to_newline(reader)?;
-        anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
+        return Err(LineTooLong.into());
     }
     let msg = serde_json::from_str(line.trim_end())?;
     Ok(Some(msg))
@@ -7505,9 +7522,10 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let oversize = read_message::<_, Response>(&mut cursor);
         assert!(oversize.is_err(), "the oversize line must be refused");
+        let err = oversize.unwrap_err();
         assert!(
-            oversize.unwrap_err().to_string().contains("protocol line exceeded"),
-            "wrong error"
+            err.is::<LineTooLong>(),
+            "oversize must be typed LineTooLong so callers can skip without matching text: {err}"
         );
         let next: Response = read_message(&mut cursor).unwrap().unwrap();
         assert!(matches!(next, Response::Ok));

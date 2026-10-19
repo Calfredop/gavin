@@ -46,7 +46,7 @@
 //! deadline of its own behind it (`Worker::settle`).
 
 use protocol::transport::Stream;
-use protocol::{drain_to_newline, write_message, Request, Response, MAX_LINE_BYTES};
+use protocol::{drain_to_newline, write_message, LineTooLong, Request, Response, MAX_LINE_BYTES};
 use std::future::Future;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
@@ -761,20 +761,6 @@ impl std::fmt::Display for TimedOut {
 }
 
 impl std::error::Error for TimedOut {}
-
-/// A reply whose line exceeded [`MAX_LINE_BYTES`]. The excess was drained
-/// to the newline, so the connection is still usable — unlike a parse
-/// error mid-stream, which leaves the lane one message out of step.
-#[derive(Debug)]
-struct LineTooLong;
-
-impl std::fmt::Display for LineTooLong {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "protocol line exceeded {MAX_LINE_BYTES} bytes without a newline")
-    }
-}
-
-impl std::error::Error for LineTooLong {}
 
 /// Reads the reply to `req`, skipping unsolicited pushes, for at most
 /// `deadline` per read.

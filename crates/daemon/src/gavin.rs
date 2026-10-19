@@ -3,6 +3,7 @@ use protocol::{
     HumanItemKind, HumanItemOutcome, HumanItemState, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
 use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -11,6 +12,13 @@ use std::time::{Duration, Instant, SystemTime};
 pub const GAVIN_ROOT_DIR: &str = ".gavin-root";
 pub const GAVIN_DIR: &str = ".gavin";
 const MAX_SCAN_DEPTH: usize = 12;
+/// Cap on one frontmatter string value (title, labels raw, agent, model,
+/// attachments raw). serde_json writes each control character as a
+/// 6-byte `\u00XX` escape, so an uncapped hostile value alone can push a
+/// `GavinTreeChanged` line past [`protocol::MAX_LINE_BYTES`].
+const MAX_FRONTMATTER_VALUE_CHARS: usize = 4_096;
+/// Cap on how many comma-separated labels or attachments one card keeps.
+const MAX_FRONTMATTER_LIST_ITEMS: usize = 64;
 const EXCLUDED_DIRS: &[&str] =
     &[".git", "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__"];
 
@@ -73,6 +81,33 @@ fn parse_frontmatter(content: &str) -> Frontmatter {
     }
     // Opening marker, no closing marker before EOF.
     Frontmatter { fields: vec![], present: false, warning: true }
+}
+
+/// Truncates a frontmatter string to [`MAX_FRONTMATTER_VALUE_CHARS`].
+/// Returns whether it was clamped (caller sets `parse_warning`).
+fn clamp_frontmatter_value(value: &str) -> (String, bool) {
+    let mut chars = value.chars();
+    let kept: String = chars.by_ref().take(MAX_FRONTMATTER_VALUE_CHARS).collect();
+    (kept, chars.next().is_some())
+}
+
+/// Splits a comma-separated frontmatter list, clamping the raw value and
+/// the item count. Sets `*warning` when either clamp fires.
+fn clamp_frontmatter_list(raw: &str, warning: &mut bool) -> Vec<String> {
+    let (clamped, was_clamped) = clamp_frontmatter_value(raw);
+    if was_clamped {
+        *warning = true;
+    }
+    let mut items: Vec<String> = clamped
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.len() > MAX_FRONTMATTER_LIST_ITEMS {
+        *warning = true;
+        items.truncate(MAX_FRONTMATTER_LIST_ITEMS);
+    }
+    items
 }
 
 /// Strict, spelled-out match rather than Priority::from_str: from_str maps
@@ -155,28 +190,18 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         }
     };
     let labels: Vec<String> = get("labels")
-        .map(|raw| {
-            raw.split(',')
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        })
+        .map(|raw| clamp_frontmatter_list(&raw, &mut warning))
         .unwrap_or_default();
-    // Split exactly like labels, and kept RAW: an entry that does not
-    // resolve -- a moved file, a hand-typed `..` -- has to survive the
-    // scan so the card can show it as broken and the run gate can refuse
-    // to spawn on it. Validating here would drop it instead, and an
-    // attachment that silently disappears is the failure this whole
-    // field exists to prevent. Parsed on every card kind (a note is a
-    // fine place to park a reference); only task and plan cards put it
-    // in a prompt.
+    // Split exactly like labels, and kept RAW (within the length/count
+    // caps above): an entry that does not resolve -- a moved file, a
+    // hand-typed `..` -- has to survive the scan so the card can show it
+    // as broken and the run gate can refuse to spawn on it. Validating
+    // here would drop it instead, and an attachment that silently
+    // disappears is the failure this whole field exists to prevent.
+    // Parsed on every card kind (a note is a fine place to park a
+    // reference); only task and plan cards put it in a prompt.
     let attachments: Vec<String> = get("attachments")
-        .map(|raw| {
-            raw.split(',')
-                .map(|a| a.trim().to_string())
-                .filter(|a| !a.is_empty())
-                .collect()
-        })
+        .map(|raw| clamp_frontmatter_list(&raw, &mut warning))
         .unwrap_or_default();
     // Unreadable degrades to None PLUS a warning, unlike `labels` and
     // `attachments` which keep whatever junk was written. Those two are
@@ -207,11 +232,29 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     // Parsed on every kind, like `complexity` and for the same reason: a
     // note is a fine place to record that something will need the big
     // model, even though nothing will ever run it.
-    let agent = get("agent").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let model = get("model").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let agent = get("agent").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
+    let model = get("model").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
     // The third half of the same override (v56): how hard that agent
     // thinks. Raw for `model`'s reason -- the levels are the CLI's.
-    let effort = get("effort").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let effort = get("effort").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
     // A direct-prompt task (v75): its body is the whole prompt. Read
     // gavin's own way -- unreadable is a warning and false, never a
     // guess -- and only on a task, `parent:`'s posture: a plan's prompt
@@ -228,11 +271,21 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         },
     };
     let (checklist_done, checklist_total) = checklist_counts(content);
+    let title = match get("title") {
+        Some(raw) => {
+            let (title, clamped) = clamp_frontmatter_value(&raw);
+            if clamped {
+                warning = true;
+            }
+            if title.is_empty() { stem } else { title }
+        }
+        None => stem,
+    };
     PlanFileInfo {
         path: protocol::wire_path(path),
         modified_at: file_modified_at(path),
         file_name,
-        title: get("title").unwrap_or(stem),
+        title,
         status: get("status"),
         priority,
         order,
@@ -3024,13 +3077,43 @@ impl GavinWatcher {
         if inner.last_tree.as_ref() == Some(&tree) {
             return; // change-gated: identical trees never re-emit
         }
-        inner.last_tree = Some(tree.clone());
         let response =
-            Response::GavinTreeChanged { workspace_id: self.workspace_id.clone(), tree };
+            Response::GavinTreeChanged { workspace_id: self.workspace_id.clone(), tree: tree.clone() };
+        // Serialize first: never write a line no reader can accept. An
+        // over-cap tree used to tear down the desktop's streaming lane
+        // (`sec-fix-streaming-lane-oversize-line`); leave last_tree unset
+        // so a later, smaller tree still pushes.
+        let line = match serde_json::to_string(&response) {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!(
+                    "gavin: failed to serialize GavinTreeChanged for {}: {e}",
+                    self.workspace_id
+                );
+                return;
+            }
+        };
+        if (line.len() as u64) >= protocol::MAX_LINE_BYTES {
+            eprintln!(
+                "gavin: GavinTreeChanged for {} is {} bytes (cap {}); not pushing",
+                self.workspace_id,
+                line.len(),
+                protocol::MAX_LINE_BYTES
+            );
+            self.report_watch_limit(Some(format!(
+                "this board's update was too large to show ({} bytes; max {})",
+                line.len(),
+                protocol::MAX_LINE_BYTES
+            )));
+            return;
+        }
+        inner.last_tree = Some(tree);
         // A dead writer (app restarted) fails silently; the next
         // WatchGavinRoot from the fresh connection replaces this watcher.
         let mut writer = self.writer.lock().unwrap();
-        let _ = protocol::write_message(&mut *writer, &response);
+        let _ = writer.write_all(line.as_bytes());
+        let _ = writer.write_all(b"\n");
+        let _ = writer.flush();
     }
 
     /// The paths currently registered with the OS, for tests that need to
@@ -5777,6 +5860,105 @@ mod tests {
         assert!(read_prd(dir.path()).is_err());
         init_gavin_root(dir.path(), "My WS").unwrap();
         assert!(read_prd(dir.path()).unwrap().starts_with("# My WS — Product Requirements"));
+    }
+
+    /// A card whose `labels:` value is 200,000 U+0001 characters must not
+    /// push a `GavinTreeChanged` past `MAX_LINE_BYTES`: frontmatter values
+    /// are capped, the card is flagged `parse_warning`, and the serialized
+    /// tree stays under the line cap.
+    #[test]
+    fn a_huge_labels_value_is_clamped_and_the_tree_fits_under_max_line_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let labels = "\u{0001}".repeat(200_000);
+        write_card(&plans, "huge.md", &format!("---\nlabels: {labels}\ntitle: Huge\n---\n"));
+
+        let tree = scan_root(dir.path());
+        let card = tree.contexts[0]
+            .plans
+            .iter()
+            .find(|p| p.file_name == "huge.md")
+            .expect("card still listed");
+        assert!(
+            card.parse_warning,
+            "a clamped frontmatter value must set parse_warning"
+        );
+        assert!(
+            card.labels.iter().map(|l| l.len()).sum::<usize>() < 200_000,
+            "labels were kept raw at full length: {} chars",
+            card.labels.iter().map(|l| l.len()).sum::<usize>()
+        );
+        let response = Response::GavinTreeChanged {
+            workspace_id: "ws-1".into(),
+            tree,
+        };
+        let line = serde_json::to_string(&response).unwrap();
+        assert!(
+            (line.len() as u64) < protocol::MAX_LINE_BYTES,
+            "GavinTreeChanged is {} bytes, at or past MAX_LINE_BYTES",
+            line.len()
+        );
+    }
+
+    /// A watcher whose serialized tree cannot fit under `MAX_LINE_BYTES`
+    /// must not write the line: it reports why (like a watch limit) and
+    /// leaves `last_tree` unset so a later, smaller tree still pushes.
+    #[test]
+    fn a_tree_past_the_line_cap_is_reported_not_pushed() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        // Enough cards with long control-character labels that the JSON
+        // escapes alone push the tree past MAX_LINE_BYTES even after a
+        // per-value frontmatter cap (~4 KiB).
+        let label = "\u{0001}".repeat(4_096);
+        for i in 0..60 {
+            write_card(
+                &plans,
+                &format!("c{i}.md"),
+                &format!("---\nlabels: {label}\ntitle: C{i}\n---\n"),
+            );
+        }
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(800))).unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::new(Mutex::new(theirs)), None);
+
+        let mut reader = BufReader::new(ours);
+        match protocol::read_message::<_, Response>(&mut reader) {
+            Ok(Some(Response::Error { message })) => {
+                assert!(
+                    message.to_ascii_lowercase().contains("too large")
+                        || message.to_ascii_lowercase().contains("board"),
+                    "unexpected error text: {message}"
+                );
+            }
+            Ok(Some(Response::GavinTreeChanged { .. })) => {
+                panic!("an over-cap tree was pushed as GavinTreeChanged")
+            }
+            Ok(Some(other)) => panic!("unexpected push: {other:?}"),
+            Ok(None) => panic!("connection closed before any report"),
+            Err(e) => panic!("oversize line reached the wire (stream torn for readers): {e}"),
+        }
+
+        // Shrink: drop the hostile cards so a later tree fits, and it must
+        // still push because last_tree was left unset.
+        for i in 0..60 {
+            let _ = std::fs::remove_file(plans.join(format!("c{i}.md")));
+        }
+        write_card(&plans, "ok.md", "---\ntitle: Ok\nstatus: To Do\n---\n");
+        watcher.rescan_and_push();
+        let after: Response = protocol::read_message(&mut reader)
+            .expect("a later smaller tree must still be readable")
+            .expect("a later smaller tree must still push");
+        assert!(
+            matches!(after, Response::GavinTreeChanged { .. }),
+            "expected GavinTreeChanged after shrink, got {after:?}"
+        );
     }
 
     #[test]
