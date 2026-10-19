@@ -367,10 +367,12 @@ impl TestDevice {
     pub fn pair_with(&self, offer: &PairingQr) -> Result<Pairing, TestDeviceError> {
         let mut wire = self.dial_first(&relay_dials(offer)?)?;
 
-        let (mut client, first) = PairingClient::start(
+        let (mut client, first) = PairingClient::start_with_kind(
             offer,
             &self.keys,
             self.hardware.public(),
+            // The test Device's key is software, as a Simulator's is.
+            Some(protocol::device_wire::KeyKind::SoftwareDebug),
             &self.name,
             entropy(PAIRING_ENTROPY)?,
         )?;

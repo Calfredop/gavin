@@ -27,6 +27,7 @@ function qr(overrides: Record<string, unknown> = {}): string {
 const start = {
   noisePrivateKey: "11".repeat(32),
   hardwareKey: `04${"66".repeat(64)}`,
+  keyKind: "hardware" as const,
   deviceName: "Pocket",
   entropy: new Uint8Array(PAIRING_ENTROPY).fill(0x77),
 };
@@ -182,6 +183,21 @@ describe("the Companion core in the shell", () => {
       const page = opened.files.find((f) => f.path === "index.html")!;
       expect(atob(page.data)).toContain("<!doctype html>");
       expect(opened.files.find((f) => f.path === "empty.txt")!.data).toBe("");
+    });
+
+    it("checks a genuine manifest alone and refuses a zero signature under a trusted signer", async () => {
+      const check = await core.exchange();
+      expect(() =>
+        check.bundleCheck({ manifest: fixture.manifest, trustedKeys: [fixture.manifest.signer] })
+      ).not.toThrow();
+
+      const forged = await core.exchange();
+      expect(() =>
+        forged.bundleCheck({
+          manifest: { ...fixture.manifest, signature: "00".repeat(64) },
+          trustedKeys: [fixture.manifest.signer],
+        })
+      ).toThrow(expect.objectContaining({ kind: "bundle", message: expect.stringMatching(/signature/) }));
     });
 
     it("is refused under keys that did not sign it, with a bad signature, and when the archive changed", async () => {

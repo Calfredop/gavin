@@ -136,6 +136,8 @@ export interface CoreExchange {
     qr: string;
     noisePrivateKey: string;
     hardwareKey: string;
+    /// What backs the hardware key (`hardware` or `software-debug`).
+    keyKind: "hardware" | "software-debug";
     deviceName: string;
     /// Fresh random bytes, at least `PAIRING_ENTROPY` of them.
     entropy: Uint8Array;
@@ -161,6 +163,11 @@ export interface CoreExchange {
   /// protocol, without its newline -- to the Workstation.
   connectSend(message: string): Uint8Array;
   relayReply(text: string): RelayReplyReading;
+  /// Checks a Companion bundle's manifest alone -- shape, trusted signer,
+  /// and Ed25519 signature over the hash -- under `trustedKeys` (hex).
+  /// The shell runs this on every load, including a cache hit. Throws a
+  /// `bundle` `CoreError` with the verifier's own sentence on refusal.
+  bundleCheck(options: { manifest: BundleManifest; trustedKeys: string[] }): void;
   /// Verifies a fetched Companion bundle -- the archive is the one the
   /// manifest names, signed by one of `trustedKeys` (hex) -- and unpacks
   /// it. Throws a `bundle` `CoreError` with the verifier's own sentence
@@ -232,12 +239,13 @@ function exchangeOver(exports: Exports): CoreExchange {
     );
 
   return {
-    pairingStart({ qr, noisePrivateKey, hardwareKey, deviceName, entropy }) {
+    pairingStart({ qr, noisePrivateKey, hardwareKey, keyKind, deviceName, entropy }) {
       const started = call({
         op: "pairing-start",
         qr,
         noisePrivateKey,
         hardwareKey,
+        keyKind,
         deviceName,
         entropy: toHex(entropy),
       }) as { send: string; dials: RelayDial[]; workstationKey: string };
@@ -262,6 +270,9 @@ function exchangeOver(exports: Exports): CoreExchange {
     connectProve: (signature) => events<ConnectEvent>(call({ op: "connect-prove", signature })),
     connectSend: (message) => bytes((call({ op: "connect-send", message }) as { bytes: string }).bytes),
     relayReply: (text) => call({ op: "relay-reply", text }) as RelayReplyReading,
+    bundleCheck: ({ manifest, trustedKeys }) => {
+      call({ op: "bundle-check", manifest, trustedKeys });
+    },
     bundleOpen: ({ archive, manifest, trustedKeys }) =>
       call({ op: "bundle-open", archive: toHex(archive), manifest, trustedKeys }) as OpenedBundle,
   };

@@ -765,8 +765,9 @@ pub(crate) fn serve_device(
         let trust = no_store(manager.trust())?;
         pairing::ResponderKeys::from_store(&trust)?
     };
+    let profile = manager.build_profile();
     let accepted = connect::run_responder(&mut Within::new(&mut stream, HANDSHAKE), &keys, |key| {
-        no_store(manager.trust())?.admit(key)
+        no_store(manager.trust())?.admit(key, profile)
     });
     let mut accepted = match accepted {
         Ok(Ok(accepted)) => accepted,

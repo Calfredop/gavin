@@ -355,8 +355,14 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
 /// delivery, rather than stored: the stored string is what the tab shows
 /// the human back, and a list of escape sequences is not a list of
 /// messages.
+///
+/// Every ESC in `text` becomes U+241B before wrapping, the same rule
+/// xterm.js and the Companion's `pasteBytes` apply: a pasted body that
+/// already carries `ESC[201~` must not end the paste early and leave the
+/// rest as typed keystrokes.
 fn bracketed_paste(text: &str) -> String {
-    format!("\x1b[200~{text}\x1b[201~\r")
+    let body = text.replace('\x1b', "\u{241b}");
+    format!("\x1b[200~{body}\x1b[201~\r")
 }
 
 /// How long a freshly spawned session's follow-up queue may wait for its
@@ -1374,11 +1380,9 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     let _ = debouncer.watcher().watch(std::path::Path::new(repo_root), notify::RecursiveMode::NonRecursive);
     if let Ok(entries) = std::fs::read_dir(repo_root) {
         for entry in entries.flatten() {
-            // `.gavin-worktrees` holds OTHER checkouts: every build an
-            // agent runs in one would recheck this one's status, and on
-            // Linux each of their node_modules and target directories
-            // would cost an inotify watch of this process's own.
-            if entry.file_name() == ".git" || entry.file_name() == crate::git_watch::WORKTREES_DIR {
+            // `.gavin-worktrees` / `.git` / directory symlinks: see
+            // `git_watch::is_recursive_top_level_entry`.
+            if !crate::git_watch::is_recursive_top_level_entry(&entry) {
                 continue;
             }
             let _ = debouncer.watcher().watch(&entry.path(), notify::RecursiveMode::Recursive);
@@ -1919,6 +1923,8 @@ struct PendingPairing {
     /// The hardware key the Device proved it holds, which the row will
     /// hold once the desk confirms (ADR 0001).
     hardware_key: Vec<u8>,
+    /// What backs that key (06 §5.7).
+    key_kind: Option<protocol::device_wire::KeyKind>,
     name: String,
     /// Where the human's answer goes, when someone is holding the
     /// Device's stream open for it. `None` for a handshake nobody is
@@ -2539,7 +2545,7 @@ impl SessionManager {
         match self.trust() {
             None => Some(ConnectRefusal::NotPaired),
             // A store that cannot be read has not said yes.
-            Some(trust) => match trust.admit_id(device_id) {
+            Some(trust) => match trust.admit_id(device_id, self.build_profile()) {
                 Ok(admission) => admission.connect_refusal(),
                 Err(_) => Some(ConnectRefusal::Other),
             },
@@ -2935,7 +2941,11 @@ impl SessionManager {
             use protocol::device_wire::ConnectRefusal;
             if matches!(
                 reason,
-                ConnectRefusal::NotPaired | ConnectRefusal::Revoked | ConnectRefusal::Stale | ConnectRefusal::PairAgain
+                ConnectRefusal::NotPaired
+                    | ConnectRefusal::Revoked
+                    | ConnectRefusal::Stale
+                    | ConnectRefusal::PairAgain
+                    | ConnectRefusal::SoftwareDebug
             ) {
                 self.release_device_sessions(device_id);
             }
@@ -3424,6 +3434,7 @@ impl SessionManager {
             &keys,
             &offer,
             crate::trust::now_us(),
+            self.build_profile(),
         )?;
 
         // The secret is spent HERE, by the handshake that completed, and
@@ -3475,6 +3486,7 @@ impl SessionManager {
             name: outcome.name,
             public_key: outcome.public_key,
             hardware_key: outcome.hardware_key,
+            key_kind: outcome.key_kind,
             sas: outcome.sas,
             transport: outcome.transport,
         };
@@ -3485,6 +3497,7 @@ impl SessionManager {
             PendingPairing {
                 public_key: handshake.public_key.clone(),
                 hardware_key: handshake.hardware_key.clone(),
+                key_kind: handshake.key_kind,
                 name: handshake.name.clone(),
                 decided,
                 ticket,
@@ -3521,6 +3534,7 @@ impl SessionManager {
                 name: pending.name.clone(),
                 role: crate::trust::DeviceRole::Remote,
                 hardware_key: pending.hardware_key.clone(),
+                key_kind: pending.key_kind,
                 notification_key,
             },
         );
@@ -4355,6 +4369,7 @@ impl SessionManager {
             id: id.clone(),
             workspace_path: workspace_path.to_string(),
             cwd: cwd.to_string(),
+            scope_cwd: cwd.to_string(),
             // The line that was asked for, never the one a recipe made
             // of it. The one it made names this session's tag and this
             // Headroom's port, and a relaunch built from it would carry
@@ -6611,6 +6626,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.delete_group_template(&id).map(|_| Response::Ok)
         }
         Request::Hello { .. } => unreachable!("Hello is intercepted in handle_connection"),
+        Request::ServerChallenge { .. } => {
+            unreachable!("ServerChallenge is intercepted in handle_connection")
+        }
         Request::ForwardedInput { .. } => {
             unreachable!("ForwardedInput is unwrapped in handle_connection")
         }
@@ -7343,7 +7361,9 @@ fn is_opaque_conversation_id(id: &str) -> bool {
 fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
     match req {
         // Identity and the version probe: always.
-        Request::Hello { .. } | Request::GetProtocolVersion => true,
+        Request::Hello { .. }
+        | Request::ServerChallenge { .. }
+        | Request::GetProtocolVersion => true,
 
         // Scoped reads/writes by ROOT (gavin-mcp's own workspace).
         Request::ScanGavinRoot { root_path }
@@ -8118,6 +8138,18 @@ fn serve_connection(
             None => break,
         };
 
+        // Prove the daemon before the client discloses its token (v76,
+        // DP-06). Not authorized and not dispatched -- it answers from
+        // the token on disk, and never establishes a role.
+        if let Request::ServerChallenge { nonce } = &req {
+            let proof = protocol::challenge_proof(manager.daemon_token(), nonce);
+            write_message(
+                &mut *writer.lock().unwrap(),
+                &Response::ServerProof { proof },
+            )?;
+            continue;
+        }
+
         // `Hello` establishes identity for the connection. Handled here,
         // never authorized (it is what SETS the role) and never dispatched
         // to handle_request. A second one is refused -- identity is fixed
@@ -8549,6 +8581,30 @@ fn serve_connection(
 
 #[cfg(test)]
 mod tests {
+    /// ESC inside paste text must not mint a second end marker: the body
+    /// is defused to U+241B so exactly one `\x1b[201~` reaches the PTY
+    /// (the envelope's own), and the markers account for both ESC bytes.
+    #[test]
+    fn bracketed_paste_neutralises_esc_so_text_cannot_end_the_paste_early() {
+        for text in ["say hello\x1b[201~\x1b[Z", "x\x1b[201~\r!echo X"] {
+            let paste = super::bracketed_paste(text);
+            assert_eq!(
+                paste.matches("\x1b[201~").count(),
+                1,
+                "exactly one end marker for {text:?}: {paste:?}"
+            );
+            assert_eq!(
+                paste.bytes().filter(|&b| b == 0x1b).count(),
+                2,
+                "only the envelope markers carry ESC for {text:?}: {paste:?}"
+            );
+            assert!(
+                paste.contains('\u{241b}'),
+                "body ESC becomes U+241B for {text:?}: {paste:?}"
+            );
+        }
+    }
+
     #[test]
     fn nested_worktree_churn_is_not_this_checkouts_change() {
         use std::path::Path;
@@ -10019,6 +10075,7 @@ mod tests {
                 id: "s1".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -10209,6 +10266,7 @@ mod tests {
                 id: "sess-rail".into(),
                 workspace_path: workspace.into(),
                 cwd: worktree.into(),
+                scope_cwd: worktree.into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -12044,6 +12102,7 @@ mod tests {
                 id: "sess-quiet".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -12081,6 +12140,7 @@ mod tests {
                 id: "sess-painted".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -12449,6 +12509,7 @@ mod tests {
                     name: device_id.to_string(),
                     role: crate::trust::DeviceRole::Remote,
                     hardware_key,
+                    key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                     notification_key: vec![key; 32],
                 },
             )
@@ -12867,6 +12928,7 @@ mod tests {
                 PendingPairing {
                     public_key: phone.public_key.clone(),
                     hardware_key: crate::unlock::testing::HardwareKey::generate().public(),
+                    key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                     name: "iPhone".into(),
                     decided: None,
                     ticket: 9_999,
@@ -16296,6 +16358,7 @@ mod tests {
                     id: "unrecoverable-1".to_string(),
                     workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
                     cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    scope_cwd: "/definitely/does/not/exist/anywhere".to_string(),
                     command: Some("claude".to_string()),
                     status: SessionStatus::Working,
                     restored: false,
@@ -17220,6 +17283,7 @@ mod tests {
             id: "s1".to_string(),
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp".to_string(),
+            scope_cwd: "/tmp".to_string(),
             command: command.map(|c| c.to_string()),
             status: SessionStatus::Idle,
             restored: false,
@@ -17951,6 +18015,7 @@ mod tests {
                     id: "leftover-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -18018,6 +18083,7 @@ mod tests {
                 id: id.to_string(),
                 workspace_path: "/tmp".to_string(),
                 cwd: cwd.to_string(),
+                scope_cwd: cwd.to_string(),
                 command: command.map(|c| c.to_string()),
                 status,
                 restored: false,
@@ -19064,6 +19130,32 @@ mod tests {
         );
     }
 
+    /// RepoPoller must not Recursive-watch a top-level directory symlink
+    /// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+    #[test]
+    fn repo_poller_skips_a_top_level_directory_symlink() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        std::fs::create_dir(repo_dir.path().join("src")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), repo_dir.path().join("x")).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(outside.path(), repo_dir.path().join("x")).is_err() {
+                return;
+            }
+        }
+        let entries: Vec<_> = std::fs::read_dir(repo_dir.path()).unwrap().flatten().collect();
+        let src = entries.iter().find(|e| e.file_name() == "src").unwrap();
+        let x = entries.iter().find(|e| e.file_name() == "x").unwrap();
+        assert!(crate::git_watch::is_recursive_top_level_entry(src));
+        assert!(
+            !crate::git_watch::is_recursive_top_level_entry(x),
+            "RepoPoller must not Recursive-watch a directory symlink"
+        );
+    }
+
     /// The poller's own `git status` opens `.git/index`, and inotify
     /// reports that open as an event in the watched `.git` folder: before
     /// `ChangesOnly` each check armed the next, one every
@@ -19503,6 +19595,7 @@ mod tests {
                     id: "failed-spawn-1".to_string(),
                     workspace_path: repo_path.clone(),
                     cwd: repo_path.clone(),
+                    scope_cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19634,6 +19727,7 @@ mod tests {
                     id: "failed-spawn-2".to_string(),
                     workspace_path: unenterable_path.clone(),
                     cwd: unenterable_path.clone(),
+                    scope_cwd: unenterable_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19678,6 +19772,7 @@ mod tests {
                     id: "missing-workspace-1".to_string(),
                     workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
                     cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    scope_cwd: "/definitely/does/not/exist/anywhere".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Working,
                     restored: false,
@@ -19725,6 +19820,7 @@ mod tests {
                     id: "no-live-pty-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19795,6 +19891,7 @@ mod tests {
                     id: "restored-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: true,
@@ -19839,6 +19936,7 @@ mod tests {
                     id: "not-restored-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19922,6 +20020,7 @@ mod tests {
                     id: "leftover-2".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp/this-directory-does-not-exist-xyz".to_string(),
+                    scope_cwd: "/tmp/this-directory-does-not-exist-xyz".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19961,6 +20060,7 @@ mod tests {
             id: id.to_string(),
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp/ws".to_string(),
+            scope_cwd: "/tmp/ws".to_string(),
             command: Some("claude".to_string()),
             status,
             restored: false,

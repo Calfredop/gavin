@@ -157,6 +157,7 @@ pub fn run_responder<S: Read + Write>(
                     | Admission::Stale(device)
                     | Admission::UnreadableRole(device)
                     | Admission::NoHardwareKey(device)
+                    | Admission::SoftwareDebug(device)
                     | Admission::Admitted(device) => Some(device.device_id),
                     Admission::Unknown => None,
                 },
@@ -247,6 +248,7 @@ mod tests {
                         name: device_id.to_string(),
                         role: DeviceRole::Remote,
                         hardware_key: phone.hardware.public(),
+                        key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                         notification_key: vec![0x5c; 32],
                     },
                     NOW,
@@ -375,7 +377,9 @@ mod tests {
             let keys = ResponderKeys::from_store(&store).unwrap();
             let mut server = server;
             server.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-            let outcome = run_responder(&mut server, &keys, |key| store.admit_at(key, now_us));
+            let outcome = run_responder(&mut server, &keys, |key| {
+                store.admit_at(key, now_us, protocol::BuildProfile::Dev)
+            });
             let outcome = outcome.map(|accepted| {
                 accepted.map_err(|refused| refused.reason).map(|mut accepted| {
                     let device_id = accepted.device.device_id.clone();
@@ -452,7 +456,10 @@ mod tests {
                     connect(&mut client, phone, &key, honestly(signer), &mut recording);
                 });
                 let refused =
-                    run_responder(&mut server, &keys, |key| store.admit_at(key, NOW)).unwrap();
+                    run_responder(&mut server, &keys, |key| {
+                        store.admit_at(key, NOW, protocol::BuildProfile::Dev)
+                    })
+                    .unwrap();
                 let _ = server.shutdown(Shutdown::Both);
                 refused
             });
@@ -693,9 +700,11 @@ mod tests {
             }
         });
         let mut server = server;
-        let accepted = run_responder(&mut server, &keys, |key| store.admit_at(key, NOW))
-            .unwrap()
-            .unwrap_or_else(|refused| panic!("{refused:?}"));
+        let accepted = run_responder(&mut server, &keys, |key| {
+            store.admit_at(key, NOW, protocol::BuildProfile::Dev)
+        })
+        .unwrap()
+        .unwrap_or_else(|refused| panic!("{refused:?}"));
         device.join().unwrap();
 
         let shown = format!("{accepted:?}");

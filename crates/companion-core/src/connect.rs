@@ -273,7 +273,11 @@ impl ConnectClient {
     /// the hardware returned it (ASN.1 DER).
     pub fn prove(&mut self, signature: &[u8]) -> Result<Vec<ConnectEvent>, CoreError> {
         let proof =
-            UnlockProof { signature: protocol::hex_encode(signature), hardware_key: None };
+            UnlockProof {
+                signature: protocol::hex_encode(signature),
+                hardware_key: None,
+                key_kind: None,
+            };
         self.prove_with(&proof.to_bytes())
     }
 
@@ -592,7 +596,11 @@ mod tests {
         let [ConnectEvent::Send(proof)] = events.as_slice() else { panic!("{events:?}") };
         assert_eq!(
             workstation.read_proof(proof),
-            UnlockProof { signature: protocol::hex_encode(SIGNATURE), hardware_key: None }
+            UnlockProof {
+                signature: protocol::hex_encode(SIGNATURE),
+                hardware_key: None,
+                key_kind: None,
+            }
         );
     }
 
