@@ -1040,6 +1040,24 @@ mod tests {
         assert!(output.contains("SIDMARK=[sid-42]"), "got: {output}");
     }
 
+    /// A minted session token must reach the PTY: gavin-mcp presents it
+    /// in Hello for the `agent` role, and Cursor's `${env:GAVIN_SESSION_TOKEN}`
+    /// interpolation reads it from the agent process. Without it,
+    /// PlaywrightEndpoint is Forbidden as a bare `local` connection.
+    #[test]
+    fn spawn_exports_the_session_token_into_the_pty() {
+        let mut session =
+            PtySession::spawn("/tmp", Some("/bin/sh"), "sid-tok", Some("tok-deadbeef")).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'TOK%s=[%s]\\n' MARK \"$GAVIN_SESSION_TOKEN\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "TOKMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains("TOKMARK=[tok-deadbeef]"), "got: {output}");
+    }
+
     #[test]
     fn spawns_shell_and_captures_output() {
         let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session", None).unwrap();

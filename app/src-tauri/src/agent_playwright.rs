@@ -147,12 +147,37 @@ trait Machine {
     }
 }
 
-/// `chromium_headless_shell-1247/INSTALLATION_COMPLETE` in Playwright's
-/// cache on a machine with this platform, home and environment.
-fn marker_path(os: HostOs, home: &Path, env: impl Fn(&str) -> Option<String>) -> PathBuf {
+/// The pinned revision's marker path — what Install downloads into, and
+/// what an older host is asked about when it cannot report its own cache.
+fn pinned_marker_path(os: HostOs, home: &Path, env: impl Fn(&str) -> Option<String>) -> PathBuf {
     pw::browsers_dir(os, home, env)
         .join(pw::headless_shell_folder(pw::HEADLESS_SHELL_REVISION))
         .join(pw::INSTALLATION_COMPLETE)
+}
+
+/// Whether a usable Chrome Headless Shell is installed: the pinned
+/// revision when present, else the newest complete one (`pick_revision`).
+/// The daemon launches the same way, so a machine that only has the
+/// spike's r1243 still counts as set up for the entry write — without
+/// this, Install never wrote `playwright` into MCP config while the
+/// feature cards looked Done.
+fn browser_at(os: HostOs, home: &Path, env: impl Fn(&str) -> Option<String>) -> (bool, String) {
+    let dir = pw::browsers_dir(os, home, env);
+    let folders: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().join(pw::INSTALLATION_COMPLETE).is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    match pw::pick_revision(folders.iter().map(String::as_str)) {
+        Some(rev) => {
+            let marker = dir.join(pw::headless_shell_folder(rev)).join(pw::INSTALLATION_COMPLETE);
+            (true, protocol::wire_path(&marker))
+        }
+        None => (false, protocol::wire_path(&dir)),
+    }
 }
 
 /// The install line as the row shows it: `npx` plus the pinned argv.
@@ -183,8 +208,7 @@ impl Machine for ThisMachine {
     fn browser(&self) -> Result<(bool, String), String> {
         let home = crate::home::home_dir()
             .ok_or("this account has no home directory to find Playwright's cache under")?;
-        let marker = marker_path(HostOs::current(), &home, |name| std::env::var(name).ok());
-        Ok((marker.is_file(), protocol::wire_path(&marker)))
+        Ok(browser_at(HostOs::current(), &home, |name| std::env::var(name).ok()))
     }
 
     fn mcp_binary(&self) -> Result<PathBuf, String> {
@@ -253,9 +277,16 @@ impl Machine for HostMachine {
     fn browser(&self) -> Result<(bool, String), String> {
         let link = &self.files.link;
         if let Some(status) = self.machine(protocol::Request::PlaywrightMachineStatus)? {
-            return Ok((status.browser_installed, format!("{}:{}", link.host, status.marker)));
+            // A host daemon still reports the pinned marker only. When that
+            // file is missing, fall through to the default-location probe
+            // below so a host that only has a fallback revision (the same
+            // shape this machine's `browser_at` accepts) can still get the
+            // entry — once the human's install left a complete shell there.
+            if status.browser_installed {
+                return Ok((true, format!("{}:{}", link.host, status.marker)));
+            }
         }
-        let marker = protocol::wire_path(&marker_path(self.os(), Path::new(&link.home), |_| None));
+        let marker = protocol::wire_path(&pinned_marker_path(self.os(), Path::new(&link.home), |_| None));
         let stat = link
             .stat_paths(&self.files.root, std::slice::from_ref(&marker))
             .map_err(|e| format!("could not ask {} about its browser cache: {e}", link.host))?
@@ -411,17 +442,27 @@ fn checks(f: &Findings) -> Vec<Check> {
         Ok(false) => Check { id: "npx", ok: Some(false), line: "Node.js (npx) not found on PATH".to_string() },
         Err(why) => Check { id: "npx", ok: None, line: why.clone() },
     };
-    let revision = pw::HEADLESS_SHELL_REVISION;
     let browser = match &f.browser {
-        Ok((true, at)) => Check {
-            id: "browser",
-            ok: Some(true),
-            line: format!("Chrome Headless Shell r{revision} installed — {at}"),
-        },
+        Ok((true, at)) => {
+            let rev = Path::new(at)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .and_then(pw::headless_shell_revision)
+                .unwrap_or(pw::HEADLESS_SHELL_REVISION);
+            Check {
+                id: "browser",
+                ok: Some(true),
+                line: format!("Chrome Headless Shell r{rev} installed — {at}"),
+            }
+        }
         Ok((false, at)) => Check {
             id: "browser",
             ok: Some(false),
-            line: format!("Chrome Headless Shell r{revision} not installed — {at}"),
+            line: format!(
+                "Chrome Headless Shell r{} not installed — {at}",
+                pw::HEADLESS_SHELL_REVISION
+            ),
         },
         Err(why) => Check { id: "browser", ok: None, line: why.clone() },
     };
@@ -537,13 +578,36 @@ fn status_for(machine: &dyn Machine, root: &Path, profile_id: &str) -> Status {
     assess(&findings(machine, root, profile_id))
 }
 
+/// Every stock profile that has an MCP layout, so Install does not leave
+/// Cursor (or any other row) without `browser_*` when the workspace's
+/// own agent was the one the wizard named. claude-code and kimi-code
+/// share `.mcp.json`; writing twice is the same merge.
+fn stock_mcp_layouts<'a>(
+    fs: &'a dyn WorkspaceFiles,
+    root: &'a Path,
+) -> Vec<(&'static str, ResolvedMcp)> {
+    crate::config::STOCK_PROFILE_IDS
+        .iter()
+        .filter_map(|id| {
+            let profile = crate::agent_setup::profile_for_writes(id);
+            crate::agent_setup::resolved_mcp(fs, root, profile).map(|layout| (*id, layout))
+        })
+        .collect()
+}
+
 /// Installs what is missing, then reports what the checks find next.
 ///
 /// The browser first, and the entry only once the browser is there: an
 /// entry with no browser behind it is a server every agent session starts
-/// and every one of its calls fails. A browser already installed is not
+/// and every one of its calls fails. A browser already installed — the
+/// pinned revision or a fallback `pick_revision` accepts — is not
 /// downloaded again. An existing `playwright` server gavin did not write
 /// is replaced only when `replace` says the human asked.
+///
+/// The entry is written for **every** stock profile with an MCP layout,
+/// not only `profile_id`: complexity routing and a manual Cursor tab
+/// read `.cursor/mcp.json` while the workspace agent may be claude-code.
+/// Status is still reported for the profile that was asked about.
 ///
 /// A non-zero exit is not an `Err`, for `agent_skills::install`'s reason:
 /// the drawer needs the output either way, and the answer is the
@@ -553,13 +617,13 @@ fn install(machine: &dyn Machine, root: &Path, profile_id: &str, replace: bool) 
     if !fs.is_dir(root) {
         return Err(format!("root does not exist: {}", root.display()));
     }
-    let profile = crate::agent_setup::profile_for_writes(profile_id);
-    let layout = crate::config::is_stock_profile_id(profile_id)
-        .then(|| crate::agent_setup::resolved_mcp(fs, root, profile))
-        .flatten()
-        .ok_or_else(|| {
-            format!("gavin cannot install Playwright for {CUSTOM_LABEL}: it does not know where that agent reads MCP config.")
-        })?;
+    if !crate::config::is_stock_profile_id(profile_id)
+        || crate::agent_setup::resolved_mcp(fs, root, crate::agent_setup::profile_for_writes(profile_id)).is_none()
+    {
+        return Err(format!(
+            "gavin cannot install Playwright for {CUSTOM_LABEL}: it does not know where that agent reads MCP config."
+        ));
+    }
 
     let before = findings(machine, root, profile_id);
     if before.npx == Ok(false) {
@@ -582,25 +646,33 @@ fn install(machine: &dyn Machine, root: &Path, profile_id: &str, replace: bool) 
         // Read again under the integration's lock: a run that started
         // since may have written this file.
         let _one_writer = crate::agent_setup::INTEGRATION_RUNS.lock().unwrap_or_else(PoisonError::into_inner);
-        let write = match read_entry(fs, root, &layout, &Ok(own.clone())) {
-            Entry::Absent => true,
-            Entry::Conflict(_) => replace,
-            Entry::Present | Entry::Unknown(_) => false,
-        };
-        if write {
-            let path = root.join(layout.config_file());
-            if let Err(e) =
-                crate::agent_setup::write_mcp_server(fs, &path, layout.format(), pw::SUBCOMMAND, own, &[pw::SUBCOMMAND])
-            {
-                write_error = Some(format!("Could not write {}: {e}", protocol::wire_path(&path)));
+        for (stock_id, layout) in stock_mcp_layouts(fs, root) {
+            let write = match read_entry(fs, root, &layout, &Ok(own.clone())) {
+                Entry::Absent => true,
+                Entry::Conflict(_) => replace,
+                Entry::Present | Entry::Unknown(_) => false,
+            };
+            if write {
+                let path = root.join(layout.config_file());
+                if let Err(e) = crate::agent_setup::write_mcp_server(
+                    fs,
+                    &path,
+                    layout.format(),
+                    pw::SUBCOMMAND,
+                    own,
+                    &[pw::SUBCOMMAND],
+                ) {
+                    write_error = Some(format!("Could not write {}: {e}", protocol::wire_path(&path)));
+                    break;
+                }
             }
-        }
-        // The instructions block tells this profile's agents the
-        // `browser_*` tools are there; setup wrote it before they were.
-        // Only a block setup already wrote is refreshed, and a failure
-        // costs nothing the next setup run does not put back.
-        if let Err(e) = crate::agent_setup::refresh_instructions_block(fs, root, profile_id, own) {
-            eprintln!("playwright: could not refresh the instructions block: {e}");
+            // The instructions block tells this profile's agents the
+            // `browser_*` tools are there; setup wrote it before they were.
+            // Only a block setup already wrote is refreshed, and a failure
+            // costs nothing the next setup run does not put back.
+            if let Err(e) = crate::agent_setup::refresh_instructions_block(fs, root, stock_id, own) {
+                eprintln!("playwright: could not refresh the instructions block: {e}");
+            }
         }
     }
 
@@ -759,6 +831,9 @@ mod tests {
     /// The card's "done": a fresh workspace, for each stock profile, ends
     /// with the right entry in the right file and dialect -- the shape
     /// gavin's own entry has there, with `playwright` as its argument.
+    /// One Install also fills every other stock profile's file: the
+    /// wizard names the workspace agent, but Cursor (and friends) must
+    /// still see `browser_*`.
     #[test]
     fn every_stock_profile_gets_its_entry_in_a_fresh_workspace() {
         for profile in crate::config::STOCK_PROFILE_IDS {
@@ -774,50 +849,58 @@ mod tests {
             assert_eq!(machine.installs.load(Ordering::SeqCst), 1, "{profile}");
 
             let p = root.path();
-            match profile {
-                "claude-code" | "kimi-code" | "gemini" => {
-                    let file = if profile == "gemini" {
-                        let mcp = crate::agent_setup::profile_by_id("gemini")
-                            .mcp
-                            .as_ref()
-                            .unwrap()
-                            .config_file;
-                        p.join(mcp)
-                    } else {
-                        p.join(".mcp.json")
-                    };
-                    assert_eq!(
-                        json(&file)["mcpServers"]["playwright"],
-                        serde_json::json!({ "command": BINARY, "args": ["playwright"] }),
-                        "{profile}"
-                    );
-                }
-                "cursor" => {
-                    let entry = &json(&p.join(".cursor/mcp.json"))["mcpServers"]["playwright"];
-                    assert_eq!(entry["type"], "stdio");
-                    assert_eq!(entry["command"], BINARY);
-                    assert_eq!(entry["args"], serde_json::json!(["playwright"]));
-                    // Cursor's MCP servers see almost none of the agent's
-                    // environment; the shim needs its session.
-                    for var in ["GAVIN_SESSION_ID", "GAVIN_SESSION_TOKEN", "GAVIN_SESSION_SOCKET"] {
-                        assert_eq!(entry["env"][var], format!("${{env:{var}}}"), "{var}");
-                    }
-                }
-                "opencode" => {
-                    assert_eq!(
-                        json(&p.join("opencode.json"))["mcp"]["playwright"],
-                        serde_json::json!({ "type": "local", "command": [BINARY, "playwright"], "enabled": true })
-                    );
-                }
-                "codex" => {
-                    let text = std::fs::read_to_string(p.join(".codex/config.toml")).unwrap();
-                    let parsed = text.parse::<toml::Table>().unwrap();
-                    let entry = parsed["mcp_servers"]["playwright"].as_table().unwrap();
-                    assert_eq!(entry["command"].as_str(), Some(BINARY));
-                    assert_eq!(entry["args"].as_array().unwrap(), &vec![toml::Value::from("playwright")]);
-                }
-                other => panic!("a stock profile this test does not know: {other}"),
+            // Named profile first, then the rest Install wrote beside it.
+            assert_playwright_entry(p, profile);
+            for other in crate::config::STOCK_PROFILE_IDS {
+                assert_playwright_entry(p, other);
             }
+        }
+    }
+
+    fn assert_playwright_entry(p: &Path, profile: &str) {
+        match profile {
+            "claude-code" | "kimi-code" | "gemini" => {
+                let file = if profile == "gemini" {
+                    let mcp = crate::agent_setup::profile_by_id("gemini")
+                        .mcp
+                        .as_ref()
+                        .unwrap()
+                        .config_file;
+                    p.join(mcp)
+                } else {
+                    p.join(".mcp.json")
+                };
+                assert_eq!(
+                    json(&file)["mcpServers"]["playwright"],
+                    serde_json::json!({ "command": BINARY, "args": ["playwright"] }),
+                    "{profile}"
+                );
+            }
+            "cursor" => {
+                let entry = &json(&p.join(".cursor/mcp.json"))["mcpServers"]["playwright"];
+                assert_eq!(entry["type"], "stdio");
+                assert_eq!(entry["command"], BINARY);
+                assert_eq!(entry["args"], serde_json::json!(["playwright"]));
+                // Cursor's MCP servers see almost none of the agent's
+                // environment; the shim needs its session.
+                for var in ["GAVIN_SESSION_ID", "GAVIN_SESSION_TOKEN", "GAVIN_SESSION_SOCKET"] {
+                    assert_eq!(entry["env"][var], format!("${{env:{var}}}"), "{var}");
+                }
+            }
+            "opencode" => {
+                assert_eq!(
+                    json(&p.join("opencode.json"))["mcp"]["playwright"],
+                    serde_json::json!({ "type": "local", "command": [BINARY, "playwright"], "enabled": true })
+                );
+            }
+            "codex" => {
+                let text = std::fs::read_to_string(p.join(".codex/config.toml")).unwrap();
+                let parsed = text.parse::<toml::Table>().unwrap();
+                let entry = parsed["mcp_servers"]["playwright"].as_table().unwrap();
+                assert_eq!(entry["command"].as_str(), Some(BINARY));
+                assert_eq!(entry["args"].as_array().unwrap(), &vec![toml::Value::from("playwright")]);
+            }
+            other => panic!("a stock profile this test does not know: {other}"),
         }
     }
 
@@ -1078,7 +1161,7 @@ mod tests {
 
     #[test]
     fn the_marker_is_the_pinned_revisions() {
-        let marker = marker_path(HostOs::MacOs, Path::new("/Users/ada"), |_| None);
+        let marker = pinned_marker_path(HostOs::MacOs, Path::new("/Users/ada"), |_| None);
         assert_eq!(
             marker,
             PathBuf::from("/Users/ada/Library/Caches/ms-playwright")
@@ -1086,6 +1169,34 @@ mod tests {
                 .join("INSTALLATION_COMPLETE")
         );
         assert_eq!(install_command(), format!("npx -y {} install-browser chromium-headless-shell", pw::mcp_spec()));
+    }
+
+    /// A fallback revision (the cache this machine often has) is enough
+    /// for Install to write the entry — same rule as the daemon's
+    /// `pick_revision`. Without it, the wizard left workspaces with no
+    /// `playwright` server while the browser broker could already launch.
+    #[test]
+    fn a_fallback_browser_revision_lets_install_write_the_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        rooted(root.path(), "claude-code");
+        let fallback = cache
+            .path()
+            .join("chromium_headless_shell-1243")
+            .join(pw::INSTALLATION_COMPLETE);
+        std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+        std::fs::write(&fallback, "").unwrap();
+        // Point Fake's marker at the pinned path (absent) so its
+        // `browser()` would say no — then use ThisMachine-shaped
+        // `browser_at` through a Fake whose marker IS the fallback.
+        let mut machine = Fake::new(&LocalFiles, cache.path());
+        machine.marker = fallback;
+        assert_eq!(machine.installs.load(Ordering::SeqCst), 0);
+        let status = install(&machine, root.path(), "claude-code", false).unwrap();
+        assert_eq!(status.state, "verified", "{}", status.detail);
+        assert_eq!(machine.installs.load(Ordering::SeqCst), 0, "no download when any complete shell is there");
+        assert!(root.path().join(".mcp.json").exists());
+        assert!(root.path().join(".cursor/mcp.json").exists());
     }
 
     /// The two tests that touch this machine. `#[ignore]`d because a
