@@ -458,6 +458,19 @@ scope.
 
 ---
 
+### Accepted residual — agent headless browser CDP (2026-10-19)
+
+An agent session's headless browser listens on a loopback DevTools port with no
+secret for the browser's lifetime. Any process on the machine that can open
+loopback TCP can attach to it. Gavin accepts this on single-user machines
+(AD-1); on a host with other OS accounts, those accounts can drive the agent's
+browser. The proxy secret is visible in the process table, so on Linux without
+hidepid any local account can read it. Multi-account hosts remain out of scope
+per `00-threat-model.md` ("another uid or root on the same host"); the
+secret-gated CDP proxy still gates the legitimate Playwright MCP path.
+
+---
+
 ## The smallest set of changes that would make an agent a narrower user than the human
 
 1. **Client identity on the socket, then a per-launch MCP token scoped to one
