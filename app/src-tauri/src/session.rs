@@ -3427,8 +3427,34 @@ pub fn get_require_local_token() -> bool {
 /// Turn `require_local_token` on (write the marker `0600`) or off (remove
 /// it). The Settings "Remote access" surface calls this; the daemon honours
 /// it on the next request with no restart.
+///
+/// A Device's forwarded call must not flip this switch: clearing the
+/// marker would give an untokened local connection back every direct
+/// privileged request, pairing included (sec-fix-invoke-desktop-remote-only).
 #[tauri::command]
-pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
+pub fn set_require_local_token(
+    enabled: bool,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    refuse_forwarded_require_local_token(crate::forwarding::is_forwarded(&request))?;
+    apply_require_local_token(enabled)
+}
+
+/// Refuse a Device's attempt to flip the marker. Pure so the gate is
+/// unit-tested without a Tauri IPC `Request`.
+fn refuse_forwarded_require_local_token(forwarded: bool) -> Result<(), String> {
+    if forwarded {
+        return Err(
+            "gavin: a Device cannot change require_local_token — turn it off from Settings on the desk"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Write or remove the marker file. Separated so tests can exercise the
+/// flip without a Tauri IPC `Request`.
+fn apply_require_local_token(enabled: bool) -> Result<(), String> {
     let path = protocol::require_local_token_path().map_err(|e| e.to_string())?;
     if enabled {
         std::fs::write(&path, b"1").map_err(|e| e.to_string())?;
@@ -3438,6 +3464,17 @@ pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod require_local_token_tests {
+    use super::*;
+
+    #[test]
+    fn a_forwarded_call_cannot_flip_require_local_token() {
+        assert!(refuse_forwarded_require_local_token(true).is_err());
+        assert!(refuse_forwarded_require_local_token(false).is_ok());
+    }
 }
 
 // -- Remote access, phase 2 (v42) -------------------------------------
