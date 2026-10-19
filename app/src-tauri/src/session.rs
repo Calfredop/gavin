@@ -5681,10 +5681,44 @@ fn host_owns_ssh_workspace(workspaces: &[Workspace], host: &str, workspace_id: &
         .is_some_and(|ssh| ssh.host == host)
 }
 
+/// A tree that arrived from an ssh link: keep it only when `workspace_id`
+/// is one of that host's own ssh workspaces, and drop every path that
+/// sits outside that workspace's `root_path`. Without this, a host can
+/// name a local absolute path as a card id; the desktop then reads it
+/// from its own disk (route falls through to Local) and can send the
+/// bytes back to the host inside an agent prompt.
+///
+/// Applied once where a host tree enters the desktop
+/// (`GavinTreeChanged` on a remote relay, and `get_gavin_tree` for a
+/// remote route), so every later reader of `card.id` only ever sees
+/// paths that `route_for_path` sends back to the same link.
+fn confine_host_tree(
+    workspaces: &[Workspace],
+    host: &str,
+    workspace_id: &str,
+    mut tree: protocol::GavinTree,
+) -> Option<protocol::GavinTree> {
+    if !host_owns_ssh_workspace(workspaces, host, workspace_id) {
+        return None;
+    }
+    let ws = workspaces.iter().find(|w| w.id == workspace_id)?;
+    let root = ws.root_path.as_deref()?;
+    tree.contexts.retain_mut(|ctx| {
+        if !crate::remote::path_is_under(root, &ctx.folder_path) {
+            return false;
+        }
+        ctx.plans.retain(|p| crate::remote::path_is_under(root, &p.path));
+        ctx.docs.retain(|d| crate::remote::path_is_under(root, &d.path));
+        ctx.specs.retain(|s| crate::remote::path_is_under(root, &s.path));
+        true
+    });
+    Some(tree)
+}
+
 /// Whether a workspace-keyed push on this relay may be emitted. Local
 /// pushes are already from this machine's daemon. A remote push may only
 /// describe that link's own ssh workspaces — the same membership test
-/// a host tree confine starts with.
+/// `confine_host_tree` starts with.
 fn accept_host_workspace_push(
     owner: &RelayOwner,
     workspaces: &[Workspace],
@@ -5823,7 +5857,7 @@ pub(crate) fn attach_and_relay(
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     // A host may only describe its own ssh workspaces —
-                    // same membership gate as a host tree confine. A
+                    // same membership gate as `confine_host_tree`. A
                     // forged local id would overwrite that workspace's
                     // rails and tick them with no desk click.
                     if matches!(&owner, RelayOwner::Remote { .. }) {
@@ -5842,6 +5876,26 @@ pub(crate) fn attach_and_relay(
                         "orchestration-changed", (workspace_id, orchestration));
                 }
                 Response::GavinTreeChanged { workspace_id, tree } => {
+                    // A host may only describe its own ssh workspaces, and
+                    // only with paths under that workspace's root — see
+                    // `confine_host_tree`. Local trees are already from
+                    // this machine's daemon, so they pass through.
+                    let tree = match &owner {
+                        RelayOwner::Remote { host, .. } => {
+                            let workspaces = reader_app_handle
+                                .state::<WorkspacesState>()
+                                .0
+                                .lock()
+                                .unwrap()
+                                .workspaces
+                                .clone();
+                            match confine_host_tree(&workspaces, host, &workspace_id, tree) {
+                                Some(tree) => tree,
+                                None => continue,
+                            }
+                        }
+                        RelayOwner::Local => tree,
+                    };
                     let _ = crate::forwarding::emit(&reader_app_handle, "gavin-tree-changed", (workspace_id, tree));
                 }
                 Response::ToolsChanged { workspace_id, tools } => {
@@ -7722,12 +7776,35 @@ pub async fn get_gavin_tree(
     compat: State<'_, DaemonCompatState>,
 ) -> Result<protocol::GavinTree, String> {
     let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let remote_host = match &route {
+        crate::remote::Route::Remote(link) => Some(link.host.clone()),
+        crate::remote::Route::Local => None,
+    };
     let resp = lanes_for(route, &state, &compat)
-        .request(Request::GetGavinTree { workspace_id })
+        .request(Request::GetGavinTree { workspace_id: workspace_id.clone() })
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
+        Response::GavinTreeSnapshot { tree, .. } => match remote_host {
+            // Same confine as the push path: a host-supplied path outside
+            // this ssh root must never become a card id the desktop reads
+            // from its own disk.
+            Some(host) => {
+                let workspaces = app_handle
+                    .state::<WorkspacesState>()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .workspaces
+                    .clone();
+                confine_host_tree(&workspaces, &host, &workspace_id, tree).ok_or_else(|| {
+                    format!(
+                        "refused host tree for workspace {workspace_id}: not an ssh workspace on {host}, or its root is missing"
+                    )
+                })
+            }
+            None => Ok(tree),
+        },
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -9097,6 +9174,147 @@ mod kanban_command_tests {
     }
 }
 
+#[cfg(test)]
+mod confine_host_tree_tests {
+    use super::*;
+    use protocol::{GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo};
+
+    /// Every field but the four required ones defaulted, the way an older
+    /// config.json loads -- so this helper never has to be revisited when
+    /// a field is added to `Workspace`.
+    fn ws(id: &str, root: Option<&str>, host: Option<&str>) -> Workspace {
+        let mut value = serde_json::json!({ "id": id, "name": id, "pages": [], "activePageId": null });
+        if let Some(root) = root {
+            value["rootPath"] = serde_json::json!(root);
+        }
+        if let Some(host) = host {
+            value["ssh"] = serde_json::json!({ "host": host });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn plan(path: &str) -> PlanFileInfo {
+        serde_json::from_value(serde_json::json!({
+            "path": path,
+            "fileName": "x.md",
+            "title": "x",
+            "kind": "plan",
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false,
+        }))
+        .unwrap()
+    }
+
+    fn md(path: &str) -> MdFileInfo {
+        MdFileInfo {
+            path: path.to_string(),
+            rel_path: "x.md".to_string(),
+        }
+    }
+
+    fn ctx(folder: &str, plans: Vec<PlanFileInfo>, docs: Vec<MdFileInfo>, specs: Vec<MdFileInfo>) -> GavinContext {
+        GavinContext {
+            folder_path: folder.to_string(),
+            kind: GavinContextKind::Root,
+            name: "ws".to_string(),
+            plans,
+            docs,
+            specs,
+            has_prd: false,
+            config_warning: false,
+            agent: None,
+            prd: None,
+            outside: false,
+        }
+    }
+
+    fn tree(root: &str, contexts: Vec<GavinContext>) -> GavinTree {
+        GavinTree {
+            root_path: root.to_string(),
+            root_missing: false,
+            contexts,
+        }
+    }
+
+    #[test]
+    fn a_hosts_tree_drops_a_card_outside_its_root() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![ctx(
+                "/srv/repo",
+                vec![
+                    plan("/srv/repo/.gavin-root/plans/a.md"),
+                    plan("/Users/me/local-ws/secret.md"),
+                ],
+                vec![],
+                vec![],
+            )],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        let paths: Vec<_> = confined.contexts[0].plans.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["/srv/repo/.gavin-root/plans/a.md"]);
+    }
+
+    #[test]
+    fn a_hosts_tree_for_another_workspace_is_dropped() {
+        let workspaces = vec![
+            ws("local-ws", Some("/Users/me/local-ws"), None),
+            ws("ssh-ws", Some("/srv/repo"), Some("h")),
+            ws("other-ssh", Some("/srv/other"), Some("other")),
+        ];
+        let incoming = tree("/srv/repo", vec![ctx("/srv/repo", vec![plan("/srv/repo/a.md")], vec![], vec![])]);
+        assert!(
+            confine_host_tree(&workspaces, "h", "local-ws", incoming.clone()).is_none(),
+            "a local workspace id must not accept a host tree"
+        );
+        assert!(
+            confine_host_tree(&workspaces, "h", "other-ssh", incoming).is_none(),
+            "another host's workspace id must not accept this host's tree"
+        );
+    }
+
+    #[test]
+    fn a_hosts_tree_with_a_sibling_prefix_is_dropped() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![ctx(
+                "/srv/repo",
+                vec![plan("/srv/repo2/x.md")],
+                vec![md("/srv/repo2/doc.md")],
+                vec![md("/srv/repo2/spec.md")],
+            )],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        assert!(confined.contexts[0].plans.is_empty());
+        assert!(confined.contexts[0].docs.is_empty());
+        assert!(confined.contexts[0].specs.is_empty());
+    }
+
+    #[test]
+    fn a_hosts_tree_drops_a_context_folder_outside_its_root() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![
+                ctx("/srv/repo", vec![plan("/srv/repo/.gavin-root/plans/a.md")], vec![], vec![]),
+                ctx(
+                    "/Users/me/local-ws",
+                    vec![plan("/Users/me/local-ws/.gavin-root/plans/b.md")],
+                    vec![],
+                    vec![],
+                ),
+            ],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        assert_eq!(confined.contexts.len(), 1);
+        assert_eq!(confined.contexts[0].folder_path, "/srv/repo");
+    }
+
+}
 
 #[cfg(test)]
 mod host_workspace_push_tests {
