@@ -16,7 +16,10 @@
 //!   around gavin's block; both keep every byte that is not gavin's.
 //! * **A path the scan did not report cannot be removed.** The remover
 //!   re-scans and intersects, so a plan that has gone stale (or been
-//!   tampered with) removes less than it asked for, never more.
+//!   tampered with) removes less than it asked for, never more. The
+//!   reported path is the one acted on: directory symlinks that leave
+//!   the root are neither descended nor listed, and every trash or edit
+//!   re-checks that the path's parent still resolves inside the root.
 
 use crate::agent_setup;
 use crate::git::WORKTREES_DIR;
@@ -159,35 +162,41 @@ fn count_archived(archive: &Path) -> usize {
     total
 }
 
-/// Whether a walked entry is a directory, the way `Path::is_dir` answers
-/// it -- a symlink counts as what it points at -- without its stat. The
-/// type readdir already returned settles everything but a symlink, and
-/// only a symlink is stat'ed to follow it. On a 152k-entry root the
-/// stats were two thirds of a warm walk: 0.76 s against 0.25 s without.
-fn entry_is_dir(entry: &std::fs::DirEntry) -> bool {
-    match entry.file_type() {
-        Ok(t) if t.is_symlink() => entry.path().is_dir(),
-        Ok(t) => t.is_dir(),
-        Err(_) => entry.path().is_dir(),
-    }
+/// True when `path` will be acted on inside `root_canonical`: the trash
+/// crate (and any path-based OS call) resolves the PARENT and keeps the
+/// leaf, so the parent is what must resolve inside the root.
+fn resolves_inside(path: &Path, root_canonical: &Path) -> bool {
+    path.parent()
+        .and_then(|p| p.canonicalize().ok())
+        .is_some_and(|p| p.starts_with(root_canonical))
 }
 
-/// Every `.gavin/` under the root. The walk matches the daemon's:
-/// `.gavin*` directories are never descended into, and the same excluded
-/// and dot-prefixed directories are skipped.
+/// A shared-file edit writes through the leaf; a symlink leaf is the
+/// outside file, not the in-root spelling the wizard showed.
+fn leaf_is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Every `.gavin/` under the root. The walk matches the daemon's
+/// `scan_root`: directory symlinks are never descended (a link out of
+/// the root would otherwise report an outside context under an in-root
+/// spelling), `.gavin*` directories are never entered, and the same
+/// excluded and dot-prefixed directories are skipped. A symlinked
+/// `.gavin` leaf is still reported -- trashing it moves only the link.
 fn walk_contexts(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > MAX_SCAN_DEPTH {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        if !entry_is_dir(&entry) {
-            continue;
-        }
+        let Ok(kind) = entry.file_type() else { continue };
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == GAVIN_DIR {
+        if name == GAVIN_DIR && path.is_dir() {
             found.push(path);
+            continue;
+        }
+        if kind.is_symlink() || !kind.is_dir() {
             continue;
         }
         if name == GAVIN_ROOT_DIR || EXCLUDED_DIRS.contains(&name.as_str()) || name.starts_with('.')
@@ -260,53 +269,69 @@ pub fn scan_with_default(root: &Path, default_agent: Option<&str>) -> Result<Gav
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
     }
+    let root_canonical = root.canonicalize().map_err(|e| e.to_string())?;
     let install = agent_setup::gavin_install(root, default_agent);
 
     let gavin_root_path = root.join(GAVIN_ROOT_DIR);
-    let gavin_root = gavin_root_path.is_dir().then(|| {
-        let plans = gavin_root_path.join("plans");
-        let archive = plans.join("archive");
-        GavinRootFootprint {
-            path: protocol::wire_path(&gavin_root_path),
-            cards: count_cards(&plans, &archive),
-            archived: count_archived(&archive),
-        }
-    });
+    let gavin_root = (gavin_root_path.is_dir() && resolves_inside(&gavin_root_path, &root_canonical))
+        .then(|| {
+            let plans = gavin_root_path.join("plans");
+            let archive = plans.join("archive");
+            GavinRootFootprint {
+                path: protocol::wire_path(&gavin_root_path),
+                cards: count_cards(&plans, &archive),
+                archived: count_archived(&archive),
+            }
+        });
 
     // The table's own skills, plus any gavin-prefixed sibling beside
     // them: the two step skills are installed on demand by
     // compose_agent_prompt and appear in no table, so reading the table
-    // alone would leave them on disk.
+    // alone would leave them on disk. Skip the listing when the skill
+    // root itself resolves outside -- `read_dir` would follow a
+    // committed `.claude` (or `.opencode`) link out of the workspace.
     let mut skills: Vec<PathBuf> = install.skills.into_iter().filter(|p| p.is_dir()).collect();
     if let Some(skill_root) = install.skill_root.as_ref() {
-        if let Ok(entries) = std::fs::read_dir(skill_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                if path.is_dir() && name.starts_with("gavin") && !skills.contains(&path) {
-                    skills.push(path);
+        let skill_root_inside = skill_root
+            .canonicalize()
+            .is_ok_and(|c| c.starts_with(&root_canonical));
+        if skill_root_inside {
+            if let Ok(entries) = std::fs::read_dir(skill_root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if path.is_dir() && name.starts_with("gavin") && !skills.contains(&path) {
+                        skills.push(path);
+                    }
                 }
             }
         }
     }
+    skills.retain(|p| resolves_inside(p, &root_canonical));
     skills.sort();
     let skills: Vec<String> = skills.iter().map(|p| protocol::wire_path(&p)).collect();
 
     // Reported only when it is really there, the same rule the MCP and
     // instructions entries follow: a screen offering to remove a file
-    // that does not exist can only be answered wrong.
+    // that does not exist can only be answered wrong. A symlinked leaf
+    // or a path whose parent resolves outside is not offered -- an edit
+    // or trash would act on the resolved location.
     let agent_file = install
         .agent_file
-        .filter(|p| p.is_file())
+        .filter(|p| p.is_file() && resolves_inside(p, &root_canonical) && !leaf_is_symlink(p))
         .map(|p| protocol::wire_path(&p));
 
     let mcp = install.mcp.and_then(|(path, server_key)| {
-        agent_setup::mcp_entry_present(root, default_agent)
-            .then(|| McpFootprint { path: protocol::wire_path(&path), server_key })
+        (agent_setup::mcp_entry_present(root, default_agent)
+            && resolves_inside(&path, &root_canonical)
+            && !leaf_is_symlink(&path))
+        .then(|| McpFootprint { path: protocol::wire_path(&path), server_key })
     });
 
-    let instructions = agent_setup::instructions_block_present(&install.instructions)
-        .then(|| protocol::wire_path(&install.instructions));
+    let instructions = (agent_setup::instructions_block_present(&install.instructions)
+        && resolves_inside(&install.instructions, &root_canonical)
+        && !leaf_is_symlink(&install.instructions))
+    .then(|| protocol::wire_path(&install.instructions));
 
     let mut inside = Vec::new();
     walk_contexts(root, 1, &mut inside);
@@ -317,6 +342,7 @@ pub fn scan_with_default(root: &Path, default_agent: Option<&str>) -> Result<Gav
     if root_gavin.is_dir() {
         inside.push(root_gavin);
     }
+    inside.retain(|p| resolves_inside(p, &root_canonical));
     inside.sort();
     let mut contexts: Vec<ContextFootprint> = inside
         .into_iter()
@@ -363,6 +389,7 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
 /// `remove` with the app-wide default agent, so the scan it re-runs and
 /// the MCP edit resolve the profile the write path used (`scan_with_default`).
 pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Option<&str>) -> Result<RemovalReport, String> {
+    let root_canonical = root.canonicalize().map_err(|e| e.to_string())?;
     let footprint = scan_with_default(root, default_agent)?;
     let allowed = removable_paths(&footprint);
     let mut report = RemovalReport::default();
@@ -375,6 +402,10 @@ pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Optio
             ));
             continue;
         }
+        if !resolves_inside(Path::new(path), &root_canonical) {
+            report.failed.push((path.clone(), "resolves outside the workspace".to_string()));
+            continue;
+        }
         match trash_path(path) {
             Ok(()) => report.done.push(format!("Moved to Trash: {path}")),
             Err(e) => report.failed.push((path.clone(), e)),
@@ -384,16 +415,24 @@ pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Optio
     // Edits, not removals. The plan names the file, but the editing is
     // agent_setup's -- the module that wrote the entry is the one that
     // knows how to take it out without reformatting everything else.
+    // Containment is checked here next to the sink: a path that somehow
+    // reached the plan after leaving the root is refused before any write.
     for mcp in &plan.strip_mcp_key {
         match footprint.mcp.as_ref() {
-            Some(found) if found == mcp => match agent_setup::remove_mcp_entry(root, default_agent) {
-                Ok(true) => report.done.push(format!(
-                    "Removed the \"{}\" server from {}",
-                    mcp.server_key, mcp.path
-                )),
-                Ok(false) => {}
-                Err(e) => report.failed.push((mcp.path.clone(), e.to_string())),
-            },
+            Some(found) if found == mcp => {
+                if !resolves_inside(Path::new(&mcp.path), &root_canonical) {
+                    report.failed.push((mcp.path.clone(), "resolves outside the workspace".to_string()));
+                    continue;
+                }
+                match agent_setup::remove_mcp_entry(root, default_agent) {
+                    Ok(true) => report.done.push(format!(
+                        "Removed the \"{}\" server from {}",
+                        mcp.server_key, mcp.path
+                    )),
+                    Ok(false) => {}
+                    Err(e) => report.failed.push((mcp.path.clone(), e.to_string())),
+                }
+            }
             _ => report.failed.push((
                 mcp.path.clone(),
                 "not reported by the scan — the file was left alone".to_string(),
@@ -407,6 +446,10 @@ pub fn remove_with_default(root: &Path, plan: &RemovalPlan, default_agent: Optio
                 path.clone(),
                 "not reported by the scan — the file was left alone".to_string(),
             ));
+            continue;
+        }
+        if !resolves_inside(Path::new(path), &root_canonical) {
+            report.failed.push((path.clone(), "resolves outside the workspace".to_string()));
             continue;
         }
         match agent_setup::remove_instructions_block(Path::new(path)) {
@@ -821,6 +864,75 @@ mod tests {
 
         assert_eq!(f.contexts.len(), 1, "{:?}", f.contexts);
         assert!(f.contexts[0].path.ends_with("api/.gavin"));
+    }
+
+    /// Committed directory symlinks that leave the root must not widen
+    /// the removable set. `trash` resolves the parent and keeps the leaf,
+    /// so descending `vendor -> ../other` and listing skills through
+    /// `.claude -> ../outside/.claude` would trash the real directories
+    /// outside (audit 2026-10-15,
+    /// `workspace-delete-scan-follows-committed-symlinks-out-of-root`).
+    #[cfg(unix)]
+    #[test]
+    fn committed_directory_symlinks_leaving_the_root_are_neither_scanned_nor_trashed() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = base.path().join("outside");
+        let root = base.path().join("root");
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR)).unwrap();
+        std::fs::create_dir_all(outside.join(".claude").join("skills").join("gavin")).unwrap();
+        std::fs::write(
+            outside.join(".claude").join("skills").join("gavin").join("SKILL.md"),
+            "skill",
+        )
+        .unwrap();
+        std::fs::create_dir_all(outside.join("proj").join(GAVIN_DIR)).unwrap();
+        std::fs::write(outside.join("proj").join(GAVIN_DIR).join("marker.txt"), "cards").unwrap();
+        std::os::unix::fs::symlink("../outside/.claude", root.join(".claude")).unwrap();
+        std::os::unix::fs::symlink("../outside/proj", root.join("vendor")).unwrap();
+
+        let f = scan(&root).unwrap();
+
+        let skill = protocol::wire_path(&root.join(".claude/skills/gavin"));
+        let ctx = protocol::wire_path(&root.join("vendor").join(GAVIN_DIR));
+        assert!(
+            !f.skills.iter().any(|s| s == &skill),
+            "scan offered outside skill via .claude symlink: {:?}",
+            f.skills
+        );
+        assert!(
+            !f.contexts.iter().any(|c| c.path == ctx),
+            "scan offered outside context via vendor symlink: {:?}",
+            f.contexts
+        );
+
+        let report = remove(
+            &root,
+            &RemovalPlan {
+                trash: vec![skill.clone(), ctx.clone()],
+                strip_mcp_key: vec![],
+                cut_block: vec![],
+            },
+        )
+        .unwrap();
+
+        assert!(
+            report.failed.iter().any(|(p, _)| p == &skill),
+            "remove did not refuse the outside skill: {:?}",
+            report
+        );
+        assert!(
+            report.failed.iter().any(|(p, _)| p == &ctx),
+            "remove did not refuse the outside context: {:?}",
+            report
+        );
+        assert!(
+            outside.join(".claude").join("skills").join("gavin").join("SKILL.md").is_file(),
+            "outside skill directory was moved or deleted"
+        );
+        assert!(
+            outside.join("proj").join(GAVIN_DIR).join("marker.txt").is_file(),
+            "outside .gavin was moved or deleted"
+        );
     }
 
     #[test]

@@ -3282,7 +3282,15 @@ pub struct GavinInstall {
 
 pub fn gavin_install(root: &Path, default_agent: Option<&str>) -> GavinInstall {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
-    let instructions = root.join(resolved_instructions_file(&LocalFiles, root, profile));
+    // Same containment the setup-time writer applies: an absolute or
+    // escaping `[agent] file` must not name a path outside the root for
+    // the delete wizard (or any other reader of this install layout).
+    let file = resolved_instructions_file(&LocalFiles, root, profile);
+    let instructions = if validate_agent_file_path(&LocalFiles, root, &file).is_ok() {
+        root.join(&file)
+    } else {
+        root.join(profile.instructions_file)
+    };
     let mcp = resolved_mcp(&LocalFiles, root, profile);
     let skills = mcp
         .as_ref()
@@ -3340,6 +3348,9 @@ pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Res
     if !path.exists() {
         return Ok(false);
     }
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!("{} is a symlink — left alone", path.display());
+    }
     let content = std::fs::read_to_string(&path)?;
     match layout.format {
         McpFormat::TomlServers => {
@@ -3395,6 +3406,9 @@ pub fn instructions_block_present(path: &Path) -> bool {
 pub fn remove_instructions_block(path: &Path) -> anyhow::Result<bool> {
     if !path.exists() {
         return Ok(false);
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!("{} is a symlink — left alone", path.display());
     }
     let content = std::fs::read_to_string(path)?;
     let (Some(start), Some(end)) = (content.find(MARKER_START), content.find(MARKER_END)) else {
@@ -6325,6 +6339,25 @@ mod tests {
         assert_eq!(resolved_instructions_file(&LocalFiles, dir.path(), profile_by_id("codex")), "NOTES.md");
     }
 
+    /// `gavin_install` must apply the same `[agent] file` containment the
+    /// setup writer does: an absolute value names any file if joined
+    /// blindly, so fall back to the profile default.
+    #[test]
+    fn gavin_install_falls_back_when_agent_file_escapes_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(".gavin-root");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\nfile = \"/tmp/outside.md\"\n",
+        )
+        .unwrap();
+
+        let install = gavin_install(dir.path(), None);
+
+        assert_eq!(install.instructions, dir.path().join("CLAUDE.md"));
+    }
+
     #[test]
     fn read_profile_id_defaults_to_claude_code_without_a_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -6544,6 +6577,53 @@ mod tests {
         assert!(mcp_entry_present(dir.path(), None), "a launcher entry is still gavin's");
         assert!(remove_mcp_entry(dir.path(), None).unwrap(), "it reports having removed one");
         assert!(!mcp_entry_present(dir.path(), None), "and it is gone");
+    }
+
+    /// A committed file symlink must not turn a shared-file edit into a
+    /// write outside the workspace (audit 2026-10-15,
+    /// `workspace-delete-scan-follows-committed-symlinks-out-of-root`).
+    #[cfg(unix)]
+    #[test]
+    fn remove_mcp_entry_refuses_a_symlinked_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        let outside_mcp = outside.path().join(".mcp.json");
+        std::fs::write(
+            &outside_mcp,
+            "{\n  \"mcpServers\": {\n    \"gavin\": { \"command\": \"/bin/gavin-mcp\", \"args\": [] }\n  }\n}\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_mcp, dir.path().join(".mcp.json")).unwrap();
+
+        let err = remove_mcp_entry(dir.path(), None).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            std::fs::read_to_string(&outside_mcp).unwrap().contains("gavin"),
+            "outside MCP file was edited through the symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_instructions_block_refuses_a_symlinked_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("CLAUDE.md");
+        std::fs::write(
+            &outside_file,
+            "# Mine\n\n<!-- gavin:start -->\nblah\n<!-- gavin:end -->\n",
+        )
+        .unwrap();
+        let link = dir.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let err = remove_instructions_block(&link).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            std::fs::read_to_string(&outside_file).unwrap().contains("gavin:start"),
+            "outside instructions file was edited through the symlink"
+        );
     }
 
     /// The delete flow resolves the profile the write path used: a
