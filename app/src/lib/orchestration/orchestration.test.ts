@@ -564,6 +564,67 @@ describe("startRailTargetWorkspace", () => {
       reason: expect.stringContaining("no longer exists"),
     });
   });
+
+  // An ssh workspace's plan is host-writable. Arming a LOCAL workspace
+  // from it would let the host start rails on the desk without a click
+  // on that local workspace -- the trust boundary the ssh link draws
+  // for trees and sessions.
+  it("refuses an ssh caller arming a local workspace", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-ssh", ssh: { host: "h" } },
+          { id: "ws-local" },
+        ],
+        "ws-ssh",
+        "ws-local"
+      )
+    ).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("same host"),
+    });
+  });
+
+  it("refuses an ssh caller arming a workspace on a different host", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-a", ssh: { host: "a" } },
+          { id: "ws-b", ssh: { host: "b" } },
+        ],
+        "ws-a",
+        "ws-b"
+      )
+    ).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("same host"),
+    });
+  });
+
+  it("allows an ssh caller to arm another workspace on the same host", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-a", ssh: { host: "h" } },
+          { id: "ws-b", ssh: { host: "h" } },
+        ],
+        "ws-a",
+        "ws-b"
+      )
+    ).toEqual({ kind: "ok", workspaceId: "ws-b" });
+  });
+
+  // Local-to-local (and local-to-ssh) cross-workspace start-rail stays
+  // as the StepParamsDialog picker already offers it.
+  it("still allows a local caller to arm any known workspace", () => {
+    expect(
+      startRailTargetWorkspace(
+        [{ id: "ws-1" }, { id: "ws-2", ssh: { host: "h" } }],
+        "ws-1",
+        "ws-2"
+      )
+    ).toEqual({ kind: "ok", workspaceId: "ws-2" });
+  });
 });
 
 // The question the daemon's push handler asks before it decides whether

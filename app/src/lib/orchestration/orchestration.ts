@@ -634,16 +634,34 @@ export type StartRailTarget =
 /// ambiguity to resolve the way `startRailVerdict` resolves a typed rail
 /// name -- only a workspace since removed, which is the one thing an ID
 /// cannot rule out on its own.
+///
+/// Cross-workspace arming is intentional between local workspaces. An
+/// ssh workspace's plan is host-writable, so a step there may only arm
+/// a rail in that same workspace or another ssh workspace on the same
+/// host -- never a local target, and never a different host. The
+/// caller's `ssh` (or its absence) is what draws that line.
 export function startRailTargetWorkspace(
-  workspaces: { id: string }[],
+  workspaces: { id: string; ssh?: { host: string } }[],
   ownWorkspaceId: string,
   wanted: string
 ): StartRailTarget {
   const id = wanted.trim();
   if (!id) return { kind: "ok", workspaceId: ownWorkspaceId };
-  return workspaces.some((w) => w.id === id)
-    ? { kind: "ok", workspaceId: id }
-    : { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+  if (!workspaces.some((w) => w.id === id)) {
+    return { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+  }
+  const caller = workspaces.find((w) => w.id === ownWorkspaceId);
+  const callerHost = caller?.ssh?.host;
+  if (callerHost) {
+    const target = workspaces.find((w) => w.id === id);
+    if (!target?.ssh || target.ssh.host !== callerHost) {
+      return {
+        kind: "refuse",
+        reason: "an ssh workspace can only arm a rail on the same host",
+      };
+    }
+  }
+  return { kind: "ok", workspaceId: id };
 }
 
 /// The conditions a rail can wait on, in the order the dialog offers

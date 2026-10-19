@@ -366,6 +366,7 @@ import { noPromptReason } from "$lib/cards/cardRun";
 import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
+import { sshLinks } from "$lib/workspace/sshLinkState";
 
 function rail(id: string): Rail {
   return { id, name: id, position: 0, worktreePath: null, pageId: null, stages: [] };
@@ -1556,6 +1557,168 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     // The calling step is done, on its OWN workspace -- arming another
     // workspace's rail must not be mistaken for this step's own launch.
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null, "ws-1");
+  });
+
+  // An ssh workspace's plan is host-writable. A start-rail step there that
+  // names a LOCAL workspace id must stall, not arm that local rail --
+  // otherwise the host starts work on the desk with no click on the local
+  // workspace (sec-fix-ssh-start-rail-local-workspace).
+  it("refuses an ssh workspace's start-rail arming a local workspace", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-local"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r-local",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/local",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s-local",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-local" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [], ssh: { host: "h" } },
+        { id: "ws-local", pages: [], rootPath: "/ws-local" },
+      ],
+    });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-local": [] });
+    vi.mocked(backend.setRailRun).mockClear();
+    vi.mocked(backend.setStepRun).mockClear();
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setRailRun).not.toHaveBeenCalledWith(
+      "r-local",
+      expect.anything(),
+      expect.anything(),
+      "ws-local"
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("same host"),
+      null,
+      null,
+      null,
+      "ws-1"
+    );
+    expect(backend.setStepRun).not.toHaveBeenCalledWith(
+      "t1",
+      "done",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "ws-1"
+    );
+  });
+
+  // Same-host ssh-to-ssh stays allowed: both plans live on that host.
+  // startRail still asks sshLaunchBlocker of the TARGET, so the link
+  // must be up or the arm would silently no-op past the trust check.
+  it("allows an ssh workspace's start-rail to arm another workspace on the same host", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-2"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r2",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/wt2",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s2",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-2" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [], ssh: { host: "h" } },
+        { id: "ws-2", pages: [], rootPath: "/ws2", ssh: { host: "h" } },
+      ],
+    });
+    sshLinks.set({ h: { status: "ready", daemonVersion: 40 } });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-2": [] });
+
+    try {
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(backend.setRailRun).toHaveBeenCalledWith("r2", "running", "s2", "ws-2");
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null, "ws-1");
+    } finally {
+      sshLinks.set({});
+    }
   });
 
   it("resuming a stalled step reopens it on the rail's page too", async () => {
