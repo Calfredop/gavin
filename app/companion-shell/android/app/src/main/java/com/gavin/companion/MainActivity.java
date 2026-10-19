@@ -29,10 +29,24 @@ public class MainActivity extends BridgeActivity {
         DebugLaunch debug = DebugLaunch.consume(getFilesDir(), debuggable);
         QrScannerPlugin.scripted = debug.pairCode;
         BundleViewPlugin.probeRequested = debug.bundleProbe;
+        BundleViewPlugin.openFirstRequested = debug.openFirst;
         DeviceKeysPlugin.checkRequested = debug.keysCheck;
         DeviceKeysPlugin.strict = debug.strictKeys;
         super.onCreate(savedInstanceState);
+        TaskSnapshotCover.install(this);
         SystemTextSize.apply(bridge.getWebView(), getResources().getConfiguration());
+    }
+
+    @Override
+    public void onPause() {
+        TaskSnapshotCover.onPause(this);
+        super.onPause();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        TaskSnapshotCover.onResume(this);
     }
 
     @Override

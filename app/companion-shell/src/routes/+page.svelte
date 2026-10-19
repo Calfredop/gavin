@@ -98,6 +98,10 @@
   /// A debug build launched with a pairing code (scripts/pair.sh), which
   /// reads the pairing's steps off the device log.
   let scripted = false;
+  /// A debug build launched with open-first (scripts/snapshot.sh): open
+  /// the first ready Workstation once after Unlock.
+  let openFirst = false;
+  let openFirstDone = false;
   /// A hub line of its own: an inbox item whose Workstation cannot be
   /// opened from this phone yet.
   let notice = $state<string | null>(null);
@@ -144,6 +148,15 @@
   const live = unlocked?.live;
   $effect(() => {
     unlocked?.setPaired($state.snapshot(paired) as PairedWorkstation[]);
+  });
+  // scripts/snapshot.sh: after Unlock, open the first ready Workstation
+  // so the OS task snapshot can be checked with Workstation content drawn.
+  $effect(() => {
+    if (!openFirst || openFirstDone || !$unlockState || !connectionsAllowed($unlockState)) return;
+    const ws = hubWorkstations(paired, $live ?? {}).find((w) => w.openable);
+    if (!ws) return;
+    openFirstDone = true;
+    void visits.open(ws);
   });
   // The Unlock gates the connection, not the screen: a paired
   // Workstation's bundle would stay in front with its last data after
@@ -326,6 +339,8 @@
             scripted = true;
             return pairing.startWith(text);
           }
+          const { open } = await BundleView.openFirstRequested().catch(() => ({ open: false }));
+          openFirst = open;
           unlocked?.setPaired($state.snapshot(paired) as PairedWorkstation[]);
           await unlocked?.start();
         })

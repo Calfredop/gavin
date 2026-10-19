@@ -18,6 +18,7 @@ public class BundleViewPlugin: CAPPlugin, CAPBridgedPlugin, BundleViewEvents {
         CAPPluginMethod(name: "close", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openExternal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "probeRequested", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openFirstRequested", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "installed", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "install", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prune", returnType: CAPPluginReturnPromise),
@@ -106,6 +107,16 @@ public class BundleViewPlugin: CAPPlugin, CAPBridgedPlugin, BundleViewEvents {
         call.resolve(["probe": UserDefaults.standard.bool(forKey: "GavinBundleProbe")])
         #else
         call.resolve(["probe": false])
+        #endif
+    }
+
+    /// Launched with `-GavinOpenFirst YES` (scripts/snapshot.sh): open the
+    /// first ready Workstation after Unlock. Never in a release build.
+    @objc func openFirstRequested(_ call: CAPPluginCall) {
+        #if DEBUG
+        call.resolve(["open": UserDefaults.standard.bool(forKey: "GavinOpenFirst")])
+        #else
+        call.resolve(["open": false])
         #endif
     }
 

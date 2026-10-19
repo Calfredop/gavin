@@ -27,6 +27,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 public class BundleViewPlugin extends Plugin implements BundleChannel.Events {
     /** Set by {@link MainActivity} when a debug build is launched to run the probe. */
     static volatile boolean probeRequested = false;
+    /** Set by {@link MainActivity} when a debug build should open the first Workstation. */
+    static volatile boolean openFirstRequested = false;
 
     @Override
     public void load() {
@@ -169,6 +171,15 @@ public class BundleViewPlugin extends Plugin implements BundleChannel.Events {
         boolean debuggable = (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         JSObject answer = new JSObject();
         answer.put("probe", debuggable && probeRequested);
+        call.resolve(answer);
+    }
+
+    /** Never true in a release build. {@code scripts/snapshot.sh}. */
+    @PluginMethod
+    public void openFirstRequested(PluginCall call) {
+        boolean debuggable = (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        JSObject answer = new JSObject();
+        answer.put("open", debuggable && openFirstRequested);
         call.resolve(answer);
     }
 
