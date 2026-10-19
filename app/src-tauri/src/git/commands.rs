@@ -1513,6 +1513,62 @@ mod ref_tests {
         assert!(!wt.join(".claude").join("settings.local.json").exists());
     }
 
+    /// A committed `.gavin-worktrees` directory symlink must not get `*`
+    /// written at its target when a worktree is cut (audit 2026-10-15).
+    #[cfg(unix)]
+    #[test]
+    fn prepare_worktrees_dir_refuses_a_symlinked_gavin_worktrees_pointing_outside() {
+        let dir = temp_repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("note.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(WORKTREES_DIR)).unwrap();
+
+        let wt = dir.path().join(WORKTREES_DIR).join("feature");
+        let err = worktree_add(
+            cwd(&dir),
+            wt.to_str().unwrap(),
+            "feature",
+            None,
+            true,
+            &OpControl::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert!(!outside.path().join(".gitignore").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("note.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    /// A committed `.claude` directory symlink on the checked-out branch
+    /// must not let `write_claude_md_excludes` rewrite files outside the
+    /// worktree (audit 2026-10-15).
+    #[cfg(unix)]
+    #[test]
+    fn write_claude_md_excludes_refuses_a_symlinked_claude_dir_pointing_outside() {
+        let dir = temp_repo();
+        write(&dir, "CLAUDE.md", "root instructions\n");
+        write(&dir, ".gitignore", ".claude/settings.local.json\n");
+        git(cwd(&dir), &["add", "CLAUDE.md", ".gitignore"]);
+        git(cwd(&dir), &["commit", "-q", "-m", "claude memory"]);
+
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("settings.local.json");
+        std::fs::write(&victim, "{\"keep\":true}\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".claude")).unwrap();
+
+        write_claude_md_excludes(dir.path(), dir.path());
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "{\"keep\":true}\n",
+            "settings write followed the .claude symlink"
+        );
+    }
+
     /// The merge guard, exercised directly: an unrelated setting already
     /// in the file survives, and a file that already sets the key is left
     /// byte-for-byte alone rather than clobbered with gavin's own list.

@@ -3462,14 +3462,34 @@ pub fn read_workspace_file(root: &Path, path: &str) -> anyhow::Result<(Option<St
     Ok((Some(text.to_string()), truncated))
 }
 
-/// `WriteWorkspaceFile`: parents created, the file written whole. Plain
-/// `fs::write`, the convention `write_plan_field` set.
+/// `WriteWorkspaceFile`: parents created, the file written whole. The leaf
+/// is opened with `O_NOFOLLOW` so a symlink swapped in after `confined`
+/// cannot redirect the write (the desktop's LocalFiles writers do the
+/// same for a local root).
 pub fn write_workspace_file(root: &Path, path: &str, content: &str) -> anyhow::Result<()> {
+    use std::io::Write;
     let resolved = confined(root, path)?;
     if let Some(parent) = resolved.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&resolved, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&resolved)?;
+        file.write_all(content.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        if std::fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{path} is a symlink; gavin will not write through it");
+        }
+        std::fs::write(&resolved, content)?;
+    }
     Ok(())
 }
 
@@ -7973,6 +7993,24 @@ mod tests {
         assert!(write_workspace_file(dir.path(), &lossy(&target), "x").is_err());
         assert!(!target.exists());
         assert!(write_workspace_file(dir.path(), "../planted", "x").is_err());
+    }
+
+    /// A committed symlink leaf whose target already exists outside must
+    /// not redirect a host-side workspace write — RemoteFiles reaches
+    /// this path.
+    #[cfg(unix)]
+    #[test]
+    fn write_workspace_file_refuses_a_symlinked_leaf_pointing_outside() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("bashrc");
+        std::fs::write(&victim, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("CLAUDE.md")).unwrap();
+        let err = write_workspace_file(dir.path(), "CLAUDE.md", "hijack\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("outside") || err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep\n");
     }
 
     /// A card in an outside context the human registered is the

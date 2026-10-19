@@ -315,9 +315,15 @@ without warning** is gavin's — it chose to merge silently rather than surface
 
 Gavin's *own* writes cannot be redirected: stock profiles use fixed relative
 paths; a `custom` profile's `mcp_file` is validated by `usable_mcp_path`
-(`agent_setup.rs:137`), which rejects absolute paths and `..` (test `:2137`). A
-symlinked `.gemini/` etc. would let the OS redirect the write, but that is an A1
-prerequisite (the attacker already writing the repo), not an A2 escalation.
+(`agent_setup.rs:137`), which rejects absolute paths and `..` (test `:2137`).
+The relative launcher `scripts/gavin-mcp` is named only when this machine holds
+a human-recorded mark for the root (app data dir, digest of the launcher file)
+— never because the repository merely ships `crates/gavin-mcp/Cargo.toml` and
+the script. A symlinked `.gemini/` (or `CLAUDE.md`, `.mcp.json`, `.gitignore`,
+…) that leads out of the workspace is refused by `contained_dest` before the
+write: a committed symlink is cloned-repo content (A2), not an A1 prerequisite,
+and git materialises it on clone with no same-user process involved. The leaf
+is then opened with `O_NOFOLLOW` so a swap after the check still fails.
 
 **Reproduction (yes, existing test).** `agent_setup.rs:2444-2452` writes
 `{"mcpServers":{"other":{"command":"/bin/other"},"gavin":{"command":"/old"}}}`,

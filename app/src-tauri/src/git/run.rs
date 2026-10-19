@@ -411,23 +411,54 @@ pub fn read_repo_file(cwd: &str, path: &std::path::Path) -> Result<Option<Vec<u8
     if let Some(result) = crate::remote::read_file_over_link(cwd, &protocol::wire_path(path)) {
         return result.map(|text| text.map(String::into_bytes));
     }
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("could not read {}: {e}", path.display())),
-    }
+    let dest = match crate::agent_setup::contained_under(std::path::Path::new(cwd), path) {
+        Ok(p) => p,
+        // Linked worktree common git dir (info/exclude) can lie outside
+        // cwd; read that path with O_NOFOLLOW rather than following a
+        // symlink leaf out of wherever it sits.
+        Err(_) => path.to_path_buf(),
+    };
+    crate::agent_setup::nofollow_read(&dest).map_err(|e| format!("could not read {}: {e}", path.display()))
 }
 
 /// The write half of `read_repo_file`, for `ignore.rs`'s Save. Parents
-/// are created on both sides.
+/// are created on both sides. A path under `cwd` goes through
+/// `contained_dest` so a committed symlink at the leaf or an intermediate
+/// directory cannot redirect the write outside the workspace.
 pub fn write_repo_file(cwd: &str, path: &std::path::Path, content: &str) -> Result<(), String> {
     if let Some(result) = crate::remote::write_file_over_link(cwd, &protocol::wire_path(path), content) {
         return result;
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(path, content).map_err(|e| format!("could not write {}: {e}", path.display()))
+    let dest = match crate::agent_setup::contained_under(std::path::Path::new(cwd), path) {
+        Ok(p) => p,
+        Err(e) => {
+            // Outside cwd: linked worktree's common git dir. Still refuse
+            // a symlink leaf; create parents only when they are missing.
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(format!(
+                    "{} is a symlink; gavin will not write through it",
+                    path.display()
+                ));
+            }
+            // Surface containment errors for paths that claimed to be
+            // under cwd but escaped via a symlink.
+            let cwd_path = std::path::Path::new(cwd);
+            if path.starts_with(cwd_path)
+                || std::fs::canonicalize(cwd_path)
+                    .ok()
+                    .is_some_and(|c| path.starts_with(&c))
+            {
+                return Err(e.to_string());
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+            }
+            path.to_path_buf()
+        }
+    };
+    crate::agent_setup::nofollow_write(&dest, content.as_bytes())
+        .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 /// Maps a non-zero exit to `Err(stderr)` — the UI shows that string
@@ -642,6 +673,57 @@ mod tests {
         // Verbatim, no reformatting -- what the editor's Save promises.
         write_repo_file(cwd, &target, "# replaced").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "# replaced");
+    }
+
+    /// A committed directory symlink under the workspace must not let
+    /// `write_repo_file` create files at its target (audit 2026-10-15).
+    #[cfg(unix)]
+    #[test]
+    fn write_repo_file_refuses_a_symlinked_parent_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        std::fs::write(outside.path().join("note.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".gavin-worktrees")).unwrap();
+
+        let target = dir.path().join(".gavin-worktrees").join(".gitignore");
+        let err = write_repo_file(cwd, &target, "*\n").unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert!(!outside.path().join(".gitignore").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("note.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_repo_file_refuses_a_symlinked_leaf_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let victim = outside.path().join("settings.json");
+        std::fs::write(&victim, "{\"keep\":true}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(
+            &victim,
+            dir.path().join(".claude").join("settings.local.json"),
+        )
+        .unwrap();
+
+        let target = dir.path().join(".claude").join("settings.local.json");
+        let err = write_repo_file(cwd, &target, "{\"claudeMdExcludes\":[]}\n").unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "{\"keep\":true}\n"
+        );
     }
 
     /// `run_git_action` runs git with the environment for a local cwd;

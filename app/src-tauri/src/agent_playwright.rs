@@ -339,7 +339,10 @@ enum Entry {
 }
 
 fn read_entry(fs: &dyn WorkspaceFiles, root: &Path, layout: &ResolvedMcp, own: &Result<String, String>) -> Entry {
-    let path = root.join(layout.config_file());
+    let path = match crate::agent_setup::contained_dest(root, Path::new(layout.config_file())) {
+        Ok(p) => p,
+        Err(e) => return Entry::Unknown(e.to_string()),
+    };
     let servers = match crate::agent_setup::mcp_servers_in(fs, &path, layout.format()) {
         Ok(servers) => servers,
         Err(e) => return Entry::Unknown(e.to_string()),
@@ -588,11 +591,22 @@ fn install(machine: &dyn Machine, root: &Path, profile_id: &str, replace: bool) 
             Entry::Present | Entry::Unknown(_) => false,
         };
         if write {
-            let path = root.join(layout.config_file());
-            if let Err(e) =
-                crate::agent_setup::write_mcp_server(fs, &path, layout.format(), pw::SUBCOMMAND, own, &[pw::SUBCOMMAND])
-            {
-                write_error = Some(format!("Could not write {}: {e}", protocol::wire_path(&path)));
+            match crate::agent_setup::contained_dest(root, Path::new(layout.config_file())) {
+                Ok(path) => {
+                    if let Err(e) = crate::agent_setup::write_mcp_server(
+                        fs,
+                        &path,
+                        layout.format(),
+                        pw::SUBCOMMAND,
+                        own,
+                        &[pw::SUBCOMMAND],
+                    ) {
+                        write_error = Some(format!("Could not write {}: {e}", protocol::wire_path(&path)));
+                    }
+                }
+                Err(e) => {
+                    write_error = Some(format!("Could not write MCP config: {e}"));
+                }
             }
         }
         // The instructions block tells this profile's agents the

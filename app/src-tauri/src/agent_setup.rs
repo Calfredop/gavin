@@ -227,18 +227,18 @@ pub struct LocalFiles;
 
 impl WorkspaceFiles for LocalFiles {
     fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-        match std::fs::read(path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        nofollow_read(path)
     }
 
     fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
         if let Some(dir) = path.parent() {
+            // Parents for workspace writes are created by `contained_dest`
+            // one component at a time. Other callers (agent-home marks)
+            // still need a parent; create_dir_all here is after that
+            // helper has already refused a symlink escape for setup paths.
             std::fs::create_dir_all(dir)?;
         }
-        Ok(std::fs::write(path, contents)?)
+        nofollow_write(path, contents)
     }
 
     fn is_dir(&self, path: &Path) -> bool {
@@ -273,8 +273,158 @@ impl WorkspaceFiles for LocalFiles {
             .create(true)
             .truncate(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         Ok(file.write_all(contents)?)
+    }
+}
+
+/// The destination for a write gavin makes INSIDE a workspace. A cloned
+/// repo can commit a symlink at any path gavin writes, so the path is
+/// resolved here and must stay under the canonical root; an in-root alias
+/// (CLAUDE.md -> AGENTS.md) is allowed, one leading out is refused.
+///
+/// Missing intermediate directories are created with `create_dir` one
+/// component at a time so a symlink cannot redirect the mkdir. When the
+/// root is not on this machine (ssh / in-memory test doubles), falls back
+/// to a lexical join — the host's `WriteWorkspaceFile` enforces the same
+/// rule there.
+pub(crate) fn contained_dest(root: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
+    contained_dest_inner(root, rel, true)
+}
+
+/// `contained_dest` without creating missing parents — for a check that
+/// must not mkdir (validating `[agent] file` before a write).
+fn check_contained_dest(root: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
+    contained_dest_inner(root, rel, false)
+}
+
+fn contained_dest_inner(root: &Path, rel: &Path, create: bool) -> anyhow::Result<PathBuf> {
+    let parts: Vec<_> = rel.components().collect();
+    if parts.is_empty() || !parts.iter().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        anyhow::bail!("{} is not a plain path inside the workspace", rel.display());
+    }
+    // Root not on this disk: lexical only. RemoteFiles and MemoryFiles
+    // use host / fake roots that canonicalize would never find here.
+    let Ok(root_c) = std::fs::canonicalize(root) else {
+        return Ok(root.join(rel));
+    };
+    let mut cur = root_c.clone();
+    for (i, c) in parts.iter().enumerate() {
+        cur.push(c.as_os_str());
+        let last = i + 1 == parts.len();
+        match std::fs::symlink_metadata(&cur) {
+            Ok(_) => {
+                // Resolve whatever is there (a symlink included) and require
+                // the result to stay inside the root.
+                let resolved = std::fs::canonicalize(&cur).map_err(|e| {
+                    anyhow::anyhow!(
+                        "{} could not be resolved ({e}); gavin will not write through it",
+                        cur.display()
+                    )
+                })?;
+                if !resolved.starts_with(&root_c) {
+                    anyhow::bail!(
+                        "{} leads outside the workspace; gavin will not write through it",
+                        cur.display()
+                    );
+                }
+                if !last && !resolved.is_dir() {
+                    anyhow::bail!("{} is not a directory", cur.display());
+                }
+                cur = resolved;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !last => {
+                if create {
+                    std::fs::create_dir(&cur)?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // Re-spell under the caller's `root` so macOS `/var` vs `/private/var`
+    // (and any other root alias) does not change the path callers report
+    // or compare. The open still lands on the resolved inode.
+    if let Ok(suffix) = cur.strip_prefix(&root_c) {
+        Ok(root.join(suffix))
+    } else {
+        Ok(cur)
+    }
+}
+
+/// Absolute path under `root`, resolved the same way as `contained_dest`.
+/// Used by `write_repo_file` for workspace-relative sinks git named.
+pub(crate) fn contained_under(root: &Path, absolute: &Path) -> anyhow::Result<PathBuf> {
+    let abs = if absolute.is_absolute() {
+        absolute.to_path_buf()
+    } else {
+        root.join(absolute)
+    };
+    let rel = abs
+        .strip_prefix(root)
+        .or_else(|_| {
+            let root_c = std::fs::canonicalize(root).ok();
+            root_c
+                .as_ref()
+                .and_then(|r| abs.strip_prefix(r).ok())
+                .ok_or(())
+        })
+        .map_err(|_| anyhow::anyhow!("{} is outside the workspace root {}", abs.display(), root.display()))?;
+    contained_dest(root, rel)
+}
+
+/// Open a leaf without following a symlink swapped in after containment.
+pub(crate) fn nofollow_read(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    match open_nofollow(path, false) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub(crate) fn nofollow_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut file = open_nofollow(path, true)?;
+    file.write_all(contents)?;
+    Ok(())
+}
+
+fn open_nofollow(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(true);
+        } else {
+            opts.read(true);
+        }
+        opts.custom_flags(libc::O_NOFOLLOW);
+        opts.open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        // No O_NOFOLLOW: refuse a symlink leaf before the open so a
+        // committed reparse point cannot redirect the write.
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{} is a symlink; gavin will not write through it", path.display()),
+            ));
+        }
+        let mut opts = std::fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(true);
+        } else {
+            opts.read(true);
+        }
+        opts.open(path)
     }
 }
 
@@ -298,12 +448,10 @@ fn usable_mcp_path(value: &str) -> Option<String> {
 /// EVERY profile, never skipped -- so a bad value is a loud error naming
 /// the value, not a silent downgrade.
 ///
-/// Canonicalizes the parent directory and checks containment rather than
-/// components alone, the same way fileviewer's `resolve_new` does: a
-/// symlinked directory leading out of the root is caught, not just a
-/// literal `..`. Safe to canonicalize eagerly here -- unlike an MCP
-/// config's directory, this write never creates the parent, so it must
-/// already exist for a valid value.
+/// Goes through `check_contained_dest` so a symlink at the leaf or at any
+/// intermediate component that leads out of the root is refused — not only
+/// a literal `..` or a symlinked parent. When the root is not on this
+/// disk (ssh), the check is lexical; the host enforces containment on write.
 fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     let path = Path::new(trimmed);
@@ -311,24 +459,15 @@ fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -
     if trimmed.is_empty() || path.is_absolute() {
         return Err(outside());
     }
-    // Rejects `..` anywhere, and the Windows prefixes/root-dir components
-    // an absolute check on a foreign separator would miss.
     if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
         return Err(outside());
     }
-    let root_canonical = fs
+    // Prove the root is answerable on this disk (or accept the remote
+    // double's word for it) before the containment walk.
+    let _ = fs
         .canonical_dir(root)
         .ok_or_else(|| format!("workspace root {} is unreadable", root.display()))?;
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    let canonical_parent = match parent {
-        Some(p) => fs.canonical_dir(&root_canonical.join(p)).ok_or_else(outside)?,
-        None => root_canonical.clone(),
-    };
-    if canonical_parent == root_canonical || canonical_parent.starts_with(&root_canonical) {
-        Ok(())
-    } else {
-        Err(outside())
-    }
+    check_contained_dest(root, path).map(|_| ()).map_err(|_| outside())
 }
 
 /// The layout to write for this root: the profile's own, or -- for
@@ -1720,8 +1859,13 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
     if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model_flag") {
         anyhow::bail!("not a settable agent key: {key}");
     }
-    let path = root.join(".gavin-root").join("config.toml");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let path = contained_dest(root, Path::new(".gavin-root/config.toml"))?;
+    let existing = match nofollow_read(&path)? {
+        Some(bytes) => String::from_utf8(bytes).map_err(|_| {
+            anyhow::anyhow!("{} is not valid UTF-8 text", path.display())
+        })?,
+        None => String::new(),
+    };
     let mut doc = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| anyhow::anyhow!("{} is not valid TOML", path.display()))?;
@@ -1729,7 +1873,7 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
     if let Some(t) = doc["agent"].as_table_mut() {
         t.set_implicit(false);
     }
-    std::fs::write(&path, doc.to_string())?;
+    nofollow_write(&path, doc.to_string().as_bytes())?;
     Ok(())
 }
 
@@ -2114,12 +2258,10 @@ fn write_mcp_config(
     layout: &ResolvedMcp,
     binary: &Path,
 ) -> anyhow::Result<PathBuf> {
-    let path = root.join(&layout.config_file);
-    // The `create_dir_all` that used to stand here is gone on purpose:
-    // `.gemini/`, `.cursor/` and `.codex/` still need not exist, but the
-    // parent is now created by `LocalFiles::write_bytes`, on whichever
-    // disk the workspace is. Doing it here would create a `.cursor/` on
-    // the DESKTOP for an ssh workspace whose files live on the host.
+    // Containment creates missing parents one component at a time under
+    // the root. For an ssh workspace the root is not on this disk, so
+    // `contained_dest` joins lexically and the host enforces the rule.
+    let path = contained_dest(root, Path::new(&layout.config_file))?;
     let command = mcp_command(fs, root, binary);
     write_mcp_server(fs, &path, layout.format, layout.server_key, &command, &[])?;
     Ok(path)
@@ -2265,7 +2407,8 @@ fn write_managed_file(
     file: &ManagedFile,
     prd: &str,
 ) -> anyhow::Result<ManagedWrite> {
-    let path = root.join(file.dir).join(file.file);
+    let rel = Path::new(file.dir).join(file.file);
+    let path = contained_dest(root, &rel)?;
     let replaced = write_owned(fs, &path, &with_prd_path(file.contents, prd))?;
     Ok(ManagedWrite { path, replaced })
 }
@@ -2317,7 +2460,7 @@ fn write_instructions_block(
     block_body: &str,
 ) -> anyhow::Result<PathBuf> {
     validate_agent_file_path(fs, root, instructions_file).map_err(|e| anyhow::anyhow!(e))?;
-    let path = root.join(instructions_file);
+    let path = contained_dest(root, Path::new(instructions_file))?;
     let content = if let Some(existing) = fs.read_to_string(&path)? {
         match (existing.find(MARKER_START), existing.find(MARKER_END)) {
             (Some(start), Some(end)) if end >= start => {
@@ -3310,7 +3453,7 @@ fn run_integration(
             {
                 record_checkout_mark(fs, root).map_err(|e| e.to_string())?;
             }
-            let mcp_path = root.join(&layout.config_file);
+            let mcp_path = contained_dest(root, Path::new(&layout.config_file)).map_err(|e| e.to_string())?;
             let foreign = foreign_mcp_servers(fs, &mcp_path, layout, &mcp_command(fs, root, &binary))
                 .map_err(|e| e.to_string())?;
             if foreign.is_empty() {
@@ -3498,8 +3641,15 @@ pub fn gavin_install(root: &Path, default_agent: Option<&str>) -> GavinInstall {
 pub fn mcp_entry_present(root: &Path, default_agent: Option<&str>) -> bool {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return false };
-    let path = root.join(&layout.config_file);
-    let Ok(content) = std::fs::read_to_string(&path) else { return false };
+    let Ok(path) = contained_dest(root, Path::new(&layout.config_file)) else {
+        return false;
+    };
+    let Ok(Some(bytes)) = nofollow_read(&path) else {
+        return false;
+    };
+    let Ok(content) = String::from_utf8(bytes) else {
+        return false;
+    };
     match layout.format {
         McpFormat::TomlServers => content
             .parse::<toml_edit::DocumentMut>()
@@ -3528,14 +3678,12 @@ pub fn mcp_entry_present(root: &Path, default_agent: Option<&str>) -> bool {
 pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Result<bool> {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return Ok(false) };
-    let path = root.join(&layout.config_file);
-    if !path.exists() {
+    let path = contained_dest(root, Path::new(&layout.config_file))?;
+    let Some(bytes) = nofollow_read(&path)? else {
         return Ok(false);
-    }
-    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-        anyhow::bail!("{} is a symlink — left alone", path.display());
-    }
-    let content = std::fs::read_to_string(&path)?;
+    };
+    let content = String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("{} is not valid UTF-8 text", path.display()))?;
     match layout.format {
         McpFormat::TomlServers => {
             let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|_| {
@@ -3547,7 +3695,7 @@ pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Res
             if table.remove(layout.server_key).is_none() {
                 return Ok(false);
             }
-            std::fs::write(&path, doc.to_string())?;
+            nofollow_write(&path, doc.to_string().as_bytes())?;
         }
         _ => {
             let mut doc: serde_json::Value = serde_json::from_str(&content).map_err(|_| {
@@ -3562,7 +3710,10 @@ pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Res
             if servers.remove(layout.server_key).is_none() {
                 return Ok(false);
             }
-            std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+            nofollow_write(
+                &path,
+                format!("{}\n", serde_json::to_string_pretty(&doc)?).as_bytes(),
+            )?;
         }
     }
     Ok(true)
@@ -6920,7 +7071,7 @@ mod tests {
 
     /// A committed file symlink must not turn a shared-file edit into a
     /// write outside the workspace (audit 2026-10-15,
-    /// `workspace-delete-scan-follows-committed-symlinks-out-of-root`).
+    /// `workspace-relative-writers-follow-committed-symlinks`).
     #[cfg(unix)]
     #[test]
     fn remove_mcp_entry_refuses_a_symlinked_leaf() {
@@ -6936,10 +7087,106 @@ mod tests {
         std::os::unix::fs::symlink(&outside_mcp, dir.path().join(".mcp.json")).unwrap();
 
         let err = remove_mcp_entry(dir.path(), None).unwrap_err().to_string();
-        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
         assert!(
             std::fs::read_to_string(&outside_mcp).unwrap().contains("gavin"),
             "outside MCP file was edited through the symlink"
+        );
+    }
+
+    /// Setup writers refuse a committed symlink leaf that leads out of
+    /// the workspace, and leave the outside target untouched
+    /// (fingerprint `workspace-relative-writers-follow-committed-symlinks`).
+    #[cfg(unix)]
+    #[test]
+    fn setup_writers_refuse_symlinked_leaves_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+
+        let outside_bashrc = outside.path().join("bashrc");
+        std::fs::write(&outside_bashrc, "export PATH=/bin\n").unwrap();
+        std::os::unix::fs::symlink(&outside_bashrc, dir.path().join("CLAUDE.md")).unwrap();
+
+        let outside_mcp = outside.path().join("global.json");
+        std::fs::write(&outside_mcp, "{\"theme\":\"dark\"}\n").unwrap();
+        std::os::unix::fs::symlink(&outside_mcp, dir.path().join(".mcp.json")).unwrap();
+
+        let outside_claude = outside.path().join("fakeclaude");
+        std::fs::create_dir_all(&outside_claude).unwrap();
+        std::fs::write(outside_claude.join("note.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(&outside_claude, dir.path().join(".claude")).unwrap();
+
+        let err = run_integration(
+            &LocalFiles,
+            dir.path(),
+            fake_binary(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "expected containment refusal, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_bashrc).unwrap(),
+            "export PATH=/bin\n",
+            "instructions write followed the CLAUDE.md symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_mcp).unwrap(),
+            "{\"theme\":\"dark\"}\n",
+            "MCP write followed the .mcp.json symlink"
+        );
+        assert!(
+            !outside_claude.join("skills").exists(),
+            "skill write followed the .claude directory symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside_claude.join("note.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    /// An in-root alias (CLAUDE.md -> AGENTS.md) is allowed: the write
+    /// lands on the resolved path still inside the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn setup_allows_an_in_root_symlink_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(dir.path().join("AGENTS.md"), "# agents\n").unwrap();
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+
+        run_integration(
+            &LocalFiles,
+            dir.path(),
+            fake_binary(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let agents = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            agents.contains("gavin:start"),
+            "in-root alias should receive the marker block: {agents}"
+        );
+        // The symlink leaf itself is untouched as a link.
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("CLAUDE.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 
