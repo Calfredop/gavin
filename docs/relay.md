@@ -272,9 +272,12 @@ the process is bound; admission still needs a real hello.
 | Open sockets | 4096 |
 | Max copied frame | 128 KiB |
 
-Public-instance per-Workstation bandwidth caps are not env-configurable
-yet; self-hosters sharing one Relay among their own machines are fine
-at these defaults.
+These caps are global or per rendezvous id only. gavin-relay does not
+meter bytes and does not bound how many rendezvous ids one admission
+token may use. A public or multi-tenant instance must put per-source
+concurrent connections, connection rate and bandwidth shaping on its
+front proxy (`docs/self-hosting-relay.md`); self-hosters sharing one
+Relay among their own machines are fine at these defaults.
 
 ## Operations notes
 

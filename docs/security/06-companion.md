@@ -315,10 +315,20 @@ of these.
   ready, because ready needs an authenticated `IK`. The inference must never gate a
   security decision or reassure.
 - **The caps.** 05 §8's 64 KiB channel line, per-connection request rate and per-Device
-  connection ceiling stand (DP-05, SC-10). They now apply on the daemon's side of the
-  Relay, and the Relay carries its own per-Workstation bandwidth limit.
+  connection ceiling stand (DP-05, SC-10). They apply on the daemon's side of the
+  Relay. gavin-relay itself enforces a global open-socket ceiling (4096),
+  per-rendezvous registration and waiting caps (4 and 16), a 5 s hello deadline,
+  and a 128 KiB copied-frame cap. It does not meter bytes or limit how many
+  rendezvous ids one admission token may hold. A shared or public instance must put
+  per-source concurrent connections, connection-rate limits and bandwidth shaping
+  in a front proxy (Caddy, nginx, or a load balancer); see
+  `docs/self-hosting-relay.md`.
 
 **Residual.** Denial, delay, selective censorship, and the metadata above.
+gavin-relay limits sockets only in total and registrations only per rendezvous id.
+Any holder of a shared admission token can take the whole socket pool and any amount
+of bandwidth; an instance shared between tenants relies on its front proxy for
+per-source and per-tenant limits.
 
 ### CT-4 — A compromised Workstation attacking the Device's other Workstations
 
@@ -674,8 +684,11 @@ pairing QR pins, admitting only peers on this network or tailnet.
 - **The Relay is untrusted** for confidentiality and integrity, and trusted for
   availability only. Its operator sees the metadata in CT-3, including the
   cross-Workstation correlation.
-- **The public Relay** is run by the publisher, free, with per-Workstation bandwidth
-  limits. **Self-hosters** run a signed image pinned by digest (`RELEASING.md`).
+- **A publisher-run public Relay** is a planned option (free); none ships in the
+  product today (Settings has no default Relay URL; the desk can run a local Relay).
+  When one is deployed, per-tenant and per-source limits belong on its front proxy,
+  not in gavin-relay (`docs/self-hosting-relay.md`). **Self-hosters** run a signed
+  image pinned by digest (`RELEASING.md`).
 - **In release builds the Relay URL must be `wss://`.** A plain `ws://` is allowed only
   where §5.7 allows a dev Relay.
 - **Reconnect** resumes the *connection*, never a command (CT-3).
