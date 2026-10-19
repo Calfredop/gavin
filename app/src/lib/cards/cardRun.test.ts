@@ -685,6 +685,20 @@ describe("promptFromRunCommand / commandUsesLaunchAgent / rebindRunCommand", () 
   });
 });
 
+describe("rebindRunCommand onto cursor", () => {
+  // claude-code -> cursor: the binding still holds the gemini line a
+  // earlier limit-hit walk wrote.
+  it("rebuilds a stored gemini line onto cursor's binary, with no gemini left", () => {
+    const rebound = rebindRunCommand("gemini --yolo 'do the thing'", {
+      launchCommand: "agent --trust",
+      promptArgs: "",
+      sessionIdArgs: "",
+    });
+    expect(rebound).toEqual({ command: "agent --trust 'do the thing'", conversationId: null });
+    expect(commandUsesLaunchAgent("gemini --yolo 'do the thing'", "agent --trust")).toBe(false);
+  });
+});
+
 describe("isGavinBuiltCommand", () => {
   const claude = { launchCommand: "claude --model opus", promptArgs: "", sessionIdArgs: "" };
   const withId = { ...claude, sessionIdArgs: "--session-id" };
