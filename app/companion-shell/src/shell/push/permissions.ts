@@ -20,6 +20,16 @@ export interface RegisterDeviceRequest {
 export interface RegisteredDevice {
   deviceId: string;
   deviceSecret: string;
+  /**
+   * Dry-run only: the nonce the Device must echo to confirm the token.
+   * Live delivery sends it only in the verification push.
+   */
+  verificationNonce?: string;
+}
+
+/** Result of claiming a newer token; permissions keep working throughout. */
+export interface TokenClaim {
+  verificationNonce?: string;
 }
 
 export interface MintedPermission {
@@ -34,7 +44,10 @@ export interface PushGatewayClient {
     deviceId: string,
     deviceSecret: string,
     body: { token: string; environment?: "production" | "development" },
-  ): Promise<void>;
+  ): Promise<TokenClaim>;
+  confirmToken(deviceId: string, deviceSecret: string, nonce: string): Promise<void>;
+  /** True while a claimed token still awaits the verification nonce. */
+  tokenPending(deviceId: string, deviceSecret: string): Promise<boolean>;
   mintPermission(deviceId: string, deviceSecret: string): Promise<MintedPermission>;
   cancelPermission(
     deviceId: string,

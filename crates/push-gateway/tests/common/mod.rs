@@ -371,12 +371,35 @@ impl Harness {
     }
 
     pub async fn register(&self, body: Value) -> Device {
+        let token = body["token"].as_str().unwrap().to_string();
         let answer = self.try_register(body).await;
         assert_eq!(answer.status, 201, "{:?}", answer.body);
-        Device {
+        let device = Device {
             id: answer.body["device_id"].as_str().unwrap().into(),
             secret: answer.body["device_secret"].as_str().unwrap().into(),
-        }
+        };
+        let nonce = self
+            .verification_nonce(&token, &answer)
+            .expect("register sends a verification nonce");
+        let confirmed = self.confirm_token(&device, &nonce).await;
+        assert_eq!(confirmed.status, 204, "{:?}", confirmed.body);
+        device
+    }
+
+    /// Registers without echoing the verification nonce: the Device stays
+    /// pending and cannot mint permissions.
+    pub async fn register_unconfirmed(&self, body: Value) -> (Device, String) {
+        let token = body["token"].as_str().unwrap().to_string();
+        let answer = self.try_register(body).await;
+        assert_eq!(answer.status, 201, "{:?}", answer.body);
+        let device = Device {
+            id: answer.body["device_id"].as_str().unwrap().into(),
+            secret: answer.body["device_secret"].as_str().unwrap().into(),
+        };
+        let nonce = self
+            .verification_nonce(&token, &answer)
+            .expect("register sends a verification nonce");
+        (device, nonce)
     }
 
     pub async fn register_ios(&self, token: &str) -> Device {
@@ -388,8 +411,64 @@ impl Harness {
     }
 
     pub async fn replace_token(&self, device: &Device, body: Value) -> Answer {
-        self.call("PUT", &format!("/v1/devices/{}/token", device.id), Some(&device.secret), Some(body.to_string().into_bytes()))
-            .await
+        let token = body["token"].as_str().unwrap_or("").to_string();
+        let answer = self
+            .call("PUT", &format!("/v1/devices/{}/token", device.id), Some(&device.secret), Some(body.to_string().into_bytes()))
+            .await;
+        if answer.status != 200 {
+            return answer;
+        }
+        let Some(nonce) = self.verification_nonce(&token, &answer) else {
+            return answer;
+        };
+        let confirmed = self.confirm_token(device, &nonce).await;
+        assert_eq!(confirmed.status, 204, "{:?}", confirmed.body);
+        answer
+    }
+
+    /// Claims a token without confirming it, leaving any other holder alone.
+    pub async fn replace_token_unconfirmed(&self, device: &Device, body: Value) -> (Answer, Option<String>) {
+        let token = body["token"].as_str().unwrap_or("").to_string();
+        let answer = self
+            .call("PUT", &format!("/v1/devices/{}/token", device.id), Some(&device.secret), Some(body.to_string().into_bytes()))
+            .await;
+        let nonce = self.verification_nonce(&token, &answer);
+        (answer, nonce)
+    }
+
+    pub async fn confirm_token(&self, device: &Device, nonce: &str) -> Answer {
+        self.call(
+            "POST",
+            &format!("/v1/devices/{}/token/confirm", device.id),
+            Some(&device.secret),
+            Some(json!({"nonce": nonce}).to_string().into_bytes()),
+        )
+        .await
+    }
+
+    /// The nonce a register/replace answer carries, or the one the fake
+    /// Apple/Google recorded on the verification push to `token`.
+    fn verification_nonce(&self, token: &str, answer: &Answer) -> Option<String> {
+        if let Some(n) = answer.body["verification_nonce"].as_str() {
+            return Some(n.to_string());
+        }
+        // iOS tokens are lowercased in the store and on the wire.
+        let ios = token.to_ascii_lowercase();
+        for req in self.apple.requests().into_iter().rev() {
+            if req.token == ios {
+                if let Some(v) = req.body["v"].as_str() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        for req in self.google.requests().into_iter().rev() {
+            if req.body["message"]["token"].as_str() == Some(token) {
+                if let Some(v) = req.body["message"]["data"]["v"].as_str() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        None
     }
 
     pub async fn try_grant(&self, device: &Device) -> Answer {

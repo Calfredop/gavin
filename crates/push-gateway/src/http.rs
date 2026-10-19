@@ -24,7 +24,8 @@ pub fn router(gateway: Arc<Gateway>) -> Router {
     Router::new()
         .route("/v1/devices", post(register))
         .route("/v1/devices/{device_id}", delete(unregister))
-        .route("/v1/devices/{device_id}/token", put(replace_token))
+        .route("/v1/devices/{device_id}/token", put(replace_token).get(token_status))
+        .route("/v1/devices/{device_id}/token/confirm", post(confirm_token))
         .route("/v1/devices/{device_id}/permissions", post(grant))
         .route("/v1/devices/{device_id}/permissions/{permission_id}", delete(cancel))
         .route("/v1/push", post(push))
@@ -50,17 +51,28 @@ struct TokenBody {
     environment: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ConfirmBody {
+    nonce: String,
+}
+
 async fn register(State(gw): Shared, body: Bytes) -> Response {
     let body: RegisterBody = match parse(&body) {
         Ok(b) => b,
         Err(refused) => return refused.into_response(),
     };
-    match gw.register(&body.platform, &body.token, body.environment.as_deref()) {
-        Ok(r) => (
-            StatusCode::CREATED,
-            Json(json!({"device_id": r.device_id.to_string(), "device_secret": r.device_secret})),
-        )
-            .into_response(),
+    match gw.register(&body.platform, &body.token, body.environment.as_deref()).await {
+        Ok(r) => {
+            let mut body = json!({
+                "device_id": r.device_id.to_string(),
+                "device_secret": r.device_secret,
+                "token_pending": true,
+            });
+            if let Some(nonce) = r.verification_nonce {
+                body["verification_nonce"] = json!(nonce);
+            }
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
         Err(refused) => refused.into_response(),
     }
 }
@@ -70,7 +82,31 @@ async fn replace_token(State(gw): Shared, Path(device): Path<String>, headers: H
         Ok(b) => b,
         Err(refused) => return refused.into_response(),
     };
-    no_content(gw.replace_token(&device, bearer(&headers), &body.token, body.environment.as_deref()))
+    match gw.replace_token(&device, bearer(&headers), &body.token, body.environment.as_deref()).await {
+        Ok(r) => {
+            let mut body = json!({"token_pending": true});
+            if let Some(nonce) = r.verification_nonce {
+                body["verification_nonce"] = json!(nonce);
+            }
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(refused) => refused.into_response(),
+    }
+}
+
+async fn confirm_token(State(gw): Shared, Path(device): Path<String>, headers: HeaderMap, body: Bytes) -> Response {
+    let body: ConfirmBody = match parse(&body) {
+        Ok(b) => b,
+        Err(refused) => return refused.into_response(),
+    };
+    no_content(gw.confirm_token(&device, bearer(&headers), &body.nonce))
+}
+
+async fn token_status(State(gw): Shared, Path(device): Path<String>, headers: HeaderMap) -> Response {
+    match gw.token_pending(&device, bearer(&headers)) {
+        Ok(pending) => (StatusCode::OK, Json(json!({"token_pending": pending}))).into_response(),
+        Err(refused) => refused.into_response(),
+    }
 }
 
 async fn unregister(State(gw): Shared, Path(device): Path<String>, headers: HeaderMap) -> Response {
@@ -118,7 +154,7 @@ impl IntoResponse for Refusal {
             | Refusal::PermissionExpired
             | Refusal::PermissionCancelled => StatusCode::UNAUTHORIZED,
             Refusal::PlatformUnavailable => StatusCode::UNPROCESSABLE_ENTITY,
-            Refusal::TooManyPermissions => StatusCode::CONFLICT,
+            Refusal::TooManyPermissions | Refusal::TokenUnconfirmed => StatusCode::CONFLICT,
             Refusal::PermissionNotFound | Refusal::DeviceUnreachable => StatusCode::NOT_FOUND,
             Refusal::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Refusal::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,

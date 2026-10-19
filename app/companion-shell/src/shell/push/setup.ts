@@ -47,12 +47,24 @@ export async function setUpNotifications(deps: SetupDeps, ask: boolean): Promise
     }
     if (!status.gateway) return { state: "no-gateway" };
     const { record } = await push.registration();
-    const { kept, fresh } = await registerToken(gatewayClient((r) => push.gateway(r)), readRegistration(record), {
-      gateway: status.gateway,
-      platform: deps.platform,
-      token: registered.token,
-      environment: registered.environment,
-    });
+    const client = gatewayClient((r) => push.gateway(r));
+    // Keep credentials as soon as register returns them so a live
+    // verification push can confirm before settleTokenClaim finishes.
+    const previous = readRegistration(record);
+    const onCredentials = async (kept: KeptRegistration) => {
+      await push.keepRegistration({ record: JSON.stringify(kept) });
+    };
+    const { kept, fresh } = await registerToken(
+      client,
+      previous,
+      {
+        gateway: status.gateway,
+        platform: deps.platform,
+        token: registered.token,
+        environment: registered.environment,
+      },
+      onCredentials
+    );
     if (fresh) await push.keepRegistration({ record: JSON.stringify(kept) });
     return { state: "on", fresh, kept };
   } catch (e) {

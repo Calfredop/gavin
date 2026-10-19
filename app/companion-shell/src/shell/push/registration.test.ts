@@ -5,8 +5,10 @@ import { readRegistration, registerToken, type CurrentToken } from "./registrati
 
 function client(overrides: Partial<PushGatewayClient> = {}): PushGatewayClient {
   return {
-    registerDevice: vi.fn(async () => ({ deviceId: "d-new", deviceSecret: "s-new" })),
-    putToken: vi.fn(async () => {}),
+    registerDevice: vi.fn(async () => ({ deviceId: "d-new", deviceSecret: "s-new", verificationNonce: "n-new" })),
+    putToken: vi.fn(async () => ({ verificationNonce: "n-put" })),
+    confirmToken: vi.fn(async () => {}),
+    tokenPending: vi.fn(async () => false),
     mintPermission: vi.fn(),
     cancelPermission: vi.fn(),
     ...overrides,
@@ -17,19 +19,21 @@ const now: CurrentToken = { gateway: "https://push.example", platform: "ios", to
 const kept = { gateway: "https://push.example", deviceId: "d1", deviceSecret: "s1", permissions: [], muted: [] };
 
 describe("registerToken", () => {
-  it("registers the first time, with the APNs environment", async () => {
+  it("registers the first time, with the APNs environment, and confirms the nonce", async () => {
     const c = client();
     await expect(registerToken(c, null, now)).resolves.toEqual({
       kept: { gateway: "https://push.example", deviceId: "d-new", deviceSecret: "s-new", permissions: [], muted: [] },
       fresh: true,
     });
     expect(c.registerDevice).toHaveBeenCalledWith({ platform: "ios", token: "ab", environment: "development" });
+    expect(c.confirmToken).toHaveBeenCalledWith("d-new", "s-new", "n-new");
   });
 
-  it("tells the gateway the token on every launch after that", async () => {
+  it("tells the gateway the token on every launch after that, and confirms", async () => {
     const c = client();
     await expect(registerToken(c, kept, now)).resolves.toEqual({ kept, fresh: false });
     expect(c.putToken).toHaveBeenCalledWith("d1", "s1", { token: "ab", environment: "development" });
+    expect(c.confirmToken).toHaveBeenCalledWith("d1", "s1", "n-put");
     expect(c.registerDevice).not.toHaveBeenCalled();
   });
 
@@ -63,6 +67,35 @@ describe("registerToken", () => {
     const c = client();
     await registerToken(c, null, { ...now, platform: "android" });
     expect(c.registerDevice).toHaveBeenCalledWith({ platform: "android", token: "ab", environment: undefined });
+  });
+
+  it("waits for a live confirmation push when the answer carries no nonce", async () => {
+    let pending = true;
+    const c = client({
+      registerDevice: vi.fn(async () => ({ deviceId: "d-new", deviceSecret: "s-new" })),
+      putToken: vi.fn(async () => ({})),
+      tokenPending: vi.fn(async () => {
+        const was = pending;
+        pending = false;
+        return was;
+      }),
+    });
+    await registerToken(c, null, now);
+    expect(c.confirmToken).not.toHaveBeenCalled();
+    expect(c.putToken).toHaveBeenCalled();
+    expect(c.tokenPending).toHaveBeenCalled();
+  });
+
+  it("keeps credentials before waiting so native can echo the nonce", async () => {
+    const c = client({
+      registerDevice: vi.fn(async () => ({ deviceId: "d-new", deviceSecret: "s-new" })),
+      tokenPending: vi.fn(async () => false),
+    });
+    const seen: string[] = [];
+    await registerToken(c, null, now, async (k) => {
+      seen.push(k.deviceId);
+    });
+    expect(seen).toEqual(["d-new"]);
   });
 });
 

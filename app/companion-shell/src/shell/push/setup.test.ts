@@ -6,7 +6,10 @@ function push(status: PushStatus, registered: PushRegistered = { permission: "gr
   const plugin = {
     status: vi.fn(async () => status),
     register: vi.fn(async () => registered),
-    gateway: vi.fn(async () => ({ status: 201, body: '{"device_id":"d1","device_secret":"s1"}' })),
+    gateway: vi.fn(async () => ({
+      status: 201,
+      body: '{"device_id":"d1","device_secret":"s1","token_pending":true,"verification_nonce":"n1"}',
+    })),
     registration: vi.fn(async () => ({ record: null as string | null })),
     keepRegistration: vi.fn(async () => {}),
   } satisfies SetupDeps["push"];
@@ -24,11 +27,23 @@ describe("setUpNotifications", () => {
 
   it("asks on the owner's tap, registers the token and keeps the registration", async () => {
     const p = push({ permission: "prompt", gateway, environment: "development" });
+    p.gateway
+      .mockResolvedValueOnce({
+        status: 201,
+        body: '{"device_id":"d1","device_secret":"s1","token_pending":true,"verification_nonce":"n1"}',
+      })
+      .mockResolvedValueOnce({ status: 204, body: "" });
     await expect(setUpNotifications({ push: p, platform: "ios" }, true)).resolves.toMatchObject({ state: "on", fresh: true });
     expect(p.gateway).toHaveBeenCalledWith({
       method: "POST",
       path: "/v1/devices",
       body: '{"platform":"ios","token":"ab","environment":"development"}',
+    });
+    expect(p.gateway).toHaveBeenCalledWith({
+      method: "POST",
+      path: "/v1/devices/d1/token/confirm",
+      bearer: "s1",
+      body: '{"nonce":"n1"}',
     });
     expect(p.keepRegistration).toHaveBeenCalledWith({
       record: JSON.stringify({ gateway, deviceId: "d1", deviceSecret: "s1", permissions: [], muted: [] }),
@@ -38,7 +53,9 @@ describe("setUpNotifications", () => {
   it("refreshes the token at launch once allowed, without asking", async () => {
     const p = push({ permission: "granted", gateway, environment: "production" });
     p.registration.mockResolvedValue({ record: JSON.stringify({ gateway, deviceId: "d1", deviceSecret: "s1" }) });
-    p.gateway.mockResolvedValue({ status: 204, body: "" });
+    p.gateway
+      .mockResolvedValueOnce({ status: 200, body: '{"token_pending":true,"verification_nonce":"n2"}' })
+      .mockResolvedValueOnce({ status: 204, body: "" });
     await expect(setUpNotifications({ push: p, platform: "ios" }, false)).resolves.toMatchObject({
       state: "on",
       fresh: false,
