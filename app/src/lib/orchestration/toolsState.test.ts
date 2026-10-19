@@ -241,4 +241,10 @@ describe("tools-changed — an agent's write reaches the open app", () => {
     expect(libraryFor(get(toolRecords), "ws-3")).not.toBeNull();
     unlisten();
   });
+
+  // A ToolsChanged from an ssh link naming a LOCAL workspace id would
+  // replace that workspace's library here the same way. The refuse is
+  // in session.rs (`accept_host_workspace_push` /
+  // `a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted`);
+  // this suite's mock still reaches the listener with a forged id.
 });

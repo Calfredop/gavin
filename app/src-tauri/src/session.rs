@@ -5409,6 +5409,36 @@ impl RelayOwner {
     }
 }
 
+
+/// Whether `workspace_id` is an ssh workspace whose `ssh.host` equals
+/// `host`. Every push that arrives on an ssh link — tree, orchestration,
+/// tools — must pass this before the desk stores anything under that id.
+/// Without it, a host that learns a LOCAL workspace id can overwrite
+/// that workspace's in-memory rails or tool library (and a first-seen
+/// `railRuns: running` push would tick with no desk click).
+fn host_owns_ssh_workspace(workspaces: &[Workspace], host: &str, workspace_id: &str) -> bool {
+    workspaces
+        .iter()
+        .find(|w| w.id == workspace_id)
+        .and_then(|w| w.ssh.as_ref())
+        .is_some_and(|ssh| ssh.host == host)
+}
+
+/// Whether a workspace-keyed push on this relay may be emitted. Local
+/// pushes are already from this machine's daemon. A remote push may only
+/// describe that link's own ssh workspaces — the same membership test
+/// a host tree confine starts with.
+fn accept_host_workspace_push(
+    owner: &RelayOwner,
+    workspaces: &[Workspace],
+    workspace_id: &str,
+) -> bool {
+    match owner {
+        RelayOwner::Local => true,
+        RelayOwner::Remote { host, .. } => host_owns_ssh_workspace(workspaces, host, workspace_id),
+    }
+}
+
 pub(crate) fn attach_and_relay(
     app_handle: &AppHandle,
     writer: &StreamWriter,
@@ -5521,6 +5551,22 @@ pub(crate) fn attach_and_relay(
                     let _ = crate::forwarding::emit(&reader_app_handle, "queued-inputs-changed", (id, queued));
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    // A host may only describe its own ssh workspaces —
+                    // same membership gate as a host tree confine. A
+                    // forged local id would overwrite that workspace's
+                    // rails and tick them with no desk click.
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        let workspaces = reader_app_handle
+                            .state::<WorkspacesState>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .workspaces
+                            .clone();
+                        if !accept_host_workspace_push(&owner, &workspaces, &workspace_id) {
+                            continue;
+                        }
+                    }
                     let _ = crate::forwarding::emit(&reader_app_handle,
                         "orchestration-changed", (workspace_id, orchestration));
                 }
@@ -5532,6 +5578,20 @@ pub(crate) fn attach_and_relay(
                     // whole library, never a delta, so the frontend
                     // replaces its rows for this workspace the same way
                     // a fetch would -- and cannot drift by missing one.
+                    // A remote push still has to name this host's own
+                    // ssh workspace (see `accept_host_workspace_push`).
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        let workspaces = reader_app_handle
+                            .state::<WorkspacesState>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .workspaces
+                            .clone();
+                        if !accept_host_workspace_push(&owner, &workspaces, &workspace_id) {
+                            continue;
+                        }
+                    }
                     let _ = crate::forwarding::emit(&reader_app_handle, "tools-changed", (workspace_id, tools));
                 }
                 Response::SessionNamed { session_id, name } => {
@@ -8707,6 +8767,65 @@ mod kanban_command_tests {
             Request::DeleteBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
             other => panic!("expected DeleteBoard, got {other:?}"),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod host_workspace_push_tests {
+    use super::*;
+
+    /// Every field but the four required ones defaulted, the way an older
+    /// config.json loads -- so this helper never has to be revisited when
+    /// a field is added to `Workspace`.
+    fn ws(id: &str, root: Option<&str>, host: Option<&str>) -> Workspace {
+        let mut value = serde_json::json!({ "id": id, "name": id, "pages": [], "activePageId": null });
+        if let Some(root) = root {
+            value["rootPath"] = serde_json::json!(root);
+        }
+        if let Some(host) = host {
+            value["ssh"] = serde_json::json!({ "host": host });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// OrchestrationChanged / ToolsChanged on a remote relay may only
+    /// name this host's own ssh workspaces. A push naming a local
+    /// workspace id (or another host's) must not be emitted; one for
+    /// this host's own ssh workspace must.
+    #[test]
+    fn a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted() {
+        let workspaces = vec![
+            ws("local-ws", Some("/Users/me/local-ws"), None),
+            ws("ssh-ws", Some("/srv/repo"), Some("h")),
+            ws("other-ssh", Some("/srv/other"), Some("other")),
+        ];
+        let remote = RelayOwner::Remote {
+            host: "h".to_string(),
+            link_id: 1,
+        };
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "local-ws"),
+            "a local workspace id must not accept a host orch/tools push"
+        );
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "other-ssh"),
+            "another host's workspace id must not accept this host's push"
+        );
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "missing"),
+            "an unknown workspace id must not accept a host push"
+        );
+        assert!(
+            accept_host_workspace_push(&remote, &workspaces, "ssh-ws"),
+            "this host's own ssh workspace must still emit"
+        );
+        // The local daemon's own pushes are never filtered by host.
+        assert!(accept_host_workspace_push(
+            &RelayOwner::Local,
+            &workspaces,
+            "local-ws"
+        ));
     }
 }
 

@@ -4293,6 +4293,14 @@ describe("a rail armed from outside the app (a push carrying run state)", () => 
     await settle();
     expect(backend.getOrchestration).not.toHaveBeenCalled();
   });
+
+  // A remote OrchestrationChanged naming a LOCAL workspace id used to
+  // reach this listener and tick that workspace (observation:
+  // "applies a push under whatever workspace id the payload names").
+  // The refuse is in session.rs now — `accept_host_workspace_push` /
+  // `a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted`
+  // — so a forged id never becomes a Tauri event. This suite cannot
+  // drive the relay; the listener below still trusts whatever arrives.
 });
 
 // ---- What a running step says about itself ---------------------------------
