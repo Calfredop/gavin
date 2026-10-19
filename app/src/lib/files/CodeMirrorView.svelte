@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { createEditor, type EditorHandle } from "$lib/files/codeMirror";
+  import type { FormatDocumentResult } from "$lib/files/documentFormat";
   import type { FormatAction } from "$lib/files/markdownFormatting";
   import { themeState } from "$lib/ui/themeState.svelte";
 
@@ -41,6 +42,10 @@
 
   export function format(action: FormatAction): void {
     handle?.format(action);
+  }
+
+  export function formatDocument(): FormatDocumentResult {
+    return handle?.formatDocument() ?? { ok: false, reason: "Editor is not ready." };
   }
 
   $effect(() => {
