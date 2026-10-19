@@ -1,9 +1,14 @@
 import { composeAdvisor, composeEffort, composeLaunchCommand } from "$lib/agents/agentModel";
 import type { FailureCausePattern } from "$lib/agents/autoResume";
 import type { CustomProfile } from "$lib/cards/complexity";
+import type { ForeignMcpServer } from "$lib/core/backend";
 import type { AgentConfig } from "$lib/core/gavin";
 import { isAbsolutePath } from "$lib/core/paths";
 import type { EffectiveTheme } from "$lib/ui/theme";
+import {
+  cursorMcpApproval,
+  type McpForeignChoice,
+} from "$lib/workspace/mcpServerTrust";
 
 export type { CustomProfile };
 
@@ -469,6 +474,20 @@ export interface ResolvedAgent {
   /// and how to self-report over `gavin_name_session`.
   sessionIdDiscovery: string;
   resumeArgs: string;
+  /// Cursor only: whether this resolve composed `--approve-mcps` (and
+  /// `--force` on the headless line) from the foreign-server disclosure.
+  /// Absent on every other profile. `"withhold"` is also the answer when
+  /// the scan was not passed in — the static row carries no approval
+  /// flags, and a hidden run must refuse rather than stall or approve.
+  cursorMcpApproval?: "approve" | "withhold";
+}
+
+/// The foreign-server set a Cursor launch will read, plus the human's
+/// recorded Keep/Isolate for it. Passed into `resolveAgentConfig` so the
+/// `--approve-mcps` composition stays at that one seam.
+export interface CursorMcpForeignInput {
+  servers: readonly ForeignMcpServer[];
+  choice: McpForeignChoice | null | undefined;
 }
 
 /// Whether a workspace's explicit `[agent] command` is another built-in
@@ -531,7 +550,12 @@ export function resolveAgentConfig(
   globalEfforts: Record<string, string> = {},
   /// App-wide default agent when the workspace has no profile. Empty /
   /// omitted means `claude-code`.
-  appDefaultProfile: string = ""
+  appDefaultProfile: string = "",
+  /// Cursor's foreign-server scan for the project root that launch will
+  /// use as cwd (AG-07). When omitted on a cursor profile the resolve
+  /// withholds `--approve-mcps` — the safe default until a caller has
+  /// scanned. Non-cursor profiles ignore it.
+  cursorMcp?: CursorMcpForeignInput
 ): ResolvedAgent {
   const defaultId = nonEmpty(appDefaultProfile) ?? FALLBACK_PROFILE;
   const requested = nonEmpty(config?.profile) ?? defaultId;
@@ -567,7 +591,7 @@ export function resolveAgentConfig(
   // `headlessArgs` takes, so a custom agent never inherits claude's.
   const advisor = nonEmpty(config?.advisor) ?? "";
   const advisorFlag = effective?.advisorFlag ?? "";
-  return {
+  const resolved: ResolvedAgent = {
     profileId,
     label: effective?.label ?? profileId,
     model,
@@ -628,6 +652,80 @@ export function resolveAgentConfig(
       (effective?.promptInjection ?? false) || (effective?.custom === true && customMcpFile !== null),
     untrustedOsc133: effective?.untrustedOsc133 ?? false,
   };
+  // Last trusted decision point for Cursor's MCP consent flags: every
+  // launcher reads launchCommand / headlessArgs from here, so the
+  // foreign-server answer is composed once rather than in each caller.
+  return applyCursorMcpApproval(resolved, cursorMcp);
+}
+
+/// Compose or withhold Cursor's `--approve-mcps` (and headless `--force`)
+/// from the AG-07 foreign-server decision. No-op for every other profile.
+/// When `cursorMcp` is omitted the answer is withhold — the profile row
+/// ships without those flags, and a caller that has not scanned must not
+/// grant consent by accident.
+export function applyCursorMcpApproval(
+  agent: ResolvedAgent,
+  cursorMcp?: CursorMcpForeignInput
+): ResolvedAgent {
+  if (agent.profileId !== "cursor") return agent;
+  const decision = cursorMcp
+    ? cursorMcpApproval(cursorMcp.servers, cursorMcp.choice)
+    : "withhold";
+  if (decision === "withhold") {
+    return {
+      ...agent,
+      command: stripCliFlag(agent.command, "--approve-mcps"),
+      launchCommand: stripCliFlag(agent.launchCommand, "--approve-mcps"),
+      headlessArgs: stripCliFlags(agent.headlessArgs, ["--approve-mcps", "--force"]),
+      cursorMcpApproval: "withhold",
+    };
+  }
+  return {
+    ...agent,
+    command: ensureCliFlagAfterBinary(agent.command, "--approve-mcps"),
+    launchCommand: ensureCliFlagAfterBinary(agent.launchCommand, "--approve-mcps"),
+    headlessArgs: ensureCursorHeadlessApproval(agent.headlessArgs),
+    cursorMcpApproval: "approve",
+  };
+}
+
+function stripCliFlag(line: string, flag: string): string {
+  return line
+    .split(/\s+/)
+    .filter((part) => part && part !== flag)
+    .join(" ");
+}
+
+function stripCliFlags(line: string, flags: readonly string[]): string {
+  const drop = new Set(flags);
+  return line
+    .split(/\s+/)
+    .filter((part) => part && !drop.has(part))
+    .join(" ");
+}
+
+/// Insert `flag` immediately after the leading binary word when absent.
+function ensureCliFlagAfterBinary(line: string, flag: string): string {
+  const parts = line.split(/\s+/).filter(Boolean);
+  if (parts.length === 0 || parts.includes(flag)) return line;
+  return [parts[0], flag, ...parts.slice(1)].join(" ");
+}
+
+/// Headless Cursor needs both `--force` (or tools apply nothing under
+/// `-p`) and `--approve-mcps`. `--force` alone also skips MCP approval,
+/// so the pair is only composed on an AG-07 approve decision.
+function ensureCursorHeadlessApproval(args: string): string {
+  const parts = args.split(/\s+/).filter(Boolean);
+  if (!parts.includes("--force")) {
+    const p = parts.indexOf("-p");
+    if (p >= 0) parts.splice(p + 1, 0, "--force");
+    else parts.unshift("--force");
+  }
+  if (!parts.includes("--approve-mcps")) {
+    const f = parts.indexOf("--force");
+    parts.splice(f + 1, 0, "--approve-mcps");
+  }
+  return parts.join(" ");
 }
 
 /// The resolved agent with this profile's extra CLI arguments appended

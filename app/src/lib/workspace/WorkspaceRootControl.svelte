@@ -16,6 +16,7 @@
   import {
     foreignMcpServersHash,
     integrationNote,
+    rememberForeignMcpServers,
     resolveCheckoutMarkOffer,
     runIntegration,
   } from "$lib/workspace/mcpServerTrust";
@@ -138,8 +139,10 @@
     try {
       const result = await runIntegration(workspace.rootPath, agent.file, workspace.mcpForeignServersChoice);
       if (result.mcpForeign) {
+        rememberForeignMcpServers(workspace.rootPath, result.mcpForeign.servers);
         pendingForeign = result.mcpForeign;
       } else {
+        rememberForeignMcpServers(workspace.rootPath, []);
         setupNote = noteFrom(result);
       }
     } catch (e) {

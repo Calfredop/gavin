@@ -348,6 +348,17 @@ over an existing record, and never for an ssh workspace, whose home is the host'
 The run reports the path it wrote. Kimi does not inherit trust to subdirectories,
 so worktrees are not covered by it.
 
+**Update 2026-10-16 — Cursor's `--approve-mcps` follows the same disclosure.**
+The Cursor profile's static launch line no longer carries `--approve-mcps` (or
+bare `--force` on the headless line, which also skips MCP approval). Those
+flags are composed at `resolveAgentConfig` only when the foreign set in the
+launch cwd's `.cursor/mcp.json` is empty or the human answered Keep for exactly
+that hash (`cursorMcpApproval` / `prepareCursorAgentLaunch`). Otherwise an
+interactive launch goes out without the flag so Cursor's own dialog asks, and
+a headless or unattended launch refuses with a disclosure reason rather than
+stalling or silently approving. `--trust` stays on the row: workspace trust
+alone does not skip MCP approval (Cursor CLI 2026.10.16).
+
 **Update 2026-10-12 — launches, worktrees included, get their own record.** Since
 kimi keys the record on the exact cwd, a launch in a context folder below the root
 or in a `.gavin-worktrees/<branch>` checkout is untrusted even when the root is

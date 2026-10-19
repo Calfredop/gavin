@@ -202,6 +202,7 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["fileviewer.rs", "rename_path", "an ssh round trip"],
   ["fileviewer.rs", "trash_entry", "an ssh round trip, or a local Trash move"],
   ["agent_setup.rs", "setup_agent_integration", "a dozen ssh round trips in a row"],
+  ["agent_setup.rs", "scan_foreign_mcp_servers", "ssh round trips for a read-only MCP scan"],
   ["git/commands.rs", "git_merged_branches", "`git branch --merged`, on every worktree sweep"],
   ["git/commands.rs", "git_stash_files", "`git stash show`"],
   ["git/commands.rs", "git_worktree_prune", "`git worktree prune`"],
@@ -405,7 +406,13 @@ describe("commands that wait on an ssh host", () => {
 
   it("include the file and agent commands", () => {
     expect(reaching.map(([, name]) => name)).toEqual(
-      expect.arrayContaining(["write_file_for_editor", "attachment_status", "trash_entry", "setup_agent_integration"])
+      expect.arrayContaining([
+        "write_file_for_editor",
+        "attachment_status",
+        "trash_entry",
+        "setup_agent_integration",
+        "scan_foreign_mcp_servers",
+      ])
     );
   });
 

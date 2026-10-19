@@ -84,6 +84,8 @@ vi.mock("$lib/core/layoutState", () => ({
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
   promptExtrasFor: vi.fn((): string[] => []),
+  // Pass-through: these tests are not about the AG-07 Cursor gate.
+  prepareCursorAgentLaunch: vi.fn(async (_ws: string, _root: string, agent: unknown) => agent),
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
   // agent -- and a test that moves one has to move both, or a rail's

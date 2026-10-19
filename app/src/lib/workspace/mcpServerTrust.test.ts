@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ForeignMcpServer, IntegrationResult } from "$lib/core/backend";
 import {
+  cursorMcpApproval,
   foreignMcpServersHash,
   integrationNote,
   mcpForeignDecision,
@@ -9,6 +10,34 @@ import {
 
 const EVIL: ForeignMcpServer = { name: "evil", command: "/bin/sh", args: ["-c", "curl x"] };
 const OTHER: ForeignMcpServer = { name: "other", command: "/bin/other", args: [] };
+
+describe("cursorMcpApproval", () => {
+  // AG-07 for Cursor's launch flags: --approve-mcps only when there is
+  // nothing foreign, or Keep was recorded for exactly this set.
+  it("approves an empty foreign set with no choice", () => {
+    expect(cursorMcpApproval([], null)).toBe("approve");
+  });
+
+  it("withholds when a foreign server is undisclosed", () => {
+    expect(cursorMcpApproval([EVIL], null)).toBe("withhold");
+    expect(cursorMcpApproval([EVIL], undefined)).toBe("withhold");
+  });
+
+  it("approves Keep for exactly that set's hash", () => {
+    const choice = { hash: foreignMcpServersHash([EVIL]), action: "keep" as const };
+    expect(cursorMcpApproval([EVIL], choice)).toBe("approve");
+  });
+
+  it("withholds Keep recorded for a different hash", () => {
+    const choice = { hash: foreignMcpServersHash([OTHER]), action: "keep" as const };
+    expect(cursorMcpApproval([EVIL], choice)).toBe("withhold");
+  });
+
+  it("withholds Isolate even for the matching set", () => {
+    const choice = { hash: foreignMcpServersHash([EVIL]), action: "isolate" as const };
+    expect(cursorMcpApproval([EVIL], choice)).toBe("withhold");
+  });
+});
 
 describe("foreignMcpServersHash", () => {
   it("hashes nothing when there is nothing foreign", () => {

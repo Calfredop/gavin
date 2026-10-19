@@ -1414,25 +1414,33 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // prompt. Workspaces that still name `cursor` as command need
         // to switch to `agent` (Settings / the agent-change wizard).
         //
-        // `--approve-mcps` and `--trust` belong on the command itself,
-        // not in a human custom override: without them Cursor stalls on
-        // MCP/workspace prompts (or a hand-rolled flag line eats the
-        // positional and the tab opens empty). No trailing `--` here —
+        // `--trust` belongs on the command itself so Cursor does not
+        // stall on the workspace-trust prompt. `--approve-mcps` (and
+        // `--force` on the headless line, which also skips MCP approval)
+        // are NOT here: they are consent for every server in the
+        // project's `.cursor/mcp.json`, composed at launch only when the
+        // foreign-server disclosure is empty or Keep (AG-07). A
+        // hand-rolled flag line that eats the positional still opens an
+        // empty tab — that is a Settings mistake, not a reason to
+        // pre-approve repository servers. No trailing `--` here —
         // `composeLaunchCommand` appends `--model …` after this string,
         // and a `--` would turn that model flag into prompt text.
-        // Verified against `agent --help` 2026.09.10.
-        command: "agent --approve-mcps --trust",
+        // Verified against `agent --help` 2026.09.10 / 2026.10.16.
+        command: "agent --trust",
         // Bare positional after the flags
         // (`Usage: agent [options] [command] [prompt...]`).
         prompt_args: Some(""),
         prompt_injection: false,
         untrusted_osc133: false,
-        // Print mode for scripts; `--force` so a hidden run can write
-        // and run tools (without it, `-p` proposes and applies nothing);
-        // same MCP/trust pins as the interactive command. Trailing `--`
-        // so a prompt starting with `-` is not read as a flag. Verified
-        // against `agent --help` 2026-09-11 and cursor.com/docs/cli/headless.
-        headless_args: "-p --force --approve-mcps --trust --",
+        // Print mode for scripts. Trailing `--` so a prompt starting
+        // with `-` is not read as a flag. `--force` and `--approve-mcps`
+        // are composed at launch on the same AG-07 decision as the
+        // interactive command: `--force` alone skips MCP approval, and
+        // `-p` without `--force` applies nothing, so a withheld
+        // disclosure refuses the headless line rather than stalling or
+        // silently approving. Verified against `agent --help` 2026-09-11
+        // / 2026.10.16 and cursor.com/docs/cli/headless.
+        headless_args: "-p --trust --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -3342,6 +3350,90 @@ pub async fn setup_agent_integration(
     .map_err(|e| e.to_string())?
 }
 
+/// Read-only scan of the foreign MCP servers the given profile's agent
+/// would load from `root_path` (the launch cwd / Cursor `projectRoot`).
+/// Reuses `foreign_mcp_servers` so Integration and launch consent see
+/// the same set. Empty when the profile has no MCP layout or the file
+/// is absent; an unparsable file errors the same way Integration does.
+#[tauri::command]
+pub async fn scan_foreign_mcp_servers(
+    root_path: String,
+    profile_id: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<ForeignMcpServer>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let default_agent = app_handle
+            .state::<crate::session::AgentDefaults>()
+            .0
+            .lock()
+            .unwrap()
+            .default_agent
+            .clone();
+        if let crate::remote::Route::Remote(link) =
+            crate::remote::route_for_root(&app_handle, Some(&root_path))?
+        {
+            let host = link.host.clone();
+            let mcp = link.mcp_path.clone();
+            let files = crate::remote::RemoteFiles {
+                link,
+                root: root_path.clone(),
+            };
+            return scan_foreign_mcp_servers_in(
+                &files,
+                Path::new(&root_path),
+                profile_id.as_deref(),
+                default_agent.as_deref(),
+                move || {
+                    mcp.clone().map(PathBuf::from).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "gavin-mcp is not beside gavin-daemon on {host} — install it there and reconnect"
+                        )
+                    })
+                },
+            );
+        }
+        scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            Path::new(&root_path),
+            profile_id.as_deref(),
+            default_agent.as_deref(),
+            resolve_mcp_binary_path,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn scan_foreign_mcp_servers_in(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    profile_id: Option<&str>,
+    default_agent: Option<&str>,
+    resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
+) -> Result<Vec<ForeignMcpServer>, String> {
+    if !fs.is_dir(root) {
+        return Err(format!("root does not exist: {}", root.display()));
+    }
+    let profile_id = profile_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| resolved_profile_id_in(fs, root, default_agent));
+    let profile = profile_for_writes(&profile_id);
+    let Some(layout) = resolved_mcp(fs, root, profile) else {
+        return Ok(Vec::new());
+    };
+    // Own command is only used to exempt gavin's entry (and the
+    // Playwright one written exactly as gavin would). A missing binary
+    // must not abort a read-only scan — fall back to empty so a
+    // non-matching command is disclosed rather than hidden.
+    let own = resolve_binary()
+        .map(|b| mcp_command(fs, root, &b))
+        .unwrap_or_default();
+    let mcp_path = contained_dest(root, Path::new(&layout.config_file)).map_err(|e| e.to_string())?;
+    foreign_mcp_servers(fs, &mcp_path, &layout, &own).map_err(|e| e.to_string())
+}
+
 /// Held for the whole of an integration run (`setup_agent_integration`),
 /// and around the Playwright step's entry write, which edits the same
 /// MCP config files.
@@ -4074,8 +4166,8 @@ fn detect_agent_binaries_with(
         .iter()
         .filter(|p| !p.command.is_empty())
         .map(|p| {
-            // The profile command may carry flags (`agent --approve-mcps
-            // --trust --`); PATH only answers for the leading word.
+            // The profile command may carry flags (`agent --trust`);
+            // PATH only answers for the leading word.
             let bin = p.command.split_whitespace().next().unwrap_or(p.command);
             let path = resolve(bin);
             DetectedAgentDto {
@@ -4149,8 +4241,26 @@ mod tests {
         // models are dated ids from `--list-models`, so none ship here.
         assert_eq!(by("cursor").model_flag, "--model");
         assert!(by("cursor").models.is_empty());
-        assert_eq!(by("cursor").command, "agent --approve-mcps --trust");
-        assert_eq!(by("cursor").headless_args, "-p --force --approve-mcps --trust --");
+        // --approve-mcps / bare --force are consent for every server in
+        // .cursor/mcp.json. They are composed at launch from the
+        // foreign-server disclosure, not pinned on the row (AG-07).
+        assert_eq!(by("cursor").command, "agent --trust");
+        assert_eq!(by("cursor").headless_args, "-p --trust --");
+        assert!(
+            !by("cursor").command.contains("--approve-mcps"),
+            "cursor command must not carry --approve-mcps unconditionally"
+        );
+        assert!(
+            !by("cursor").headless_args.contains("--approve-mcps"),
+            "cursor headless_args must not carry --approve-mcps unconditionally"
+        );
+        assert!(
+            !by("cursor")
+                .headless_args
+                .split_whitespace()
+                .any(|a| a == "--force"),
+            "cursor headless_args must not carry bare --force (it skips MCP approval)"
+        );
     }
 
     /// The two halves have to be exclusive. A row that ships an alias
@@ -4283,7 +4393,7 @@ mod tests {
         assert_eq!(codex.path, None);
         let cursor = rows.iter().find(|r| r.id == "cursor").unwrap();
         assert!(cursor.found);
-        assert_eq!(cursor.command, "agent --approve-mcps --trust");
+        assert_eq!(cursor.command, "agent --trust");
         assert_eq!(cursor.path.as_deref(), Some("/opt/bin/agent"));
     }
 
@@ -7453,6 +7563,51 @@ mod tests {
         // silent "nothing foreign here".
         std::fs::write(&codex_path, "[[[not toml").unwrap();
         assert!(foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex"), "/apps/gavin-mcp").is_err());
+    }
+
+    /// The read-only launch scan for Cursor's projectRoot (cwd) reuses
+    /// `foreign_mcp_servers` on `.cursor/mcp.json`, so Integration and
+    /// `--approve-mcps` composition see the same set.
+    #[test]
+    fn scan_foreign_mcp_servers_reads_cursor_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let cursor_mcp = dir.path().join(".cursor/mcp.json");
+        std::fs::create_dir_all(cursor_mcp.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cursor_mcp,
+            r#"{ "mcpServers": {
+                "gavin": { "command": "/apps/gavin-mcp", "args": [] },
+                "probe": { "command": "/bin/sh", "args": ["-c", "touch /tmp/x"] }
+            } }"#,
+        )
+        .unwrap();
+        let found = scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            dir.path(),
+            Some("cursor"),
+            None,
+            || Ok(PathBuf::from("/apps/gavin-mcp")),
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            vec![ForeignMcpServer {
+                name: "probe".to_string(),
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "touch /tmp/x".to_string()],
+            }]
+        );
+        // Absent file → empty, not an error (nothing to disclose).
+        let empty = tempfile::tempdir().unwrap();
+        assert!(scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            empty.path(),
+            Some("cursor"),
+            None,
+            || Ok(PathBuf::from("/apps/gavin-mcp")),
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]

@@ -1335,6 +1335,16 @@ export function setupAgentIntegration(
   });
 }
 
+/// Read-only AG-07 scan of the foreign servers the given profile's agent
+/// would load from `rootPath` (the launch cwd / Cursor `projectRoot`).
+/// Empty when there is nothing foreign or the profile has no MCP layout.
+export function scanForeignMcpServers(
+  rootPath: string,
+  profileId?: string
+): Promise<ForeignMcpServer[]> {
+  return invoke("scan_foreign_mcp_servers", { rootPath, profileId });
+}
+
 export function createPlan(
   contextFolder: string,
   fileName: string,

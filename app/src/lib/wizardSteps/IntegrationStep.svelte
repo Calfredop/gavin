@@ -11,6 +11,7 @@
   import * as backend from "$lib/core/backend";
   import {
     foreignMcpServersHash,
+    rememberForeignMcpServers,
     resolveCheckoutMarkOffer,
     runIntegration,
   } from "$lib/workspace/mcpServerTrust";
@@ -64,8 +65,10 @@
     try {
       const r = await runIntegration(ws.rootPath, agentFile, ws.mcpForeignServersChoice, profileId);
       if (r.mcpForeign) {
+        rememberForeignMcpServers(ws.rootPath, r.mcpForeign.servers);
         pendingForeign = r.mcpForeign;
       } else {
+        rememberForeignMcpServers(ws.rootPath, []);
         result = r;
       }
     } catch (e) {

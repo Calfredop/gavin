@@ -105,6 +105,8 @@ vi.mock("$lib/core/layoutState", async () => {
       ],
       promptArgs: "",
     })),
+    // Pass-through: these tests are not about the AG-07 Cursor gate.
+    prepareCursorAgentLaunch: vi.fn(async (_ws: string, _root: string, agent: unknown) => agent),
     sessionExits: writable(new Map<string, number>()),
     handleAgentSessionSpawned: vi.fn(),
     switchWorkspaceView: vi.fn().mockResolvedValue(undefined),

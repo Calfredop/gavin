@@ -294,6 +294,7 @@ pub fn run() {
             browser_view::get_playwright_pane_open,
             browser_view::set_playwright_pane_open,
             agent_setup::setup_agent_integration,
+            agent_setup::scan_foreign_mcp_servers,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,
             agent_models::agent_model_catalog,
