@@ -1,5 +1,5 @@
-# Sourced by probe.sh and keys.sh: build a DEBUG app and put it on the
-# Simulator or emulator named. Not a script of its own.
+# Sourced by probe.sh, keys.sh, pair.sh and hub.sh: build a DEBUG app and
+# put it on the Simulator or emulator named. Not a script of its own.
 #
 #   build_and_install <platform> <target> <work-dir> [sync args...]
 #
@@ -7,6 +7,11 @@
 # on, e.g. --probe), builds, and installs. Sets `adb` for Android.
 # Name devices by UDID or serial, never `booted`: other sessions on this
 # Mac boot simulators of their own.
+#
+# Android script-only debug triggers go through
+# `android_debug_request` / `android_debug_clear`: files under the app's
+# private `files/gavin-debug/`, writable only via `run-as` (debuggable +
+# shell). Intent extras on MainActivity are ignored.
 
 app_id=com.gavin.companion
 
@@ -43,4 +48,20 @@ build_and_install() {
       exit 2
       ;;
   esac
+}
+
+# Wipe leftover script requests, then write one file under
+# files/gavin-debug/<name>. Optional second arg is the file body (base64
+# pair-code); an empty body is a flag file. Requires `adb` and `target`.
+# One remote shell string: adb joins argv with spaces and does not re-quote,
+# so `sh -c 'rm -rf …'` as separate argv becomes `sh -c rm` on device.
+android_debug_clear() {
+  "$adb" -s "$target" shell "run-as $app_id sh -c 'rm -rf files/gavin-debug && mkdir -p files/gavin-debug'"
+}
+
+android_debug_request() {
+  name=$1
+  body=${2-}
+  # Base64 pair codes are A-Za-z0-9+/= only; flag names are fixed literals.
+  "$adb" -s "$target" shell "run-as $app_id sh -c 'mkdir -p files/gavin-debug && printf %s \"$body\" > files/gavin-debug/$name'"
 }

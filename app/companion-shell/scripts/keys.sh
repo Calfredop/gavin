@@ -69,8 +69,10 @@ case "$platform" in
     "$adb" -s "$target" logcat -c
     "$adb" -s "$target" logcat -v raw -s Capacitor/Console:* GavinShell:* >"$log" 2>&1 &
     watcher=$!
-    "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" \
-      --ez gavinKeysCheck true --ez gavinStrictKeys "$strict" >/dev/null
+    android_debug_clear
+    android_debug_request keys-check
+    if $strict; then android_debug_request strict-keys; fi
+    "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" >/dev/null
     ;;
 esac
 

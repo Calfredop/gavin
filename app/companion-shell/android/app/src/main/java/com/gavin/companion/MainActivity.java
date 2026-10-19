@@ -22,14 +22,15 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DeviceKeysPlugin.class);
         registerPlugin(QrScannerPlugin.class);
         registerPlugin(WorkstationsPlugin.class);
-        // `adb shell am start … --ez gavinBundleProbe true` (scripts/probe.sh),
-        // `--ez gavinKeysCheck true` and `--ez gavinStrictKeys true` (scripts/keys.sh),
-        // `--es gavinPairCode <base64>` (scripts/pair.sh).
+        // Script-only debug triggers: files under files/gavin-debug/ written
+        // by `adb shell run-as` (scripts/keys.sh, pair.sh, probe.sh, hub.sh).
+        // Intent extras are ignored — any app can start this exported activity.
         boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        QrScannerPlugin.scripted = debuggable ? getIntent().getStringExtra("gavinPairCode") : null;
-        BundleViewPlugin.probeRequested = debuggable && getIntent().getBooleanExtra("gavinBundleProbe", false);
-        DeviceKeysPlugin.checkRequested = debuggable && getIntent().getBooleanExtra("gavinKeysCheck", false);
-        DeviceKeysPlugin.strict = debuggable && getIntent().getBooleanExtra("gavinStrictKeys", false);
+        DebugLaunch debug = DebugLaunch.consume(getFilesDir(), debuggable);
+        QrScannerPlugin.scripted = debug.pairCode;
+        BundleViewPlugin.probeRequested = debug.bundleProbe;
+        DeviceKeysPlugin.checkRequested = debug.keysCheck;
+        DeviceKeysPlugin.strict = debug.strictKeys;
         super.onCreate(savedInstanceState);
         SystemTextSize.apply(bridge.getWebView(), getResources().getConfiguration());
     }

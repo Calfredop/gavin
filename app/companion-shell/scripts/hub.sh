@@ -97,8 +97,9 @@ await_line() {
   done
 }
 
-# Launches the app, with `$@` as what it is launched with, writing what it
-# logs to the file named first.
+# Launches the app, with `$@` as what it is launched with (iOS launch
+# arguments only), writing what it logs to the file named first. Android
+# script triggers are written via android_debug_request beforehand.
 launch() {
   out=$1
   shift
@@ -112,7 +113,7 @@ launch() {
       "$adb" -s "$target" logcat -c
       "$adb" -s "$target" logcat -v raw -s Capacitor/Console:* GavinShell:* >"$out" 2>&1 &
       watcher=$!
-      "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" "$@" >/dev/null
+      "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" >/dev/null
       ;;
   esac
 }
@@ -149,8 +150,13 @@ for n in 0 1; do
     "$adb" -s "$target" reverse "tcp:$port" "tcp:$port" >/dev/null
   fi
   code=$(base64 <"$work/qr-$n" | tr -d '\n')
-  if [ "$platform" = android ]; then launch "$work/phone-$n.log" --es gavinPairCode "$code"
-  else launch "$work/phone-$n.log" -GavinPairCode "$code"; fi
+  if [ "$platform" = android ]; then
+    android_debug_clear
+    android_debug_request pair-code "$code"
+    launch "$work/phone-$n.log"
+  else
+    launch "$work/phone-$n.log" -GavinPairCode "$code"
+  fi
   await_line "$work/phone-$n.log" 60 '\[gavin-pair\] phase confirming'
   answer
   await_line "$work/phone-$n.log" 90 '\[gavin-pair\] paired ws-'
