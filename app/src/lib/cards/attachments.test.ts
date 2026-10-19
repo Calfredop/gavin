@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   addAttachment,
   attachmentFromPick,
+  attachmentChipLabel,
   attachmentName,
   attachmentPromptBlock,
   formatAttachments,
@@ -93,6 +94,19 @@ describe("attachmentName", () => {
     expect(attachmentName("docs/deep/spec.md")).toBe("spec.md");
     expect(attachmentName("/Users/x/shot.png")).toBe("shot.png");
     expect(attachmentName("spec.md")).toBe("spec.md");
+  });
+});
+
+describe("attachmentChipLabel", () => {
+  it("uses the resolved target's name when a symlink's raw entry differs", () => {
+    expect(attachmentChipLabel("spec.md", "/ws/hello.command")).toBe("hello.command");
+    expect(attachmentChipLabel("docs/spec.md", "/ws/docs/hello.command")).toBe("hello.command");
+  });
+
+  it("keeps the raw name when the resolved target shares it, or when unresolved", () => {
+    expect(attachmentChipLabel("docs/spec.md", "/ws/docs/spec.md")).toBe("spec.md");
+    expect(attachmentChipLabel("spec.md", null)).toBe("spec.md");
+    expect(attachmentChipLabel("spec.md", undefined)).toBe("spec.md");
   });
 });
 

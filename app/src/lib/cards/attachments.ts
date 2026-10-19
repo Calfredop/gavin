@@ -95,6 +95,24 @@ export function attachmentName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+/// What the chip shows and titles itself with. The frontmatter entry is
+/// the raw path the human (or agent) wrote; the host's `absolutePath` is
+/// the symlink-resolved target a click would open. When those names
+/// differ -- `spec.md` pointing at `hello.command` -- the chip must
+/// read as the target, not as the viewable-looking link name. Falls
+/// back to the raw entry when the host has not resolved it yet, or when
+/// the entry was refused and has no absolute path.
+export function attachmentChipLabel(
+  rawPath: string,
+  absolutePath: string | null | undefined
+): string {
+  if (absolutePath) {
+    const resolved = attachmentName(absolutePath);
+    if (resolved !== attachmentName(rawPath)) return resolved;
+  }
+  return attachmentName(rawPath);
+}
+
 /// The block appended to a launched agent's prompt. `readablePaths` are
 /// absolute, one per line, and are what the agent is told to read: the
 /// agent's cwd is a rail's worktree or the card's context folder

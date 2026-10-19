@@ -9,7 +9,7 @@
     switchWorkspaceView,
   } from "$lib/core/layoutState";
   import * as backend from "$lib/core/backend";
-  import { showAlert } from "$lib/core/dialog";
+  import { askConfirm, showAlert } from "$lib/core/dialog";
   import { confirmDestructive } from "$lib/core/confirmGate";
   import { isViewableExtension, loadViewableExtensions } from "$lib/files/fileTypes";
   import { defaultMode } from "$lib/files/fileEditing";
@@ -266,10 +266,25 @@
       return;
     }
     // Images, video, binaries, anything unrecognized: the OS's default
-    // application, which is the PRD's standing rule for them.
-    await backend.openPathExternally(node.path).catch((e) => {
-      void showAlert({ title: `Couldn't open ${node.name}`, lines: [String(e)] });
-    });
+    // application, which is the PRD's standing rule for them. Launchables
+    // (.command, executables, .app) are refused in open_path_externally;
+    // Reveal in Finder is the next step so the human can inspect without
+    // handing the file to /usr/bin/open.
+    try {
+      await backend.openPathExternally(node.path);
+    } catch (e) {
+      const message = String(e);
+      if (message.includes("would run as a program")) {
+        const reveal = await askConfirm({
+          title: `Couldn't open ${node.name}`,
+          lines: [message],
+          confirmLabel: "Reveal in Finder",
+        });
+        if (reveal) await revealInFinder(node);
+        return;
+      }
+      void showAlert({ title: `Couldn't open ${node.name}`, lines: [message] });
+    }
   }
 
   async function openInTab(node: FileNode): Promise<void> {
