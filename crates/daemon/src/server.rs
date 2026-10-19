@@ -34,11 +34,64 @@ const ATTACH_FAILURE_EXIT_CODE: i32 = -2;
 /// A1/A2 from exhausting all three). Generous -- ordinary use is a handful
 /// of terminals per open workspace, dozens across every workspace at once.
 ///
+/// Assumes soft `RLIMIT_NOFILE` has been raised at startup
+/// (`protocol::nofile::raise_soft_nofile`, to 8192). Under macOS's
+/// launchd soft default of 256, this ceiling is unreachable: each session
+/// holds ~3 PTY FDs, so `openpty` hits EMFILE first. The named EMFILE
+/// refusal (`refuse_emfile`) is that backstop; this ceiling is the one
+/// that fires once the soft limit is high enough.
+///
 /// Held on the manager as an `AtomicUsize` seeded from this constant,
 /// rather than compared against the bare constant, so the boundary test
 /// can lower it directly (tests share this module and can already reach
 /// private fields) instead of spawning hundreds of real PTYs.
 const MAX_LIVE_SESSIONS: usize = 256;
+
+/// What `create_session` (and recovery) says when `openpty` fails because
+/// the process is out of file descriptors. Same shape as the session
+/// ceiling refusal: named, actionable, and what the app banners rather
+/// than wrapping as `expected SessionCreated, got Error { … }`.
+const TOO_MANY_OPEN_FILES: &str =
+    "gavin-daemon: too many open files — close some sessions before starting another";
+
+/// Whether an `openpty` / spawn error is EMFILE (or ENFILE), including:
+/// - portable-pty: `failed to openpty: Os { … "Too many open files" }`
+/// - filedescriptor (portable-pty's dup of the master): `dup of fd N failed`
+///   — the form seen when soft RLIMIT_NOFILE is still macOS's launchd 256
+///   and the next session tries to clone a master near that ceiling.
+fn is_emfile(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if let Some(code) = io.raw_os_error() {
+                #[cfg(unix)]
+                if code == libc::EMFILE || code == libc::ENFILE {
+                    return true;
+                }
+                // Windows ERROR_TOO_MANY_OPEN_FILES.
+                #[cfg(windows)]
+                if code == 4 {
+                    return true;
+                }
+            }
+            let text = io.to_string();
+            if text.contains("Too many open files") || text.contains("dup of fd") {
+                return true;
+            }
+        }
+    }
+    let text = format!("{err:#}");
+    text.contains("Too many open files") || text.contains("dup of fd")
+}
+
+/// Map an EMFILE spawn failure to [`TOO_MANY_OPEN_FILES`]; leave every
+/// other error alone.
+fn refuse_emfile(err: anyhow::Error) -> anyhow::Error {
+    if is_emfile(&err) {
+        anyhow::anyhow!(TOO_MANY_OPEN_FILES)
+    } else {
+        err
+    }
+}
 
 /// Ceiling on connections `handle_connection` will admit to its request
 /// loop before refusing the rest with the same named error. `serve` spawns
@@ -4337,7 +4390,8 @@ impl SessionManager {
             &id,
             Some(&session_token),
             compression.env(),
-        )?;
+        )
+        .map_err(refuse_emfile)?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
@@ -5801,6 +5855,7 @@ impl SessionManager {
                     }
                 }
                 Err(e) => {
+                    let e = refuse_emfile(e);
                     eprintln!("failed to recover session {} (cwd {cwd}): {e}", record.id);
                     if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
                         eprintln!("failed to mark session {} exited: {e}", record.id);
@@ -12095,6 +12150,42 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// portable-pty turns `openpty` EMFILE into an anyhow string that
+    /// embeds the OS error's Debug form; `refuse_emfile` must still
+    /// recognise it and rewrite it to the named refusal the app banners.
+    #[test]
+    fn refuse_emfile_rewrites_portable_pty_style_message() {
+        #[cfg(unix)]
+        let code = libc::EMFILE;
+        #[cfg(windows)]
+        let code = 4;
+        let raw = anyhow::anyhow!(
+            "failed to openpty: {:?}",
+            std::io::Error::from_raw_os_error(code)
+        );
+        assert!(is_emfile(&raw), "{raw}");
+        let named = refuse_emfile(raw);
+        assert_eq!(named.to_string(), TOO_MANY_OPEN_FILES);
+    }
+
+    /// The form that shows up under macOS soft-256 before openpty itself
+    /// fails: portable-pty dups the master via `filedescriptor`, which
+    /// reports `dup of fd 252 failed` (fd number near the soft ceiling).
+    #[test]
+    fn refuse_emfile_rewrites_filedescriptor_dup_failure() {
+        let raw = anyhow::anyhow!("dup of fd 252 failed");
+        assert!(is_emfile(&raw), "{raw}");
+        assert_eq!(refuse_emfile(raw).to_string(), TOO_MANY_OPEN_FILES);
+    }
+
+    #[test]
+    fn refuse_emfile_leaves_unrelated_spawn_errors_alone() {
+        let raw = anyhow::anyhow!("cwd does not exist or is not a directory: /nope");
+        assert!(!is_emfile(&raw));
+        let kept = refuse_emfile(raw);
+        assert!(kept.to_string().contains("cwd does not exist"), "{kept}");
     }
 
     /// DP-05: `create_session` must refuse once it is already holding

@@ -109,6 +109,11 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn serve() -> anyhow::Result<()> {
+    // Before any SQLite open, PTY recover, or socket bind: Finder-launched
+    // processes inherit macOS's soft RLIMIT_NOFILE of 256, and recovery
+    // alone can need more than that. See `protocol::nofile`.
+    protocol::nofile::raise_soft_nofile();
+
     let dir = protocol::app_support_dir()?;
 
     std::fs::create_dir_all(&dir)?;

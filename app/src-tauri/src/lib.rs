@@ -103,6 +103,11 @@ pub fn run() {
         .manage(device_commit::DeviceCommitRequests::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
+            // Same soft-RLIMIT raise the daemon does at serve(): the host
+            // is also Finder-launched, and its sockets, watchers and
+            // children share the inherited soft 256. No-op on Windows.
+            protocol::nofile::raise_soft_nofile();
+
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 mac_window::round_window_corners(&window, 10.0);

@@ -4870,6 +4870,40 @@ mod resolve_workspaces_tests {
         }
     }
 
+    /// EMFILE / session-ceiling refusals must not fall back to $HOME (that
+    /// would fail again) and must surface the daemon's own sentence, not
+    /// `expected SessionCreated, got Error { … }`.
+    #[test]
+    fn a_resource_refusal_surfaces_the_daemon_message_without_a_home_fallback() {
+        let message = "gavin-daemon: too many open files — close some sessions before starting another";
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Error {
+            message: message.to_string(),
+        }]);
+        let conn = lanes_over(client);
+
+        let err = block_on(create_agent_session(
+            &conn,
+            Some("/tmp/somewhere"),
+            Some("/tmp/somewhere"),
+            None,
+            None,
+            None,
+            false,
+            "/home/t",
+        ))
+        .unwrap_err();
+        assert_eq!(err.to_string(), message);
+        assert!(
+            !err.to_string().contains("expected SessionCreated"),
+            "must not wrap the daemon Error in Debug form: {err}"
+        );
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "must not retry at $HOME after a resource refusal"
+        );
+    }
+
     #[test]
     fn create_fresh_session_with_no_command_sends_none() {
         let (client, captured, _dir) =
@@ -6291,9 +6325,16 @@ pub(crate) async fn create_agent_session(
         Response::SessionCreated { id, compressed, uncompressed_reason } => {
             return Ok(CreatedSession { id, compressed, uncompressed_reason })
         }
-        Response::Error { message } if target != home => {
+        // Only a missing/unenterable cwd is worth falling back for. A
+        // resource refusal (session ceiling, EMFILE) would fail again in
+        // $HOME and used to surface as `expected SessionCreated, got
+        // Error { … }` — wrap the daemon's own words instead.
+        Response::Error { message }
+            if target != home && message.contains("cwd does not exist") =>
+        {
             eprintln!("failed to recreate session at last-known cwd {target}, falling back to $HOME: {message}");
         }
+        Response::Error { message } => anyhow::bail!("{message}"),
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 
@@ -6322,6 +6363,7 @@ pub(crate) async fn create_agent_session(
         Response::SessionCreated { id, compressed, uncompressed_reason } => {
             Ok(CreatedSession { id, compressed, uncompressed_reason })
         }
+        Response::Error { message } => anyhow::bail!("{message}"),
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 }

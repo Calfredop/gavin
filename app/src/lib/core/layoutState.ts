@@ -443,6 +443,15 @@ function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
 
+/// A refused request on a connection that is still up. Same channel as
+/// the `daemon-request-error` listener: a dismissible banner over a
+/// working app (`DaemonRequestErrorBanner`), never the whole-window
+/// "Couldn't connect / Restart daemon" overlay `setError` draws. Create
+/// Session's EMFILE and session-ceiling refusals land here.
+function reportRequestError(err: unknown): void {
+  daemonRequestError.set(err instanceof Error ? err.message : String(err));
+}
+
 // Shared by every action below that ends in "mutate the active page's
 // tree, then persist the whole workspaces array" -- extracted so that
 // pattern exists exactly once instead of once per action.
@@ -657,8 +666,8 @@ export function runningSessionCount(state: LayoutState): number {
 
 // Shared by every action that creates exactly one fresh session before
 // mutating a tree (splitPane, addTab). Returns null -- having already
-// called setError -- on failure, so callers just check for null rather
-// than duplicating their own try/catch.
+// called reportRequestError -- on failure, so callers just check for
+// null rather than duplicating their own try/catch.
 async function createFreshSession(workspaceId: string): Promise<string | null> {
   try {
     return await backend.createSession(
@@ -667,7 +676,7 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
       workspaceRootPath(workspaceId) ?? undefined
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
 }
@@ -4805,7 +4814,7 @@ export async function createPage(
       )
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
   if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns, agent.untrustedOsc133);
@@ -4880,7 +4889,7 @@ export async function createTiledPage(
 
     }
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     for (const id of sessionIds) void backend.killSession(id).catch(() => {});
     return null;
   }
@@ -4976,7 +4985,7 @@ export async function createSessionOnPage(
       profileId
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
   const anchor = layout.allSessionIds(page.layout)[0];
@@ -5010,7 +5019,7 @@ export async function createSessionForCard(
     );
 
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
 

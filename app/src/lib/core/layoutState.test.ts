@@ -1110,7 +1110,7 @@ describe("splitPane", () => {
     expect(backend.createSession).not.toHaveBeenCalled();
   });
 
-  it("leaves the tree unchanged and surfaces an error when create_session fails", async () => {
+  it("leaves the tree unchanged and banners a request error when create_session fails", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
 
@@ -1118,7 +1118,8 @@ describe("splitPane", () => {
 
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
-    expect(state.status).toBe("error");
+    expect(state.status).not.toBe("error");
+    expect(get(daemonRequestError)).toBe("daemon unreachable");
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
@@ -2879,14 +2880,22 @@ describe("createSessionForCard", () => {
     expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 
-  it("returns null and surfaces an error when session creation fails", async () => {
+  it("returns null and banners a request error when session creation fails, without taking the window down", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
-    vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
+    vi.mocked(backend.createSession).mockRejectedValue(
+      new Error("gavin-daemon: too many open files — close some sessions before starting another")
+    );
 
     const sessionId = await createSessionForCard("ws-1", "", null);
 
     expect(sessionId).toBeNull();
-    expect(get(layoutState).status).toBe("error");
+    // A refused CreateSession is not a lost connection: the Restart-daemon
+    // overlay must stay off, and the dismissible request banner carries
+    // the daemon's own sentence.
+    expect(get(layoutState).status).not.toBe("error");
+    expect(get(daemonRequestError)).toBe(
+      "gavin-daemon: too many open files — close some sessions before starting another"
+    );
   });
 
   it("is a no-op for an unknown workspace id", async () => {

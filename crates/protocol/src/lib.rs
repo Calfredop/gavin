@@ -22,6 +22,12 @@ pub mod transport;
 #[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod daemon_lock;
 
+// Soft RLIMIT_NOFILE for Finder-launched daemons and the Tauri host.
+// Unix-only body; a no-op elsewhere. Behind `os` so the wasm Companion
+// core never sees it.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
+pub mod nofile;
+
 // The Device wire's two contracts. Neither has an operating-system part,
 // so both are here whether or not the `os` feature is: the Companion core
 // depends on them from `wasm32-unknown-unknown`.
