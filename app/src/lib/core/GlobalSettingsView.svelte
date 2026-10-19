@@ -160,7 +160,6 @@
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { DEVICES_LABEL } from "$lib/core/devicesPanel";
   import { deskRelayIndicator, directIndicator, relayIndicator } from "$lib/ui/indicators";
-  import { profilesInUse } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
@@ -184,13 +183,6 @@
     mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
   );
   const profiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
-
-  /// Whether any agent in use can actually be asked about its limits. The
-  /// limit gate is offered either way -- a workspace may switch agents --
-  /// but saying so beats a control that silently never fires.
-  const probed = $derived(
-    $agentProfilesStore.some((p) => p.usageProbe && profilesInUse().includes(p.id))
-  );
 
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
@@ -1256,7 +1248,6 @@
           primaryId={defaultAgentId}
           label={defaultAgentLabel}
           profiles={allProfiles}
-          limitsProbed={probed}
         />
       {:else if activeAgentProfile}
         {#if activeCustom}
@@ -1386,7 +1377,6 @@
           primaryId={activeAgentProfile.id}
           label={activeAgentProfile.label}
           profiles={allProfiles}
-          limitsProbed={probed}
         />
       {:else if agentsTab === ADD_TAB}
         <div class="row">
