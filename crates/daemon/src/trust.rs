@@ -1079,11 +1079,13 @@ impl TrustStore {
     /// returning the new public key.
     ///
     /// §3: the rotation is the point. Marking rows is a change to a file;
-    /// a new static key invalidates every phone at once **even if the
-    /// store is somehow restored from a backup**, because each phone
-    /// pinned the old key and the handshake it pinned it for no longer
-    /// completes. That is what makes this the one-button answer to a lost
-    /// phone.
+    /// a new static key invalidates every phone that still pins the old
+    /// one, for as long as this file stays the live store. The key pair
+    /// lives in the same `devices.sqlite` as the rows, so restoring a
+    /// pre-revocation copy of the file brings both back together — after
+    /// restoring the gavin data folder, run Revoke all again. That is
+    /// still the one-button answer to a lost phone while the store is
+    /// intact.
     pub fn revoke_all(&self) -> anyhow::Result<Vec<u8>> {
         self.revoke_all_at(now_us())
     }

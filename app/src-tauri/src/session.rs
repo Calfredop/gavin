@@ -3738,9 +3738,10 @@ pub async fn revoke_device(
 }
 
 /// Revoke every device AND rotate the daemon's static key: the one-button
-/// answer to a lost phone. Every phone pinned the old key, so the
-/// rotation invalidates all of them at once even if `devices.sqlite` is
-/// later restored from a backup.
+/// answer to a lost phone while the store is intact. Every phone pinned
+/// the old key, so the rotation invalidates them for as long as the live
+/// `devices.sqlite` holds the new one. The key lives in that same file,
+/// so a restore of a pre-revocation copy undoes both halves.
 #[tauri::command]
 pub async fn revoke_all_devices(
     state: State<'_, CommandConnection>,

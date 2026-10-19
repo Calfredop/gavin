@@ -477,8 +477,9 @@ export function revokeAllCopy(): ConfirmCopy {
   return {
     title: "Revoke all devices?",
     lines: [
-      "Every paired device is revoked AND the daemon's own key is rotated. Each phone pinned the old key, so none of them can come back even if the trust store is later restored from a backup.",
+      "Every paired device is revoked AND the daemon's own key is rotated. Each phone pinned the old key, so none of them can connect while this store holds the new one.",
       "Every phone has to pair again from this screen.",
+      "After restoring the gavin data folder from a backup, run this again — the old key and the device rows live in the same file.",
       "This is the answer to a phone you have lost.",
     ],
     confirmLabel: "Revoke all and rotate the key",

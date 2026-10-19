@@ -2060,9 +2060,12 @@ pub enum Request {
         device_id: String,
     },
     /// Revoke every device AND rotate the daemon's static key, which
-    /// invalidates every phone at once even if `devices.sqlite` is later
-    /// restored from a backup, because each phone pinned the old key
-    /// (§3). The one-button answer to a lost phone.
+    /// invalidates every phone that pinned the old key for as long as
+    /// the live `devices.sqlite` holds the new one (§3). The key lives
+    /// in that same file, so a restore of a pre-revocation copy undoes
+    /// both halves — run Revoke all again after restoring the gavin data
+    /// folder. The one-button answer to a lost phone while the store is
+    /// intact.
     RevokeAllDevices,
     /// Store whether remote access is on and which relay to reach this
     /// daemon through.

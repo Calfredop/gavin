@@ -391,12 +391,15 @@ describe("the prompts", () => {
   });
 
   // The whole reason "Revoke all" is not just "revoke each": it rotates
-  // the key, which is what survives a restored backup.
+  // the key. The key lives in the same file as the rows, so the copy
+  // also tells the owner to run it again after restoring that file.
   it("says Revoke all rotates the key and forces every phone to re-pair", () => {
     const copy = revokeAllCopy();
     const text = copy.lines.join(" ");
     expect(text).toContain("rotated");
     expect(text).toContain("pair again");
+    expect(text).toContain("restoring the gavin data folder");
+    expect(text).not.toContain("even if the trust store is later restored");
     expect(copy.confirmLabel).toContain("rotate the key");
   });
 });

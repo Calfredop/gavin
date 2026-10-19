@@ -2175,8 +2175,9 @@ pub struct Revocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevokeAll {
     /// The daemon's rotated static public key. Every phone pinned the old
-    /// one, so this is the fact that invalidates them all at once even if
-    /// the store is somehow restored from a backup (§3).
+    /// one, so this is the fact that invalidates them while the live
+    /// store holds the new key (§3). The key lives in the same file as
+    /// the rows; a restore of that file undoes the rotation too.
     pub new_public_key: Vec<u8>,
     pub connections_dropped: usize,
 }
@@ -3916,9 +3917,12 @@ impl SessionManager {
     /// every live connection that carries any device id (§3).
     ///
     /// The rotation is what makes this the one-button answer to a lost
-    /// phone: marking rows is a change to a file, but a new static key
-    /// invalidates every phone at once even if the file is restored,
-    /// because each one pinned the old key.
+    /// phone while the store is intact: marking rows is a change to a
+    /// file, but a new static key invalidates every phone that pinned
+    /// the old one. The key lives in that same file, so restoring a
+    /// pre-revocation copy brings the old key and the unrevoked rows
+    /// back together — run Revoke all again after restoring the gavin
+    /// data folder.
     #[allow(dead_code)]
     pub fn revoke_all_devices(&self) -> anyhow::Result<RevokeAll> {
         let new_public_key = {
@@ -13759,9 +13763,8 @@ mod tests {
     }
 
     /// "Revoke all devices" over the wire: every row revoked, every
-    /// connection dropped, and the key rotated -- which is the half that
-    /// holds even if `devices.sqlite` is later restored from a backup
-    /// (§3).
+    /// connection dropped, and the key rotated so phones that pinned the
+    /// old one no longer match the live store (§3).
     #[test]
     fn revoke_all_devices_over_the_wire_rotates_the_key() {
         let dir = tempfile::tempdir().unwrap();
