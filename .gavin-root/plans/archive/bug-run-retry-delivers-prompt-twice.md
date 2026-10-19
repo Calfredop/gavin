@@ -3,7 +3,6 @@ order: 4096
 kind: task
 title: [bug] a retried agent run receives its prompt twice
 status: Done
-parent: bug-kimi-launch-integrations.md
 priority: medium
 ---
 Follow-up of bug-kimi-launch-integrations.md ("Follow-ups NOT done here", second bullet). In kimi sessions that failed on 2026-10-06 (OAuth errors, since fixed), the session wire logs under `~/.kimi-code/sessions/` show the card prompt arriving as TWO user messages. Gavin seems to re-deliver the prompt when it retries or recovers a failed run.

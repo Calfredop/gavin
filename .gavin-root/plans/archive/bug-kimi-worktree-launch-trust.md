@@ -3,7 +3,6 @@ order: 1168
 kind: task
 title: [bug] kimi runs in gavin worktrees still stop at the trust screen (or drop the gavin MCP server)
 status: Done
-parent: bug-kimi-launch-integrations.md
 priority: high
 ---
 Follow-up of bug-kimi-launch-integrations.md (read its sections 2 and "Resumed 2026-10-12" first), and of feat-kimi-integration.md's answered decision (2026-10-06, option A): **gavin trusts each gavin-created worktree at the launch of a kimi session in it, with the same consent rules as the root grant.** That answer is settled; do not re-open it. No code implements it yet.
