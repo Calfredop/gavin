@@ -3380,13 +3380,17 @@ fn workspace_roots(root: &Path) -> Vec<PathBuf> {
 /// inside the root that points outside resolves to where it leads, and a
 /// file that does not exist yet -- the one a write is about to make --
 /// still has a place to be judged by. Absolute only.
+///
+/// Existence is from `symlink_metadata`, not `exists()`: a dangling
+/// symlink leaf would otherwise look missing, get reattached under the
+/// root, and then `fs::write` would create the target outside.
 fn resolve_for_containment(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.is_absolute() {
         anyhow::bail!("{} is not an absolute path", path.display());
     }
     let mut existing = path;
     let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
-    while !existing.exists() {
+    while std::fs::symlink_metadata(existing).is_err() {
         let name = existing
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("{} could not be resolved", path.display()))?;
@@ -8011,6 +8015,29 @@ mod tests {
             .to_string();
         assert!(err.contains("outside") || err.contains("symlink"), "{err}");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep\n");
+    }
+
+    /// Audit 2026-10-15 (`daemon-gavin-resolve_for_containment-dangling-
+    /// symlink-write`): a dangling symlink leaf must not be judged as a
+    /// file not created yet. `Path::exists` is false for one, so the old
+    /// walk reattached the link's name under the root and `fs::write`
+    /// created the outside target. Refuse, and leave nothing outside.
+    #[cfg(unix)]
+    #[test]
+    fn write_workspace_file_refuses_a_dangling_symlink_leaf() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("created.txt");
+        assert!(!victim.exists());
+        std::os::unix::fs::symlink(&victim, dir.path().join("CLAUDE.md")).unwrap();
+        assert!(
+            write_workspace_file(dir.path(), "CLAUDE.md", "gavin-written-marker\n").is_err(),
+            "dangling symlink leaf must be refused"
+        );
+        assert!(
+            !victim.exists(),
+            "dangling target must not be created outside the workspace root"
+        );
     }
 
     /// A card in an outside context the human registered is the

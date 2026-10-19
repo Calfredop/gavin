@@ -116,19 +116,23 @@ fn extra_context_roots(root: &Path) -> Vec<PathBuf> {
 /// Resolves an absolute path for containment even when it (or some
 /// ancestor of it) does not exist yet -- `write_file_for_editor` creates
 /// missing parent directories on save, and a PRD/agent-file tab opens
-/// before its file does. Walks up to the nearest EXISTING ancestor,
-/// canonicalizes it (so a symlinked directory anywhere in the existing
-/// prefix is caught exactly the way `resolve_existing` catches one for
-/// the six guarded explorer commands below), then reattaches the still-
-/// missing suffix unresolved -- there is nothing on disk yet for a
-/// symlink to be.
+/// before its file does. Walks up to the nearest existing directory
+/// entry, canonicalizes it (so a symlinked directory anywhere in the
+/// existing prefix is caught exactly the way `resolve_existing` catches
+/// one for the six guarded explorer commands below), then reattaches
+/// the still-missing suffix unresolved.
+///
+/// Existence is from `symlink_metadata`, not `exists()`: a dangling
+/// symlink leaf would otherwise look missing, get reattached under the
+/// root, and then `fs::write` would create the target outside (same
+/// invariant as the daemon's `resolve_for_containment`).
 fn resolve_for_containment(path: &str) -> Result<PathBuf, String> {
     let mut existing = Path::new(path);
     if !existing.is_absolute() {
         return Err(format!("{path} is not an absolute path"));
     }
     let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
-    while !existing.exists() {
+    while existing.symlink_metadata().is_err() {
         let name = existing.file_name().ok_or_else(|| format!("{path} could not be resolved"))?;
         suffix.push(name);
         existing = existing.parent().ok_or_else(|| format!("{path} could not be resolved"))?;
@@ -303,7 +307,10 @@ fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) ->
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&resolved, content).map_err(|e| e.to_string())
+    // O_NOFOLLOW (unix) / symlink-leaf refuse (elsewhere): a link swapped
+    // in after containment cannot redirect the write. Same seam as the
+    // daemon's WriteWorkspaceFile and LocalFiles writers.
+    crate::agent_setup::nofollow_write(&resolved, content.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Resolves a path-shaped candidate string from terminal output against
@@ -1757,6 +1764,37 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("outside every open workspace"), "{err}");
         assert!(!elsewhere.join("new.md").exists());
+    }
+
+    /// A dangling symlink leaf must not be treated as a missing file:
+    /// `exists()` is false for one, so the old walk reattached the name
+    /// under the root and `fs::write` created the outside target.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_for_editor_refuses_a_dangling_symlink_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let victim = elsewhere.join("created.txt");
+        assert!(!victim.exists());
+        std::os::unix::fs::symlink(&victim, workspace.join("CLAUDE.md")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        assert!(
+            write_file_for_editor_impl(
+                &workspace.join("CLAUDE.md").to_string_lossy(),
+                "gavin-written-marker\n".to_string(),
+                &roots,
+            )
+            .is_err(),
+            "dangling symlink leaf must be refused"
+        );
+        assert!(
+            !victim.exists(),
+            "dangling target must not be created outside every open workspace"
+        );
     }
 
     #[test]
