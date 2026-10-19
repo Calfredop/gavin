@@ -15,6 +15,7 @@ mod kimi_trust;
 mod memory_index;
 mod orchestration;
 mod osc;
+mod outside_contexts;
 mod ownership;
 mod pairing;
 mod presence;

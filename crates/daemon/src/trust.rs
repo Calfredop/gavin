@@ -512,7 +512,16 @@ impl TrustStore {
             -- One row per static key: the key IS the identity, so two
             -- rows claiming it would make `admit` pick one arbitrarily.
             CREATE UNIQUE INDEX IF NOT EXISTS devices_by_public_key
-                ON devices (public_key)",
+                ON devices (public_key);
+            -- Outside contexts the human registered on this machine
+            -- (`AddExternalGavinContext`). Shared with the free helpers
+            -- in `outside_contexts.rs`; CREATE TABLE IF NOT EXISTS is
+            -- enough for a new table on an existing file.
+            CREATE TABLE IF NOT EXISTS registered_outside_contexts (
+                root_path TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                PRIMARY KEY (root_path, folder_path)
+            )",
         )?;
         // `ALTER TABLE ADD COLUMN` has no IF NOT EXISTS in SQLite, and
         // re-running it is a plain error rather than a corruption risk,
@@ -536,6 +545,9 @@ impl TrustStore {
         ] {
             let _ = conn.execute(stmt, []);
         }
+        // Belt and braces with the CREATE above: a store whose open
+        // predated the table still gains it when this binary runs.
+        crate::outside_contexts::ensure_table(&conn)?;
         let store = Self { conn, device_cap: DEFAULT_DEVICE_CAP };
         store.ensure_static_keypair()?;
         // Reasserted on every open, not just the one that creates the

@@ -2089,9 +2089,12 @@ pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
 }
 
 /// Top-level `extra_contexts` array of the root config: absolute folder
-/// paths OUTSIDE the workspace that scans should include. Anything that
-/// isn't a string array (or a file that doesn't parse) reads as empty --
-/// config_warning already covers the parse failure.
+/// paths OUTSIDE the workspace. Raw parse only — a value that arrived
+/// with the repository is not yet a registration. Callers that include
+/// outside contexts in a scan or in workspace containment go through
+/// `registered_extra_contexts` instead. Anything that isn't a string
+/// array (or a file that doesn't parse) reads as empty -- config_warning
+/// already covers the parse failure.
 fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(config_path) else { return vec![] };
     let Ok(table) = content.parse::<toml::Table>() else { return vec![] };
@@ -2100,6 +2103,16 @@ fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default()
+}
+
+/// `extra_contexts` entries the HUMAN registered on this machine: present
+/// in the root config AND in the machine-local registration list that
+/// only `add_external_context` / `AddExternalGavinContext` writes. A
+/// value that arrived with the repository is inert until registered.
+fn registered_extra_contexts(root: &Path) -> Vec<String> {
+    let listed = parse_extra_contexts(&root.join(GAVIN_ROOT_DIR).join("config.toml"));
+    let approved = crate::outside_contexts::registered_outside_contexts(root);
+    listed.into_iter().filter(|f| approved.iter().any(|a| a == f)).collect()
 }
 
 /// Scaffolds `.gavin` in a folder outside the workspace root and records
@@ -2145,6 +2158,10 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
         arr.push(entry.as_str());
     }
     std::fs::write(&config_path, doc.to_string())?;
+    // Machine-local mark: config.toml alone is not a registration (a
+    // clone can ship the same key). Scans honour the entry only when
+    // this list says the human registered it here.
+    crate::outside_contexts::register_outside_context(root, folder)?;
     Ok(())
 }
 
@@ -2160,10 +2177,14 @@ pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()>
     })?;
     let entry = folder.to_string_lossy().to_string();
     let Some(arr) = doc.get_mut("extra_contexts").and_then(|i| i.as_array_mut()) else {
+        // Config had nothing to drop; still clear a stale machine-local
+        // mark so a re-add is the only way back in.
+        crate::outside_contexts::unregister_outside_context(root, folder)?;
         return Ok(());
     };
     arr.retain(|v| v.as_str() != Some(entry.as_str()));
     std::fs::write(&config_path, doc.to_string())?;
+    crate::outside_contexts::unregister_outside_context(root, folder)?;
     Ok(())
 }
 
@@ -2419,13 +2440,15 @@ pub fn scan_root(root: &Path) -> GavinTree {
         b_root.cmp(&a_root).then(a.folder_path.cmp(&b.folder_path))
     });
 
-    // Outside contexts (`extra_contexts` in the root config) come after
-    // every scanned one, sorted by path. Entries under the root would
-    // double-list a scanned folder and are skipped; so is a folder that
-    // vanished or lost its `.gavin` -- the navigator simply stops showing
-    // it until it is back.
+    // Outside contexts the human registered on this machine come after
+    // every scanned one, sorted by path. A value merely listed in the
+    // committed `extra_contexts` array is inert until
+    // `add_external_context` records it locally. Entries under the root
+    // would double-list a scanned folder and are skipped; so is a folder
+    // that vanished or lost its `.gavin` -- the navigator simply stops
+    // showing it until it is back.
     if root_has_gavin_root {
-        let mut extras = parse_extra_contexts(&root_gavin.join("config.toml"));
+        let mut extras = registered_extra_contexts(root);
         extras.sort();
         extras.dedup();
         for folder in extras {
@@ -3066,14 +3089,15 @@ impl GavinWatcher {
 // spelled here because this is the machine whose disk it is.
 
 /// The roots a workspace's files may live under: the root itself, then
-/// every `extra_contexts` folder its config names -- canonical, so a
-/// symlinked checkout compares by where it is.
+/// every outside folder the human registered for it -- canonical, so a
+/// symlinked checkout compares by where it is. Committed-but-unregistered
+/// `extra_contexts` entries do not widen containment.
 fn workspace_roots(root: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(canonical) = protocol::canonical_path(root) {
         roots.push(canonical);
     }
-    for extra in parse_extra_contexts(&root.join(".gavin-root").join("config.toml")) {
+    for extra in registered_extra_contexts(root) {
         if let Ok(canonical) = protocol::canonical_path(Path::new(&extra)) {
             roots.push(canonical);
         }
@@ -5070,12 +5094,57 @@ mod tests {
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
+        // Hand-written config is not a registration; even a path that
+        // would otherwise be skipped for being inside the root must not
+        // appear as `outside` from the extras list.
         let tree = scan_root(&root);
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
             tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
         assert_eq!(src_entries, 1);
         assert!(tree.contexts.iter().all(|c| !c.outside));
+    }
+
+    /// Committed `extra_contexts` alone must not disclose another
+    /// workspace's cards. Registration on this machine is what arms them.
+    #[test]
+    fn committed_extra_contexts_are_inert_until_registered() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&root_dir);
+        let outside = wire_root(&outside_dir);
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(outside.join(GAVIN_DIR).join("plans")).unwrap();
+        std::fs::write(
+            outside.join(GAVIN_DIR).join("plans").join("secret.md"),
+            "---\ntitle: Victim card\n---\n",
+        )
+        .unwrap();
+
+        let config = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        let mut body = std::fs::read_to_string(&config).unwrap();
+        body.push_str(&format!("extra_contexts = ['{}']\n", outside.display()));
+        std::fs::write(&config, body).unwrap();
+
+        let tree = scan_root(&root);
+        assert!(
+            tree.contexts.iter().all(|c| !c.outside),
+            "a clone-committed extra_contexts path must not appear until registered"
+        );
+        assert!(
+            !tree.contexts.iter().any(|c| c.folder_path == wire_spelling(&outside)),
+            "victim folder must not be in the tree before registration"
+        );
+
+        add_external_context(&root, &outside).unwrap();
+        let tree = scan_root(&root);
+        let ctx = tree
+            .contexts
+            .iter()
+            .find(|c| c.folder_path == wire_spelling(&outside))
+            .expect("registered outside folder appears after add_external_context");
+        assert!(ctx.outside);
+        assert!(ctx.plans.iter().any(|p| p.file_name == "secret.md"));
     }
 
     #[test]
@@ -7099,7 +7168,7 @@ mod tests {
         assert!(write_workspace_file(dir.path(), "../planted", "x").is_err());
     }
 
-    /// A card in an outside context the root config names is the
+    /// A card in an outside context the human registered is the
     /// workspace's too, exactly as the tree says it is.
     #[test]
     fn workspace_files_reach_an_extra_context_the_root_config_names() {
