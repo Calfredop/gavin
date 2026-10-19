@@ -1008,6 +1008,41 @@ fn resolve_inside_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     Ok(target)
 }
 
+/// DP-05 for writes: refuses a target when it, or any directory between
+/// `root` and it, is a symlink resolving outside `root` -- or a dangling
+/// one, whose write would create the link's target wherever it points.
+///
+/// The scan already refuses to descend such links (`safe_to_descend`);
+/// every writer that lands in a workspace's `.gavin*` tree must apply
+/// the same rule before `create_dir_all` / `read_to_string` / `write`,
+/// or a repository-committed symlink turns an ordinary Settings /
+/// wizard / card-create action into a write outside the workspace
+/// (audit 2026-10-15, `fixed-path-writers-follow-repo-committed-symlinks`).
+fn confine_write_target(root: &Path, target: &Path) -> anyhow::Result<()> {
+    let canonical_root = root.canonicalize()?;
+    let rel = target
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("{} is outside {}", target.display(), root.display()))?;
+    let mut at = root.to_path_buf();
+    for comp in rel.components() {
+        at.push(comp);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let resolved = at
+                    .canonicalize()
+                    .map_err(|_| anyhow::anyhow!("{} is a dangling symlink", at.display()))?;
+                if !resolved.starts_with(&canonical_root) {
+                    anyhow::bail!("{} is a symlink leaving the workspace", at.display());
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 pub fn read_prd(root: &Path) -> anyhow::Result<String> {
     use std::io::Read;
     let rel = prd_relative_path(root);
@@ -1123,6 +1158,9 @@ pub fn create_plan_file(
     };
 
     let plans = gavin_dir.join("plans");
+    // DP-05: a committed `plans/` symlink (or a dangling one) must not
+    // let card creation land outside the context folder.
+    confine_write_target(context_folder, &plans)?;
     std::fs::create_dir_all(&plans)?;
     // File names are unique per context (that is what `parent:` resolves
     // on), so the check spans the whole tree -- a flat `x.md` and an
@@ -1143,8 +1181,10 @@ pub fn create_plan_file(
     } else {
         plans.clone()
     };
+    confine_write_target(context_folder, &dir)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(file_name);
+    confine_write_target(context_folder, &path)?;
 
     let mut content = String::from("---\n");
     if kind != "plan" {
@@ -2027,6 +2067,7 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
     };
     if value.trim().is_empty() && CLEARABLE_KEYS.contains(&key) {
         let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        confine_write_target(root, &path)?;
         // No file means no key to remove. Returning early rather than
         // falling through keeps a clear from CREATING an empty
         // config.toml, which is the one thing this path could do that
@@ -2061,6 +2102,7 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
         value.to_string()
     };
     let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &path)?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
@@ -2083,11 +2125,13 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
     Ok(())
 }
 
-fn scaffold_gavin_dir(gavin_dir: &Path) -> anyhow::Result<()> {
+fn scaffold_gavin_dir(root: &Path, gavin_dir: &Path) -> anyhow::Result<()> {
     for sub in ["plans", "docs", "specs"] {
         let dir = gavin_dir.join(sub);
+        confine_write_target(root, &dir)?;
         std::fs::create_dir_all(&dir)?;
         let keep = dir.join(".gitkeep");
+        confine_write_target(root, &keep)?;
         if !keep.exists() {
             std::fs::write(&keep, "")?;
         }
@@ -2118,9 +2162,11 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
         anyhow::bail!("root does not exist or is not a directory: {}", root.display());
     }
     let gavin_dir = root.join(GAVIN_ROOT_DIR);
+    confine_write_target(root, &gavin_dir)?;
     std::fs::create_dir_all(&gavin_dir)?;
-    scaffold_gavin_dir(&gavin_dir)?;
+    scaffold_gavin_dir(root, &gavin_dir)?;
     let config = gavin_dir.join("config.toml");
+    confine_write_target(root, &config)?;
     if !config.exists() {
         std::fs::write(&config, ROOT_CONFIG_TEMPLATE)?;
     }
@@ -2128,8 +2174,10 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
     // re-running init on a root pointing at its own `docs/PRD.md` would
     // otherwise leave a second, unread PRD behind.
     let prd = root.join(prd_relative_path(root));
+    confine_write_target(root, &prd)?;
     if !prd.exists() {
         if let Some(parent) = prd.parent() {
+            confine_write_target(root, parent)?;
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&prd, PRD_TEMPLATE.replace("{workspace}", workspace_name))?;
@@ -2193,9 +2241,11 @@ pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
         anyhow::bail!("parent does not exist or is not a directory: {}", parent.display());
     }
     let gavin_dir = parent.join(GAVIN_DIR);
+    confine_write_target(parent, &gavin_dir)?;
     std::fs::create_dir_all(&gavin_dir)?;
-    scaffold_gavin_dir(&gavin_dir)?;
+    scaffold_gavin_dir(parent, &gavin_dir)?;
     let config = gavin_dir.join("config.toml");
+    confine_write_target(parent, &config)?;
     if !config.exists() {
         let name = parent.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         std::fs::write(&config, format!("name = \"{name}\"\n"))?;
@@ -2254,6 +2304,7 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
         );
     }
     let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &config_path)?;
     if !config_path.is_file() {
         anyhow::bail!("no {} -- is {} a gavin root?", config_path.display(), root.display());
     }
@@ -2286,6 +2337,7 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
 /// caller asked for already holds.
 pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
     let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &config_path)?;
     let Ok(existing) = std::fs::read_to_string(&config_path) else { return Ok(()) };
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", config_path.display())
@@ -6067,6 +6119,175 @@ mod tests {
             "this is not [ valid toml\n",
             "the file must survive untouched"
         );
+    }
+
+    /// DP-05 / audit 2026-10-15: a dangling `config.toml` symlink must
+    /// not let Settings / the wizard create the link's target outside
+    /// the workspace. The write is refused; the outside path stays absent.
+    #[test]
+    fn config_toml_dangling_symlink_refuses_writers_and_creates_nothing_outside() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("created-by-gavin.toml");
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        let err = set_root_config_field(root.path(), "profile", "claude-code")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("dangling symlink") || err.contains("symlink leaving"),
+            "{err}"
+        );
+        assert!(!target.exists(), "dangling target must not be created");
+
+        let ext = outside.path().join("ext-folder");
+        std::fs::create_dir_all(&ext).unwrap();
+        assert!(add_external_context(root.path(), &ext).is_err());
+        assert!(!target.exists());
+        assert!(remove_external_context(root.path(), &ext).is_err());
+        assert!(!target.exists());
+    }
+
+    /// DP-05 / audit 2026-10-15: a `config.toml` symlink aimed at an
+    /// existing outside TOML must be refused; the outside file stays
+    /// byte-identical through set / add / remove.
+    #[test]
+    fn config_toml_symlink_leaving_the_root_refuses_writers_and_leaves_outside_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("existing.toml");
+        let before = b"name = \"outside\"\n";
+        std::fs::write(&target, before).unwrap();
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        assert!(set_root_config_field(root.path(), "model", "opus").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+
+        let ext = outside.path().join("ext-folder");
+        std::fs::create_dir_all(&ext).unwrap();
+        assert!(add_external_context(root.path(), &ext).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+        assert!(remove_external_context(root.path(), &ext).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+    }
+
+    /// An in-root `config.toml` symlink (e.g. pointing at another file
+    /// still under the workspace) is a legitimate layout and must keep
+    /// accepting writes.
+    #[test]
+    fn config_toml_symlink_inside_the_root_is_still_writable() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        let real = gavin.join("real-config.toml");
+        let link = gavin.join("config.toml");
+        std::fs::rename(&link, &real).unwrap();
+        if !try_symlink(&real, &link) {
+            return;
+        }
+
+        set_root_config_field(root.path(), "profile", "codex").unwrap();
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert!(text.contains("profile = \"codex\""), "{text}");
+    }
+
+    /// DP-05 / audit 2026-10-15: a `plans/` directory symlink leaving
+    /// the root must not let card creation write outside; the response
+    /// is Err and the outside directory stays empty of the new card.
+    #[test]
+    fn plans_symlink_leaving_the_root_refuses_create_plan_file() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        let outside = tempfile::tempdir().unwrap();
+        let outside_plans = outside.path().join("plans-target");
+        std::fs::create_dir_all(&outside_plans).unwrap();
+        // Replace the real plans/ with a symlink aimed outside.
+        std::fs::remove_dir_all(&plans).unwrap();
+        if !try_symlink(&outside_plans, &plans) {
+            return;
+        }
+
+        let err = create_plan_file(
+            root.path(),
+            "hello-card.md",
+            "Hello card",
+            None,
+            None,
+            Some("dummy body written by the human"),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("dangling symlink") || err.contains("symlink leaving"),
+            "{err}"
+        );
+        assert!(
+            !outside_plans.join("hello-card.md").exists(),
+            "card must not land outside the workspace"
+        );
+    }
+
+    /// A `plans/` symlink whose target stays inside the root is still
+    /// a writable plans tree.
+    #[test]
+    fn plans_symlink_inside_the_root_still_accepts_create_plan_file() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        let real_plans = gavin.join("real-plans");
+        let plans = gavin.join("plans");
+        std::fs::rename(&plans, &real_plans).unwrap();
+        if !try_symlink(&real_plans, &plans) {
+            return;
+        }
+
+        let path = create_plan_file(
+            root.path(),
+            "inside.md",
+            "Inside",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(path.starts_with(root.path()) || real_plans.join("inside.md").exists());
+        assert!(real_plans.join("inside.md").is_file());
+    }
+
+    /// init_gavin_root must refuse a dangling committed `config.toml`
+    /// symlink rather than create its outside target.
+    #[test]
+    fn init_gavin_root_refuses_a_dangling_config_toml_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("init-created.toml");
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        assert!(init_gavin_root(root.path(), "WS").is_err());
+        assert!(!target.exists());
     }
 
     #[test]
