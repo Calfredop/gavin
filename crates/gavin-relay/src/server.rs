@@ -590,15 +590,18 @@ async fn workstation(
     let registered = {
         let mut registrations = shared.registrations.lock().unwrap();
         let mut by_token = shared.registrations_by_token.lock().unwrap();
-        let list = registrations.entry(rendezvous.clone()).or_default();
-        let for_token = by_token.entry(token).or_insert(0);
-        if list.len() >= shared.limits.registrations_per_rendezvous
-            || *for_token >= shared.limits.registrations_per_token
+        let list_len = registrations.get(&rendezvous).map(|l| l.len()).unwrap_or(0);
+        let for_token = by_token.get(&token).copied().unwrap_or(0);
+        if list_len >= shared.limits.registrations_per_rendezvous
+            || for_token >= shared.limits.registrations_per_token
         {
             false
         } else {
-            list.push(Registration { id, announce });
-            *for_token += 1;
+            registrations.entry(rendezvous.clone()).or_default().push(Registration {
+                id,
+                announce,
+            });
+            *by_token.entry(token).or_insert(0) += 1;
             shared.counters.workstations.fetch_add(1, Ordering::SeqCst);
             true
         }
