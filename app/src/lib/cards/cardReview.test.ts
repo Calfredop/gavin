@@ -99,6 +99,27 @@ describe("the digest", () => {
     // agent.
     expect(cardContentReviewed({ title: "", body: "", attachments: [] }, undefined)).toBe(false);
   });
+
+  it("keeps the /1 digest when the card names no agent, model or effort", () => {
+    // Pinned so an accidental widen of /1 invalidates every existing marker.
+    expect(cardContentDigest({ title: "t", body: "b", attachments: ["a.md"] })).toBe(
+      "3f86050572d0893fafd3dfe0414651140eccb91f6d82bd101f4c038d141e873c"
+    );
+    const base = cardContentDigest({ title: "t", body: "b", attachments: ["a.md"] });
+    expect(cardContentDigest({ title: "t", body: "b", attachments: ["a.md"], agent: "" })).toBe(base);
+    expect(cardContentDigest({ title: "t", body: "b", attachments: ["a.md"], model: "  " })).toBe(base);
+  });
+
+  it("changes the digest when model is set or changed, and reviewLines names it", () => {
+    const none = cardContentDigest({ title: "t", body: "b", attachments: [] });
+    const opus = cardContentDigest({ title: "t", body: "b", attachments: [], model: "opus" });
+    const sonnet = cardContentDigest({ title: "t", body: "b", attachments: [], model: "sonnet" });
+    expect(opus).not.toBe(none);
+    expect(sonnet).not.toBe(opus);
+    expect(reviewLines({ title: "t", body: "b", attachments: [], model: "opus" }, []).some((l) =>
+      l.includes("model opus")
+    )).toBe(true);
+  });
 });
 
 describe("what the sheet says", () => {

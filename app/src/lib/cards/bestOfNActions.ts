@@ -43,6 +43,7 @@ import {
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, EMPTY_DIRECT_PROMPT, isDirectPrompt, noPromptReason, provisionalSessionName, runStatusNeeded, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
+import { cardContentOf } from "$lib/cards/cardReview";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
 import { sshLimitation } from "$lib/workspace/sshWorkspace";
@@ -140,7 +141,14 @@ export async function startBestOfN(
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
-    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    content: cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    }),
     statuses: resolved.statuses,
     // The card's own prompt, not a candidate's: `composeCandidatePrompt`
     // wraps this in gavin's "you are candidate 2 of 3" framing, which is

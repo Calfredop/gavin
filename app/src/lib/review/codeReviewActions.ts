@@ -32,6 +32,7 @@ import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession, resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
+import { cardContentOf } from "$lib/cards/cardReview";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
@@ -204,7 +205,14 @@ export async function requestCardReview(
     !(await ensureCardReviewed({
       workspaceId,
       path: card.id,
-      content: { title: card.title, body, attachments: card.attachments ?? [] },
+      content: cardContentOf({
+        title: card.title,
+        body,
+        attachments: card.attachments,
+        agent: card.agent,
+        model: card.model,
+        effort: card.effort,
+      }),
       statuses: resolved.statuses,
       prompt: body,
       blockLabel: "The card body the review agent will read:",

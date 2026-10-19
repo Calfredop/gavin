@@ -8,7 +8,8 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import type { ResolvedAgent } from "$lib/core/settings";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
@@ -55,8 +56,8 @@ import {
   type AttachmentStatus,
 } from "$lib/cards/attachments";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
-import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
+import { cardContentOf, UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent, bracketedPaste } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
@@ -474,7 +475,14 @@ export async function developCard(
   const file = await backend.readFileForViewer(card.id);
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
-  const content = { title: card.title, body, attachments: card.attachments ?? [] };
+  const content = cardContentOf({
+    title: card.title,
+    body,
+    attachments: card.attachments,
+    agent: card.agent,
+    model: card.model,
+    effort: card.effort,
+  });
   if (
     !(await ensureCardReviewed({
       workspaceId,
@@ -505,9 +513,17 @@ export async function developCard(
   // is not a level: develop overwhelmingly targets a card that names
   // neither field, and `agentForCard` resolves that to EXACTLY
   // `resolvedAgentFor` -- the behaviour this route had before.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
+  const { decision, agent: launchAgent } = agentForNewLaunch(workspaceId, card, false);
   const held = holdLaunch(workspaceId, decision);
   if (held) return held;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    card.contextFolder,
+    launchAgent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   const prompt = withPromptExtras(
     composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
     promptExtrasFor(workspaceId, agent.profileId)
@@ -616,9 +632,27 @@ async function launchCard(
   // attributed) resolves to exactly the workspace's agent -- so this
   // reads the same as `resolvedAgentFor` did for every card that
   // predates the fields.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
+  const { decision, agent: launchAgent } = agentForNewLaunch(
+    workspaceId,
+    card,
+    mode === "resume" || mode === "review"
+  );
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
+  // Cursor's projectRoot is the launch cwd. A review runs where the work
+  // is (binding.launchCwd); every other mode uses the card's context.
+  const cursorRoot =
+    mode === "review"
+      ? (binding?.launchCwd ?? binding?.cwd ?? card.contextFolder)
+      : card.contextFolder;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    cursorRoot,
+    launchAgent,
+    options.automatic || options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label, agent.profileId);
 
   // Whether the conversation a resume would reopen exists at all. Asked
@@ -791,7 +825,14 @@ async function launchCard(
     if (!file.exists) return `Card file not found: ${card.id}`;
     body = stripFrontmatter(file.content).trim();
     if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
-    const content = { title: card.title, body, attachments: card.attachments ?? [] };
+    const content = cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    });
     if (options.automatic) {
       // Unattended (auto-resume): refuse rather than ask. A modal raised
       // with nobody watching holds the recovery open behind whatever
@@ -1061,7 +1102,7 @@ export async function pasteToMainAgent(
     return queueFollowUp(mainSessionId, target, prompt);
   }
   try {
-    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
+    await backend.writeInput(mainSessionId, bracketedPaste(prompt));
   } catch (e) {
     return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -1141,7 +1182,14 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
-    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    content: cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    }),
     statuses: resolved.statuses,
     prompt: composePrompt(card.id),
   });
@@ -1214,7 +1262,7 @@ export async function relaunchCard(
   // workspace's agent here would hand codex's replay claude's
   // `--session-id`, which is garbage in its argv.
   const relaunched = cardViewForPath(get(gavinTrees)[workspaceId], path);
-  const agent = agentForCard(workspaceId, relaunched);
+  let agent: ResolvedAgent = agentForCard(workspaceId, relaunched);
   // The binding WHOLE, read by card: the board carries no launch command
   // (v43), and this is the one action that replays it. Read after the
   // gates, so a re-launch that queued reads it when it finally runs.
@@ -1234,6 +1282,15 @@ export async function relaunchCard(
   // refused here -- before createSession -- and Launch as new session is
   // the way to compose a fresh, gated command from the card now.
   if (!isGavinBuiltCommand(binding.command, agent)) return FOREIGN_RELAUNCH_COMMAND;
+  const relaunchRoot = binding.launchCwd ?? binding.cwd;
+  const cursorReady = await prepareCursorAgentLaunch(
+    workspaceId,
+    relaunchRoot,
+    agent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof cursorReady === "string") return cursorReady;
+  agent = cursorReady;
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is
@@ -1261,11 +1318,14 @@ export async function relaunchCard(
   if (!verbatim) {
     const file = await backend.readFileForViewer(path);
     if (!file.exists) return `Card file not found: ${path}`;
-    const content = {
+    const content = cardContentOf({
       title: relaunched?.title ?? "",
       body: stripFrontmatter(file.content).trim(),
-      attachments: relaunched?.attachments ?? [],
-    };
+      attachments: relaunched?.attachments,
+      agent: relaunched?.agent,
+      model: relaunched?.model,
+      effort: relaunched?.effort,
+    });
     if (options.queued && !cardReviewed(workspaceId, path, content)) return UNREVIEWED_UNATTENDED;
     const resolved = await resolveAttachmentsForRun(workspaceId, content.attachments);
     if ("error" in resolved) return resolved.error;
@@ -1281,7 +1341,20 @@ export async function relaunchCard(
       return null;
     }
   }
-  const fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
+  let fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
+  // A remembered Cursor command may still carry `--approve-mcps` from a
+  // launch before the disclosure changed. Strip it (and bare `--force`)
+  // when the AG-07 answer is withhold, so a re-launch cannot pre-approve
+  // servers the human has not kept.
+  if (agent.profileId === "cursor" && agent.cursorMcpApproval === "withhold" && fresh.command) {
+    fresh = {
+      ...fresh,
+      command: fresh.command
+        .split(/\s+/)
+        .filter((part) => part && part !== "--approve-mcps" && part !== "--force")
+        .join(" "),
+    };
+  }
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
   // was launched in, which is where it is about to run again.

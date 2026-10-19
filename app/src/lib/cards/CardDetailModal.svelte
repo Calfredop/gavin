@@ -1,8 +1,9 @@
 <script lang="ts">
   import Modal from "$lib/core/Modal.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import DOMPurify from "dompurify";
-  import { renderMarkdown } from "$lib/files/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { sanitizeMarkdown } from "$lib/files/sanitizeMarkdown";
+  import { markdownLinkClick } from "$lib/files/markdownLinks";
   import { pickPath } from "$lib/workspace/picker";
   import type { CardView } from "$lib/core/planBoard";
   import { canReplay, type Column, type Label, type Priority } from "$lib/board/kanban";
@@ -23,6 +24,8 @@
     agentDefaultsStore,
     agentProfilesStore,
     requireReviewDefault,
+    cardReviewed,
+    stampCardReview,
   } from "$lib/core/layoutState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import {
@@ -35,6 +38,7 @@
   import { cardAgentSummary } from "$lib/cards/cardAgent";
   import {
     addAttachment,
+    attachmentChipLabel,
     attachmentFromPick,
     attachmentName,
     formatAttachments,
@@ -76,7 +80,7 @@
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { mustPromptBody } from "$lib/agents/actionPromptsState";
-  import { cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
+  import { cardContentOf, cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
   import { resumeNoteFor } from "$lib/agents/autoResume";
   import { runBaseline } from "$lib/cards/runChanges";
@@ -223,9 +227,14 @@
       void backend.unwatchFileForViewer(path).catch(() => {});
     };
   });
-  const bodyHtml = $derived(
-    content !== null ? DOMPurify.sanitize(renderMarkdown(content)) : null
-  );
+  const bodyHtml = $derived(content !== null ? sanitizeMarkdown(content) : null);
+
+  // Repository markdown must not navigate the gavin window. Only http(s)
+  // leaves, through the system browser (ADR 0005).
+  function followMarkdownLink(event: MouseEvent): void {
+    const href = markdownLinkClick(event);
+    if (href) void openUrl(href).catch(() => {});
+  }
   const checklist = $derived<ChecklistItem[]>(
     card.kind === "plan" && content !== null ? parseChecklist(content) : []
   );
@@ -319,10 +328,29 @@
     value: string
   ): Promise<boolean> {
     errorMessage = null;
+    // A human picking agent/model/effort on a card they already reviewed
+    // is their own edit — re-stamp so the next launch does not ask again.
+    const restampLaunch =
+      (key === "agent" || key === "model" || key === "effort") &&
+      cardReviewed(workspaceId, card.id, reviewContent);
     try {
       const moved = await backend.setPlanFrontmatterField(card.id, key, value);
       patchPlanField(workspaceId, card.id, key, value);
       followMove(moved);
+      if (restampLaunch) {
+        void stampCardReview(
+          workspaceId,
+          card.id,
+          cardContentOf({
+            title: card.title,
+            body: stripFrontmatter(content ?? "").trim(),
+            attachments,
+            agent: key === "agent" ? value : card.agent,
+            model: key === "model" ? value : card.model,
+            effort: key === "effort" ? value : card.effort,
+          })
+        );
+      }
       return true;
     } catch (e) {
       errorMessage = String(e);
@@ -655,7 +683,25 @@
       }
       await backend.openPathExternally(path);
     } catch (e) {
-      attachmentsError = `Couldn't open ${attachmentName(path)}: ${e instanceof Error ? e.message : e}`;
+      const message = String(e instanceof Error ? e.message : e);
+      attachmentsError = `Couldn't open ${attachmentName(path)}: ${message}`;
+      // Launchables are refused in open_path_externally; Reveal is the
+      // safe next step so the human can inspect the target without
+      // handing it to /usr/bin/open.
+      if (message.includes("would run as a program")) {
+        const reveal = await askConfirm({
+          title: "Reveal in Finder instead?",
+          lines: [message],
+          confirmLabel: "Reveal in Finder",
+        });
+        if (reveal) {
+          await backend.revealPathExternally(path).catch((revealErr) => {
+            attachmentsError = `Couldn't reveal ${attachmentName(path)}: ${
+              revealErr instanceof Error ? revealErr.message : revealErr
+            }`;
+          });
+        }
+      }
     }
   }
 
@@ -1120,11 +1166,16 @@
   const requireReview = $derived(
     resolveRequireReview(reviewWorkspace?.requireReview, $requireReviewDefault)
   );
-  const reviewContent = $derived({
-    title: card.title,
-    body: stripFrontmatter(content ?? "").trim(),
-    attachments: [...attachments],
-  });
+  const reviewContent = $derived(
+    cardContentOf({
+      title: card.title,
+      body: stripFrontmatter(content ?? "").trim(),
+      attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    })
+  );
   // Never for a note -- nothing executes one -- never before the file has
   // been read, since "not loaded yet" must not draw as "not reviewed", and
   // never when the gate itself is off for this workspace.
@@ -1588,7 +1639,12 @@
             {isDirectPrompt(card) ? "Prompt · sent as written" : card.kind === "task" ? "Prompt" : "Body"}
           </div>
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
-          <div class="body-preview">{@html bodyHtml}</div>
+          <div
+            class="body-preview"
+            role="presentation"
+            onclick={followMarkdownLink}
+            onauxclick={followMarkdownLink}
+          >{@html bodyHtml}</div>
         </div>
       {/if}
 
@@ -1734,6 +1790,11 @@
                   {@const broken = status !== null && !status.exists}
                   {@const refused = status !== null && status.location === "refused"}
                   {@const withheld = status !== null && !broken && status.location === "outside"}
+                  {@const chipLabel = attachmentChipLabel(path, status?.absolutePath ?? null)}
+                  {@const resolvedTitle =
+                    status?.absolutePath && attachmentName(status.absolutePath) !== attachmentName(path)
+                      ? status.absolutePath
+                      : path}
                   <span class="attachment" class:broken class:withheld>
                     <button
                       type="button"
@@ -1745,15 +1806,15 @@
                           ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
                           : withheld
                             ? `${path} — outside the workspace. Gavin does not read this automatically; a launched agent is told the card named it, but not what it contains.`
-                            : path}
+                            : resolvedTitle}
                       onclick={() => status && void openAttachment(status)}
                     >
-                      {broken ? "⚠ " : withheld ? "↗ " : ""}{attachmentName(path)}
+                      {broken ? "⚠ " : withheld ? "↗ " : ""}{chipLabel}
                     </button>
                     <button
                       type="button"
                       class="attachment-remove"
-                      aria-label={`Remove ${attachmentName(path)}`}
+                      aria-label={`Remove ${chipLabel}`}
                       disabled={attachmentsBusy || attachmentsBlocked !== null}
                       title={attachmentsBlocked ?? "Take this file off the card"}
                       onclick={() => void writeAttachments(removeAttachment(attachments, path))}

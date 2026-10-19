@@ -105,6 +105,7 @@ import {
   agentForProfile,
   resolvedAgentFor,
   promptExtrasFor,
+  prepareCursorAgentLaunch,
   armFailureDetection,
   baseShaForLaunch,
   cardReviewed,
@@ -173,7 +174,7 @@ import {
 import { sessionLiveness } from "$lib/core/workspace";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { DEVELOPING_STALL } from "$lib/cards/developingCards";
-import { unreviewedStallReason } from "$lib/cards/cardReview";
+import { cardContentOf, unreviewedStallReason } from "$lib/cards/cardReview";
 import type { OrchestrationAgentRecord } from "$lib/core/workspace";
 import {
   conversationLogFor,
@@ -1440,7 +1441,17 @@ async function executeToolLaunch(
   }
 
   const body = resolveToolBody(tool, stepParams(step));
-  const agent = resolvedAgentFor(workspaceId);
+  let agent = resolvedAgentFor(workspaceId, cwd);
+  if (tool.kind === "agent") {
+    // A rail step is unattended: Cursor's MCP dialog would stall with
+    // nobody watching, so an unresolved disclosure refuses here.
+    const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, agent, "unattended");
+    if (typeof prepared === "string") {
+      await stallLaunch(workspaceId, step.id, prepared);
+      return false;
+    }
+    agent = prepared;
+  }
   // Only an AGENT tool gets a conversation: a command, script or until
   // step is a shell, and its verdict is its exit code (tools spec T5).
   const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
@@ -1614,11 +1625,18 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // The human answers it on the card, where the body can actually be
   // read; Retry then starts the step.
   if (
-    !cardReviewed(workspaceId, step.cardPath, {
-      title: entry.plan.title,
-      body,
-      attachments: entry.plan.attachments ?? [],
-    })
+    !cardReviewed(
+      workspaceId,
+      step.cardPath,
+      cardContentOf({
+        title: entry.plan.title,
+        body,
+        attachments: entry.plan.attachments,
+        agent: entry.plan.agent,
+        model: entry.plan.model,
+        effort: entry.plan.effort,
+      })
+    )
   ) {
     await stallLaunch(workspaceId, stepId, unreviewedStallReason(entry.plan.title));
     return false;
@@ -1647,8 +1665,16 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   if (decision.kind === "pause") {
     return false;
   }
-  const launchAgent =
+  let launchAgent =
     decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
+  {
+    const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, launchAgent, "unattended");
+    if (typeof prepared === "string") {
+      await stallLaunch(workspaceId, stepId, prepared);
+      return false;
+    }
+    launchAgent = prepared;
+  }
   let prompt: string;
   const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
   // A direct prompt goes out as written, on a rail as on the board: no
@@ -3211,11 +3237,18 @@ async function unreviewedTitles(workspaceId: string, entries: CardEntry[]): Prom
     const file = await backend.readFileForViewer(e.plan.path);
     const body = file.exists ? stripFrontmatter(file.content).trim() : "";
     if (
-      !cardReviewed(workspaceId, e.plan.path, {
-        title: e.plan.title,
-        body,
-        attachments: e.plan.attachments ?? [],
-      })
+      !cardReviewed(
+        workspaceId,
+        e.plan.path,
+        cardContentOf({
+          title: e.plan.title,
+          body,
+          attachments: e.plan.attachments,
+          agent: e.plan.agent,
+          model: e.plan.model,
+          effort: e.plan.effort,
+        })
+      )
     ) {
       out.push(e.plan.title);
     }
