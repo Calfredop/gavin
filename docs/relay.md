@@ -64,6 +64,12 @@ no CLI arguments.
 | `GAVIN_RELAY_TLS_CERT` | | Certificate chain, PEM. |
 | `GAVIN_RELAY_TLS_KEY` | | Matching private key, PEM. |
 | `GAVIN_RELAY_TLS_TERMINATED` | | Set to `1` when a proxy in front terminates TLS. |
+| `GAVIN_RELAY_CONNECTIONS` | `4096` | Sockets open at once, of every kind. |
+| `GAVIN_RELAY_CONNECTIONS_PER_SOURCE` | `64` | Sockets open at once from one source address (before TLS). |
+| `GAVIN_RELAY_REGISTRATIONS_PER_TOKEN` | `32` | Workstation registrations one admission token may hold across rendezvous ids. |
+| `GAVIN_RELAY_REGISTRATIONS_PER_RENDEZVOUS` | `4` | Registrations under one rendezvous id. |
+| `GAVIN_RELAY_WAITING_PER_RENDEZVOUS` | `16` | Devices waiting under one rendezvous id. |
+| `GAVIN_RELAY_BYTES_PER_STREAM` | `0` | Bytes one joined stream may copy (`0` = no budget). An over-budget stream is ended. |
 
 It will not start without at least one admission token, and it will not
 start without TLS unless `GAVIN_RELAY_TLS_TERMINATED=1`. A misspelt
@@ -258,23 +264,30 @@ There is no health HTTP endpoint: the Relay is WebSocket-only. A
 load-balancer probe that opens TCP to the listen port is enough to know
 the process is bound; admission still needs a real hello.
 
-## Limits (fixed for now)
+## Limits
 
-| Limit | Value |
-| --- | --- |
-| Hello deadline (accept → first frame) | 5 s |
-| Claim deadline (Device waits for a Workstation) | 10 s |
-| Keepalive ping | every 20 s |
-| Silence before drop | 60 s |
-| Write deadline per frame | 30 s |
-| Registrations per rendezvous | 4 |
-| Waiting Devices per rendezvous | 16 |
-| Open sockets | 4096 |
-| Max copied frame | 128 KiB |
+| Limit | Default | Env |
+| --- | --- | --- |
+| Hello deadline (accept → first frame) | 5 s | (fixed) |
+| Claim deadline (Device waits for a Workstation) | 10 s | (fixed) |
+| Keepalive ping | every 20 s | (fixed) |
+| Silence before drop | 60 s | (fixed) |
+| Write deadline per frame | 30 s | (fixed) |
+| Open sockets | 4096 | `GAVIN_RELAY_CONNECTIONS` |
+| Open sockets per source address | 64 | `GAVIN_RELAY_CONNECTIONS_PER_SOURCE` |
+| Registrations per admission token | 32 | `GAVIN_RELAY_REGISTRATIONS_PER_TOKEN` |
+| Registrations per rendezvous | 4 | `GAVIN_RELAY_REGISTRATIONS_PER_RENDEZVOUS` |
+| Waiting Devices per rendezvous | 16 | `GAVIN_RELAY_WAITING_PER_RENDEZVOUS` |
+| Bytes per joined stream | none (`0`) | `GAVIN_RELAY_BYTES_PER_STREAM` |
+| Max copied frame | 128 KiB | (fixed) |
 
-Public-instance per-Workstation bandwidth caps are not env-configurable
-yet; self-hosters sharing one Relay among their own machines are fine
-at these defaults.
+At the process-wide or per-source socket ceiling the peer is closed unread.
+A registration over the per-token or per-rendezvous cap is refused `busy`.
+A stream that would copy past its byte budget is ended (not throttled).
+
+Connection *rate* limits and bandwidth shaping that are not a per-stream
+byte budget still belong on a front proxy (Caddy, nginx, a load balancer)
+when the Relay is shared across tenants.
 
 ## Operations notes
 

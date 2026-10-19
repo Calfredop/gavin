@@ -13,6 +13,12 @@
 //! | `GAVIN_RELAY_TLS_KEY` | its private key, PEM |
 //! | `GAVIN_RELAY_TLS_TERMINATED=1` | something in front of the Relay does TLS |
 //! | `GAVIN_RELAY_EXIT_WITH_STDIN=1` | read commands from stdin, and stop when it closes |
+//! | `GAVIN_RELAY_CONNECTIONS` | sockets open at once; `4096` when unset |
+//! | `GAVIN_RELAY_CONNECTIONS_PER_SOURCE` | sockets open at once from one address, before TLS; `64` when unset |
+//! | `GAVIN_RELAY_REGISTRATIONS_PER_TOKEN` | Workstation registrations one admission token may hold; `32` when unset |
+//! | `GAVIN_RELAY_REGISTRATIONS_PER_RENDEZVOUS` | registrations under one rendezvous id; `4` when unset |
+//! | `GAVIN_RELAY_WAITING_PER_RENDEZVOUS` | Devices waiting under one rendezvous id; `16` when unset |
+//! | `GAVIN_RELAY_BYTES_PER_STREAM` | bytes one joined stream may copy; `0` (no budget) when unset |
 //!
 //! The last one is for the daemon that runs this Mac's own Relay
 //! (`crates/daemon/src/desk_relay.rs`). It holds the other end of the
@@ -69,12 +75,55 @@ fn tls() -> anyhow::Result<Option<Tls>> {
     }
 }
 
+fn usize_var(name: &str, default: usize) -> anyhow::Result<usize> {
+    match var(name) {
+        None => Ok(default),
+        Some(raw) => raw.parse().map_err(|e| {
+            anyhow::anyhow!("gavin-relay: {name} is not an integer ({raw}): {e}")
+        }),
+    }
+}
+
+fn u64_var(name: &str, default: u64) -> anyhow::Result<u64> {
+    match var(name) {
+        None => Ok(default),
+        Some(raw) => raw
+            .parse()
+            .map_err(|e| anyhow::anyhow!("gavin-relay: {name} is not an integer ({raw}): {e}")),
+    }
+}
+
+fn limits() -> anyhow::Result<Limits> {
+    let defaults = Limits::default();
+    Ok(Limits {
+        connections: usize_var("GAVIN_RELAY_CONNECTIONS", defaults.connections)?,
+        connections_per_source: usize_var(
+            "GAVIN_RELAY_CONNECTIONS_PER_SOURCE",
+            defaults.connections_per_source,
+        )?,
+        registrations_per_token: usize_var(
+            "GAVIN_RELAY_REGISTRATIONS_PER_TOKEN",
+            defaults.registrations_per_token,
+        )?,
+        registrations_per_rendezvous: usize_var(
+            "GAVIN_RELAY_REGISTRATIONS_PER_RENDEZVOUS",
+            defaults.registrations_per_rendezvous,
+        )?,
+        waiting_per_rendezvous: usize_var(
+            "GAVIN_RELAY_WAITING_PER_RENDEZVOUS",
+            defaults.waiting_per_rendezvous,
+        )?,
+        bytes_per_stream: u64_var("GAVIN_RELAY_BYTES_PER_STREAM", defaults.bytes_per_stream)?,
+        ..defaults
+    })
+}
+
 fn config() -> anyhow::Result<RelayConfig> {
     let listen = var("GAVIN_RELAY_LISTEN").unwrap_or_else(|| DEFAULT_LISTEN.to_string());
     let listen: SocketAddr = listen
         .parse()
         .map_err(|e| anyhow::anyhow!("gavin-relay: GAVIN_RELAY_LISTEN is not an address ({listen}): {e}"))?;
-    Ok(RelayConfig { listen, tokens: tokens()?, tls: tls()?, limits: Limits::default() })
+    Ok(RelayConfig { listen, tokens: tokens()?, tls: tls()?, limits: limits()? })
 }
 
 /// With `GAVIN_RELAY_EXIT_WITH_STDIN=1`, reads stdin a line at a time on

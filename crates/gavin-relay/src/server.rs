@@ -30,7 +30,7 @@ use protocol::relay::{
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,6 +69,18 @@ pub struct Limits {
     pub waiting_per_rendezvous: usize,
     /// Sockets open at once, of every kind.
     pub connections: usize,
+    /// Sockets open at once from one source address, before TLS. At the
+    /// ceiling the socket is closed unread, the same as the process-wide
+    /// pool: nothing is known about the peer yet.
+    pub connections_per_source: usize,
+    /// Workstation registrations one admission token may hold at once,
+    /// across every rendezvous id. Stops a shared-token principal from
+    /// filling the process-wide pool under ids it chooses itself.
+    pub registrations_per_token: usize,
+    /// Bytes one joined stream may copy in both directions together.
+    /// `0` means no budget. An over-budget stream is ended; it is not
+    /// throttled.
+    pub bytes_per_stream: u64,
 }
 
 impl Default for Limits {
@@ -82,6 +94,9 @@ impl Default for Limits {
             registrations_per_rendezvous: 4,
             waiting_per_rendezvous: 16,
             connections: 4096,
+            connections_per_source: 64,
+            registrations_per_token: 32,
+            bytes_per_stream: 0,
         }
     }
 }
@@ -193,8 +208,36 @@ struct Shared {
     limits: Limits,
     counters: Arc<Counters>,
     registrations: Mutex<HashMap<String, Vec<Registration>>>,
+    /// Workstation registrations held per admission-token digest.
+    registrations_by_token: Mutex<HashMap<[u8; 32], usize>>,
     waiting: Mutex<HashMap<String, Waiting>>,
     next_registration: AtomicU64,
+}
+
+/// Open sockets attributed to one source address. Released when the
+/// connection's task ends, however it ends.
+struct SourceHold {
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Drop for SourceHold {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap();
+        if let Some(n) = counts.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                counts.remove(&self.ip);
+            }
+        }
+    }
+}
+
+fn source_ip(peer: SocketAddr) -> IpAddr {
+    match peer.ip() {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        other => other,
+    }
 }
 
 fn digest(token: &str) -> [u8; 32] {
@@ -253,6 +296,7 @@ struct Registered {
     shared: Arc<Shared>,
     rendezvous: String,
     id: u64,
+    token: [u8; 32],
 }
 
 impl Drop for Registered {
@@ -262,6 +306,13 @@ impl Drop for Registered {
             list.retain(|r| r.id != self.id);
             if list.is_empty() {
                 registrations.remove(&self.rendezvous);
+            }
+        }
+        let mut by_token = self.shared.registrations_by_token.lock().unwrap();
+        if let Some(n) = by_token.get_mut(&self.token) {
+            *n -= 1;
+            if *n == 0 {
+                by_token.remove(&self.token);
             }
         }
         self.shared.counters.workstations.fetch_sub(1, Ordering::SeqCst);
@@ -327,6 +378,8 @@ async fn serve_counting(
     let shared = Arc::new(shared_for(&config, tokens, counters));
     let acceptor = config.tls.as_ref().map(tls_acceptor).transpose()?;
     let slots = Arc::new(Semaphore::new(config.limits.connections));
+    let per_source = Arc::new(Mutex::new(HashMap::<IpAddr, usize>::new()));
+    let per_source_ceiling = config.limits.connections_per_source;
 
     tokio::pin!(shutdown);
     loop {
@@ -334,8 +387,8 @@ async fn serve_counting(
             _ = &mut shutdown => return Ok(()),
             accepted = listener.accept() => accepted,
         };
-        let socket = match accepted {
-            Ok((socket, _)) => socket,
+        let (socket, peer) = match accepted {
+            Ok(accepted) => accepted,
             Err(e) => {
                 eprintln!("gavin-relay: accept failed: {e}");
                 // Out of file descriptors is the realistic one, and a
@@ -346,15 +399,30 @@ async fn serve_counting(
             }
         };
         shared.counters.accepted.fetch_add(1, Ordering::SeqCst);
-        // At the ceiling a socket is closed unread. Nothing is known
+        // At either ceiling a socket is closed unread. Nothing is known
         // about it yet, so there is nobody to explain it to.
         let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+            continue;
+        };
+        let ip = source_ip(peer);
+        let source = {
+            let mut counts = per_source.lock().unwrap();
+            let held = counts.entry(ip).or_insert(0);
+            if *held >= per_source_ceiling {
+                None
+            } else {
+                *held += 1;
+                Some(SourceHold { counts: Arc::clone(&per_source), ip })
+            }
+        };
+        let Some(source) = source else {
             continue;
         };
         let shared = Arc::clone(&shared);
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
             let _slot = slot;
+            let _source = source;
             handle(shared, acceptor, socket).await;
         });
     }
@@ -382,6 +450,7 @@ fn shared_for(config: &RelayConfig, tokens: AdmissionTokens, counters: Arc<Count
         limits: config.limits.clone(),
         counters,
         registrations: Mutex::new(HashMap::new()),
+        registrations_by_token: Mutex::new(HashMap::new()),
         waiting: Mutex::new(HashMap::new()),
         next_registration: AtomicU64::new(0),
     }
@@ -444,9 +513,10 @@ async fn handle(
         return refuse(ws, RefusalReason::Malformed).await;
     }
 
+    let token_digest = digest(token);
     match &hello {
         RelayHello::Workstation { rendezvous, .. } => {
-            workstation(shared, ws, rendezvous.clone()).await
+            workstation(shared, ws, rendezvous.clone(), token_digest).await
         }
         RelayHello::Device { rendezvous, purpose, .. } => {
             if !is_purpose(purpose) {
@@ -505,18 +575,30 @@ async fn say(ws: &mut Socket, reply: &RelayReply, within: Duration) -> bool {
     )
 }
 
-async fn workstation(shared: Arc<Shared>, mut ws: Socket, rendezvous: String) {
+async fn workstation(
+    shared: Arc<Shared>,
+    mut ws: Socket,
+    rendezvous: String,
+    token: [u8; 32],
+) {
     let (announce, mut announcements) = mpsc::channel(shared.limits.waiting_per_rendezvous);
     let id = shared.next_registration.fetch_add(1, Ordering::SeqCst);
     // Decided inside the block and acted on outside it: the lock is a
-    // std one, and must be let go before anything is awaited.
+    // std one, and must be let go before anything is awaited. Both maps
+    // are judged under one critical section so a token that is at its
+    // ceiling cannot race another registration past it.
     let registered = {
         let mut registrations = shared.registrations.lock().unwrap();
+        let mut by_token = shared.registrations_by_token.lock().unwrap();
         let list = registrations.entry(rendezvous.clone()).or_default();
-        if list.len() >= shared.limits.registrations_per_rendezvous {
+        let for_token = by_token.entry(token).or_insert(0);
+        if list.len() >= shared.limits.registrations_per_rendezvous
+            || *for_token >= shared.limits.registrations_per_token
+        {
             false
         } else {
             list.push(Registration { id, announce });
+            *for_token += 1;
             shared.counters.workstations.fetch_add(1, Ordering::SeqCst);
             true
         }
@@ -524,7 +606,7 @@ async fn workstation(shared: Arc<Shared>, mut ws: Socket, rendezvous: String) {
     if !registered {
         return refuse(ws, RefusalReason::Busy).await;
     }
-    let _registered = Registered { shared: Arc::clone(&shared), rendezvous, id };
+    let _registered = Registered { shared: Arc::clone(&shared), rendezvous, id, token };
 
     if !say(&mut ws, &RelayReply::Ready, shared.limits.write_deadline).await {
         return;
@@ -642,7 +724,8 @@ fn step(message: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>)
 }
 
 /// Joins a Device's socket to the Workstation's and copies binary frames
-/// between them, verbatim, until either side goes.
+/// between them, verbatim, until either side goes or the stream's byte
+/// budget is spent.
 async fn copy(shared: Arc<Shared>, mut device: Socket, mut workstation: Socket) {
     let limits = shared.limits.clone();
     // Both are told at once that the other is there. If either cannot be
@@ -666,16 +749,22 @@ async fn copy(shared: Arc<Shared>, mut device: Socket, mut workstation: Socket) 
     keepalive.tick().await;
     let mut device_heard = Instant::now();
     let mut workstation_heard = Instant::now();
+    let mut copied = 0u64;
+    let budget = limits.bytes_per_stream;
 
     loop {
         tokio::select! {
             message = device.next() => match step(message) {
                 Step::Forward(message, len) => {
                     device_heard = Instant::now();
+                    if budget_spent(budget, copied, len) {
+                        break;
+                    }
                     let sent = tokio::time::timeout(limits.write_deadline, workstation.send(message)).await;
                     if !matches!(sent, Ok(Ok(()))) {
                         break;
                     }
+                    copied += len as u64;
                     shared.counters.bytes.fetch_add(len as u64, Ordering::SeqCst);
                 }
                 Step::Heard => device_heard = Instant::now(),
@@ -684,10 +773,14 @@ async fn copy(shared: Arc<Shared>, mut device: Socket, mut workstation: Socket) 
             message = workstation.next() => match step(message) {
                 Step::Forward(message, len) => {
                     workstation_heard = Instant::now();
+                    if budget_spent(budget, copied, len) {
+                        break;
+                    }
                     let sent = tokio::time::timeout(limits.write_deadline, device.send(message)).await;
                     if !matches!(sent, Ok(Ok(()))) {
                         break;
                     }
+                    copied += len as u64;
                     shared.counters.bytes.fetch_add(len as u64, Ordering::SeqCst);
                 }
                 Step::Heard => workstation_heard = Instant::now(),
@@ -718,6 +811,12 @@ async fn copy(shared: Arc<Shared>, mut device: Socket, mut workstation: Socket) 
         let _ = workstation.close(None).await;
     })
     .await;
+}
+
+/// Whether forwarding `len` more bytes would take the stream past its
+/// budget. A budget of `0` is none.
+fn budget_spent(budget: u64, copied: u64, len: usize) -> bool {
+    budget != 0 && copied.saturating_add(len as u64) > budget
 }
 
 /// A Relay running on a thread of its own, for a program that is not

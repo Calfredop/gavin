@@ -309,7 +309,10 @@ of these.
   security decision or reassure.
 - **The caps.** 05 §8's 64 KiB channel line, per-connection request rate and per-Device
   connection ceiling stand (DP-05, SC-10). They now apply on the daemon's side of the
-  Relay, and the Relay carries its own per-Workstation bandwidth limit.
+  Relay. gavin-relay itself enforces a process-wide and per-source socket ceiling, a
+  registration ceiling per admission token and per rendezvous id, waiting caps, and an
+  optional per-stream byte budget (over-budget streams are ended). Connection-rate and
+  proxy-level bandwidth shaping for a shared instance stay on the front proxy.
 
 **Residual.** Denial, delay, selective censorship, and the metadata above.
 
@@ -666,8 +669,10 @@ pairing QR pins, admitting only peers on this network or tailnet.
 - **The Relay is untrusted** for confidentiality and integrity, and trusted for
   availability only. Its operator sees the metadata in CT-3, including the
   cross-Workstation correlation.
-- **The public Relay** is run by the publisher, free, with per-Workstation bandwidth
-  limits. **Self-hosters** run a signed image pinned by digest (`RELEASING.md`).
+- **The public Relay** (when the publisher runs one) uses gavin-relay's in-process
+  per-source, per-token and per-stream limits, with connection-rate and any further
+  bandwidth shaping on its front proxy. **Self-hosters** run a signed image pinned by
+  digest (`RELEASING.md`) and set the same knobs (or rely on their proxy) as needed.
 - **In release builds the Relay URL must be `wss://`.** A plain `ws://` is allowed only
   where §5.7 allows a dev Relay.
 - **Reconnect** resumes the *connection*, never a command (CT-3).

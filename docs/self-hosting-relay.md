@@ -162,7 +162,21 @@ configuration.
 
 ## Limits
 
-The Relay caps concurrent connections, registrations and waiting streams
-per rendezvous id, and how long a connection may sit without saying hello
-(`Limits` in `crates/gavin-relay/src/server.rs`). A public instance adds
-per-Workstation bandwidth limits on top; your own does not.
+gavin-relay itself enforces (`Limits` in `crates/gavin-relay/src/server.rs`,
+overridable with `GAVIN_RELAY_*` — see `docs/relay.md`):
+
+- a process-wide open-socket ceiling and a per-source-address ceiling
+  (both before TLS; at the ceiling the socket is closed unread);
+- Workstation registration caps per rendezvous id and per admission token
+  (across rendezvous ids);
+- waiting Devices per rendezvous id;
+- an optional per-stream byte budget (`GAVIN_RELAY_BYTES_PER_STREAM`; an
+  over-budget stream is ended, not throttled);
+- hello / claim / keepalive / silence / write deadlines and a 128 KiB
+  frame cap.
+
+A shared or public instance should still put **connection-rate** limits
+and any bandwidth shaping that is not a per-stream byte budget on the
+front proxy (Caddy, nginx, or a load balancer) — beside the TLS-termination
+notes above. Per-IP concurrent connections can be set in the proxy as well
+as, or instead of, `GAVIN_RELAY_CONNECTIONS_PER_SOURCE`.

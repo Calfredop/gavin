@@ -244,7 +244,7 @@ The earlier remote-access design stopped at phase 2. Pairing and the trust store
 - **What it does:** it matches up the two ends and copies bytes between them, over WebSocket and TLS.
 - **Who may connect:** daemons and Devices must present its admission token.
 - **Distribution:** signed images, pinned by digest.
-- **Instances:** one public instance run by the publisher, self-hosting documented, and a dev instance in the local stack. Public instances are free, with per-Workstation bandwidth limits.
+- **Instances:** one public instance run by the publisher, self-hosting documented, and a dev instance in the local stack. Public instances are free; gavin-relay's per-source, per-token and per-stream limits (plus a front proxy for connection rate) bound shared use.
 - **Padding stays at the 256-byte bucket from 05.**
 
 ### The Companion shell (Capacitor, the store app)
