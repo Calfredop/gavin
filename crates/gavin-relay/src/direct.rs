@@ -40,15 +40,26 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(30);
 /// TLS, the WebSocket handshake and the hello are a dozen reads. Lifted
 /// once the hello is answered (`Answered::ready`), after which the
 /// stream sets its own timeout before every read.
+///
+/// `first_byte_until` is a tighter bound on the first read that returns
+/// any data: a silent socket gives its place back sooner than one that
+/// has started talking. Cleared once a byte has arrived.
 pub struct Paced {
     socket: TcpStream,
     until: Option<Instant>,
+    first_byte_until: Option<Instant>,
+    saw_data: bool,
 }
 
 impl Read for Paced {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if let Some(until) = self.until {
-            let left = until.saturating_duration_since(Instant::now());
+            let deadline = if !self.saw_data {
+                self.first_byte_until.unwrap_or(until).min(until)
+            } else {
+                until
+            };
+            let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -57,7 +68,11 @@ impl Read for Paced {
             }
             self.socket.set_read_timeout(Some(left))?;
         }
-        self.socket.read(buf)
+        let n = self.socket.read(buf)?;
+        if n > 0 {
+            self.saw_data = true;
+        }
+        Ok(n)
     }
 }
 
@@ -164,14 +179,30 @@ pub struct Answered {
 
 /// Takes a Device's connection as far as its first frame: TLS, the
 /// WebSocket handshake, and a hello -- all of it `within` of being
-/// called, however slowly it arrives.
+/// called, however slowly it arrives. The first byte may wait the
+/// whole of `within`; a caller that wants a silent socket dropped
+/// sooner uses [`answer_with_first_byte`].
 ///
 /// Nothing here reads the hello for meaning. A frame that is not one at
 /// all is refused (`malformed`) before this returns, the way a Relay
 /// refuses it; whether the one that is names this Workstation is the
 /// caller's to say.
 pub fn answer(socket: TcpStream, tls: ServerTls, within: Duration) -> Result<Answered, AnswerError> {
-    let until = Instant::now() + within;
+    answer_with_first_byte(socket, tls, within, within)
+}
+
+/// As [`answer`], but a peer that sends nothing must produce its first
+/// byte inside `first_byte`. After that the whole hello still has
+/// `within` from the call.
+pub fn answer_with_first_byte(
+    socket: TcpStream,
+    tls: ServerTls,
+    within: Duration,
+    first_byte: Duration,
+) -> Result<Answered, AnswerError> {
+    let start = Instant::now();
+    let until = start + within;
+    let first_byte_until = start + first_byte.min(within);
     let _ = socket.set_nodelay(true);
     socket.set_write_timeout(Some(within))?;
     let handle = socket.try_clone()?;
@@ -179,7 +210,12 @@ pub fn answer(socket: TcpStream, tls: ServerTls, within: Duration) -> Result<Ans
         rustls::ServerConnection::new(tls).map_err(|e| AnswerError::Tls(e.to_string()))?;
     let transport = Transport::Answering(Box::new(rustls::StreamOwned::new(
         session,
-        Paced { socket, until: Some(until) },
+        Paced {
+            socket,
+            until: Some(until),
+            first_byte_until: Some(first_byte_until),
+            saw_data: false,
+        },
     )));
     let mut ws = tungstenite::accept_with_config(transport, Some(ws_config())).map_err(|e| {
         match e {
@@ -475,6 +511,27 @@ mod tests {
         let answered = answer(socket, Arc::clone(&listener.tls), Duration::from_millis(300));
         assert!(matches!(answered, Err(AnswerError::TimedOut)), "{:?}", answered.err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A silent peer is bounded by `first_byte`, not by the whole hello
+    /// deadline: the answering place is freed sooner than HELLO.
+    #[test]
+    fn a_silent_peer_is_bounded_by_the_first_byte_deadline() {
+        let listener = listener();
+        let addr = listener.listener.local_addr().unwrap();
+        let _silent = TcpStream::connect(addr).unwrap();
+        let (socket, _) = listener.listener.accept().unwrap();
+        let started = Instant::now();
+        let answered = answer_with_first_byte(
+            socket,
+            Arc::clone(&listener.tls),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+        );
+        let took = started.elapsed();
+        assert!(matches!(answered, Err(AnswerError::TimedOut)), "{:?}", answered.err());
+        assert!(took < Duration::from_secs(1), "waited the whole hello: {took:?}");
+        assert!(took >= Duration::from_millis(150), "timed out too early: {took:?}");
     }
 
     /// A WebSocket whose first frame is not a hello is refused by name,

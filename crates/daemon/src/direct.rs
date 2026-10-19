@@ -30,8 +30,14 @@
 //!
 //! - A peer that is not on this machine or this network
 //!   (`relay::address_is_local`) is closed on, unread.
-//! - `OPEN` sockets at once, of every kind; one over is closed on.
-//! - TLS, the WebSocket handshake and the hello inside `HELLO` together.
+//! - Sockets not yet past `verdict` draw on `ANSWERING`, capped per
+//!   source address; a full budget drops the oldest silent socket
+//!   rather than refusing a newcomer. After `verdict` says yes the
+//!   connection takes a `CARRIED` place no unauthenticated peer can
+//!   touch -- the same split `remote.rs` keeps between
+//!   `MAX_CONNECTING` and a proved connection.
+//! - TLS, the WebSocket handshake and the hello inside `HELLO`
+//!   together, with `FIRST_BYTE` for a peer that has sent nothing.
 //! - A hello that is not a Device's for THIS Workstation's key is refused
 //!   by name, as a Relay refuses it, and so is one whose token is not the
 //!   desk's while the desk holds one. From there the Relay's own ceilings
@@ -44,9 +50,10 @@ use crate::trust::DirectIdentity;
 use gavin_relay::direct::{self as answering, AnswerError, Answered, ServerTls};
 use protocol::relay::{self, RefusalReason, RelayHello, RELAY_WIRE_VERSION};
 use protocol::DirectState;
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The port a release build's daemon listens on, and the one a dev
@@ -65,11 +72,24 @@ const PORT_ENV: &str = "GAVIN_DIRECT_PORT";
 /// `hello_deadline`.
 const HELLO: Duration = Duration::from_secs(5);
 
-/// Sockets open at once, of every kind: being answered, being let in,
-/// and carried. A Workstation holds five Devices with two connections
-/// each, and a pairing or two; this is room for those and a few
-/// strangers, and no more threads than that.
-pub(crate) const OPEN: usize = 16;
+/// How long a peer may take to send its first TLS byte. A silent
+/// socket holds an answering place only this long, not the whole of
+/// `HELLO`.
+const FIRST_BYTE: Duration = Duration::from_secs(1);
+
+/// Sockets not yet past `verdict`: TLS, the WebSocket handshake and
+/// the hello. Apart from `CARRIED`, so a stranger that says nothing
+/// cannot take the places a paired Device needs.
+pub(crate) const ANSWERING: usize = 8;
+
+/// Of the answering places, how many one source address may hold.
+/// A third from the same peer is refused; the drop-oldest rule is for
+/// the total, not for crowding out one address's own slots.
+pub(crate) const ANSWERING_PER_PEER: usize = 2;
+
+/// Sockets let in or carried, after `verdict` said yes. A Workstation
+/// holds five Devices with two connections each, and a pairing or two.
+pub(crate) const CARRIED: usize = 16;
 
 /// How long the listener sleeps when nobody is knocking. What a Device
 /// waits on at most before its connection is accepted.
@@ -83,24 +103,108 @@ const STORE_POLL: Duration = Duration::from_secs(2);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CEILING: Duration = Duration::from_secs(60);
 
-/// Sockets the listener holds open right now.
-static OPEN_NOW: AtomicUsize = AtomicUsize::new(0);
+/// Sockets being answered, by source address, oldest first. Each holds
+/// a clone that `shutdown`s when the place is preempted so its thread
+/// can reclaim the slot.
+struct Answering {
+    by_peer: HashMap<IpAddr, usize>,
+    queue: VecDeque<(u64, IpAddr, TcpStream)>,
+    next_id: u64,
+}
 
-/// One of the `OPEN` places, given back however the socket ends.
-struct Open;
+impl Answering {
+    fn new() -> Self {
+        Self { by_peer: HashMap::new(), queue: VecDeque::new(), next_id: 0 }
+    }
 
-impl Open {
-    fn begin() -> Option<Self> {
-        OPEN_NOW
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < OPEN).then_some(n + 1))
-            .ok()
-            .map(|_| Open)
+    /// Takes a pre-authentication place for `peer`, or `None` when that
+    /// address already holds `ANSWERING_PER_PEER`. When the total is
+    /// full, drops the oldest silent socket to make room.
+    fn begin(&mut self, peer: IpAddr, socket: &TcpStream) -> Option<AnsweringPlace> {
+        let held = self.by_peer.get(&peer).copied().unwrap_or(0);
+        if held >= ANSWERING_PER_PEER {
+            return None;
+        }
+        if self.queue.len() >= ANSWERING {
+            self.drop_oldest();
+        }
+        let handle = socket.try_clone().ok()?;
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.queue.push_back((id, peer, handle));
+        *self.by_peer.entry(peer).or_insert(0) += 1;
+        Some(AnsweringPlace { id, peer })
+    }
+
+    fn drop_oldest(&mut self) {
+        let Some((_id, peer, stream)) = self.queue.pop_front() else {
+            return;
+        };
+        let _ = stream.shutdown(Shutdown::Both);
+        if let Some(n) = self.by_peer.get_mut(&peer) {
+            *n -= 1;
+            if *n == 0 {
+                self.by_peer.remove(&peer);
+            }
+        }
+    }
+
+    /// Gives back the place `id` held, if it is still in the queue
+    /// (preemption already removed it).
+    fn release(&mut self, id: u64, peer: IpAddr) {
+        let Some(pos) = self.queue.iter().position(|(held, _, _)| *held == id) else {
+            return;
+        };
+        let _ = self.queue.remove(pos);
+        if let Some(n) = self.by_peer.get_mut(&peer) {
+            *n -= 1;
+            if *n == 0 {
+                self.by_peer.remove(&peer);
+            }
+        }
     }
 }
 
-impl Drop for Open {
+static ANSWERING_NOW: std::sync::OnceLock<Mutex<Answering>> = std::sync::OnceLock::new();
+
+fn answering_now() -> &'static Mutex<Answering> {
+    ANSWERING_NOW.get_or_init(|| Mutex::new(Answering::new()))
+}
+
+/// One of the `ANSWERING` places, given back however the socket ends.
+struct AnsweringPlace {
+    id: u64,
+    peer: IpAddr,
+}
+
+impl Drop for AnsweringPlace {
     fn drop(&mut self) {
-        OPEN_NOW.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut answering) = answering_now().lock() {
+            answering.release(self.id, self.peer);
+        }
+    }
+}
+
+/// Sockets past `verdict`, being proved or carried.
+static CARRIED_NOW: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the `CARRIED` places, given back when the connection ends.
+struct Carried;
+
+impl Carried {
+    fn begin() -> Option<Self> {
+        CARRIED_NOW
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < CARRIED).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Carried)
+    }
+}
+
+impl Drop for Carried {
+    fn drop(&mut self) {
+        CARRIED_NOW.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -310,8 +414,11 @@ fn admit(
         remote::note(format!("a direct connection from {} was closed on: not on this network", peer.ip()));
         return;
     }
-    let Some(open) = Open::begin() else {
-        remote::note("a direct connection was closed on: the listener holds as many as it will".into());
+    let Some(answering) = begin_answering(peer.ip(), &socket) else {
+        remote::note(format!(
+            "a direct connection from {} was closed on: that address holds as many answering places as it may",
+            peer.ip()
+        ));
         return;
     };
     // An accepted socket inherits the listener's non-blocking mode on
@@ -324,14 +431,22 @@ fn admit(
     let want = want.clone();
     let tls = Arc::clone(tls);
     let started = std::thread::Builder::new().name("direct-device".into()).spawn(move || {
-        let _open = open;
-        if let Err(e) = serve(&manager, &want, tls, socket) {
+        if let Err(e) = serve(&manager, &want, tls, socket, answering) {
             remote::note(format!("a direct connection was not made: {e}"));
         }
     });
     if let Err(e) = started {
         eprintln!("gavin-daemon: could not serve a direct connection: {e}");
     }
+}
+
+/// Takes a pre-authentication place for `peer`, dropping the oldest
+/// silent socket when the total is full. `None` when this address
+/// already holds `ANSWERING_PER_PEER`, or the socket could not be
+/// cloned for preemption.
+fn begin_answering(peer: IpAddr, socket: &TcpStream) -> Option<AnsweringPlace> {
+    let mut answering = answering_now().lock().ok()?;
+    answering.begin(peer, socket)
 }
 
 /// What a connection is let in as, or the refusal it is told.
@@ -376,11 +491,13 @@ fn serve(
     want: &Want,
     tls: ServerTls,
     socket: TcpStream,
+    answering: AnsweringPlace,
 ) -> anyhow::Result<()> {
-    let answered: Answered = answering::answer(socket, tls, HELLO).map_err(|e| match e {
-        AnswerError::Io(e) => anyhow::anyhow!(e),
-        other => anyhow::anyhow!("{other}"),
-    })?;
+    let answered: Answered =
+        answering::answer_with_first_byte(socket, tls, HELLO, FIRST_BYTE).map_err(|e| match e {
+            AnswerError::Io(e) => anyhow::anyhow!(e),
+            other => anyhow::anyhow!("{other}"),
+        })?;
     let purpose = match verdict(manager, want, &answered.hello) {
         Ok(purpose) => purpose,
         Err(reason) => {
@@ -388,12 +505,21 @@ fn serve(
             anyhow::bail!("{reason}");
         }
     };
+    // Take a carried place before giving the answering place back, so
+    // an unauthenticated peer cannot fill the gap between verdict and
+    // carry. A full carried budget is Busy, not a dropped stranger.
+    let Some(carried) = Carried::begin() else {
+        answered.refuse(RefusalReason::Busy);
+        anyhow::bail!("{}", RefusalReason::Busy);
+    };
+    drop(answering);
     let Some(serving) = Serving::begin(purpose) else {
         answered.refuse(RefusalReason::Busy);
         anyhow::bail!("{}", RefusalReason::Busy);
     };
     let stream = answered.ready()?;
     let still_wanted = || desired(manager).as_ref() == Some(want);
+    let _carried = carried;
     match purpose {
         Purpose::Pair => {
             let _serving = serving;
@@ -466,6 +592,11 @@ fn url(address: IpAddr, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+
+    /// The answering and carried budgets are process-wide; tests that
+    /// fill them must not run over each other.
+    static BUDGET_TEST: Mutex<()> = Mutex::new(());
 
     /// A QR names only addresses a Device could dial from another
     /// machine on this network or tailnet.
@@ -528,12 +659,98 @@ mod tests {
         }
     }
 
+    /// A third silent socket from one address is refused while that
+    /// address's first two still hold answering places.
     #[test]
-    fn no_more_sockets_are_held_open_than_the_ceiling() {
-        let held: Vec<Open> = std::iter::from_fn(Open::begin).take(OPEN + 3).collect();
-        assert_eq!(held.len(), OPEN);
-        assert!(Open::begin().is_none());
+    fn a_third_silent_socket_from_one_address_is_refused() {
+        let _budget = BUDGET_TEST.lock().unwrap();
+        let peer: IpAddr = "127.0.0.2".parse().unwrap();
+        let mut ends = Vec::new();
+        let mut held = Vec::new();
+        for _ in 0..ANSWERING_PER_PEER {
+            let (server, client) = connected_pair();
+            let place = begin_answering(peer, &server).expect("first two from one peer");
+            ends.push((server, client));
+            held.push(place);
+        }
+        let (server, _client) = connected_pair();
+        assert!(
+            begin_answering(peer, &server).is_none(),
+            "a third from the same address must be refused"
+        );
+        // Another address may still take a place.
+        let other: IpAddr = "127.0.0.3".parse().unwrap();
+        let (other_server, _other_client) = connected_pair();
+        let other_place = begin_answering(other, &other_server).expect("a different peer");
         drop(held);
-        assert!(Open::begin().is_some());
+        drop(other_place);
+        drop(ends);
+    }
+
+    /// Fill the whole pre-authentication cap with silent sockets from
+    /// several loopback addresses. A newcomer still gets in: the oldest
+    /// silent socket is dropped to make room.
+    #[test]
+    fn when_answering_is_full_the_oldest_silent_socket_is_dropped() {
+        let _budget = BUDGET_TEST.lock().unwrap();
+        let mut ends = Vec::new();
+        let mut held = Vec::new();
+        // Several addresses, two each, until ANSWERING is full.
+        let mut octet = 2u8;
+        while held.len() < ANSWERING {
+            let peer = IpAddr::from([127, 0, 0, octet]);
+            octet = octet.wrapping_add(1).max(2);
+            let (server, client) = connected_pair();
+            let place = begin_answering(peer, &server).expect("room under the cap");
+            ends.push((server, client, peer));
+            held.push(place);
+        }
+        assert_eq!(held.len(), ANSWERING);
+
+        ends[0].1.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+
+        // A newcomer from a fresh address: the oldest is shut down.
+        let newcomer = IpAddr::from([127, 0, 0, octet]);
+        let (server, client) = connected_pair();
+        let place = begin_answering(newcomer, &server).expect("drop-oldest makes room");
+        let mut buf = [0u8; 1];
+        let closed = match ends[0].1.read(&mut buf) {
+            Ok(0) => true,
+            Err(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            ),
+            Ok(_) => false,
+        };
+        assert!(closed, "the oldest silent socket should have been shut down");
+
+        drop(place);
+        drop(held);
+        drop(ends);
+        drop(server);
+        drop(client);
+    }
+
+    /// Connections past verdict hold places no unauthenticated peer
+    /// can take: the carried ceiling is its own counter.
+    #[test]
+    fn no_more_carried_sockets_than_the_ceiling() {
+        let _budget = BUDGET_TEST.lock().unwrap();
+        let held: Vec<Carried> = std::iter::from_fn(Carried::begin).take(CARRIED + 3).collect();
+        assert_eq!(held.len(), CARRIED);
+        assert!(Carried::begin().is_none());
+        drop(held);
+        assert!(Carried::begin().is_some());
+    }
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (server, client)
     }
 }
