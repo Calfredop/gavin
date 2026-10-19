@@ -74,6 +74,7 @@ import { indexQueued, type QueuedInput } from "$lib/agents/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
+  complexityAttributionForProfile,
   effectiveComplexityTable,
   withComplexityTableForPrimary,
   EMPTY_AGENT_DEFAULTS,
@@ -2614,13 +2615,26 @@ export function agentForCard(
 /// Resolve a specific profile in this workspace without changing the
 /// stored agent. Fallback launches use this so the chain can run Codex
 /// while `[agent] profile` still names Claude.
-export function agentForProfile(workspaceId: string, profileId: string) {
+///
+/// When `card` carries a `complexity:` level, that level is read from
+/// THIS profile's complexity table (not the workspace primary's): the
+/// model / effort the human mapped onto the fallback agent have to
+/// reach its argv. Without that, Cursor as fallback launched bare and
+/// the CLI picked its own default (`sonnet`) while the table said `auto`.
+export function agentForProfile(
+  workspaceId: string,
+  profileId: string,
+  card?: CardAgentFields | null
+) {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  const table = effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    profileId
+  );
+  const attribution = complexityAttributionForProfile(profileId, card?.complexity, table);
   const agent = resolveAgentConfig(
-    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
-      profile: profileId,
-      model: "",
-      effort: "",
-    }),
+    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), attribution),
     profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
     undefined,

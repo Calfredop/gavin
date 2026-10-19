@@ -1666,7 +1666,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
   let launchAgent =
-    decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
+    decision.viaFallback ? agentForProfile(workspaceId, decision.profileId, entry.plan) : agent;
   {
     const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, launchAgent, "unattended");
     if (typeof prepared === "string") {

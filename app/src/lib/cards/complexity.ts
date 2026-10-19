@@ -280,6 +280,35 @@ export function complexityEntryFor(
   return isAttributed(entry) ? (entry as ComplexityAgent) : null;
 }
 
+/// What a forced-profile launch (the fallback chain) takes from THAT
+/// profile's complexity table.
+///
+/// `decideLaunch` has already picked `profileId`; this only overlays the
+/// model / effort / advisor the human mapped onto that agent for the
+/// card's level. A row that routes to a different profile is ignored —
+/// following it would yank the launch off the agent the chain just
+/// chose. Card `agent:` / `model:` overrides are not consulted here:
+/// those named the spent primary, and applying them to the fallback is
+/// how Claude aliases (`sonnet`) used to land on `agent --model`.
+export function complexityAttributionForProfile(
+  profileId: string,
+  complexity: string | null | undefined,
+  table: ComplexityTable
+): ComplexityAgent {
+  const id = (profileId ?? "").trim();
+  const levelEntry = complexityEntryFor(parseComplexity(complexity), table);
+  if (!id || !levelEntry) return { profile: id, model: "", effort: "" };
+  const rowProfile = levelEntry.profile.trim();
+  if (rowProfile && rowProfile !== id) return { profile: id, model: "", effort: "" };
+  const advisor = (levelEntry.advisor ?? "").trim();
+  return {
+    profile: id,
+    model: levelEntry.model,
+    effort: levelEntry.effort ?? "",
+    ...(advisor ? { advisor } : {}),
+  };
+}
+
 /// The agent config an attributed card resolves through: the workspace's
 /// own, with the attribution's profile and/or model laid over it.
 ///

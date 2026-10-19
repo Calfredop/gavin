@@ -3,6 +3,7 @@ import {
   agentConfigWithAttribution,
   COMPLEXITY_LABELS,
   COMPLEXITY_LEVELS,
+  complexityAttributionForProfile,
   complexityEntryFor,
   complexityTableForPrimary,
   effectiveComplexityTable,
@@ -89,6 +90,50 @@ describe("complexityEntryFor", () => {
   it("answers null for a level nobody attributed, and for no level at all", () => {
     expect(complexityEntryFor("moderate", table)).toBeNull();
     expect(complexityEntryFor(null, table)).toBeNull();
+  });
+});
+
+describe("complexityAttributionForProfile", () => {
+  const cursorTable: ComplexityTable = {
+    moderate: { profile: "cursor", model: "auto" },
+    intricate: { profile: "codex", model: "gpt-5" },
+    simple: { profile: "", model: "composer-1", effort: "high" },
+  };
+
+  // The bug: fallback used to ignore this table and launch Cursor with
+  // no model, so the CLI picked its own default (sonnet).
+  it("pins the fallback profile and keeps that row's model and effort", () => {
+    expect(complexityAttributionForProfile("cursor", "moderate", cursorTable)).toEqual({
+      profile: "cursor",
+      model: "auto",
+      effort: "",
+    });
+    expect(complexityAttributionForProfile("cursor", "simple", cursorTable)).toEqual({
+      profile: "cursor",
+      model: "composer-1",
+      effort: "high",
+    });
+  });
+
+  it("ignores a row that routes to a different agent", () => {
+    expect(complexityAttributionForProfile("cursor", "intricate", cursorTable)).toEqual({
+      profile: "cursor",
+      model: "",
+      effort: "",
+    });
+  });
+
+  it("is inert when the card is unrated or the table is silent", () => {
+    expect(complexityAttributionForProfile("cursor", null, cursorTable)).toEqual({
+      profile: "cursor",
+      model: "",
+      effort: "",
+    });
+    expect(complexityAttributionForProfile("cursor", "trivial", cursorTable)).toEqual({
+      profile: "cursor",
+      model: "",
+      effort: "",
+    });
   });
 });
 

@@ -108,7 +108,10 @@ function agentForNewLaunch(
   const primary = agentForCard(workspaceId, card);
   const decision = launchDecision(workspaceId, primary.profileId, resume);
   if (decision.kind === "use" && decision.viaFallback) {
-    return { decision, agent: agentForProfile(workspaceId, decision.profileId) };
+    // Pass the card so the fallback profile's own complexity table
+    // (model / effort for this level) reaches argv — not a bare profile
+    // resolve that dropped every row and left Cursor on its CLI default.
+    return { decision, agent: agentForProfile(workspaceId, decision.profileId, card) };
   }
   return { decision, agent: primary };
 }
