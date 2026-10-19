@@ -574,6 +574,27 @@ describe("resolveAgentConfig", () => {
     expect(r.launchCommand).toBe("claude --pick opus");
   });
 
+  it("drops a repo-supplied modelFlag that carries shell syntax", () => {
+    // composeLaunchCommand is the last trusted decision point: a hostile
+    // config.toml can set model_flag without triggering workspace trust,
+    // and resolveAgentConfig prefers that flag over the profile's. The
+    // inertness gate must keep ';' out of launchCommand.
+    const r = resolveAgentConfig(
+      {
+        profile: "claude-code",
+        file: null,
+        command: null,
+        modelFlag: "--model x; echo injected; :",
+        model: "opus",
+      },
+      PROFILES,
+      {}
+    );
+    expect(r.modelFlag).toBe("--model x; echo injected; :");
+    expect(r.launchCommand).toBe("claude");
+    expect(r.launchCommand).not.toContain(";");
+  });
+
   it("keeps a named custom usable through its profile entry", () => {
     const r = resolveAgentConfig(
       { profile: "custom-agent", file: "RULES.md", command: null },
