@@ -358,7 +358,9 @@ Integration grant's rules:
   the root. The one exception is a gavin worktree's own root. A worktree is its own
   git work tree, so kimi reads its committed `.mcp.json`. That file is vetted by
   the root's rule instead of being refused.
-- The root's files, and the worktree's, may declare nothing but gavin's own entries.
+- The root's files, and the worktree's, may declare nothing but gavin's own entries
+  (recognised by the absolute `gavin-mcp` they run and its args, never by the key
+  name `gavin` alone -- a repository can commit any command under that name).
   An unreadable file withholds.
 - It never writes over an existing record, follows `KIMI_CODE_HOME`, and writes
   owner-only.

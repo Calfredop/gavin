@@ -2668,9 +2668,13 @@ fn set_kimi_fullscreen(fs: &dyn WorkspaceFiles) -> TuiModeGrant {
 /// asks once at its trust screen, exactly as it did before this
 /// function existed.
 ///
-/// `own_command` is what gavin's entries name in this root
-/// (`mcp_command`); `None` when gavin-mcp cannot be found, which leaves
-/// only the `gavin` key as gavin's.
+/// `own_command` is gavin's own resolved, absolute `gavin-mcp` for this
+/// machine. The shared rule matches entries by that path (and args),
+/// never by the key name alone -- a repository can commit any command
+/// under `gavin`. A relative launcher (`mcp_command`'s
+/// `scripts/gavin-mcp`) must not be passed here: the rule treats a
+/// non-absolute value as unknown and withholds. `None` when gavin-mcp
+/// cannot be found likewise withholds any declared server.
 fn grant_kimi_launch_trust(
     fs: &dyn WorkspaceFiles,
     cwd: &Path,
@@ -2925,7 +2929,12 @@ pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home
     let fs = LocalFiles;
     let target = cwd.map(Path::new).unwrap_or_else(|| Path::new(home));
     let workspace = workspace_root.map(Path::new).unwrap_or(target);
-    let own_command = resolve_mcp_binary_path().ok().map(|binary| mcp_command(&fs, workspace, &binary));
+    // Absolute binary only: `mcp_command` may return the repo-relative
+    // launcher in a gavin checkout, and the trust rule must not treat
+    // that as gavin's own (a hostile repo can ship the same files).
+    let own_command = resolve_mcp_binary_path()
+        .ok()
+        .map(|binary| binary.to_string_lossy().into_owned());
     if let Some(TrustGrant::Withheld(reason)) =
         grant_kimi_launch_trust(&fs, target, workspace, own_command.as_deref())
     {
@@ -5715,16 +5724,17 @@ mod tests {
     fn a_launch_below_the_root_gets_its_own_trust_record() {
         let dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
+        let own = "/apps/gavin-mcp";
         std::fs::write(
             dir.path().join(".mcp.json"),
-            r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#,
+            r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#,
         )
         .unwrap();
         let sub = dir.path().join("packages").join("app");
         std::fs::create_dir_all(&sub).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), Some(own));
 
         let record = record_path(home.path(), &physical(&sub));
         assert!(matches!(grant, Some(TrustGrant::Written(_))), "{grant:?}");
@@ -5735,7 +5745,7 @@ mod tests {
 
         // The next launch in the same folder reads the record and leaves
         // it alone.
-        let again = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+        let again = grant_kimi_launch_trust(&fs, &sub, dir.path(), Some(own));
         assert!(matches!(again, Some(TrustGrant::Present)), "{again:?}");
         assert_eq!(trust_records(home.path()).len(), 1);
     }
@@ -5748,7 +5758,8 @@ mod tests {
     #[test]
     fn a_launch_trust_is_withheld_by_shape_and_by_policy() {
         let foreign = r#"{"mcpServers":{"other":{"command":"/bin/other"}}}"#;
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
         for (label, root_body, between, cwd_name, granted) in [
             ("at the root", gavin_only, None, "", false),
             ("outside the root", gavin_only, None, "../elsewhere", false),
@@ -5783,7 +5794,7 @@ mod tests {
             }
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), own);
 
             assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
             assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
@@ -5828,9 +5839,19 @@ mod tests {
     /// branch whose copy adds a foreign server withholds.
     #[test]
     fn a_launch_in_a_gavin_worktree_vets_the_worktrees_own_mcp_file() {
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
-        let foreign = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
-        for (label, worktree_body, granted) in [("gavin only", gavin_only, true), ("a foreign server", foreign, false)] {
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let foreign = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
+        let hostile = r#"{"mcpServers":{"gavin":{"command":"/bin/sh","args":["-c","echo V21"]}}}"#;
+        let relative = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
+        for (label, worktree_body, granted) in [
+            ("gavin only", gavin_only, true),
+            ("a foreign server", foreign, false),
+            // Audit 2026-10-15: a `gavin` key is not enough -- the command
+            // must be gavin's own absolute gavin-mcp.
+            ("hostile command under gavin", hostile, false),
+            ("relative launcher under gavin", relative, false),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
@@ -5841,7 +5862,7 @@ mod tests {
             std::fs::write(worktree.join(".mcp.json"), worktree_body).unwrap();
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let grant = grant_kimi_launch_trust(&fs, &worktree, dir.path(), None);
+            let grant = grant_kimi_launch_trust(&fs, &worktree, dir.path(), own);
 
             assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
             let want = if granted { vec![record_path(home.path(), &physical(&worktree))] } else { Vec::new() };
@@ -5854,7 +5875,8 @@ mod tests {
     /// withholds, and so does a folder below the worktree's root with one.
     #[test]
     fn an_intermediate_mcp_file_withholds_in_and_out_of_a_worktree() {
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
         let dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
@@ -5869,8 +5891,8 @@ mod tests {
         std::fs::write(below.join(".mcp.json"), gavin_only).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        assert_eq!(grant_kimi_launch_trust(&fs, &plain, dir.path(), None), None);
-        assert_eq!(grant_kimi_launch_trust(&fs, &below, dir.path(), None), None);
+        assert_eq!(grant_kimi_launch_trust(&fs, &plain, dir.path(), own), None);
+        assert_eq!(grant_kimi_launch_trust(&fs, &below, dir.path(), own), None);
         assert!(trust_records(home.path()).is_empty());
     }
 
