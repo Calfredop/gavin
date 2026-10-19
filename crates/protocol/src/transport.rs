@@ -322,8 +322,8 @@ mod imp {
         TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX,
+        CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
+        FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PeekNamedPipe,
@@ -331,7 +331,8 @@ mod imp {
         PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
     use windows::Win32::System::Threading::{
-        CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
+        CreateEventW, GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject,
+        INFINITE, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
@@ -533,7 +534,12 @@ mod imp {
         handle: HANDLE,
         read_timeout_ms: AtomicU32,
         read_closed: AtomicBool,
+        write_closed: AtomicBool,
         peer: Option<PathBuf>,
+        /// Test-only: parked between the `read_closed` check and `ReadFile`
+        /// so a shutdown can land in the lost-wakeup window.
+        #[cfg(test)]
+        read_before_issue: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     // The handle is only ever passed to Win32 calls that are documented
@@ -557,8 +563,18 @@ mod imp {
                 handle,
                 read_timeout_ms: AtomicU32::new(0),
                 read_closed: AtomicBool::new(false),
+                write_closed: AtomicBool::new(false),
                 peer,
+                #[cfg(test)]
+                read_before_issue: std::sync::Mutex::new(None),
             }))
+        }
+
+        /// Install a one-shot hook that runs after `read_closed` is checked
+        /// and before `ReadFile` is issued. Windows tests only.
+        #[cfg(test)]
+        pub fn set_read_before_issue_hook(&self, hook: impl FnOnce() + Send + 'static) {
+            *self.0.read_before_issue.lock().unwrap() = Some(Box::new(hook));
         }
 
         pub fn connect_at(endpoint: &Endpoint) -> io::Result<Stream> {
@@ -591,6 +607,12 @@ mod imp {
                 };
                 match handle {
                     Ok(h) => {
+                        if let Err(e) = ensure_server_is_current_user(h) {
+                            unsafe {
+                                let _ = CloseHandle(h);
+                            }
+                            return Err(e);
+                        }
                         return Ok(Stream::wrap(h, Some(endpoint.path().to_path_buf())));
                     }
                     Err(_) => {
@@ -631,25 +653,22 @@ mod imp {
         /// Two connected ends with no name anyone else can reach.
         ///
         /// `UnixStream::pair()` is one syscall; a pipe has to be built.
-        /// The name is unique per call and the instance limit is one, so
-        /// the window in which a stranger could open it is the two lines
-        /// between creating it and connecting to it, and only for a
-        /// process that guessed the counter. Both ends report no peer
-        /// path, exactly as an unnamed socket pair does.
+        /// The name is drawn from `random_hex` (not pid+counter — those
+        /// are visible to other users) and created with
+        /// `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a pre-created name fails
+        /// rather than attaching as a second instance. Both ends report
+        /// no peer path, exactly as an unnamed socket pair does.
         pub fn pair() -> io::Result<(Stream, Stream)> {
-            use std::sync::atomic::AtomicU64;
-            static NEXT: AtomicU64 = AtomicU64::new(0);
             let name = format!(
-                r"\\.\pipe\gavin-pair-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
+                r"\\.\pipe\gavin-pair-{}",
+                crate::random_hex(16).map_err(io::Error::other)?
             );
             let wide_name = wide(&name);
             let sd = SecurityDescriptor::current_user_only()?;
             let server = unsafe {
                 CreateNamedPipeW(
                     PCWSTR(wide_name.as_ptr()),
-                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
                     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                     1,
                     PIPE_BUFFER_BYTES,
@@ -700,17 +719,20 @@ mod imp {
         }
 
         /// Unblocks whoever is reading, and makes every later read report
-        /// end of stream.
+        /// end of stream. A `Write` or `Both` also fails later writes with
+        /// `BrokenPipe`, matching a Unix socket's half-close.
         ///
         /// `CancelIoEx` with a null overlapped pointer cancels the I/O
         /// any thread of this process has outstanding on the handle,
         /// which is what makes this reach the reader rather than only the
         /// caller -- the single reason the handle is shared rather than
-        /// duplicated. The write half has no separate close on a pipe:
-        /// the peer sees the end when the last handle goes.
+        /// duplicated.
         pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
             if matches!(how, Shutdown::Read | Shutdown::Both) {
                 self.0.read_closed.store(true, Ordering::SeqCst);
+            }
+            if matches!(how, Shutdown::Write | Shutdown::Both) {
+                self.0.write_closed.store(true, Ordering::SeqCst);
             }
             unsafe {
                 let _ = CancelIoEx(self.0.handle, None);
@@ -799,10 +821,43 @@ mod imp {
                     std::thread::sleep(POLL_INTERVAL);
                 }
             }
+            #[cfg(test)]
+            if let Some(hook) = self.0.read_before_issue.lock().unwrap().take() {
+                hook();
+            }
             let mut op = Op::new()?;
             let started = unsafe { ReadFile(self.0.handle, Some(buf), None, Some(op.ptr())) };
+            // Lost-wakeup close: shutdown may have stored `read_closed`
+            // after the check above and before this ReadFile queued. If
+            // the flag is set while we are pending, cancel this op and
+            // reap it — with shutdown's store-then-cancel order, either
+            // we see the flag or shutdown's CancelIoEx finds the read.
+            if started.is_err() && last_error() == ERROR_IO_PENDING {
+                if self.0.read_closed.load(Ordering::SeqCst) {
+                    unsafe {
+                        let _ = CancelIoEx(self.0.handle, Some(op.ptr() as *const OVERLAPPED));
+                    }
+                    let mut moved: u32 = 0;
+                    let _ = unsafe {
+                        GetOverlappedResult(
+                            self.0.handle,
+                            op.ptr() as *const OVERLAPPED,
+                            &mut moved,
+                            true,
+                        )
+                    };
+                    return Ok(0);
+                }
+            }
             match complete(self.0.handle, &mut op, started, INFINITE) {
-                Ok(read) => Ok(read as usize),
+                Ok(read) => {
+                    // A shut-down stream never hands back bytes, even when
+                    // the read completed with data after the flag was set.
+                    if self.0.read_closed.load(Ordering::SeqCst) {
+                        return Ok(0);
+                    }
+                    Ok(read as usize)
+                }
                 Err(e) => match code_of(&e) {
                     // The peer closed its last handle. A socket answers
                     // this with a zero-length read, and `read_message`
@@ -822,6 +877,12 @@ mod imp {
 
     impl Stream {
         pub fn write_ref(&self, buf: &[u8]) -> io::Result<usize> {
+            if self.0.write_closed.load(Ordering::SeqCst) {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the write half of this pipe was shut down",
+                ));
+            }
             let mut op = Op::new()?;
             let started = unsafe { WriteFile(self.0.handle, Some(buf), None, Some(op.ptr())) };
             match complete(self.0.handle, &mut op, started, INFINITE) {
@@ -910,33 +971,81 @@ mod imp {
     unsafe impl Sync for SecurityDescriptor {}
 
     fn current_user_sid_string() -> io::Result<String> {
+        unsafe { sid_string_from_token_process(GetCurrentProcess()) }
+    }
+
+    /// The user SID of the process serving a pipe we just opened, or an
+    /// error for any failure — fail closed: an unreadable server is not
+    /// "probably us".
+    fn ensure_server_is_current_user(pipe: HANDLE) -> io::Result<()> {
+        let mut pid = 0u32;
         unsafe {
-            let mut token = HANDLE::default();
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
+            GetNamedPipeServerProcessId(pipe, &mut pid)
                 .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
-            let mut needed: u32 = 0;
-            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut needed);
-            let mut buf = vec![0u8; needed.max(1) as usize];
-            let got = GetTokenInformation(
-                token,
-                TokenUser,
-                Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
-                needed,
-                &mut needed,
-            );
-            let _ = CloseHandle(token);
-            got.map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
-            let user = &*(buf.as_ptr() as *const TOKEN_USER);
-            let mut out = windows::core::PWSTR::null();
-            ConvertSidToStringSidW(user.User.Sid, &mut out)
-                .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
-            let s = out.to_string().unwrap_or_default();
-            let _ = LocalFree(Some(HLOCAL(out.0 as *mut _)));
-            if s.is_empty() {
-                return Err(io::Error::other("could not read this process's user SID"));
-            }
-            Ok(s)
         }
+        if pid == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "named pipe is held by another account (server pid unknown)",
+            ));
+        }
+        let server = unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "named pipe is held by another account (could not query server pid {pid}: {e})"
+                    ),
+                )
+            })?
+        };
+        let server_sid = unsafe {
+            let sid = sid_string_from_token_process(server);
+            let _ = CloseHandle(server);
+            sid
+        }
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("named pipe is held by another account (could not read server sid: {e})"),
+            )
+        })?;
+        let ours = current_user_sid_string()?;
+        if server_sid != ours {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("named pipe is held by another account (server pid {pid})"),
+            ));
+        }
+        Ok(())
+    }
+
+    unsafe fn sid_string_from_token_process(process: HANDLE) -> io::Result<String> {
+        let mut token = HANDLE::default();
+        OpenProcessToken(process, TOKEN_QUERY, &mut token)
+            .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
+        let mut needed: u32 = 0;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut needed);
+        let mut buf = vec![0u8; needed.max(1) as usize];
+        let got = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+            needed,
+            &mut needed,
+        );
+        let _ = CloseHandle(token);
+        got.map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut out = windows::core::PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut out)
+            .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
+        let s = out.to_string().unwrap_or_default();
+        let _ = LocalFree(Some(HLOCAL(out.0 as *mut _)));
+        if s.is_empty() {
+            return Err(io::Error::other("could not read process user SID"));
+        }
+        Ok(s)
     }
 
     pub struct Listener {
@@ -957,7 +1066,9 @@ mod imp {
         pub fn bind_at(endpoint: &Endpoint) -> io::Result<Listener> {
             let wide_name = wide(&win32_pipe_name(endpoint.path()));
             let sd = SecurityDescriptor::current_user_only()?;
-            let first = create_instance(&wide_name, &sd)?;
+            // First instance only: if another account already holds the
+            // name, CreateNamedPipeW fails instead of adding an instance.
+            let first = create_instance(&wide_name, &sd, true)?;
             Ok(Listener { wide_name, sd, waiting: Mutex::new(Some(first)) })
         }
 
@@ -966,7 +1077,7 @@ mod imp {
                 let mut slot = self.waiting.lock().unwrap();
                 match slot.take() {
                     Some(h) => h,
-                    None => create_instance(&self.wide_name, &self.sd)?,
+                    None => create_instance(&self.wide_name, &self.sd, false)?,
                 }
             };
             if let Err(e) = connect_instance(handle) {
@@ -975,7 +1086,7 @@ mod imp {
                 }
                 return Err(e);
             }
-            match create_instance(&self.wide_name, &self.sd) {
+            match create_instance(&self.wide_name, &self.sd, false) {
                 Ok(next) => *self.waiting.lock().unwrap() = Some(next),
                 // Out of instances or out of handles: the connection just
                 // accepted is still good, and the next accept will try
@@ -1000,11 +1111,23 @@ mod imp {
     /// `INVALID_HANDLE_VALUE` rather than a `Result`, so the failure has
     /// to be read off `GetLastError` -- via `io::Error::last_os_error`,
     /// which is the same thing and already the right type.
-    fn create_instance(wide_name: &[u16], sd: &SecurityDescriptor) -> io::Result<HANDLE> {
+    ///
+    /// `first` passes `FILE_FLAG_FIRST_PIPE_INSTANCE` so a name another
+    /// process already holds is a bind failure, not a silent extra
+    /// instance. Later instances from `accept` must not pass it.
+    fn create_instance(
+        wide_name: &[u16],
+        sd: &SecurityDescriptor,
+        first: bool,
+    ) -> io::Result<HANDLE> {
+        let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+        if first {
+            open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+        }
         let handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR(wide_name.as_ptr()),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                open_mode,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES,
                 PIPE_BUFFER_BYTES,
@@ -1123,8 +1246,22 @@ impl Iterator for Incoming<'_> {
 /// it, and on Windows a pipe name resolving to nothing and a pipe name
 /// whose server is mid-handoff are the same error code. Connecting is
 /// what tells the two apart, on both.
+///
+/// On Windows a connect that fails because the server is another
+/// account (`pipe_held_by_another_account`) is *not* "listening as us"
+/// — callers that used to treat any successful connect as "my daemon"
+/// must check that error separately and refuse.
 pub fn is_listening(endpoint: &Endpoint) -> bool {
     Stream::connect(endpoint).is_ok()
+}
+
+/// Whether `err` is the Windows client refusal for a pipe served by
+/// another local account. `bind_server` and `connect_or_spawn` surface
+/// this by name instead of "another gavin-daemon is already listening"
+/// or a silent connect.
+pub fn pipe_held_by_another_account(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::PermissionDenied
+        && err.to_string().contains("held by another account")
 }
 
 #[cfg(test)]
@@ -1397,5 +1534,180 @@ mod tests {
         drop(client);
         let _ = pusher.join();
         let _ = parked.join();
+    }
+
+    /// Windows: the first instance owns the name. CI's Windows job only
+    /// `cargo check`s these; they run on a VM in the human test.
+    #[cfg(windows)]
+    mod windows_pipe_ownership {
+        use super::*;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+        };
+        use windows::Win32::System::Pipes::{
+            CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+            PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        };
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        /// Hold a pipe name with no FIRST flag (the squat shape).
+        fn squat_name(name: &str) -> windows::Win32::Foundation::HANDLE {
+            let wide_name = wide(name);
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    PCWSTR(wide_name.as_ptr()),
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                    PIPE_UNLIMITED_INSTANCES,
+                    64 * 1024,
+                    64 * 1024,
+                    0,
+                    None,
+                )
+            };
+            assert_ne!(handle, INVALID_HANDLE_VALUE, "squat CreateNamedPipeW failed");
+            handle
+        }
+
+        #[test]
+        fn bind_at_on_a_name_that_already_exists_fails() {
+            let dir = std::env::temp_dir().join(format!(
+                "gavin-first-instance-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            let endpoint = Endpoint::new(dir.join("daemon.sock"));
+            let name = win32_pipe_name(endpoint.path());
+            let squat = squat_name(&name);
+            let err = match Listener::bind_at(&endpoint) {
+                Ok(_) => panic!("first-instance flag must refuse a held name"),
+                Err(e) => e,
+            };
+            unsafe {
+                let _ = CloseHandle(squat);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(err.raw_os_error().is_some(), "expected a bind failure, got {err}");
+        }
+
+        #[test]
+        fn pair_on_a_pre_created_name_fails() {
+            // pair() draws a random name, so pin the collision on the same
+            // CreateNamedPipeW flags pair uses: FIRST + nMaxInstances 1.
+            let name = format!(
+                r"\\.\pipe\gavin-pair-collision-{}",
+                std::process::id()
+            );
+            let squat = squat_name(&name);
+            let wide_name = wide(&name);
+            let second = unsafe {
+                CreateNamedPipeW(
+                    PCWSTR(wide_name.as_ptr()),
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                    1,
+                    64 * 1024,
+                    64 * 1024,
+                    0,
+                    None,
+                )
+            };
+            unsafe {
+                let _ = CloseHandle(squat);
+            }
+            assert_eq!(
+                second, INVALID_HANDLE_VALUE,
+                "FILE_FLAG_FIRST_PIPE_INSTANCE must fail on a pre-created name"
+            );
+        }
+
+        #[test]
+        fn connect_at_to_a_same_user_server_succeeds() {
+            let dir = std::env::temp_dir().join(format!(
+                "gavin-same-user-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            let endpoint = Endpoint::new(dir.join("daemon.sock"));
+            let listener = Listener::bind(&endpoint).unwrap();
+            let server = std::thread::spawn(move || {
+                let _ = listener.accept();
+            });
+            let client =
+                Stream::connect(&endpoint).expect("same-user server must still connect");
+            drop(client);
+            let _ = server.join();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn stream_pair_still_works_for_the_same_user() {
+            let (mut a, mut b) = Stream::pair().expect("pair must succeed for this user");
+            a.write_all(b"ok\n").unwrap();
+            a.flush().unwrap();
+            let mut buf = [0u8; 3];
+            b.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"ok\n");
+        }
+
+        /// Shutdown between the read_closed check and ReadFile must still
+        /// return Ok(0), not the peer's later byte. Revocation shuts the
+        /// same Arc the reader holds (a clone), not the peer end.
+        #[test]
+        fn shutdown_during_the_read_gap_returns_eof() {
+            use std::io::Read;
+            use std::sync::{Arc, Barrier};
+            use std::time::{Duration, Instant};
+
+            let (reader, mut writer) = Stream::pair().unwrap();
+            let reader_for_shutdown = reader.try_clone().unwrap();
+            let gate = Arc::new(Barrier::new(2));
+            let gate_r = Arc::clone(&gate);
+            reader.set_read_before_issue_hook(move || {
+                gate_r.wait();
+            });
+
+            let reader_thread = std::thread::spawn(move || {
+                let mut buf = [0u8; 1];
+                // Bound the wait so a hang fails CI rather than stalls it.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let result = reader.read(&mut buf);
+                assert!(Instant::now() < deadline, "read hung past shutdown");
+                result
+            });
+
+            // Reach the hook (flag checked, ReadFile not yet issued).
+            gate.wait();
+            reader_for_shutdown.shutdown(Shutdown::Both).unwrap();
+            // Without the fix, this byte would satisfy the parked read.
+            let _ = writer.write_all(b"x");
+
+            let result = reader_thread.join().expect("reader thread");
+            match result {
+                Ok(0) => {}
+                Ok(n) => panic!("expected Ok(0) after shutdown, got Ok({n})"),
+                Err(e) => panic!("expected Ok(0) after shutdown, got {e}"),
+            }
+        }
+
+        #[test]
+        fn shutdown_write_makes_later_writes_broken_pipe() {
+            use std::io::Write;
+            let (reader, mut writer) = Stream::pair().unwrap();
+            writer.shutdown(Shutdown::Write).unwrap();
+            let err = writer.write_all(b"x").unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+            // Read-only shutdown must leave writes working.
+            let (reader2, mut writer2) = Stream::pair().unwrap();
+            writer2.shutdown(Shutdown::Read).unwrap();
+            writer2.write_all(b"y").unwrap();
+            drop(reader);
+            drop(reader2);
+        }
     }
 }
