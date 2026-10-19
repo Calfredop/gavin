@@ -17,10 +17,13 @@
 //! - **The manifest** (`BundleManifest`): the archive's SHA-256, its size,
 //!   an Ed25519 signature over `signing_message(hash)` and the key it
 //!   verifies under. camelCase, since the shell reads it as JSON.
-//! - **The verifier** (`verify`): the archive is the one the manifest
-//!   names, and the signature checks under one of the keys the caller
-//!   trusts. The shell hands it the publisher key it pins -- and, in a
-//!   debug build only, a dev key made on the developer's machine.
+//! - **The verifier** (`verify_manifest`, `verify`): the signature checks
+//!   under one of the keys the caller trusts, from the manifest alone
+//!   (`verify_manifest`); `verify` also checks that the archive is the
+//!   one the manifest names. The shell runs `verify_manifest` on every
+//!   load, including a cache hit. The shell hands it the publisher key
+//!   it pins -- and, in a debug build only, a dev key made on the
+//!   developer's machine.
 //! - **The fetch** (`GetCompanionBundle` / `CompanionBundle` in `lib.rs`):
 //!   the manifest, then the archive in chunks of at most `BUNDLE_CHUNK_MAX`
 //!   bytes, each base64 in a JSON string. The daemon's line cap is a
@@ -188,19 +191,29 @@ pub fn signer_is_trusted(manifest: &BundleManifest, trusted: &[[u8; 32]]) -> Res
     }
 }
 
-/// Accepts `archive` only if it is the one `manifest` names and the
-/// signature checks under a key in `trusted`.
-pub fn verify(archive: &[u8], manifest: &BundleManifest, trusted: &[[u8; 32]]) -> Result<(), BundleRefusal> {
+/// Accepts `manifest` only if its shape is sound, its signer is in
+/// `trusted`, and the Ed25519 signature checks over `signing_message(hash)`.
+/// Needs no archive: the shell runs this on every load, including a cache
+/// hit, so a retired key cannot keep opening bundles it already signed.
+pub fn verify_manifest(manifest: &BundleManifest, trusted: &[[u8; 32]]) -> Result<(), BundleRefusal> {
     check_manifest(manifest)?;
     signer_is_trusted(manifest, trusted)?;
     let hash = fixed::<32>("hash", &manifest.hash)?;
-    if archive.len() as u64 != manifest.size || archive_hash(archive) != hash {
-        return Err(BundleRefusal::HashMismatch);
-    }
     let signer = fixed::<32>("signer", &manifest.signer)?;
     let key = VerifyingKey::from_bytes(&signer).map_err(|_| BundleRefusal::UntrustedSigner)?;
     let signature = Signature::from_bytes(&fixed::<64>("signature", &manifest.signature)?);
     key.verify(&signing_message(&hash), &signature).map_err(|_| BundleRefusal::BadSignature)
+}
+
+/// Accepts `archive` only if it is the one `manifest` names and the
+/// signature checks under a key in `trusted`.
+pub fn verify(archive: &[u8], manifest: &BundleManifest, trusted: &[[u8; 32]]) -> Result<(), BundleRefusal> {
+    verify_manifest(manifest, trusted)?;
+    let hash = fixed::<32>("hash", &manifest.hash)?;
+    if archive.len() as u64 != manifest.size || archive_hash(archive) != hash {
+        return Err(BundleRefusal::HashMismatch);
+    }
+    Ok(())
 }
 
 // ---- the archive -------------------------------------------------------
@@ -506,6 +519,24 @@ mod tests {
         // signature is even looked at.
         assert_eq!(verify(&archive, &manifest, &[public_key(&[9u8; 32])]), Err(BundleRefusal::UntrustedSigner));
         assert_eq!(signer_is_trusted(&manifest, &[]), Err(BundleRefusal::UntrustedSigner));
+    }
+
+    #[test]
+    fn verify_manifest_refuses_a_trusted_signer_with_a_zero_signature_and_accepts_a_genuine_one() {
+        // Fingerprint: companion-shell/bundle.ts:readyBundle:cache-hit-opens-without-signature-verify
+        // The cache-hit path needs a manifest-only check; a trusted signer
+        // string is not enough — the Ed25519 signature must verify.
+        let archive = pack(&files()).unwrap();
+        let genuine = sign(&archive, &SEED, "0.1.0");
+        let signer = public_key(&SEED);
+        verify_manifest(&genuine, &[signer]).unwrap();
+
+        let mut forged = genuine.clone();
+        forged.signature = hex_encode(&[0u8; 64]);
+        assert_eq!(
+            verify_manifest(&forged, &[signer]),
+            Err(BundleRefusal::BadSignature)
+        );
     }
 
     #[test]

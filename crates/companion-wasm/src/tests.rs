@@ -807,6 +807,24 @@ fn bundle_open_verifies_under_the_trusted_keys_and_unpacks() {
     }));
     assert_eq!(answer["error"]["kind"], "request", "{answer}");
 
+    // bundle-check: the manifest alone, no archive — accepts a genuine
+    // signature and refuses a zero one under a trusted signer.
+    let answer = bundle_call(json!({
+        "op": "bundle-check",
+        "manifest": manifest,
+        "trustedKeys": [dev_key],
+    }));
+    assert!(answer.get("ok").is_some(), "{answer}");
+    let mut zero = manifest.clone();
+    zero.signature = "00".repeat(64);
+    let answer = bundle_call(json!({
+        "op": "bundle-check",
+        "manifest": zero,
+        "trustedKeys": [dev_key],
+    }));
+    assert_eq!(answer["error"]["kind"], "bundle", "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap().contains("signature"), "{answer}");
+
     // Opening a bundle is not an exchange: the instance still starts one.
     assert!(PAIRING.with(|p| p.borrow().is_none()) && CONNECTION.with(|c| c.borrow().is_none()));
 }
