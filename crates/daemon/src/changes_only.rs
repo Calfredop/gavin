@@ -54,7 +54,9 @@ pub(crate) fn new_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(
     timeout: std::time::Duration,
     on_batch: F,
 ) -> notify::Result<notify_debouncer_mini::Debouncer<ChangesOnly>> {
-    let config = notify_debouncer_mini::Config::default().with_timeout(timeout);
+    let config = notify_debouncer_mini::Config::default()
+        .with_timeout(timeout)
+        .with_notify_config(notify::Config::default().with_follow_symlinks(false));
     notify_debouncer_mini::new_debouncer_opt(config, on_batch)
 }
 

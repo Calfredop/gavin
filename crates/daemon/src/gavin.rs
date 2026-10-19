@@ -6231,6 +6231,61 @@ mod tests {
         assert!(!snapshot_must_scan(Some(MIN_RESCAN_INTERVAL + Duration::from_millis(5)), 1));
     }
 
+    /// A symlink under a Recursive-watched `.gavin-root` must not pull an
+    /// outside tree into this process's inotify quota
+    /// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_symlink_inside_gavin_root_does_not_spend_inotify_watches_on_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let mut nested = outside.path().to_path_buf();
+        for i in 0..200 {
+            nested = nested.join(format!("d{i}"));
+            std::fs::create_dir(&nested).unwrap();
+        }
+        let link = root.join(GAVIN_ROOT_DIR).join("plans").join("x");
+        if !try_symlink(outside.path(), &link) {
+            return;
+        }
+
+        let before = inotify_watch_count();
+        let (_ours, theirs) = Stream::pair().unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        std::thread::sleep(Duration::from_millis(200));
+        let added = inotify_watch_count().saturating_sub(before);
+        assert!(
+            added < 40,
+            "marker Recursive watch must not follow plans/x out of the tree, added {added}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn inotify_watch_count() -> usize {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let Ok(target) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            if !target.to_string_lossy().contains("anon_inode:inotify") {
+                continue;
+            }
+            let fdinfo_path = format!("/proc/self/fdinfo/{}", entry.file_name().to_string_lossy());
+            let Ok(contents) = std::fs::read_to_string(&fdinfo_path) else {
+                continue;
+            };
+            total += contents.lines().filter(|l| l.starts_with("inotify")).count();
+        }
+        total
+    }
+
     #[test]
     fn a_snapshot_never_waits_on_a_rescan_sleeping_out_its_floor() {
         // GetGavinTree answers the app's command connection, so a
