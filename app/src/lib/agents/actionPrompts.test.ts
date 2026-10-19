@@ -9,6 +9,7 @@ import {
   resolveActionPrompt,
   withOverride,
 } from "./actionPrompts";
+import { DEFAULT_CODE_REVIEW } from "./actionPromptDefaults";
 import { BUILTIN_TOOLS } from "$lib/orchestration/orchestrationTools";
 
 describe("fillTemplate", () => {
@@ -33,6 +34,13 @@ describe("effectiveBody / bodySource", () => {
 
   it("treats blank overrides as absent", () => {
     expect(effectiveBody("a", "default", { a: "  " }, { a: "\n" })).toBe("default");
+  });
+});
+
+describe("DEFAULT_CODE_REVIEW", () => {
+  it("does not tell the agent that a cloned REVIEW.md wins over the review", () => {
+    expect(DEFAULT_CODE_REVIEW).not.toMatch(/it wins/i);
+    expect(DEFAULT_CODE_REVIEW).toContain("repository's review suggestions");
   });
 });
 
