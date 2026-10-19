@@ -3175,8 +3175,15 @@ pub const PAIRING_NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 /// session token itself, so a copy of `registry.sqlite` yields no token
 /// that could be presented in a `Hello`.
 pub fn hash_token_hex(token: &str) -> String {
+    hash_bytes_hex(token.as_bytes())
+}
+
+/// SHA-256 of arbitrary bytes, hex-encoded. Used for digests that are
+/// not tokens — a launcher script's contents, for example — so a changed
+/// file cannot keep an approval that was for different bytes.
+pub fn hash_bytes_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
-    h.update(token.as_bytes());
+    h.update(bytes);
     hex_encode(&h.finalize())
 }
 

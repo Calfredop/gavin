@@ -9,7 +9,11 @@
   } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
-  import { foreignMcpServersHash, runIntegration } from "$lib/workspace/mcpServerTrust";
+  import {
+    foreignMcpServersHash,
+    resolveCheckoutMarkOffer,
+    runIntegration,
+  } from "$lib/workspace/mcpServerTrust";
   import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
 
   interface Props {
@@ -78,7 +82,8 @@
         hash: foreignMcpServersHash(pendingForeign.servers),
         action,
       });
-      result = await backend.setupAgentIntegration(ws.rootPath, agentFile, action, profileId);
+      const written = await backend.setupAgentIntegration(ws.rootPath, agentFile, action, profileId);
+      result = await resolveCheckoutMarkOffer(written, ws.rootPath, agentFile, action, profileId);
       pendingForeign = null;
     } catch (e) {
       error = String(e);

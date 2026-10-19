@@ -1,5 +1,6 @@
 import type { ForeignMcpServer, IntegrationResult } from "$lib/core/backend";
 import * as backend from "$lib/core/backend";
+import { askConfirm } from "$lib/core/dialog";
 import { sha256Hex } from "$lib/core/sha256";
 
 /// The AG-07 gate: whether a workspace's target MCP config file already
@@ -98,6 +99,38 @@ export function integrationNote(
   return `${clauses.join(". ")} — re-run any time to update.`;
 }
 
+/// Asks whether to trust a `checkoutMarkOffer`, and re-runs Integration
+/// with the mark when the human approves. Declining leaves the absolute
+/// binary already on disk and strips the offer from the result.
+export async function resolveCheckoutMarkOffer(
+  result: IntegrationResult,
+  rootPath: string,
+  instructionsFile: string,
+  mcpForeignChoice?: "keep" | "isolate",
+  profileId?: string
+): Promise<IntegrationResult> {
+  if (!result.checkoutMarkOffer) return result;
+  const ok = await askConfirm({
+    title: `Trust ${result.checkoutMarkOffer.launcher}?`,
+    lines: [
+      "This root ships a gavin-mcp launcher. Approving lets this repository choose what gavin's MCP entry runs.",
+      "Declining keeps the absolute gavin-mcp beside the app.",
+    ],
+    confirmLabel: "Trust launcher",
+  });
+  if (!ok) {
+    const { checkoutMarkOffer: _, ...rest } = result;
+    return rest;
+  }
+  return backend.setupAgentIntegration(
+    rootPath,
+    instructionsFile,
+    mcpForeignChoice,
+    profileId,
+    true
+  );
+}
+
 /// Runs `setupAgentIntegration`, resolving the gate from `storedChoice`
 /// when it already answers the set the host reports back. A first call
 /// with no choice is unavoidable either way -- reading the target file
@@ -107,6 +140,11 @@ export function integrationNote(
 /// recorded, or the set changed), the MCP write stays held back and the
 /// result's `mcpForeign` is what the caller shows a chooser for; call
 /// `setupAgentIntegration` again with the human's pick once they answer.
+///
+/// When the host offers a checkout mark (`checkoutMarkOffer`), asks with
+/// `askConfirm` whether to trust the repository's launcher. Approving
+/// re-runs with the mark recorded so gavin's entry names that launcher;
+/// declining leaves the absolute binary already written.
 export async function runIntegration(
   rootPath: string,
   instructionsFile: string,
@@ -114,9 +152,11 @@ export async function runIntegration(
   profileId?: string
 ): Promise<IntegrationResult> {
   const first = await backend.setupAgentIntegration(rootPath, instructionsFile, undefined, profileId);
-  if (!first.mcpForeign) return first;
+  if (!first.mcpForeign) {
+    return resolveCheckoutMarkOffer(first, rootPath, instructionsFile, undefined, profileId);
+  }
   const decided = mcpForeignDecision(first.mcpForeign.servers, storedChoice);
-  return decided
-    ? backend.setupAgentIntegration(rootPath, instructionsFile, decided, profileId)
-    : first;
+  if (!decided) return first;
+  const after = await backend.setupAgentIntegration(rootPath, instructionsFile, decided, profileId);
+  return resolveCheckoutMarkOffer(after, rootPath, instructionsFile, decided, profileId);
 }
