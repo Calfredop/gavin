@@ -21,8 +21,10 @@
 // belongs in the body. Optional `topics:` frontmatter (comma-separated,
 // or a `[a, b]` list) tags it for search; topics are not board labels,
 // and `labels: memory` stays the one marker. Adopt refuses an empty
-// body, a Why with no fact, a second fact or a second Why, and a fact
-// or Why too long to be one sentence-sized unit.
+// body, a Why with no fact, a second fact or a second Why, a fact or Why
+// too long to be one sentence-sized unit, and a fact or Why holding HTML
+// markup, a gavin marker string, or invisible / bidi format characters
+// the rendered card preview does not show.
 //
 // The section's grammar, which `parseLearned` here and the daemon's
 // `memory_index::parse_learned` both read -- the daemon rebuilds its
@@ -76,7 +78,7 @@ export interface Memory {
 
 /// Why a card cannot be adopted, named so tests (and the shared
 /// fixture) can say which refusal without matching prose.
-export type MemoryRefusal = "empty" | "no-fact" | "multi-fact" | "too-long";
+export type MemoryRefusal = "empty" | "no-fact" | "multi-fact" | "too-long" | "markup";
 
 /// Sentence-sized, generously: the fact is what a search returns and
 /// what an agent reads in one glance, and the Why is one reason.
@@ -85,6 +87,12 @@ export const MAX_WHY_CHARS = 500;
 
 const WHY_RE = /^why:\s*/i;
 const TOPICS_SUFFIX_RE = /\s*\(topics:([^()]*)\)\s*$/i;
+
+// Text the rendered preview can hide must not reach the instructions
+// file: HTML markup, either gavin marker string, zero-width / bidi
+// format controls, or Unicode tag characters.
+const HIDDEN_RE =
+  /<[!/?A-Za-z]|gavin:(?:start|end)|[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]|[\u{E0000}-\u{E007F}]/u;
 
 /// A `topics:` value as a list: commas, an optional `[ ]` around them,
 /// lower-cased so "PTY" and "pty" are one topic. The characters the
@@ -125,6 +133,8 @@ const REFUSALS: Record<MemoryRefusal, (n?: number) => string> = {
     "A memory is one fact line plus an optional Why: line, and this card holds more. Split the rest into cards of their own.",
   "too-long": (n) =>
     `This memory is ${n} characters, which is more than one fact (a fact is at most ${MAX_FACT_CHARS}, a Why: at most ${MAX_WHY_CHARS}). Shorten it or split it.`,
+  markup: () =>
+    "A memory is plain text; this one holds HTML, a gavin marker or invisible characters the card preview does not show.",
 };
 
 /// The card as one memory, or the reason it is not one.
@@ -148,6 +158,7 @@ export function parseMemoryCard(
   const why = lines.length === 2 ? lines[1].replace(WHY_RE, "").trim() : null;
   if (fact.length > MAX_FACT_CHARS) return refuse("too-long", fact.length);
   if (why !== null && why.length > MAX_WHY_CHARS) return refuse("too-long", why.length);
+  if (HIDDEN_RE.test(fact) || (why !== null && HIDDEN_RE.test(why))) return refuse("markup");
   return { fact, topics: normalizeTopics(cardTopicsField(fileContent)), why: why || null };
 }
 
@@ -261,18 +272,27 @@ export type AdoptResult = { movedTo: string } | { error: string };
 /// `doneStatus` is the board's done column NAME rather than a literal:
 /// the column vocabulary is the human's, and "Shipped" is as valid a
 /// last column as "Done".
+///
+/// `shownContent` is the card file the human confirmed: Adopt re-reads
+/// and refuses if the bytes differ, so a click authorizes exactly what
+/// was shown, not whatever the file holds when the write runs.
 export async function adoptMemory(
   card: Pick<CardView, "id">,
   instructionsPath: string,
-  doneStatus: string
+  doneStatus: string,
+  shownContent: string
 ): Promise<AdoptResult> {
   const fileName = instructionsPath.split("/").at(-1) ?? instructionsPath;
   try {
     // Re-read rather than trusting the modal's watched snapshot: that
     // copy is up to a watch debounce old, and this is a whole-file
-    // write on the other side.
+    // write on the other side. The re-read must still match what the
+    // human confirmed, or the click would authorize unseen bytes.
     const cardFile = await backend.readFileForViewer(card.id);
     if (!cardFile.exists) return { error: "The card's file is gone." };
+    if (cardFile.content !== shownContent) {
+      return { error: "This card changed since it was shown. Read it again before adopting." };
+    }
     const memory = parseMemoryCard(cardFile.content);
     if ("refuse" in memory) return { error: memory.error };
     const bullet = memoryBullet(memory);

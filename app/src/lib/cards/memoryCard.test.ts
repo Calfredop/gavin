@@ -80,6 +80,28 @@ describe("parseMemoryCard", () => {
     expect(refusal(`One.\nWhy: ${"y".repeat(MAX_WHY_CHARS + 1)}\n`)).toContain("more than one fact");
   });
 
+  // The card preview is rendered HTML: comments, display:none, the gavin
+  // end marker and Unicode tags vanish there, and Adopt must not write
+  // anything the human never saw into the instructions file.
+  it("refuses a fact or Why the rendered preview can hide", () => {
+    const refusal = (body: string) => {
+      const r = parseMemoryCard(`---\nkind: note\n---\n${body}`);
+      if (!("refuse" in r)) throw new Error(`adopted: ${body}`);
+      return r;
+    };
+    expect(refusal("A fact. <!-- x -->\n").refuse).toBe("markup");
+    expect(refusal('A fact. <span style="display:none">hid</span>\n').refuse).toBe("markup");
+    expect(refusal("A fact. <!-- gavin:end -->\n").refuse).toBe("markup");
+    expect(refusal(`A fact.\u{E0041}\n`).refuse).toBe("markup");
+    expect(refusal("A fact.\nWhy: because <!-- x -->\n").refuse).toBe("markup");
+    expect(refusal("A fact.\nWhy: gavin:start sneaks in\n").refuse).toBe("markup");
+    expect(parseMemoryCard("---\nkind: note\n---\nA fact.\n")).toEqual({
+      fact: "A fact.",
+      topics: [],
+      why: null,
+    });
+  });
+
   it("keeps a fact of exactly the limit", () => {
     const fact = "x".repeat(MAX_FACT_CHARS);
     expect(parseMemoryCard(`---\nkind: note\n---\n${fact}\n`)).toEqual({ fact, topics: [], why: null });
@@ -246,7 +268,7 @@ describe("adoptMemory", () => {
 
   it("writes the fact into the block, then files the card into the done column", async () => {
     reads({ [CARD.id]: { content: BODY }, [INSTRUCTIONS]: { content: file("Guidance.\n") } });
-    const result = await adoptMemory(CARD, INSTRUCTIONS, "Shipped");
+    const result = await adoptMemory(CARD, INSTRUCTIONS, "Shipped", BODY);
     expect(result).toEqual({ movedTo: "/ws/.gavin-root/plans/done/memory-daemon.md" });
     expect(backend.writeFileForEditor).toHaveBeenCalledWith(
       INSTRUCTIONS,
@@ -263,11 +285,24 @@ describe("adoptMemory", () => {
         content: file("Guidance.\n\n### Learned\n\n- Never pkill gavin-daemon.\n"),
       },
     });
-    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done")).toEqual({
+    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY)).toEqual({
       movedTo: "/ws/.gavin-root/plans/done/memory-daemon.md",
     });
     expect(backend.writeFileForEditor).not.toHaveBeenCalled();
     expect(backend.setPlanFrontmatterField).toHaveBeenCalled();
+  });
+
+  // The modal showed one snapshot; Adopt re-reads. Writing against a
+  // changed card would authorize bytes the human never confirmed.
+  it("writes nothing when the re-read differs from what was shown", async () => {
+    reads({ [CARD.id]: { content: BODY }, [INSTRUCTIONS]: { content: file("Guidance.\n") } });
+    const stale =
+      "---\nkind: note\nlabels: memory\n---\nA different fact the human never saw.\n";
+    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done", stale)).toEqual({
+      error: "This card changed since it was shown. Read it again before adopting.",
+    });
+    expect(backend.writeFileForEditor).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
 
   it("files nothing when there is nothing to adopt", async () => {
@@ -275,28 +310,29 @@ describe("adoptMemory", () => {
     // done for a memory that never landed is the one outcome worth
     // ruling out, since nothing afterwards would show it.
     reads({ [INSTRUCTIONS]: { content: file("Guidance.\n") } });
-    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done")).toEqual({
+    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY)).toEqual({
       error: "The card's file is gone.",
     });
 
-    reads({ [CARD.id]: { content: "---\nkind: note\n---\n" }, [INSTRUCTIONS]: { content: file("G\n") } });
-    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done")).toEqual({
+    const empty = "---\nkind: note\n---\n";
+    reads({ [CARD.id]: { content: empty }, [INSTRUCTIONS]: { content: file("G\n") } });
+    expect(await adoptMemory(CARD, INSTRUCTIONS, "Done", empty)).toEqual({
       error: "This card has no body, so there is no memory to adopt.",
     });
 
     reads({ [CARD.id]: { content: BODY } });
-    const missing = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    const missing = await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY);
     expect("error" in missing && missing.error).toContain("CLAUDE.md doesn't exist yet");
 
     reads({ [CARD.id]: { content: BODY }, [INSTRUCTIONS]: { content: "# My rules\n" } });
-    const noBlock = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    const noBlock = await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY);
     expect("error" in noBlock && noBlock.error).toContain(MARKER_START);
 
     reads({
       [CARD.id]: { content: BODY },
       [INSTRUCTIONS]: { content: file("G\n"), truncated: true },
     });
-    const capped = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    const capped = await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY);
     expect("error" in capped && capped.error).toContain("too large");
 
     expect(backend.writeFileForEditor).not.toHaveBeenCalled();
@@ -304,11 +340,13 @@ describe("adoptMemory", () => {
   });
 
   it("writes the topics into the bullet the daemon reads", async () => {
+    const withTopics =
+      "---\nkind: note\nlabels: memory\ntopics: daemon\n---\nNever pkill gavin-daemon.\nWhy: PTYs.\n";
     reads({
-      [CARD.id]: { content: "---\nkind: note\nlabels: memory\ntopics: daemon\n---\nNever pkill gavin-daemon.\nWhy: PTYs.\n" },
+      [CARD.id]: { content: withTopics },
       [INSTRUCTIONS]: { content: file("Guidance.\n") },
     });
-    await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    await adoptMemory(CARD, INSTRUCTIONS, "Done", withTopics);
     expect(backend.writeFileForEditor).toHaveBeenCalledWith(
       INSTRUCTIONS,
       file("Guidance.\n\n### Learned\n\n- Never pkill gavin-daemon. (topics: daemon)\n  Why: PTYs.\n")
@@ -316,11 +354,12 @@ describe("adoptMemory", () => {
   });
 
   it("files nothing for a card that is more than one fact", async () => {
+    const multi = "---\nkind: note\n---\nOne.\nTwo.\n";
     reads({
-      [CARD.id]: { content: "---\nkind: note\n---\nOne.\nTwo.\n" },
+      [CARD.id]: { content: multi },
       [INSTRUCTIONS]: { content: file("G\n") },
     });
-    const result = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    const result = await adoptMemory(CARD, INSTRUCTIONS, "Done", multi);
     expect("error" in result && result.error).toContain("one fact line");
     expect(backend.writeFileForEditor).not.toHaveBeenCalled();
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
@@ -329,7 +368,7 @@ describe("adoptMemory", () => {
   it("names the file when the write itself fails", async () => {
     reads({ [CARD.id]: { content: BODY }, [INSTRUCTIONS]: { content: file("G\n") } });
     vi.mocked(backend.writeFileForEditor).mockRejectedValue(new Error("read-only"));
-    const result = await adoptMemory(CARD, INSTRUCTIONS, "Done");
+    const result = await adoptMemory(CARD, INSTRUCTIONS, "Done", BODY);
     expect("error" in result && result.error).toBe("Couldn't adopt into CLAUDE.md: read-only");
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
@@ -377,6 +416,17 @@ describe("the card detail modal", () => {
     expect(body).not.toContain("switchWorkspaceView");
     expect(body).not.toContain("openFileInSplit");
     expect(body).not.toContain("onClose");
+  });
+
+  // The rendered preview can hide markup; the confirm shows the exact
+  // bullet as plain text, and adoptMemory is handed that same snapshot.
+  it("binds Adopt to the shown bytes via a plain-text confirm", () => {
+    const handler = source.slice(source.indexOf("async function handleAdopt"));
+    const body = handler.slice(0, handler.indexOf("\n  }"));
+    expect(body).toContain("askConfirm(");
+    expect(body).toContain("memoryBullet(memory)");
+    expect(body).toContain("danger: true");
+    expect(body).toContain("adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name, shown)");
   });
 });
 

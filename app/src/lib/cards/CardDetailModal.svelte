@@ -43,6 +43,7 @@
     withheldAttachmentPaths,
     type AttachmentStatus,
   } from "$lib/cards/attachments";
+  import { askConfirm } from "$lib/core/dialog";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/git/autoCommit";
   import { isViewableInApp } from "$lib/files/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
@@ -84,7 +85,13 @@
   import RunHistoryModal from "$lib/cards/RunHistoryModal.svelte";
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
-  import { adoptBlockedReason, adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
+  import {
+    adoptBlockedReason,
+    adoptMemory,
+    isMemoryCard,
+    memoryBullet,
+    parseMemoryCard,
+  } from "$lib/cards/memoryCard";
   import { syncAfterAdopt } from "$lib/cards/memoryIndexState";
   import {
     orchestrations,
@@ -941,10 +948,28 @@
 
   async function handleAdopt(): Promise<void> {
     errorMessage = null;
-    if (adoptRoot === null || done === null) return;
+    if (adoptRoot === null || done === null || content === null) return;
+    // Bind the click to the bytes on screen: confirm the exact bullet,
+    // then hand that same snapshot to adoptMemory so a re-read that
+    // differs refuses rather than writing unseen text.
+    const shown = content;
+    const memory = parseMemoryCard(shown);
+    if ("refuse" in memory) {
+      errorMessage = memory.error;
+      return;
+    }
+    const ok = await askConfirm({
+      title: `Adopt into ${instructionsFile}?`,
+      lines: ["Every future agent in this workspace will read exactly this text:"],
+      block: { label: "Appended under ### Learned:", text: memoryBullet(memory) },
+      confirmLabel: `Adopt into ${instructionsFile}`,
+      cancelLabel: "Keep as a card",
+      danger: true,
+    });
+    if (!ok) return;
     adopting = true;
     try {
-      const result = await adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name);
+      const result = await adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name, shown);
       if ("error" in result) {
         errorMessage = result.error;
         return;
