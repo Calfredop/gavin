@@ -718,10 +718,10 @@ export const FEATURE_MIN_VERSION = {
   // so `min_version_for` already stops both against an older daemon --
   // which recorded nothing to read.
   //
-  // Consumer: `reviewState.ts`'s `shellWritesFor`, which does not ask an
-  // older daemon at all and reads the run's transcript alone, exactly as
-  // before -- a refusal there is not a fault to show, it is a daemon that
-  // kept no records.
+  // Consumer: `transcriptNarrow.ts`'s `shellWritesFor` (Review and the
+  // session Changes view), which does not ask an older daemon at all and
+  // reads the run's transcript alone, exactly as before -- a refusal
+  // there is not a fault to show, it is a daemon that kept no records.
   shellWrites: 72,
   // The direct-prompt task (v75, `feat-direct-prompt-task.md`): a task's
   // `direct: true` line, sending its body as the whole prompt. It widens

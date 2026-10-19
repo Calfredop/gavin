@@ -16,6 +16,8 @@ import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { untrackedPaths } from "$lib/cards/runChanges";
 import { attributeRun } from "$lib/cards/changeAttributionState";
+import { narrowToTranscript } from "$lib/cards/transcriptNarrow";
+import type { TouchSource } from "$lib/review/reviewBoard";
 
 export interface RunChangesView {
   /// The run this view is of -- carried so a card whose binding was
@@ -25,7 +27,15 @@ export interface RunChangesView {
   /// The card's title, for the attribution question: the run's own card
   /// is always one of the options, and this is what it is called.
   title: string;
+  /// Workspace + conversation the transcript narrow needs. Absent when
+  /// the open site has no conversation id (or an ssh host whose
+  /// transcript is out of reach); refresh then keeps the checkout list.
+  workspaceId: string | null;
+  conversationId: string | null;
   changes: RunChanges | null;
+  /// Where `changes.files` came from. `transcript`: this agent's files.
+  /// `checkout`: everything dirty since the baseline -- co-tenants too.
+  source: TouchSource;
   loading: boolean;
   error: string | null;
   /// The selected file and its diff, from the same baseline.
@@ -59,17 +69,24 @@ export async function openRunChanges(
   path: string,
   cwd: string,
   baseSha: string,
-  title?: string
+  title?: string,
+  workspaceId?: string | null,
+  conversationId?: string | null
 ): Promise<void> {
   const existing = get(runChangesStore)[path];
   const same = existing && existing.cwd === cwd && existing.baseSha === baseSha;
+  const ws = workspaceId ?? existing?.workspaceId ?? null;
+  const conv = conversationId === undefined ? (existing?.conversationId ?? null) : conversationId;
   runChangesStore.update((all) => ({
     ...all,
     [path]: {
       cwd,
       baseSha,
       title: title ?? existing?.title ?? path.slice(path.lastIndexOf("/") + 1),
+      workspaceId: ws,
+      conversationId: conv,
       changes: same ? existing.changes : null,
+      source: same ? existing.source : "checkout",
       loading: true,
       error: null,
       selected: same ? existing.selected : null,
@@ -89,20 +106,40 @@ export async function refreshRunChanges(path: string): Promise<void> {
   const token = view.token + 1;
   update(path, (v) => ({ ...v, token, loading: true, error: null }));
   try {
-    const changes = await backend.gitRunChanges(view.cwd, view.baseSha);
-    update(path, (v) => (v.token === token ? { ...v, changes, loading: false } : v));
+    const measured = await backend.gitRunChanges(view.cwd, view.baseSha);
+    const narrowed =
+      view.workspaceId && view.conversationId
+        ? await narrowToTranscript(
+            view.workspaceId,
+            { cwd: view.cwd, conversationId: view.conversationId },
+            measured
+          )
+        : null;
+    const changes = narrowed ?? measured;
+    const source: TouchSource = narrowed ? "transcript" : "checkout";
+    update(path, (v) => (v.token === token ? { ...v, changes, source, loading: false } : v));
     // The hint BESIDE the list, never in it: which card each file looks
     // like, when another card has run in this checkout and the switch is
-    // on. Fire-and-forget into its own store -- a failure there is
-    // today's answer, not this view's error -- and re-asked on every
+    // on. Not for a run its transcript already narrowed: those files are
+    // the agent's own, and a guess must not hand one of them to a
+    // neighbour. Fire-and-forget into its own store -- a failure there
+    // is today's answer, not this view's error -- and re-asked on every
     // load and Refresh, where an unchanged file's answer is cached.
-    void attributeRun({ cardPath: path, cardTitle: view.title, cwd: view.cwd, changes });
+    if (!narrowed) {
+      void attributeRun({ cardPath: path, cardTitle: view.title, cwd: view.cwd, changes });
+    }
     // A selection that survived the refresh is re-read, because the
     // agent has almost certainly written to it since -- that is why
-    // anyone pressed Refresh.
+    // anyone pressed Refresh. Drop a selection the narrow removed.
     const after = get(runChangesStore)[path];
     if (after?.token === token && after.selected) {
-      await selectRunFile(path, after.selected);
+      if (!after.changes?.files.some((f) => f.path === after.selected)) {
+        update(path, (v) =>
+          v.token === token ? { ...v, selected: null, diff: null, diffLoading: false } : v
+        );
+      } else {
+        await selectRunFile(path, after.selected);
+      }
     }
   } catch (e) {
     update(path, (v) =>
@@ -144,6 +181,10 @@ export async function selectRunFile(path: string, file: string): Promise<void> {
 /// from a fresh scan: what they agreed to remove is what was on screen,
 /// and a file the agent created in between must survive to be asked
 /// about on its own.
+///
+/// Discard is always whole-checkout (`reset --hard` to baseline), even
+/// when the file list was narrowed to this agent's transcript. The
+/// confirm copy must keep saying so.
 export async function discardRun(path: string): Promise<{ report: import("$lib/git/git").DiscardReport } | { error: string }> {
   const view = get(runChangesStore)[path];
   if (!view?.changes) return { error: "This run's changes are not loaded." };

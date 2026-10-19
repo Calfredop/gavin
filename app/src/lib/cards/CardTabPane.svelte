@@ -87,6 +87,7 @@
       cwd: baseline.cwd,
       baseSha: baseline.baseSha,
       live: cardSessionState($layoutState, binding) === "live",
+      conversationId: binding?.conversationId ?? null,
     };
   });
 
@@ -132,6 +133,8 @@
       cwd={run.cwd}
       baseSha={run.baseSha}
       sessionIsLive={run.live}
+      {workspaceId}
+      conversationId={run.conversationId}
       inline
       onClose={close}
     />

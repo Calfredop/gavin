@@ -42,6 +42,9 @@ describe("the card detail modal", () => {
     expect(text).toContain("baseSha={baseline.baseSha}");
     // The live-agent refusal is decided by the modal, from this flag.
     expect(text).toContain("sessionIsLive={bindingLive}");
+    // Transcript narrow needs the workspace and the run's conversation.
+    expect(text).toContain("{workspaceId}");
+    expect(text).toContain("conversationId={binding?.conversationId ?? null}");
   });
 });
 
@@ -83,6 +86,8 @@ describe("the tab chip", () => {
     expect(text).toContain("runBaseline(binding, $daemonCompat)");
     expect(text).toContain("cwd={run.cwd}");
     expect(text).toContain("baseSha={run.baseSha}");
+    expect(text).toContain("conversationId={run.conversationId}");
+    expect(text).toContain("{workspaceId}");
   });
 
   it("mounts the same modal the card detail does, drawn as a pane", () => {
@@ -135,9 +140,22 @@ describe("the modal", () => {
 
   it("asks before discarding, with the accounting and a danger choice", () => {
     const text = source(MODAL);
-    expect(text).toContain("discardPrompt(changes, title, foreign.map(foreignLine))");
+    // listNarrowed follows source so a transcript-cut list cannot look
+    // like a file-scoped discard.
+    expect(text).toContain(
+      'discardPrompt(changes, title, foreign.map(foreignLine), source === "transcript")'
+    );
     expect(text).toContain("askConfirm(");
     expect(text).toContain("danger: true");
+  });
+
+  it("threads workspace and conversation into the store, and shows the checkout strip", () => {
+    const text = source(MODAL);
+    expect(text).toContain(
+      "openRunChanges(path, cwd, baseSha, title, workspaceId, conversationId)"
+    );
+    expect(text).toContain("checkoutSourceStrip(source)");
+    expect(text).toContain("EMPTY_AFTER_NARROW");
   });
 
   it("hangs the refusal on a non-disabled ancestor so it can be read", () => {

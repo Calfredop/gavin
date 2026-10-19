@@ -1872,6 +1872,8 @@
     cwd={baseline.cwd}
     baseSha={baseline.baseSha}
     sessionIsLive={bindingLive}
+    {workspaceId}
+    conversationId={binding?.conversationId ?? null}
     onClose={() => (showingChanges = false)}
   />
 {/if}
