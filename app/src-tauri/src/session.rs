@@ -5730,6 +5730,31 @@ fn accept_host_workspace_push(
     }
 }
 
+/// Whether a push read on this relay should be forwarded to the desk's
+/// webviews (and the forwarding connection).
+///
+/// The Remote-access and Devices surfaces answer for the LOCAL daemon
+/// only — a wrong answer there is invisible. An ssh host's streaming
+/// connection still carries session and workspace pushes the desk needs
+/// (`GavinTreeChanged`, `SessionOwnerChanged`, …); the desk-scoped
+/// device and remote-access pushes must not overwrite local state.
+fn forwarded_from(owner: &RelayOwner, resp: &Response) -> bool {
+    match owner {
+        RelayOwner::Local => true,
+        RelayOwner::Remote { .. } => !matches!(
+            resp,
+            Response::DevicePairingRequested { .. }
+                | Response::DeviceConnected { .. }
+                | Response::DeviceDisconnected { .. }
+                | Response::DeviceRefusalChanged { .. }
+                | Response::DevicePresenceChanged { .. }
+                | Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. }
+        ),
+    }
+}
+
 pub(crate) fn attach_and_relay(
     app_handle: &AppHandle,
     writer: &StreamWriter,
@@ -5800,6 +5825,11 @@ pub(crate) fn attach_and_relay(
                 owner.lost(&reader_app_handle, epoch, "daemon closed the connection".to_string());
                 break;
             };
+            // Desk-scoped device / remote-access pushes from an ssh host
+            // must not reach Settings or Devices — see `forwarded_from`.
+            if !forwarded_from(&owner, &resp) {
+                continue;
+            }
             match resp {
                 Response::Output { id, data } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "pty-output", (id, data));
@@ -5925,19 +5955,20 @@ pub(crate) fn attach_and_relay(
                     // agent rename and a human rename persist identically.
                     let _ = crate::forwarding::emit(&reader_app_handle, "session-named", (session_id, name));
                 }
-                // The three device pushes (v42). Forwarded verbatim, the
-                // way `remote-link-ready`/`remote-link-lost` are: the
-                // Settings section is the only listener, and what it does
-                // with each is its own (`remoteAccess.ts`).
+                // The three device pushes (v42). From RelayOwner::Local
+                // only (`forwarded_from`): the Settings section and
+                // Devices panel answer for THIS machine, and an ssh
+                // host's copies must not overwrite them. What the
+                // section does with each is its own (`remoteAccess.ts`).
                 //
                 // `DevicePairingRequested` is the one that cannot be
-                // dropped. It is the ONLY notice a phone has finished the
-                // handshake and is waiting on the human -- the daemon
-                // pushes it once and keeps nothing to re-read, because
-                // the pending handshake lives in memory until it is
-                // answered or replaced. So it rides the stream
-                // connection, which is the one the app keeps open for its
-                // whole life.
+                // dropped FROM THE LOCAL daemon. It is the ONLY notice a
+                // phone has finished the handshake and is waiting on the
+                // human -- the daemon pushes it once and keeps nothing to
+                // re-read, because the pending handshake lives in memory
+                // until it is answered or replaced. So it rides the
+                // local stream connection, which is the one the app
+                // keeps open for its whole life.
                 Response::DevicePairingRequested { device_id, name, sas } => {
                     let _ = crate::forwarding::emit(&reader_app_handle,
                         "device-pairing-requested", (device_id, name, sas));
@@ -9175,6 +9206,107 @@ mod kanban_command_tests {
 }
 
 #[cfg(test)]
+mod forwarded_from_tests {
+    use super::*;
+
+    fn remote() -> RelayOwner {
+        RelayOwner::Remote {
+            host: "host.example".into(),
+            link_id: 1,
+        }
+    }
+
+    fn desk_scoped_pushes() -> Vec<Response> {
+        vec![
+            Response::DevicePairingRequested {
+                device_id: "d-host".into(),
+                name: "x".into(),
+                sas: "000000".into(),
+            },
+            Response::DeviceConnected {
+                device_id: "d-host".into(),
+            },
+            Response::DeviceDisconnected {
+                device_id: "d-host".into(),
+            },
+            Response::DeviceRefusalChanged {
+                device_id: "d-host".into(),
+                refusal: protocol::DeviceRefusal {
+                    reason: protocol::device_wire::ConnectRefusal::Unlock,
+                    at: 1,
+                },
+            },
+            Response::DevicePresenceChanged {
+                device_id: "d-host".into(),
+                presence: protocol::DevicePresence::default(),
+            },
+            Response::RelayStateChanged {
+                state: protocol::RelayState::NotWanted,
+            },
+            Response::DirectStateChanged {
+                state: protocol::DirectState::NotWanted,
+            },
+            Response::DeskRelayStateChanged {
+                state: protocol::DeskRelayState::NotWanted,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_hosts_device_and_remote_access_pushes_are_not_forwarded() {
+        let remote = remote();
+        for resp in desk_scoped_pushes() {
+            assert!(
+                !forwarded_from(&remote, &resp),
+                "Remote must drop desk-scoped push: {resp:?}"
+            );
+            assert!(
+                forwarded_from(&RelayOwner::Local, &resp),
+                "Local must still forward desk-scoped push: {resp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hosts_session_pushes_are_still_forwarded() {
+        let remote = remote();
+        let session_pushes = [
+            Response::GavinTreeChanged {
+                workspace_id: "ws".into(),
+                tree: protocol::GavinTree {
+                    root_path: "/r".into(),
+                    root_missing: false,
+                    contexts: vec![],
+                },
+            },
+            Response::SessionOwnerChanged {
+                ownership: protocol::SessionOwnership {
+                    session_id: "s1".into(),
+                    owner: None,
+                    changed_by: None,
+                    reason: protocol::OwnerChange::Released,
+                    at: 1,
+                },
+            },
+            Response::PtySizeBorrowed {
+                session_id: "s1".into(),
+                device: None,
+            },
+        ];
+        for resp in &session_pushes {
+            assert!(
+                forwarded_from(&remote, resp),
+                "Remote must still forward host session push: {resp:?}"
+            );
+            assert!(
+                forwarded_from(&RelayOwner::Local, resp),
+                "Local must forward session push: {resp:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod confine_host_tree_tests {
     use super::*;
     use protocol::{GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo};
@@ -9373,7 +9505,6 @@ mod host_workspace_push_tests {
         ));
     }
 }
-
 #[cfg(test)]
 mod attach_target_tests {
     use super::*;
