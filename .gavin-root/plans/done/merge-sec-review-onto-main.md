@@ -1,6 +1,6 @@
 ---
 title: Merge sec/review-2026-10-15 onto main
-status: In Progress
+status: Done
 ---
 Gracefully merge the security review branch onto main, resolve conflicts preserving both intents, and verify.
 
@@ -8,4 +8,4 @@ Gracefully merge the security review branch onto main, resolve conflicts preserv
 - [x] Merge `sec/review-2026-10-15` into `main` (worktree or clean path)
 - [x] Resolve each conflict from primary sources; keep security intent and main's later work
 - [x] Run focused checks the merge could break
-- [ ] Finish the merge commit
+- [x] Finish the merge commit
