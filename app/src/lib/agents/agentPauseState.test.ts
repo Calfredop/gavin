@@ -644,6 +644,64 @@ describe("the gate", () => {
     });
   });
 
+  // Real fleet shape after restart: fallback chain + threshold configured,
+  // usage cache shows Claude spent, but nobody ever saved a pauseCycles
+  // row for claude-code (only cursor has one). Settings still draws the
+  // shipped DEFAULT_CYCLE with limitEnabled on, so the desk looks armed.
+  // launchDecision must not treat "no cycle key" as "limits off" or the
+  // chain never walks and Claude keeps spawning.
+  it("walks the fallback when Claude is over threshold even with no pauseCycles key for it", () => {
+    agentDefaultsStore.set({
+      customCommand: "",
+      customModelFlag: "",
+      defaultAgent: "claude-code",
+      complexityTables: {},
+      // Only cursor was ever edited under Pause — Claude has no key.
+      pauseCycles: {
+        cursor: {
+          ...DEFAULT_CYCLE,
+          enabled: false,
+          anchorMs: ANCHOR,
+          limitEnabled: true,
+        },
+      },
+      fallbackChains: {},
+      fallbackThresholds: { "claude-code": 80 },
+      actionPromptOverrides: {},
+    } as never);
+    layoutState.set({
+      workspaces: [
+        {
+          id: "w1",
+          fallbackChains: { "claude-code": ["cursor", "kimi-code"] },
+          armedAgents: ["cursor", "kimi-code"],
+        },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: true,
+      },
+      cursor: {
+        state: "ready",
+        windows: [{ id: "auto", label: "Auto", usedPercent: 12, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: true,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "cursor",
+      viaFallback: true,
+    });
+  });
+
   it("blocks and names the unarmed next chain agent rather than skipping it", () => {
     setAppCycle(cycle({ enabled: false, limitPercent: 90 }));
     layoutState.set({
@@ -796,9 +854,9 @@ describe("the gate", () => {
     });
   });
 
-  it("does not invent a usage pause when no cycle is configured at all", () => {
+  it("does not invent a usage pause when no cycle and no fallback chain is configured", () => {
     layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
+      workspaces: [{ id: "w1" }],
       activeWorkspaceId: "w1",
     } as never);
     agentUsageStore.set({
@@ -816,6 +874,27 @@ describe("the gate", () => {
       viaFallback: false,
     });
     expect(mayStartWork("w1")).toBe(true);
+  });
+
+  it("walks a configured chain even though no cycle was ever saved for the primary", () => {
+    layoutState.set({
+      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
   });
 });
 
