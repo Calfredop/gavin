@@ -204,7 +204,7 @@ docker build -f crates/push-gateway/Dockerfile -t gavin-push-gateway .
 A dry run, for development:
 
 ```sh
-docker run --rm -p 8080:8080 -v gavin-push-data:/data \
+docker run --rm -p 127.0.0.1:8080:8080 -v gavin-push-data:/data \
   -e GAVIN_PUSH_DELIVERY=dry-run \
   -e GAVIN_PUSH_TLS_TERMINATED=1 \
   gavin-push-gateway
@@ -213,7 +213,7 @@ docker run --rm -p 8080:8080 -v gavin-push-data:/data \
 Live, with the credentials mounted read-only:
 
 ```sh
-docker run -d --name gavin-push-gateway -p 8080:8080 \
+docker run -d --name gavin-push-gateway -p 127.0.0.1:8080:8080 \
   -v gavin-push-data:/data \
   -v /srv/gavin-push/secrets:/run/secrets:ro \
   -e GAVIN_PUSH_TLS_TERMINATED=1 \
@@ -224,6 +224,9 @@ docker run -d --name gavin-push-gateway -p 8080:8080 \
   -e GAVIN_PUSH_FCM_SERVICE_ACCOUNT_FILE=/run/secrets/fcm-service-account.json \
   gavin-push-gateway
 ```
+
+A proxy on another host publishes on the address that host reaches, never
+`0.0.0.0` on a public interface.
 
 The image runs as an unprivileged user (uid 10001), which must be able to
 read the mounted credential files.
