@@ -627,6 +627,12 @@ pub fn file_human_item(
     if text.contains('\n') || text.contains('\r') {
         anyhow::bail!("a human item is one checklist line — it cannot contain a newline");
     }
+    // Every other C0 control (ESC included) is refused too: tab is the
+    // only one a checklist line may carry. Without this, an agent-filed
+    // item could plant ESC[201~ that later rides a bracketed paste.
+    if text.chars().any(|c| c.is_control() && c != '\t') {
+        anyhow::bail!("a human item cannot contain control characters");
+    }
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -661,6 +667,9 @@ pub fn file_human_item(
     };
     let mut new_lines = vec![format!("- [ ] {marker}: {text}")];
     let options: Vec<&str> = options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+    if options.iter().any(|o| o.chars().any(|c| c.is_control() && c != '\t')) {
+        anyhow::bail!("a human item option cannot contain control characters");
+    }
     if !options.is_empty() {
         let labelled: Vec<String> = options
             .iter()
@@ -4680,6 +4689,20 @@ mod tests {
         assert!(file_human_item(&path, HumanItemKind::Decision, "   ", &[], "2026-09-23").is_err());
         assert!(
             file_human_item(&path, HumanItemKind::Decision, "a\nb", &[], "2026-09-23").is_err()
+        );
+        assert!(
+            file_human_item(&path, HumanItemKind::Decision, "say\x1b[201~", &[], "2026-09-23")
+                .is_err()
+        );
+        assert!(
+            file_human_item(
+                &path,
+                HumanItemKind::Decision,
+                "which?",
+                &["keep\x1b[Z".into()],
+                "2026-09-23"
+            )
+            .is_err()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no writes on error");
 
