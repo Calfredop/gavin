@@ -472,7 +472,7 @@ pub fn diff(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untrack
 /// `rev` (SP4) diffs `<rev>^..<rev>` (the empty tree for a root commit) and
 /// ignores `staged`/`untracked`.
 pub fn diff_at(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untracked: bool, rev: Option<&str>) -> Result<FileDiff, String> {
-    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-U3"];
+    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U3"];
     let parent: String;
     if let Some(rev) = rev {
         let parent_ref = format!("{rev}^");

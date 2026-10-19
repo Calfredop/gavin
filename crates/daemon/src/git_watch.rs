@@ -69,7 +69,7 @@ pub fn is_relevant(rel: &Path) -> bool {
 /// inside `cwd` itself (`WorktreeWatch::arm_initial` watches it directly
 /// in that case, off `ONE_RECURSIVE_WATCH`).
 pub fn gitdir_for(cwd: &Path) -> Option<PathBuf> {
-    let out = crate::program::command("git")
+    let out = crate::git_status::git()
         .args(["--no-optional-locks", "rev-parse", "--absolute-git-dir"])
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -512,7 +512,7 @@ fn load_tracked_ignored(root: &Path) -> Option<TrackedIgnored> {
 
 /// `git <args>` in `root`: its stdout, when it exits 0.
 fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let out = crate::program::command("git")
+    let out = crate::git_status::git()
         .arg("--no-optional-locks")
         .args(args)
         .current_dir(root)

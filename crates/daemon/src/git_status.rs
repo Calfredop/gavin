@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -8,6 +9,60 @@ use std::time::{Duration, Instant};
 /// repo root's poller (and by extension, every session mapped to it)
 /// indefinitely.
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// git as this scanner (and the RepoPoller's watch helpers) run it:
+/// repository config may not run anything. Committed `core.fsmonitor`,
+/// hooks, and an implicitly discovered bare-style directory must not
+/// become command execution inside the daemon.
+pub(crate) fn git() -> std::process::Command {
+    let mut c = crate::program::command("git");
+    c.env("GIT_CONFIG_NOSYSTEM", "1").args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "safe.bareRepository=explicit",
+    ]);
+    c
+}
+
+/// Whether `repo_root` is the session's trusted workspace, or a known
+/// worktree of that repository. An OSC 7 can name any path the PTY
+/// printed -- including an embedded git directory committed as ordinary
+/// tracked files -- and only these roots may register a RepoPoller.
+pub fn repo_root_trusted(workspace_path: &str, repo_root: &str) -> bool {
+    let Ok(ws) = std::fs::canonicalize(workspace_path) else {
+        return false;
+    };
+    let Ok(root) = std::fs::canonicalize(repo_root) else {
+        return false;
+    };
+    if root == ws {
+        return true;
+    }
+    known_worktrees(&ws).into_iter().any(|wt| wt == root)
+}
+
+fn known_worktrees(workspace: &Path) -> Vec<PathBuf> {
+    let output = git()
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(workspace)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect()
+}
 
 /// The fields this scanner extracts from `git status --porcelain=v2
 /// --branch` output. `ahead`/`behind` are only meaningful when
@@ -75,7 +130,7 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
     // a revision argument, exits non-zero, and this function would then
     // return `None` for every session on that machine with nothing logged
     // to explain why.
-    let output = crate::program::command("git")
+    let output = git()
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -109,7 +164,7 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
 /// and a bare one in a non-repo prints git's error to stdout on some
 /// versions. Both would otherwise be recorded as a sha.
 pub fn head_sha(cwd: &str) -> Option<String> {
-    let output = crate::program::command("git")
+    let output = git()
         .args(["rev-parse", "--verify", "-q", "HEAD"])
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -153,7 +208,7 @@ pub fn head_sha(cwd: &str) -> Option<String> {
 /// `std::process` deadlock that `Child::wait_with_output` exists to
 /// avoid, and which a timeout loop cannot use directly.
 fn run_git_capture(repo_root: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = crate::program::command("git")
+    let mut child = git()
         .args(args)
         .current_dir(repo_root)
         .stdin(Stdio::null())
@@ -519,6 +574,101 @@ mod tests {
         fn run_git_status_returns_none_for_a_directory_that_is_not_a_repo() {
             let dir = tempfile::tempdir().unwrap();
             assert_eq!(run_git_status(dir.path().to_str().unwrap()), None);
+        }
+
+        /// An embedded git directory committed as ordinary tracked files
+        /// (`HEAD`, `config`, `objects/`, `refs/` with `core.worktree = .`
+        /// and a `core.fsmonitor` command) must not execute that command
+        /// when this scanner resolves or statuses it.
+        fn embedded_fsmonitor_repo(marker: &std::path::Path) -> (tempfile::TempDir, std::path::PathBuf) {
+            let scratch = tempfile::tempdir().unwrap();
+            let src = scratch.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&src).status().unwrap();
+            Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"])
+                .current_dir(&src)
+                .status()
+                .unwrap();
+            let payload = src.join("payload");
+            std::fs::create_dir_all(payload.join("objects")).unwrap();
+            std::fs::create_dir_all(payload.join("refs")).unwrap();
+            std::fs::write(payload.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            std::fs::write(payload.join("objects").join(".keep"), "").unwrap();
+            std::fs::write(payload.join("refs").join(".keep"), "").unwrap();
+            let marker_str = marker.to_str().unwrap();
+            std::fs::write(
+                payload.join("config"),
+                format!(
+                    "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch {marker_str}; false\"\n"
+                ),
+            )
+            .unwrap();
+            Command::new("git").args(["add", "payload"]).current_dir(&src).status().unwrap();
+            Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "payload"])
+                .current_dir(&src)
+                .status()
+                .unwrap();
+            let clone = scratch.path().join("clone");
+            Command::new("git")
+                .args(["clone", "-q", src.to_str().unwrap(), clone.to_str().unwrap()])
+                .status()
+                .unwrap();
+            let embedded = clone.join("payload");
+            (scratch, embedded)
+        }
+
+        #[test]
+        fn run_git_status_does_not_execute_a_committed_core_fsmonitor() {
+            let marker = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+            let marker_path = marker.to_path_buf();
+            let _ = std::fs::remove_file(&marker_path);
+            let (_scratch, embedded) = embedded_fsmonitor_repo(&marker_path);
+            let embedded = embedded.to_str().unwrap();
+
+            // Unhardened git still executes the committed command -- the
+            // premise this hardening exists to break.
+            let _ = Command::new("git")
+                .args(["--no-optional-locks", "status", "--porcelain=v2", "--branch"])
+                .current_dir(embedded)
+                .output();
+            assert!(
+                marker_path.exists(),
+                "test premise: unhardened git status must run the committed fsmonitor"
+            );
+            let _ = std::fs::remove_file(&marker_path);
+
+            let _ = run_git_status(embedded);
+            let _ = resolve_repo_root(embedded);
+            assert!(
+                !marker_path.exists(),
+                "hardened git status/resolve must not run a committed core.fsmonitor"
+            );
+        }
+
+        #[test]
+        fn repo_root_trusted_accepts_the_workspace_and_its_worktrees_only() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+            commit_all(dir.path(), "initial");
+            let ws = dir.path().to_str().unwrap();
+            let root = resolve_repo_root(ws).unwrap();
+            assert!(repo_root_trusted(ws, &root));
+
+            let outside = tempfile::tempdir().unwrap();
+            init_repo(outside.path());
+            std::fs::write(outside.path().join("file.txt"), "hello").unwrap();
+            commit_all(outside.path(), "initial");
+            let other = resolve_repo_root(outside.path().to_str().unwrap()).unwrap();
+            assert!(!repo_root_trusted(ws, &other));
+
+            let embedded_marker = dir.path().join("no-marker");
+            let (_scratch, embedded) = embedded_fsmonitor_repo(&embedded_marker);
+            // Even if resolve returned the embedded path (it must not, with
+            // safe.bareRepository=explicit), the workspace gate refuses it.
+            assert!(!repo_root_trusted(ws, embedded.to_str().unwrap()));
         }
     }
 }

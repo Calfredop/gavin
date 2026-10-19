@@ -441,23 +441,72 @@ pub fn ok(out: GitOutput) -> Result<GitOutput, String> {
     }
 }
 
+/// Top-level `-c` / env hardening shared with the daemon's
+/// `git_status::git`: repository config must not run fsmonitor, hooks or
+/// textconv on a read the host started on its own. Prefixed ahead of
+/// `--no-optional-locks` so every RO argv carries the same shield whether
+/// it runs locally or is forwarded as `RunGit` to an ssh host.
+fn readonly_git_prefix<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut full = Vec::with_capacity(args.len() + 8);
+    full.extend_from_slice(&[
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "safe.bareRepository=explicit",
+        "--no-optional-locks",
+    ]);
+    full.extend_from_slice(args);
+    full
+}
+
 /// `git` with `--no-optional-locks` prepended: for read-only commands so
 /// they never create `.git/index.lock` (top-level option, must precede the
-/// subcommand — see crates/daemon/src/git_status.rs).
+/// subcommand — see crates/daemon/src/git_status.rs). Also disables
+/// repository-driven execution (`core.fsmonitor`, hooksPath, implicit
+/// bare discovery) so a cloned tree cannot turn a status/diff into a
+/// command the host runs.
 pub fn run_git_ro(cwd: &str, args: &[&str]) -> Result<GitOutput, String> {
-    let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("--no-optional-locks");
-    full.extend_from_slice(args);
-    run_git(cwd, &full, None)
+    let full = readonly_git_prefix(args);
+    if let Some(result) = crate::remote::run_git_over_link(cwd, &full, None, None, GIT_LINK_TIMEOUT) {
+        return result.map(|(stdout, stderr, wire_truncated, code)| GitOutput {
+            stdout,
+            stderr,
+            code,
+            wire_truncated,
+        });
+    }
+    run_local(
+        cwd,
+        &full,
+        &[("GIT_CONFIG_NOSYSTEM", "1")],
+        None,
+        None,
+        GIT_TIMEOUT,
+        &OpControl::default(),
+    )
 }
 
 /// `run_git_ro` for output that is only wanted up to `max` bytes -- a
 /// diff the viewer will refuse past that anyway. See `run_git_capped`.
 pub fn run_git_ro_capped(cwd: &str, args: &[&str], max: usize) -> Result<GitOutput, String> {
-    let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("--no-optional-locks");
-    full.extend_from_slice(args);
-    run_git_capped(cwd, &full, None, Some(max))
+    let full = readonly_git_prefix(args);
+    if let Some(result) = crate::remote::run_git_over_link(cwd, &full, None, Some(max), GIT_LINK_TIMEOUT) {
+        return result.map(|(mut stdout, stderr, wire_truncated, code)| {
+            stdout.truncate(max.saturating_add(1));
+            GitOutput { stdout, stderr, code, wire_truncated }
+        });
+    }
+    run_local(
+        cwd,
+        &full,
+        &[("GIT_CONFIG_NOSYSTEM", "1")],
+        None,
+        Some(max),
+        GIT_TIMEOUT,
+        &OpControl::default(),
+    )
 }
 
 /// Streams git's stderr (its progress channel) line by line — `\r` counts
