@@ -123,6 +123,19 @@ included, is unencrypted on that hop. The proxy must pass WebSocket
 upgrades through and must not close an idle connection sooner than the
 Relay's 20-second keepalive ping (most proxies default to a minute or more).
 
+If the Relay is shared between tenants (or exposed on the public
+internet), configure those same proxy or load-balancer controls for
+fairness and cost: a per-source-IP concurrent-connection ceiling, a
+connection-rate limit, and bandwidth shaping. gavin-relay itself only
+caps open sockets in total and registrations per rendezvous id; it does
+not meter bytes and does not bound how many rendezvous ids one admission
+token may hold. Without the proxy limits, one peer can fill the socket
+pool (including during the 5 s pre-admission hello window) and copy
+unlimited traffic. Caddy's `max_conns` / rate-limit modules, nginx
+`limit_conn` / `limit_req` / `limit_rate`, and the equivalent knobs on a
+cloud load balancer all cover this; pick values that fit how many
+Workstations and Devices you expect per client address.
+
 Either way the URL you give the desktop app is `wss://your.host[:port]`. A
 release build of the desktop app takes only `wss://` for a Relay that is not
 on your own network; `ws://` is accepted for loopback and LAN addresses,

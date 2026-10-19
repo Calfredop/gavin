@@ -22,6 +22,7 @@ mod keep_running;
 mod layout;
 mod mac_window;
 mod memory;
+mod navigation_guard;
 mod program;
 mod pull_request;
 mod remote;
@@ -75,7 +76,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // Refuses top-level navigation off the app's own origin for every
+        // webview (main and ws-*). Frontend link interception is the
+        // primary path; this is the host backstop (navigation_guard.rs).
+        .plugin(navigation_guard::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -294,6 +299,7 @@ pub fn run() {
             browser_view::get_playwright_pane_open,
             browser_view::set_playwright_pane_open,
             agent_setup::setup_agent_integration,
+            agent_setup::scan_foreign_mcp_servers,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,
             agent_models::agent_model_catalog,

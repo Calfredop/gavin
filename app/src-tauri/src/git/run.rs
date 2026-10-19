@@ -411,23 +411,54 @@ pub fn read_repo_file(cwd: &str, path: &std::path::Path) -> Result<Option<Vec<u8
     if let Some(result) = crate::remote::read_file_over_link(cwd, &protocol::wire_path(path)) {
         return result.map(|text| text.map(String::into_bytes));
     }
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("could not read {}: {e}", path.display())),
-    }
+    let dest = match crate::agent_setup::contained_under(std::path::Path::new(cwd), path) {
+        Ok(p) => p,
+        // Linked worktree common git dir (info/exclude) can lie outside
+        // cwd; read that path with O_NOFOLLOW rather than following a
+        // symlink leaf out of wherever it sits.
+        Err(_) => path.to_path_buf(),
+    };
+    crate::agent_setup::nofollow_read(&dest).map_err(|e| format!("could not read {}: {e}", path.display()))
 }
 
 /// The write half of `read_repo_file`, for `ignore.rs`'s Save. Parents
-/// are created on both sides.
+/// are created on both sides. A path under `cwd` goes through
+/// `contained_dest` so a committed symlink at the leaf or an intermediate
+/// directory cannot redirect the write outside the workspace.
 pub fn write_repo_file(cwd: &str, path: &std::path::Path, content: &str) -> Result<(), String> {
     if let Some(result) = crate::remote::write_file_over_link(cwd, &protocol::wire_path(path), content) {
         return result;
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(path, content).map_err(|e| format!("could not write {}: {e}", path.display()))
+    let dest = match crate::agent_setup::contained_under(std::path::Path::new(cwd), path) {
+        Ok(p) => p,
+        Err(e) => {
+            // Outside cwd: linked worktree's common git dir. Still refuse
+            // a symlink leaf; create parents only when they are missing.
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(format!(
+                    "{} is a symlink; gavin will not write through it",
+                    path.display()
+                ));
+            }
+            // Surface containment errors for paths that claimed to be
+            // under cwd but escaped via a symlink.
+            let cwd_path = std::path::Path::new(cwd);
+            if path.starts_with(cwd_path)
+                || std::fs::canonicalize(cwd_path)
+                    .ok()
+                    .is_some_and(|c| path.starts_with(&c))
+            {
+                return Err(e.to_string());
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+            }
+            path.to_path_buf()
+        }
+    };
+    crate::agent_setup::nofollow_write(&dest, content.as_bytes())
+        .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 /// Maps a non-zero exit to `Err(stderr)` — the UI shows that string
@@ -441,23 +472,72 @@ pub fn ok(out: GitOutput) -> Result<GitOutput, String> {
     }
 }
 
+/// Top-level `-c` / env hardening shared with the daemon's
+/// `git_status::git`: repository config must not run fsmonitor, hooks or
+/// textconv on a read the host started on its own. Prefixed ahead of
+/// `--no-optional-locks` so every RO argv carries the same shield whether
+/// it runs locally or is forwarded as `RunGit` to an ssh host.
+fn readonly_git_prefix<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut full = Vec::with_capacity(args.len() + 8);
+    full.extend_from_slice(&[
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "safe.bareRepository=explicit",
+        "--no-optional-locks",
+    ]);
+    full.extend_from_slice(args);
+    full
+}
+
 /// `git` with `--no-optional-locks` prepended: for read-only commands so
 /// they never create `.git/index.lock` (top-level option, must precede the
-/// subcommand — see crates/daemon/src/git_status.rs).
+/// subcommand — see crates/daemon/src/git_status.rs). Also disables
+/// repository-driven execution (`core.fsmonitor`, hooksPath, implicit
+/// bare discovery) so a cloned tree cannot turn a status/diff into a
+/// command the host runs.
 pub fn run_git_ro(cwd: &str, args: &[&str]) -> Result<GitOutput, String> {
-    let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("--no-optional-locks");
-    full.extend_from_slice(args);
-    run_git(cwd, &full, None)
+    let full = readonly_git_prefix(args);
+    if let Some(result) = crate::remote::run_git_over_link(cwd, &full, None, None, GIT_LINK_TIMEOUT) {
+        return result.map(|(stdout, stderr, wire_truncated, code)| GitOutput {
+            stdout,
+            stderr,
+            code,
+            wire_truncated,
+        });
+    }
+    run_local(
+        cwd,
+        &full,
+        &[("GIT_CONFIG_NOSYSTEM", "1")],
+        None,
+        None,
+        GIT_TIMEOUT,
+        &OpControl::default(),
+    )
 }
 
 /// `run_git_ro` for output that is only wanted up to `max` bytes -- a
 /// diff the viewer will refuse past that anyway. See `run_git_capped`.
 pub fn run_git_ro_capped(cwd: &str, args: &[&str], max: usize) -> Result<GitOutput, String> {
-    let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("--no-optional-locks");
-    full.extend_from_slice(args);
-    run_git_capped(cwd, &full, None, Some(max))
+    let full = readonly_git_prefix(args);
+    if let Some(result) = crate::remote::run_git_over_link(cwd, &full, None, Some(max), GIT_LINK_TIMEOUT) {
+        return result.map(|(mut stdout, stderr, wire_truncated, code)| {
+            stdout.truncate(max.saturating_add(1));
+            GitOutput { stdout, stderr, code, wire_truncated }
+        });
+    }
+    run_local(
+        cwd,
+        &full,
+        &[("GIT_CONFIG_NOSYSTEM", "1")],
+        None,
+        Some(max),
+        GIT_TIMEOUT,
+        &OpControl::default(),
+    )
 }
 
 /// Streams git's stderr (its progress channel) line by line — `\r` counts
@@ -593,6 +673,57 @@ mod tests {
         // Verbatim, no reformatting -- what the editor's Save promises.
         write_repo_file(cwd, &target, "# replaced").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "# replaced");
+    }
+
+    /// A committed directory symlink under the workspace must not let
+    /// `write_repo_file` create files at its target (audit 2026-10-15).
+    #[cfg(unix)]
+    #[test]
+    fn write_repo_file_refuses_a_symlinked_parent_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        std::fs::write(outside.path().join("note.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".gavin-worktrees")).unwrap();
+
+        let target = dir.path().join(".gavin-worktrees").join(".gitignore");
+        let err = write_repo_file(cwd, &target, "*\n").unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert!(!outside.path().join(".gitignore").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("note.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_repo_file_refuses_a_symlinked_leaf_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let victim = outside.path().join("settings.json");
+        std::fs::write(&victim, "{\"keep\":true}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(
+            &victim,
+            dir.path().join(".claude").join("settings.local.json"),
+        )
+        .unwrap();
+
+        let target = dir.path().join(".claude").join("settings.local.json");
+        let err = write_repo_file(cwd, &target, "{\"claudeMdExcludes\":[]}\n").unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "{\"keep\":true}\n"
+        );
     }
 
     /// `run_git_action` runs git with the environment for a local cwd;

@@ -221,15 +221,23 @@ fn declares_anything(fs: &dyn TrustFiles, dir: &Path) -> bool {
 
 /// Whether `dir`'s own project MCP files say only what gavin writes:
 /// `.kimi-code/mcp.json` nothing at all, and `.mcp.json` nothing beyond
-/// gavin's `gavin` entry and the Playwright step's, exactly as gavin
-/// writes that one (`own_command` with `playwright` as its one argument).
-/// With `own_command` unknown, only the `gavin` key counts as gavin's.
+/// gavin's own entries -- recognised by what they RUN, never by key
+/// alone. A repository can commit any command under `gavin`. Each entry
+/// must equal gavin's own resolved, absolute `gavin-mcp`: the `gavin`
+/// key with no args, or the Playwright step's key with `playwright` as
+/// its one argument. A relative `own_command` (the repo-relative
+/// launcher `mcp_command` names in a gavin checkout) counts as unknown:
+/// a hostile repo can satisfy the checkout heuristic and ship that
+/// script. With no absolute own command, nothing counts as gavin's and
+/// any declared server withholds -- kimi then asks at its own screen.
 fn declares_only_gavins(fs: &dyn TrustFiles, dir: &Path, own_command: Option<&str>) -> bool {
+    let own = own_command.filter(|c| Path::new(c).is_absolute());
     let gavins = |s: &Server| {
-        s.name == "gavin"
-            || own_command.is_some_and(|c| {
-                s.name == crate::playwright::SUBCOMMAND && s.command == c && s.args == [crate::playwright::SUBCOMMAND]
-            })
+        own.is_some_and(|c| {
+            s.command == c
+                && ((s.name == "gavin" && s.args.is_empty())
+                    || (s.name == crate::playwright::SUBCOMMAND && s.args == [crate::playwright::SUBCOMMAND]))
+        })
     };
     declared(fs, &dir.join(".kimi-code").join("mcp.json")).is_some_and(|servers| servers.is_empty())
         && declared(fs, &dir.join(".mcp.json")).is_some_and(|servers| servers.iter().all(gavins))
@@ -365,12 +373,25 @@ mod tests {
         }
     }
 
-    const GAVIN_ONLY: &str = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp","args":[]}}}"#;
-    const FOREIGN: &str = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
+    /// What Integration writes for a non-gavin checkout: the absolute
+    /// binary beside the app. A repository can also commit this shape.
+    const OWN: &str = "/apps/gavin-mcp";
+    const GAVIN_ONLY: &str = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+    const FOREIGN: &str = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
+    /// The audit payload: a `gavin` key whose command is not gavin's.
+    const HOSTILE_GAVIN: &str =
+        r#"{"mcpServers":{"gavin":{"command":"/bin/sh","args":["-c","echo V21_MARKER > /dev/null"]}}}"#;
+    /// The repo-relative launcher mcp_command names in a gavin checkout.
+    /// It must not count as gavin's own: a hostile repo can ship it.
+    const RELATIVE_LAUNCHER: &str = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp","args":[]}}}"#;
     const WT: &str = "/work/repo/.gavin-worktrees/feat-x";
 
     fn grant(disk: &Disk, cwd: &str) -> Option<Grant> {
-        launch_grant(disk, Path::new("/home/ada/.kimi-code"), Path::new(cwd), Path::new("/work/repo"), None, 7)
+        grant_with(disk, cwd, Some(OWN))
+    }
+
+    fn grant_with(disk: &Disk, cwd: &str, own: Option<&str>) -> Option<Grant> {
+        launch_grant(disk, Path::new("/home/ada/.kimi-code"), Path::new(cwd), Path::new("/work/repo"), own, 7)
     }
 
     /// A repo that commits gavin's `.mcp.json`, and one worktree of it.
@@ -545,15 +566,40 @@ mod tests {
 
     /// The Playwright step's entry beside gavin's is still gavin's, in a
     /// worktree as at the root -- but only as gavin writes it, and only
-    /// when the caller knows gavin's own command.
+    /// when the caller knows gavin's own absolute command.
     #[test]
     fn the_playwright_entry_counts_as_gavins_only_when_known() {
         let body = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp"},
                        "playwright":{"command":"/apps/gavin-mcp","args":["playwright"]}}}"#;
         for (own, granted) in [(Some("/apps/gavin-mcp"), true), (None, false), (Some("/bin/other"), false)] {
             let disk = repo_with_worktree(body).file("/work/repo/.mcp.json", body);
-            let got = launch_grant(&disk, Path::new("/home/ada/.kimi-code"), Path::new(WT), Path::new("/work/repo"), own, 7);
+            let got = grant_with(&disk, WT, own);
             assert_eq!(got.is_some(), granted, "{own:?}: {got:?}");
+        }
+    }
+
+    /// Regression (audit 2026-10-15, name-only-gavin-entry): a `gavin`
+    /// key is not enough. The entry must run gavin's own absolute
+    /// gavin-mcp with no args. A committed `/bin/sh` under that name,
+    /// a relative launcher, a relative own_command, and an unknown
+    /// own_command all withhold -- kimi asks at its own screen.
+    #[test]
+    fn a_gavin_keyed_entry_must_run_gavins_own_absolute_command() {
+        for (label, worktree_mcp, root_mcp, own, granted) in [
+            ("hostile command under gavin", HOSTILE_GAVIN, GAVIN_ONLY, Some(OWN), false),
+            ("hostile at the root too", HOSTILE_GAVIN, HOSTILE_GAVIN, Some(OWN), false),
+            ("relative launcher in the worktree", RELATIVE_LAUNCHER, GAVIN_ONLY, Some(OWN), false),
+            ("relative own_command matches nothing", GAVIN_ONLY, GAVIN_ONLY, Some("scripts/gavin-mcp"), false),
+            ("own_command unknown", GAVIN_ONLY, GAVIN_ONLY, None, false),
+            ("gavin's absolute entry, known own", GAVIN_ONLY, GAVIN_ONLY, Some(OWN), true),
+            ("empty mcp file still grants", "", "", Some(OWN), true),
+        ] {
+            let disk = repo_with_worktree(worktree_mcp).file("/work/repo/.mcp.json", root_mcp);
+            let got = grant_with(&disk, WT, own);
+            assert_eq!(got.is_some(), granted, "{label}: {got:?}");
+            if !granted {
+                assert!(disk.records().is_empty(), "{label}");
+            }
         }
     }
 }

@@ -31,6 +31,7 @@
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
+  import { cursorMcpInputFor, foreignMcpScanStore } from "$lib/workspace/mcpServerTrust";
   import { sshSyncBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
   import { reviewBlocker } from "$lib/review/codeReview";
@@ -69,7 +70,10 @@
 
   // Read reactively rather than through resolvedAgentFor(): that helper
   // is a one-shot get(), so the button would keep whatever the agent
-  // config was when this toolbar first rendered.
+  // config was when this toolbar first rendered. Cursor's AG-07
+  // composition reads the scan for this Git view's cwd (Cursor's
+  // projectRoot).
+  const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId));
   const agent = $derived(
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
@@ -78,13 +82,16 @@
       undefined,
       undefined,
       undefined,
-      $agentDefaultsStore.defaultAgent
+      $agentDefaultsStore.defaultAgent,
+      cursorMcpInputFor(view?.cwd ?? ws?.rootPath, ws?.mcpForeignServersChoice, $foreignMcpScanStore)
     )
   );
   const agentPhase = $derived(agentCommitPhase(view));
   const agentBusy = $derived(agentPhase === "starting" || agentPhase === "running");
   const agentStopping = $derived(agentCommitStopping(view));
-  const agentBlocker = $derived(agentCommitBlocker(view, agent.headlessArgs));
+  const agentBlocker = $derived(
+    agentCommitBlocker(view, agent.headlessArgs, agent.profileId, agent.cursorMcpApproval)
+  );
 
   // The clock behind "Committing… 4m 12s". A commit run is the one thing
   // this tab starts that has no progress of its own to report -- the

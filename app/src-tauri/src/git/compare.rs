@@ -96,7 +96,7 @@ pub fn compare_diff(
     three_dot: bool,
 ) -> Result<FileDiff, String> {
     let (start, _) = diff_start(cwd, base_ref, target_ref, three_dot)?;
-    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-U3", "-M", &start, target_ref, "--"];
+    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U3", "-M", &start, target_ref, "--"];
     if let Some(old) = old_path {
         args.push(old);
     }

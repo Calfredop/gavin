@@ -25,6 +25,7 @@
 		A1C0DE0000000000000000B7 /* QrScannerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */; };
 		A1C0DE0000000000000000B8 /* WorkstationsPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */; };
 		A1C0DE0000000000000000B9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */; };
+		A1C0DE0000000000000000BA /* TaskSnapshotCover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000AA /* TaskSnapshotCover.swift */; };
 		A1C0DE00000000000000D001 /* PushPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE00000000000000C001 /* PushPlugin.swift */; };
 		A1C0DE00000000000000D002 /* SharedKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE00000000000000C003 /* SharedKeychain.swift */; };
 		A1C0DE00000000000000D003 /* DeliveredNotify.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE00000000000000C004 /* DeliveredNotify.swift */; };
@@ -80,6 +81,7 @@
 		A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerPlugin.swift; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkstationsPlugin.swift; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A1C0DE0000000000000000AA /* TaskSnapshotCover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskSnapshotCover.swift; sourceTree = "<group>"; };
 		A1C0DE00000000000000C001 /* PushPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPlugin.swift; sourceTree = "<group>"; };
 		A1C0DE00000000000000C002 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 		A1C0DE00000000000000C003 /* SharedKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedKeychain.swift; sourceTree = "<group>"; };
@@ -152,6 +154,7 @@
 				A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */,
 				A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */,
 				A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */,
+				A1C0DE0000000000000000AA /* TaskSnapshotCover.swift */,
 				A1C0DE00000000000000C001 /* PushPlugin.swift */,
 				A1C0DE00000000000000C002 /* App.entitlements */,
 			);
@@ -302,6 +305,7 @@
 				A1C0DE0000000000000000B6 /* DeviceKeysPlugin.swift in Sources */,
 				A1C0DE0000000000000000B7 /* QrScannerPlugin.swift in Sources */,
 				A1C0DE0000000000000000B8 /* WorkstationsPlugin.swift in Sources */,
+				A1C0DE0000000000000000BA /* TaskSnapshotCover.swift in Sources */,
 				A1C0DE00000000000000D001 /* PushPlugin.swift in Sources */,
 				A1C0DE00000000000000D002 /* SharedKeychain.swift in Sources */,
 				A1C0DE00000000000000D003 /* DeliveredNotify.swift in Sources */,

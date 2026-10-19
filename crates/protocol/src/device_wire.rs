@@ -147,6 +147,47 @@ pub fn unlock_message(handshake_hash: &[u8]) -> Vec<u8> {
     message
 }
 
+/// What backs the Device's P-256 key (ADR 0001, 06 §5.7).
+///
+/// The shell reports a more specific backing (`secure-enclave`,
+/// `strongbox`, `tee`); those collapse to [`KeyKind::Hardware`] on the
+/// wire. `software-debug` is the only kind a release daemon refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyKind {
+    /// A presence-gated key in the Secure Enclave, StrongBox or TEE.
+    Hardware,
+    /// A software key from a debug shell on a Simulator or emulator.
+    /// Only a debug daemon accepts it.
+    SoftwareDebug,
+    /// A kind a newer Companion named. Kept for forward compatibility;
+    /// admission treats it like hardware until a newer rule says
+    /// otherwise.
+    #[serde(other)]
+    Other,
+}
+
+impl KeyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyKind::Hardware => "hardware",
+            KeyKind::SoftwareDebug => "software-debug",
+            KeyKind::Other => "other",
+        }
+    }
+
+    /// Parses a trust-store value. `None` for NULL / empty (a row from
+    /// before the column, or a Device that omitted the field).
+    pub fn from_stored(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("") => None,
+            Some("hardware") => Some(KeyKind::Hardware),
+            Some("software-debug") => Some(KeyKind::SoftwareDebug),
+            Some(_) => Some(KeyKind::Other),
+        }
+    }
+}
+
 /// The first message a Device sends on the channel a handshake left
 /// behind: proof that the phone itself is on the other end.
 ///
@@ -162,6 +203,12 @@ pub struct UnlockProof {
     /// never one the connection brought with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware_key: Option<String>,
+    /// At pairing, what backs that key (06 §5.7). Absent when connecting,
+    /// and when an older Device omits it: the trust-store row then holds
+    /// NULL, which every daemon still accepts so already-paired phones
+    /// are not stranded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_kind: Option<KeyKind>,
 }
 
 impl UnlockProof {
@@ -220,6 +267,9 @@ pub enum ConnectRefusal {
     /// hardware key, or a role this Workstation cannot read -- and
     /// pairing again is what replaces it.
     PairAgain,
+    /// The row is a `software-debug` key, and this Workstation is a
+    /// release build: only a debug daemon accepts that kind (06 §5.7).
+    SoftwareDebug,
     /// The proof did not verify: no signature, or not the registered
     /// hardware key's, or not over this handshake.
     Unlock,
@@ -242,6 +292,9 @@ impl std::fmt::Display for ConnectRefusal {
             }
             ConnectRefusal::PairAgain => {
                 "this Device has to be paired with the Workstation again before it can connect"
+            }
+            ConnectRefusal::SoftwareDebug => {
+                "this Device holds a software debug key — only a development Workstation accepts it"
             }
             ConnectRefusal::Unlock => "the Workstation could not verify that this Device is unlocked",
             ConnectRefusal::Busy => "this Device already holds as many connections as it may",
@@ -429,19 +482,32 @@ mod tests {
 
     #[test]
     fn a_proof_round_trips_with_and_without_a_key() {
-        let connecting = UnlockProof { signature: "3045".into(), hardware_key: None };
+        let connecting = UnlockProof {
+            signature: "3045".into(),
+            hardware_key: None,
+            key_kind: None,
+        };
         assert_eq!(
             String::from_utf8(connecting.to_bytes()).unwrap(),
             r#"{"signature":"3045"}"#
         );
         assert_eq!(UnlockProof::from_bytes(&connecting.to_bytes()).unwrap(), connecting);
 
-        let pairing = UnlockProof { signature: "3045".into(), hardware_key: Some("04ab".into()) };
+        let pairing = UnlockProof {
+            signature: "3045".into(),
+            hardware_key: Some("04ab".into()),
+            key_kind: Some(KeyKind::Hardware),
+        };
         assert_eq!(
             String::from_utf8(pairing.to_bytes()).unwrap(),
-            r#"{"signature":"3045","hardwareKey":"04ab"}"#
+            r#"{"signature":"3045","hardwareKey":"04ab","keyKind":"hardware"}"#
         );
         assert_eq!(UnlockProof::from_bytes(&pairing.to_bytes()).unwrap(), pairing);
+
+        // An older Device that omits the field still deserialises: the
+        // row then holds NULL, and every daemon accepts it.
+        let legacy = UnlockProof::from_bytes(br#"{"signature":"3045","hardwareKey":"04ab"}"#).unwrap();
+        assert_eq!(legacy.key_kind, None);
     }
 
     /// A Device that skipped the proof and sent its first request in the
@@ -500,6 +566,7 @@ mod tests {
             ConnectVerdict::Refused { reason: ConnectRefusal::Stale },
             ConnectVerdict::Refused { reason: ConnectRefusal::Unlock },
             ConnectVerdict::Refused { reason: ConnectRefusal::Busy },
+            ConnectVerdict::Refused { reason: ConnectRefusal::SoftwareDebug },
         ] {
             assert_eq!(ConnectVerdict::from_bytes(&verdict.to_bytes()).unwrap(), verdict);
         }
@@ -526,6 +593,7 @@ mod tests {
             ConnectRefusal::Revoked,
             ConnectRefusal::Stale,
             ConnectRefusal::PairAgain,
+            ConnectRefusal::SoftwareDebug,
             ConnectRefusal::Unlock,
             ConnectRefusal::Busy,
             ConnectRefusal::Other,

@@ -160,7 +160,8 @@ impl PtySession {
                 // an npm-global install and many other Windows CLIs take.
                 // See `rewrite_for_windows_shim`'s doc comment. A no-op on
                 // every non-Windows platform (PATHEXT is unset there).
-                let c = crate::shell::rewrite_for_windows_shim(c, &resolve_against);
+                let c = crate::shell::rewrite_for_windows_shim(c, &resolve_against)
+                    .map_err(|message| anyhow::anyhow!("{message}"))?;
                 cmd.args(["-c", &c]);
                 if let Some(path) = path {
                     cmd.env("PATH", path);

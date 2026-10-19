@@ -31,4 +31,12 @@ describe("renderMarkdown", () => {
   it("renders task list items", () => {
     expect(renderMarkdown("- [x] done\n- [ ] todo\n")).toContain('type="checkbox"');
   });
+
+  it("aligns table cells with align=, not style=", () => {
+    // sanitizeMarkdown forbids the style attribute; marked must keep
+    // using align= so forbidding style does not break table alignment.
+    const html = renderMarkdown("| a | b |\n| ---: | ---: |\n| 1 | 2 |\n");
+    expect(html).toContain('align="right"');
+    expect(html).not.toContain("style=");
+  });
 });

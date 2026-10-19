@@ -521,9 +521,58 @@ async function runHub() {
   }
 }
 
+/// One Workstation for `scripts/snapshot.sh`: paired, then a desktop app
+/// that shows `SNAPSHOT-MARKER` in the attention inbox and serves a small
+/// HTML bundle that paints the same marker full-screen (stand-in for a
+/// terminal the OS task snapshot would retain).
+async function runSnapshot() {
+  const work = option("--work");
+  if (!work) {
+    console.error("usage: node scripts/devstack.mjs snapshot --work <dir>");
+    process.exit(2);
+  }
+  const bundleMod = await import(
+    /* @vite-ignore */ new URL("../../src-tauri/companion-bundle.mjs", import.meta.url).href
+  );
+  const stageMod = await import(
+    /* @vite-ignore */ new URL("../../src-tauri/stage-companion.mjs", import.meta.url).href
+  );
+  buildStack();
+  const stack = await startDevStack({ log: (line) => console.log(`[desk] ${line}`) });
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => void stack.stop().finally(() => process.exit(0)));
+  }
+  try {
+    await pairPhone(stack, join(work, "qr"), join(work, "phone.log"), (line) => console.log(`[desk] ${line}`));
+    const marker = "SNAPSHOT-MARKER";
+    const html = `<!doctype html><meta charset=utf-8><title>${marker}</title>
+<style>html,body{margin:0;height:100%;background:#111;color:#0f0;font:28px/1.4 ui-monospace,Menlo,monospace}
+main{padding:48px 24px;white-space:pre-wrap}</style>
+<main>gavin@workstation:~$ echo ${marker}\n${marker}\n</main>`;
+    const archive = bundleMod.pack([{ path: "index.html", data: Buffer.from(html) }]);
+    const { seed } = stageMod.loadOrMakeDevKey(stageMod.devKeyPath());
+    const manifest = bundleMod.sign(archive, seed, "snapshot");
+    await stack.desk.startApp(
+      [{ id: "snap", workspace: "ws-1", kind: "waiting", text: marker, target: { kind: "session", id: "s-snap" } }],
+      { bundle: { manifest, archive } }
+    );
+    writeFileSync(join(work, "ready"), "");
+    console.log(`[desk] paired; desktop shows ${marker} and serves the marker bundle`);
+    await new Promise(() => {});
+  } catch (e) {
+    console.error(`[desk] ${e instanceof Error ? e.message : String(e)}`);
+    console.error(stack.daemonLog());
+    await stack.stop();
+    process.exit(1);
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "desk") {
   await runDesk();
 }
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "hub") {
   await runHub();
+}
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "snapshot") {
+  await runSnapshot();
 }

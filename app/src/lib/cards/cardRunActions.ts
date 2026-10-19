@@ -8,7 +8,8 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import type { ResolvedAgent } from "$lib/core/settings";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
@@ -29,6 +30,8 @@ import {
   buildResumeCommand,
   withFreshConversationId,
   withRelaunchNote,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
   relaunchNote,
   commandUsesLaunchAgent,
   rebindRunCommand,
@@ -55,8 +58,8 @@ import {
   type AttachmentStatus,
 } from "$lib/cards/attachments";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
-import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
+import { cardContentOf, UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent, bracketedPaste } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
@@ -474,7 +477,14 @@ export async function developCard(
   const file = await backend.readFileForViewer(card.id);
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
-  const content = { title: card.title, body, attachments: card.attachments ?? [] };
+  const content = cardContentOf({
+    title: card.title,
+    body,
+    attachments: card.attachments,
+    agent: card.agent,
+    model: card.model,
+    effort: card.effort,
+  });
   if (
     !(await ensureCardReviewed({
       workspaceId,
@@ -505,9 +515,17 @@ export async function developCard(
   // is not a level: develop overwhelmingly targets a card that names
   // neither field, and `agentForCard` resolves that to EXACTLY
   // `resolvedAgentFor` -- the behaviour this route had before.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
+  const { decision, agent: launchAgent } = agentForNewLaunch(workspaceId, card, false);
   const held = holdLaunch(workspaceId, decision);
   if (held) return held;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    card.contextFolder,
+    launchAgent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   const prompt = withPromptExtras(
     composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
     promptExtrasFor(workspaceId, agent.profileId)
@@ -616,9 +634,27 @@ async function launchCard(
   // attributed) resolves to exactly the workspace's agent -- so this
   // reads the same as `resolvedAgentFor` did for every card that
   // predates the fields.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
+  const { decision, agent: launchAgent } = agentForNewLaunch(
+    workspaceId,
+    card,
+    mode === "resume" || mode === "review"
+  );
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
+  // Cursor's projectRoot is the launch cwd. A review runs where the work
+  // is (binding.launchCwd); every other mode uses the card's context.
+  const cursorRoot =
+    mode === "review"
+      ? (binding?.launchCwd ?? binding?.cwd ?? card.contextFolder)
+      : card.contextFolder;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    cursorRoot,
+    launchAgent,
+    options.automatic || options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label, agent.profileId);
 
   // Whether the conversation a resume would reopen exists at all. Asked
@@ -791,7 +827,14 @@ async function launchCard(
     if (!file.exists) return `Card file not found: ${card.id}`;
     body = stripFrontmatter(file.content).trim();
     if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
-    const content = { title: card.title, body, attachments: card.attachments ?? [] };
+    const content = cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    });
     if (options.automatic) {
       // Unattended (auto-resume): refuse rather than ask. A modal raised
       // with nobody watching holds the recovery open behind whatever
@@ -1061,7 +1104,7 @@ export async function pasteToMainAgent(
     return queueFollowUp(mainSessionId, target, prompt);
   }
   try {
-    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
+    await backend.writeInput(mainSessionId, bracketedPaste(prompt));
   } catch (e) {
     return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -1141,7 +1184,14 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
-    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    content: cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    }),
     statuses: resolved.statuses,
     prompt: composePrompt(card.id),
   });
@@ -1189,12 +1239,6 @@ export async function relaunchCard(
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
   // least.
-  //
-  // And no first-Run review, for the opposite reason to develop's: this
-  // replays the command the binding STORED, so the bytes it sends are the
-  // ones a human already read before the first launch. Re-reading the
-  // card here would be the wrong question -- the file may have moved on,
-  // and none of it is going anywhere.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
   const remote = sshLaunchBlocker(workspaceId);
@@ -1220,7 +1264,8 @@ export async function relaunchCard(
   // the chain. The remembered prompt still rides; only the binary is
   // rebound when launchDecision picks someone else.
   const relaunched = cardViewForPath(get(gavinTrees)[workspaceId], path);
-  const { decision, agent } = agentForNewLaunch(workspaceId, relaunched, false);
+  const { decision, agent: decided } = agentForNewLaunch(workspaceId, relaunched, false);
+  let agent = decided;
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
   // The binding WHOLE, read by card: the board carries no launch command
@@ -1236,6 +1281,43 @@ export async function relaunchCard(
   // The command itself, whatever the board said: a daemon too old to
   // say anything reads as replayable there.
   if (!binding.command?.trim()) return NOTHING_TO_REPLAY;
+  // Link/Claim can store an arbitrary string on the binding. withRelaunchNote
+  // and withFreshConversationId hand unrecognised commands back unchanged,
+  // so anything that is not one buildRunCommand wrote for this agent — and
+  // that cannot be rebound from a stale fallback binary — is refused here
+  // before createSession. Launch as new session composes a fresh, gated
+  // command from the card now.
+  const usesThisAgent = commandUsesLaunchAgent(binding.command, agent.launchCommand);
+  let rebound: { command: string; conversationId: string | null } | null = null;
+  if (usesThisAgent) {
+    if (!isGavinBuiltCommand(binding.command, agent)) return FOREIGN_RELAUNCH_COMMAND;
+  } else {
+    // Shell wrappers can carry a trailing quoted string that rebind would
+    // otherwise treat as a prompt — refuse those before rebuilding.
+    const head = binding.command.trimStart().split(/\s+/)[0] ?? "";
+    if (/^(?:.*\/)?(sh|bash|zsh|dash|cmd(?:\.exe)?|powershell|pwsh)$/i.test(head)) {
+      return FOREIGN_RELAUNCH_COMMAND;
+    }
+    if (/[;|&`$()<>]/.test(binding.command.split("'")[0] ?? "")) {
+      return FOREIGN_RELAUNCH_COMMAND;
+    }
+    rebound = rebindRunCommand(binding.command, agent);
+    if (!rebound) {
+      return (
+        "This card's remembered launch was on a different agent, and gavin could not " +
+        "rebuild it for the one that should run now — use Launch as new session."
+      );
+    }
+  }
+  const relaunchRoot = binding.launchCwd ?? binding.cwd;
+  const cursorReady = await prepareCursorAgentLaunch(
+    workspaceId,
+    relaunchRoot,
+    agent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof cursorReady === "string") return cursorReady;
+  agent = cursorReady;
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is
@@ -1250,29 +1332,60 @@ export async function relaunchCard(
   // where its status is recorded: the original was written for a card
   // nobody had started. Not a direct prompt's, which carries no word of
   // gavin's -- a note naming the card would be the first.
-  //
-  // When the stored binary is not the agent launchDecision picked
-  // (stale fallback, or the workspace agent changed), rebuild around
-  // the remembered prompt on the decided agent rather than replaying
-  // a CLI the chain no longer names.
-  let fresh: { command: string | null; conversationId: string | null };
-  if (commandUsesLaunchAgent(binding.command, agent.launchCommand)) {
-    const replayed =
-      relaunched && isDirectPrompt(relaunched) ? binding.command : withRelaunchNote(binding.command, path);
-    fresh = withFreshConversationId(replayed, agent.sessionIdArgs);
-  } else {
-    const rebound = rebindRunCommand(binding.command, agent);
-    if (!rebound) {
-      return (
-        "This card's remembered launch was on a different agent, and gavin could not " +
-        "rebuild it for the one that should run now — use Launch as new session."
-      );
+  const verbatim = Boolean(relaunched && isDirectPrompt(relaunched));
+  const sourceCommand = rebound?.command ?? binding.command;
+  const replayed = verbatim ? sourceCommand : withRelaunchNote(sourceCommand, path);
+  // A direct prompt's replayed bytes are the stored, already-reviewed
+  // body and get no relaunch note. Every other card -- a plan whose
+  // stored prompt only names the file, a task whose framing points at
+  // it, anything withRelaunchNote extends -- tells the agent to read the
+  // card at its CURRENT path. That is the card's content reaching the
+  // agent, so the first-Run review applies the same way new-session mode
+  // gates the identical note: read the file, digest it, ask or refuse
+  // unattended, before createSession and before the binding is rewritten.
+  if (!verbatim) {
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    const content = cardContentOf({
+      title: relaunched?.title ?? "",
+      body: stripFrontmatter(file.content).trim(),
+      attachments: relaunched?.attachments,
+      agent: relaunched?.agent,
+      model: relaunched?.model,
+      effort: relaunched?.effort,
+    });
+    if (options.queued && !cardReviewed(workspaceId, path, content)) return UNREVIEWED_UNATTENDED;
+    const resolved = await resolveAttachmentsForRun(workspaceId, content.attachments);
+    if ("error" in resolved) return resolved.error;
+    if (
+      !(await ensureCardReviewed({
+        workspaceId,
+        path,
+        content,
+        statuses: resolved.statuses,
+        prompt: replayed ?? binding.command,
+      }))
+    ) {
+      return null;
     }
-    const withNote =
-      relaunched && isDirectPrompt(relaunched)
-        ? rebound.command
-        : withRelaunchNote(rebound.command, path);
-    fresh = { command: withNote, conversationId: rebound.conversationId };
+  }
+  // Rebind already minted a fresh conversation id; the same-agent path
+  // still needs one so a replayed `--session-id` is not reused.
+  let fresh: { command: string | null; conversationId: string | null } = rebound
+    ? { command: replayed, conversationId: rebound.conversationId }
+    : withFreshConversationId(replayed, agent.sessionIdArgs);
+  // A remembered Cursor command may still carry `--approve-mcps` from a
+  // launch before the disclosure changed. Strip it (and bare `--force`)
+  // when the AG-07 answer is withhold, so a re-launch cannot pre-approve
+  // servers the human has not kept.
+  if (agent.profileId === "cursor" && agent.cursorMcpApproval === "withhold" && fresh.command) {
+    fresh = {
+      ...fresh,
+      command: fresh.command
+        .split(/\s+/)
+        .filter((part) => part && part !== "--approve-mcps" && part !== "--force")
+        .join(" "),
+    };
   }
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command

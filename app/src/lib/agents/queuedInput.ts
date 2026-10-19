@@ -281,6 +281,17 @@ export function queueTip(queue: QueuedInput[], max = 4): string | null {
   return [count, ...lines].join("\n");
 }
 
+/// The bracketed-paste envelope the desk writes into a PTY: start marker,
+/// body, end marker, CR. Every ESC in `text` becomes U+241B first — the
+/// same rule the Companion's `pasteBytes` and the daemon's
+/// `bracketed_paste` apply — so a card or decision that already carries
+/// `ESC[201~` cannot end the paste early and leave the rest as typed
+/// keystrokes.
+export function bracketedPaste(text: string): string {
+  const body = text.replace(/\x1b/g, "\u{241b}");
+  return `\x1b[200~${body}\x1b[201~\r`;
+}
+
 /// Whether "Send to workspace agent" should QUEUE this card rather than
 /// bracket-paste it straight into the terminal.
 ///

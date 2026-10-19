@@ -26,6 +26,7 @@ pub const APNS_KEY_ID: &str = "GAVIN_PUSH_APNS_KEY_ID";
 pub const APNS_TEAM_ID: &str = "GAVIN_PUSH_APNS_TEAM_ID";
 pub const APNS_TOPIC: &str = "GAVIN_PUSH_APNS_TOPIC";
 pub const FCM_SERVICE_ACCOUNT_FILE: &str = "GAVIN_PUSH_FCM_SERVICE_ACCOUNT_FILE";
+pub const TLS_TERMINATED: &str = "GAVIN_PUSH_TLS_TERMINATED";
 
 const KNOWN: &[&str] = &[
     LISTEN,
@@ -40,6 +41,7 @@ const KNOWN: &[&str] = &[
     APNS_TEAM_ID,
     APNS_TOPIC,
     FCM_SERVICE_ACCOUNT_FILE,
+    TLS_TERMINATED,
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub struct Config {
     pub permission_ttl_days: u64,
     pub rate: RateLimit,
     pub delivery: Delivery,
+    pub tls_terminated: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,7 +96,14 @@ impl Config {
         };
 
         let listen = get(LISTEN).unwrap_or_else(|| "0.0.0.0:8080".into());
-        let listen = listen.parse().with_context(|| format!("{LISTEN} is not an address:port: {listen:?}"))?;
+        let listen: SocketAddr =
+            listen.parse().with_context(|| format!("{LISTEN} is not an address:port: {listen:?}"))?;
+        let tls_terminated = get(TLS_TERMINATED).as_deref() == Some("1");
+        if !listen.ip().is_loopback() && !tls_terminated {
+            bail!(
+                "gavin-push-gateway: it serves plain HTTP — set {TLS_TERMINATED}=1 if a proxy in front of it terminates TLS, or listen on 127.0.0.1"
+            );
+        }
         let data_dir = PathBuf::from(get(DATA_DIR).unwrap_or_else(|| "/data".into()));
         let permission_key_file =
             get(PERMISSION_KEY_FILE).map(PathBuf::from).unwrap_or_else(|| data_dir.join("permission.key"));
@@ -124,7 +134,15 @@ impl Config {
             Some(other) => bail!("{DELIVERY} must be live or dry-run, not {other:?}"),
         };
 
-        Ok(Config { listen, data_dir, permission_key_file, permission_ttl_days, rate, delivery })
+        Ok(Config {
+            listen,
+            data_dir,
+            permission_key_file,
+            permission_ttl_days,
+            rate,
+            delivery,
+            tls_terminated,
+        })
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -198,13 +216,22 @@ mod tests {
 
     #[test]
     fn dry_run_needs_nothing_else_and_takes_the_defaults() {
-        let c = config(&[(DELIVERY, "dry-run")]).unwrap();
+        let c = config(&[(DELIVERY, "dry-run"), (TLS_TERMINATED, "1")]).unwrap();
         assert_eq!(c.listen, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(c.db_path(), PathBuf::from("/data/push-gateway.sqlite"));
         assert_eq!(c.permission_key_file, PathBuf::from("/data/permission.key"));
         assert_eq!(c.settings().permission_ttl_s, 90 * 86_400);
         assert_eq!(c.rate, RateLimit::per_hour(30, 240));
         assert_eq!(c.delivery, Delivery::DryRun);
+        assert!(c.tls_terminated);
+    }
+
+    #[test]
+    fn a_public_listen_without_tls_affirmation_is_refused() {
+        let err = config(&[(DELIVERY, "dry-run"), (LISTEN, "0.0.0.0:8080")]).unwrap_err().to_string();
+        assert!(err.contains(TLS_TERMINATED), "{err}");
+        assert!(config(&[(DELIVERY, "dry-run"), (LISTEN, "0.0.0.0:8080"), (TLS_TERMINATED, "1")]).is_ok());
+        assert!(config(&[(DELIVERY, "dry-run"), (LISTEN, "127.0.0.1:8080")]).is_ok());
     }
 
     /// The dev stack's gateway. Its credentials are named and do not exist:
@@ -214,11 +241,12 @@ mod tests {
     #[test]
     fn a_dry_run_builds_no_apple_or_google_client_and_sends_nothing() {
         use crate::clock::SystemClock;
-        use crate::sender::{ApnsEnvironment, Delivery, Target};
+        use crate::sender::{ApnsEnvironment, Delivery, PushBody, Target};
         use crate::store::Platform;
 
         let c = config(&[
             (DELIVERY, "dry-run"),
+            (TLS_TERMINATED, "1"),
             (APNS_KEY_FILE, "/nonexistent/apns.p8"),
             (APNS_KEY_ID, "K"),
             (APNS_TEAM_ID, "T"),
@@ -228,23 +256,32 @@ mod tests {
         .unwrap();
         let sender = c.sender(Arc::new(SystemClock), Log::stderr()).expect("no credential file is read");
         assert!(sender.supports(Platform::Ios) && sender.supports(Platform::Android));
+        assert!(sender.reveals_verification_nonce());
 
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let apns = Target::Apns { token: "abc", environment: ApnsEnvironment::Development };
-        assert_eq!(runtime.block_on(sender.send(apns, b"ciphertext")), Delivery::Delivered);
-        assert_eq!(runtime.block_on(sender.send(Target::Fcm { token: "abc" }, b"ciphertext")), Delivery::Delivered);
+        assert_eq!(
+            runtime.block_on(sender.send(apns, PushBody::Ciphertext(b"ciphertext"))),
+            Delivery::Delivered
+        );
+        assert_eq!(
+            runtime.block_on(sender.send(Target::Fcm { token: "abc" }, PushBody::Ciphertext(b"ciphertext"))),
+            Delivery::Delivered
+        );
     }
 
     #[test]
     fn live_delivery_without_any_credentials_is_refused() {
-        let err = config(&[]).unwrap_err().to_string();
+        let err = config(&[(TLS_TERMINATED, "1")]).unwrap_err().to_string();
         assert!(err.contains("dry-run"), "{err}");
-        assert!(config(&[(DELIVERY, "live"), (APNS_KEY_ID, "")]).is_err());
+        assert!(config(&[(DELIVERY, "live"), (TLS_TERMINATED, "1"), (APNS_KEY_ID, "")]).is_err());
     }
 
     #[test]
     fn half_an_apns_configuration_is_refused() {
-        let err = config(&[(APNS_KEY_FILE, "/k.p8"), (APNS_KEY_ID, "K")]).unwrap_err().to_string();
+        let err = config(&[(TLS_TERMINATED, "1"), (APNS_KEY_FILE, "/k.p8"), (APNS_KEY_ID, "K")])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains(APNS_TEAM_ID) && err.contains(APNS_TOPIC), "{err}");
     }
 
@@ -284,11 +321,11 @@ mod tests {
     #[test]
     fn bad_values_are_refused() {
         for vars in [
-            [(DELIVERY, "dry-run"), (LISTEN, "8080")],
-            [(DELIVERY, "dry-run"), (RATE_BURST, "0")],
-            [(DELIVERY, "dry-run"), (RATE_PER_HOUR, "lots")],
-            [(DELIVERY, "dry-run"), (PERMISSION_TTL_DAYS, "0")],
-            [(DELIVERY, "sometimes"), (RATE_BURST, "1")],
+            [(DELIVERY, "dry-run"), (TLS_TERMINATED, "1"), (LISTEN, "8080")],
+            [(DELIVERY, "dry-run"), (TLS_TERMINATED, "1"), (RATE_BURST, "0")],
+            [(DELIVERY, "dry-run"), (TLS_TERMINATED, "1"), (RATE_PER_HOUR, "lots")],
+            [(DELIVERY, "dry-run"), (TLS_TERMINATED, "1"), (PERMISSION_TTL_DAYS, "0")],
+            [(DELIVERY, "sometimes"), (TLS_TERMINATED, "1"), (RATE_BURST, "1")],
         ] {
             assert!(config(&vars).is_err(), "{vars:?}");
         }
@@ -297,7 +334,7 @@ mod tests {
     #[test]
     fn a_misspelt_variable_is_refused() {
         let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
-        assert!(Config::check_names(names(&[DELIVERY, "PATH", "HOME"])).is_ok());
+        assert!(Config::check_names(names(&[DELIVERY, TLS_TERMINATED, "PATH", "HOME"])).is_ok());
         let err = Config::check_names(names(&[DELIVERY, "GAVIN_PUSH_APNS_KEYID"])).unwrap_err().to_string();
         assert!(err.contains("GAVIN_PUSH_APNS_KEYID"), "{err}");
     }

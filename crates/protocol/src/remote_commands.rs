@@ -225,6 +225,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("get_playwright_pane_open", RemoteAllowance::Allowed),
     ("set_playwright_pane_open", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
+    ("scan_foreign_mcp_servers", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),
     ("agent_model_catalog", RemoteAllowance::Allowed),

@@ -29,6 +29,9 @@ function scriptedCore(options: { dials?: Array<typeof DIAL & { pin?: string }>; 
     pairingStart: () => {
       throw new Error("a connection does not pair");
     },
+    bundleCheck: () => {
+      throw new Error("a connection opens no bundle");
+    },
     bundleOpen: () => {
       throw new Error("a connection opens no bundle");
     },

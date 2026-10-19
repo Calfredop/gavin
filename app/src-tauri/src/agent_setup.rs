@@ -228,18 +228,18 @@ pub struct LocalFiles;
 
 impl WorkspaceFiles for LocalFiles {
     fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-        match std::fs::read(path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        nofollow_read(path)
     }
 
     fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
         if let Some(dir) = path.parent() {
+            // Parents for workspace writes are created by `contained_dest`
+            // one component at a time. Other callers (agent-home marks)
+            // still need a parent; create_dir_all here is after that
+            // helper has already refused a symlink escape for setup paths.
             std::fs::create_dir_all(dir)?;
         }
-        Ok(std::fs::write(path, contents)?)
+        nofollow_write(path, contents)
     }
 
     fn is_dir(&self, path: &Path) -> bool {
@@ -274,8 +274,158 @@ impl WorkspaceFiles for LocalFiles {
             .create(true)
             .truncate(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         Ok(file.write_all(contents)?)
+    }
+}
+
+/// The destination for a write gavin makes INSIDE a workspace. A cloned
+/// repo can commit a symlink at any path gavin writes, so the path is
+/// resolved here and must stay under the canonical root; an in-root alias
+/// (CLAUDE.md -> AGENTS.md) is allowed, one leading out is refused.
+///
+/// Missing intermediate directories are created with `create_dir` one
+/// component at a time so a symlink cannot redirect the mkdir. When the
+/// root is not on this machine (ssh / in-memory test doubles), falls back
+/// to a lexical join — the host's `WriteWorkspaceFile` enforces the same
+/// rule there.
+pub(crate) fn contained_dest(root: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
+    contained_dest_inner(root, rel, true)
+}
+
+/// `contained_dest` without creating missing parents — for a check that
+/// must not mkdir (validating `[agent] file` before a write).
+fn check_contained_dest(root: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
+    contained_dest_inner(root, rel, false)
+}
+
+fn contained_dest_inner(root: &Path, rel: &Path, create: bool) -> anyhow::Result<PathBuf> {
+    let parts: Vec<_> = rel.components().collect();
+    if parts.is_empty() || !parts.iter().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        anyhow::bail!("{} is not a plain path inside the workspace", rel.display());
+    }
+    // Root not on this disk: lexical only. RemoteFiles and MemoryFiles
+    // use host / fake roots that canonicalize would never find here.
+    let Ok(root_c) = std::fs::canonicalize(root) else {
+        return Ok(root.join(rel));
+    };
+    let mut cur = root_c.clone();
+    for (i, c) in parts.iter().enumerate() {
+        cur.push(c.as_os_str());
+        let last = i + 1 == parts.len();
+        match std::fs::symlink_metadata(&cur) {
+            Ok(_) => {
+                // Resolve whatever is there (a symlink included) and require
+                // the result to stay inside the root.
+                let resolved = std::fs::canonicalize(&cur).map_err(|e| {
+                    anyhow::anyhow!(
+                        "{} could not be resolved ({e}); gavin will not write through it",
+                        cur.display()
+                    )
+                })?;
+                if !resolved.starts_with(&root_c) {
+                    anyhow::bail!(
+                        "{} leads outside the workspace; gavin will not write through it",
+                        cur.display()
+                    );
+                }
+                if !last && !resolved.is_dir() {
+                    anyhow::bail!("{} is not a directory", cur.display());
+                }
+                cur = resolved;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !last => {
+                if create {
+                    std::fs::create_dir(&cur)?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // Re-spell under the caller's `root` so macOS `/var` vs `/private/var`
+    // (and any other root alias) does not change the path callers report
+    // or compare. The open still lands on the resolved inode.
+    if let Ok(suffix) = cur.strip_prefix(&root_c) {
+        Ok(root.join(suffix))
+    } else {
+        Ok(cur)
+    }
+}
+
+/// Absolute path under `root`, resolved the same way as `contained_dest`.
+/// Used by `write_repo_file` for workspace-relative sinks git named.
+pub(crate) fn contained_under(root: &Path, absolute: &Path) -> anyhow::Result<PathBuf> {
+    let abs = if absolute.is_absolute() {
+        absolute.to_path_buf()
+    } else {
+        root.join(absolute)
+    };
+    let rel = abs
+        .strip_prefix(root)
+        .or_else(|_| {
+            let root_c = std::fs::canonicalize(root).ok();
+            root_c
+                .as_ref()
+                .and_then(|r| abs.strip_prefix(r).ok())
+                .ok_or(())
+        })
+        .map_err(|_| anyhow::anyhow!("{} is outside the workspace root {}", abs.display(), root.display()))?;
+    contained_dest(root, rel)
+}
+
+/// Open a leaf without following a symlink swapped in after containment.
+pub(crate) fn nofollow_read(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    match open_nofollow(path, false) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub(crate) fn nofollow_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut file = open_nofollow(path, true)?;
+    file.write_all(contents)?;
+    Ok(())
+}
+
+fn open_nofollow(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(true);
+        } else {
+            opts.read(true);
+        }
+        opts.custom_flags(libc::O_NOFOLLOW);
+        opts.open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        // No O_NOFOLLOW: refuse a symlink leaf before the open so a
+        // committed reparse point cannot redirect the write.
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{} is a symlink; gavin will not write through it", path.display()),
+            ));
+        }
+        let mut opts = std::fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(true);
+        } else {
+            opts.read(true);
+        }
+        opts.open(path)
     }
 }
 
@@ -299,12 +449,10 @@ fn usable_mcp_path(value: &str) -> Option<String> {
 /// EVERY profile, never skipped -- so a bad value is a loud error naming
 /// the value, not a silent downgrade.
 ///
-/// Canonicalizes the parent directory and checks containment rather than
-/// components alone, the same way fileviewer's `resolve_new` does: a
-/// symlinked directory leading out of the root is caught, not just a
-/// literal `..`. Safe to canonicalize eagerly here -- unlike an MCP
-/// config's directory, this write never creates the parent, so it must
-/// already exist for a valid value.
+/// Goes through `check_contained_dest` so a symlink at the leaf or at any
+/// intermediate component that leads out of the root is refused — not only
+/// a literal `..` or a symlinked parent. When the root is not on this
+/// disk (ssh), the check is lexical; the host enforces containment on write.
 fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     let path = Path::new(trimmed);
@@ -312,24 +460,15 @@ fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -
     if trimmed.is_empty() || path.is_absolute() {
         return Err(outside());
     }
-    // Rejects `..` anywhere, and the Windows prefixes/root-dir components
-    // an absolute check on a foreign separator would miss.
     if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
         return Err(outside());
     }
-    let root_canonical = fs
+    // Prove the root is answerable on this disk (or accept the remote
+    // double's word for it) before the containment walk.
+    let _ = fs
         .canonical_dir(root)
         .ok_or_else(|| format!("workspace root {} is unreadable", root.display()))?;
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    let canonical_parent = match parent {
-        Some(p) => fs.canonical_dir(&root_canonical.join(p)).ok_or_else(outside)?,
-        None => root_canonical.clone(),
-    };
-    if canonical_parent == root_canonical || canonical_parent.starts_with(&root_canonical) {
-        Ok(())
-    } else {
-        Err(outside())
-    }
+    check_contained_dest(root, path).map(|_| ()).map_err(|_| outside())
 }
 
 /// The layout to write for this root: the profile's own, or -- for
@@ -1270,25 +1409,33 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // prompt. Workspaces that still name `cursor` as command need
         // to switch to `agent` (Settings / the agent-change wizard).
         //
-        // `--approve-mcps` and `--trust` belong on the command itself,
-        // not in a human custom override: without them Cursor stalls on
-        // MCP/workspace prompts (or a hand-rolled flag line eats the
-        // positional and the tab opens empty). No trailing `--` here —
+        // `--trust` belongs on the command itself so Cursor does not
+        // stall on the workspace-trust prompt. `--approve-mcps` (and
+        // `--force` on the headless line, which also skips MCP approval)
+        // are NOT here: they are consent for every server in the
+        // project's `.cursor/mcp.json`, composed at launch only when the
+        // foreign-server disclosure is empty or Keep (AG-07). A
+        // hand-rolled flag line that eats the positional still opens an
+        // empty tab — that is a Settings mistake, not a reason to
+        // pre-approve repository servers. No trailing `--` here —
         // `composeLaunchCommand` appends `--model …` after this string,
         // and a `--` would turn that model flag into prompt text.
-        // Verified against `agent --help` 2026.09.10.
-        command: "agent --approve-mcps --trust",
+        // Verified against `agent --help` 2026.09.10 / 2026.10.16.
+        command: "agent --trust",
         // Bare positional after the flags
         // (`Usage: agent [options] [command] [prompt...]`).
         prompt_args: Some(""),
         prompt_injection: false,
         untrusted_osc133: false,
-        // Print mode for scripts; `--force` so a hidden run can write
-        // and run tools (without it, `-p` proposes and applies nothing);
-        // same MCP/trust pins as the interactive command. Trailing `--`
-        // so a prompt starting with `-` is not read as a flag. Verified
-        // against `agent --help` 2026-09-11 and cursor.com/docs/cli/headless.
-        headless_args: "-p --force --approve-mcps --trust --",
+        // Print mode for scripts. Trailing `--` so a prompt starting
+        // with `-` is not read as a flag. `--force` and `--approve-mcps`
+        // are composed at launch on the same AG-07 decision as the
+        // interactive command: `--force` alone skips MCP approval, and
+        // `-p` without `--force` applies nothing, so a withheld
+        // disclosure refuses the headless line rather than stalling or
+        // silently approving. Verified against `agent --help` 2026-09-11
+        // / 2026.10.16 and cursor.com/docs/cli/headless.
+        headless_args: "-p --trust --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -1819,8 +1966,13 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
     if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model_flag") {
         anyhow::bail!("not a settable agent key: {key}");
     }
-    let path = root.join(".gavin-root").join("config.toml");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let path = contained_dest(root, Path::new(".gavin-root/config.toml"))?;
+    let existing = match nofollow_read(&path)? {
+        Some(bytes) => String::from_utf8(bytes).map_err(|_| {
+            anyhow::anyhow!("{} is not valid UTF-8 text", path.display())
+        })?,
+        None => String::new(),
+    };
     let mut doc = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| anyhow::anyhow!("{} is not valid TOML", path.display()))?;
@@ -1828,7 +1980,7 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
     if let Some(t) = doc["agent"].as_table_mut() {
         t.set_implicit(false);
     }
-    std::fs::write(&path, doc.to_string())?;
+    nofollow_write(&path, doc.to_string().as_bytes())?;
     Ok(())
 }
 
@@ -1997,6 +2149,124 @@ fn launcher_file(root: &Path, windows: bool) -> PathBuf {
     root.join("scripts").join(name)
 }
 
+/// Whether the workspace root *looks* like a gavin checkout: it ships
+/// both the `gavin-mcp` crate and the launcher the relative command would
+/// name. That shape alone is not enough to *use* the launcher — a cloned
+/// repo can forge both files — only to *offer* the human a mark. The mark
+/// store (`checkout_mark_matches`) is what decides.
+fn looks_like_gavin_checkout(fs: &dyn WorkspaceFiles, root: &Path) -> bool {
+    fs.is_file(&root.join("crates/gavin-mcp/Cargo.toml"))
+        && fs.is_file(&launcher_file(root, fs.is_windows()))
+}
+
+// Thread-local override of the marks file for tests. Production reads
+// `app_support_dir()/gavin-checkout-marks.json`. A suite must not touch
+// the developer's real marks, and `set_var` on HOME is unsafe under the
+// multi-threaded test harness, so tests point this at a temp file.
+thread_local! {
+    static CHECKOUT_MARKS_PATH: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn checkout_marks_path() -> Option<PathBuf> {
+    if let Some(path) = CHECKOUT_MARKS_PATH.with(|p| p.borrow().clone()) {
+        return Some(path);
+    }
+    protocol::app_support_dir()
+        .ok()
+        .map(|d| d.join("gavin-checkout-marks.json"))
+}
+
+/// Canonical key for a root in the mark store. Prefer the physical path
+/// so two spellings of the same folder share one mark; fall back to the
+/// path as given when the disk cannot answer (ssh).
+fn checkout_mark_key(fs: &dyn WorkspaceFiles, root: &Path) -> String {
+    fs.canonical_dir(root)
+        .unwrap_or_else(|| root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn launcher_digest(fs: &dyn WorkspaceFiles, root: &Path) -> Option<String> {
+    let path = launcher_file(root, fs.is_windows());
+    let bytes = fs.read_bytes(&path).ok().flatten()?;
+    Some(protocol::hash_bytes_hex(&bytes))
+}
+
+fn read_checkout_marks() -> serde_json::Map<String, serde_json::Value> {
+    let Some(path) = checkout_marks_path() else {
+        return serde_json::Map::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return serde_json::Map::new();
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+fn write_checkout_marks(map: &serde_json::Map<String, serde_json::Value>) -> anyhow::Result<()> {
+    let path = checkout_marks_path()
+        .ok_or_else(|| anyhow::anyhow!("no place to store the gavin checkout mark"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = serde_json::to_string_pretty(&serde_json::Value::Object(map.clone()))?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        if let Some(dir) = path.parent() {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(body.as_bytes())?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, body)?;
+        Ok(())
+    }
+}
+
+/// True when this machine has a mark for `root` whose digest still
+/// matches the launcher file on disk. A mismatch drops the stale mark
+/// so the next Integration asks again.
+fn checkout_mark_matches(fs: &dyn WorkspaceFiles, root: &Path) -> bool {
+    let Some(digest) = launcher_digest(fs, root) else {
+        return false;
+    };
+    let key = checkout_mark_key(fs, root);
+    let mut map = read_checkout_marks();
+    let Some(entry) = map.get(&key).and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if entry == digest {
+        return true;
+    }
+    // Launcher bytes changed: the approval was for different contents.
+    map.remove(&key);
+    let _ = write_checkout_marks(&map);
+    false
+}
+
+/// Record that the human approved this root's launcher on this machine.
+fn record_checkout_mark(fs: &dyn WorkspaceFiles, root: &Path) -> anyhow::Result<()> {
+    let digest = launcher_digest(fs, root)
+        .ok_or_else(|| anyhow::anyhow!("launcher file is missing or unreadable"))?;
+    let key = checkout_mark_key(fs, root);
+    let mut map = read_checkout_marks();
+    map.insert(key, serde_json::Value::String(digest));
+    write_checkout_marks(&map)
+}
+
 /// What the config files name as the command.
 ///
 /// `.mcp.json` and `.cursor/mcp.json` are committed and this checkout is
@@ -2004,33 +2274,30 @@ fn launcher_file(root: &Path, windows: bool) -> PathBuf {
 /// wrong for one machine by construction: each setup run re-pointed the
 /// file and broke the other, three times over, until it named a binary
 /// that existed on neither and every agent session lost the gavin_* tools.
-/// A root that carries gavin's own launcher is named by relative path
-/// instead, and the per-machine resolving moves into the launcher.
+/// A root the human has marked on this machine as a trusted gavin
+/// checkout is named by relative path instead, and the per-machine
+/// resolving moves into the launcher.
 ///
 /// Every OTHER workspace -- gavin manages roots that are not its own
 /// checkout -- gets the absolute binary resolved beside the running app,
 /// which is correct there: those files are not shared between machines.
 ///
-/// That split is also why the launcher needs a second condition, and not
-/// just "a file sits at that path". A relative command is resolved by the
-/// agent against the workspace root, so naming one means the REPO chooses
-/// what gavin's own entry executes. `03-agent-surface.md` records that
-/// gavin's own writes cannot be redirected; pointing them at a file an
-/// arbitrary cloned repo happens to ship would falsify that. So the
-/// launcher is named only in a checkout that actually builds gavin-mcp --
-/// where the human already trusts the tree enough to compile and run it,
-/// and where the shared-config problem is the one that exists.
+/// A relative command is resolved by the agent against the workspace
+/// root, so naming one means the REPO chooses what gavin's own entry
+/// executes. `03-agent-surface.md` records that gavin's own writes
+/// cannot be redirected; pointing them at a file an arbitrary cloned
+/// repo happens to ship would falsify that. File existence alone is not
+/// enough — a stub `Cargo.toml` and script satisfy it — so the launcher
+/// is named only when this machine holds a human-recorded mark for the
+/// root whose digest still matches the launcher file. The mark lives in
+/// the app's data directory, never in the repository.
 ///
-/// Both questions go through `fs`, never through this process's disk. An
-/// ssh workspace's root is a path on the HOST: answering it locally would
-/// read a same-shaped directory on the desktop, and the answer decides
-/// what gavin's own MCP entry executes. A remote gavin checkout that
-/// ships the launcher gets it, resolved on the host by the host's copy,
-/// which is the same guarantee the local case gets -- and `mcp_path`'s
-/// absolute binary remains the answer for every root that ships none.
+/// The shape check (crate + launcher present) goes through `fs`, never
+/// through this process's disk. An ssh workspace's root is a path on
+/// the HOST: answering it locally would read a same-shaped directory on
+/// the desktop. The mark itself is always on the desk.
 pub(crate) fn mcp_command(fs: &dyn WorkspaceFiles, root: &Path, binary: &Path) -> String {
-    let is_gavin_checkout = fs.is_file(&root.join("crates/gavin-mcp/Cargo.toml"));
-    if is_gavin_checkout && fs.is_file(&launcher_file(root, fs.is_windows())) {
+    if looks_like_gavin_checkout(fs, root) && checkout_mark_matches(fs, root) {
         MCP_LAUNCHER.to_string()
     } else {
         binary.to_string_lossy().into_owned()
@@ -2098,12 +2365,10 @@ fn write_mcp_config(
     layout: &ResolvedMcp,
     binary: &Path,
 ) -> anyhow::Result<PathBuf> {
-    let path = root.join(&layout.config_file);
-    // The `create_dir_all` that used to stand here is gone on purpose:
-    // `.gemini/`, `.cursor/` and `.codex/` still need not exist, but the
-    // parent is now created by `LocalFiles::write_bytes`, on whichever
-    // disk the workspace is. Doing it here would create a `.cursor/` on
-    // the DESKTOP for an ssh workspace whose files live on the host.
+    // Containment creates missing parents one component at a time under
+    // the root. For an ssh workspace the root is not on this disk, so
+    // `contained_dest` joins lexically and the host enforces the rule.
+    let path = contained_dest(root, Path::new(&layout.config_file))?;
     let command = mcp_command(fs, root, binary);
     write_mcp_server(fs, &path, layout.format, layout.server_key, &command, &[])?;
     Ok(path)
@@ -2249,7 +2514,8 @@ fn write_managed_file(
     file: &ManagedFile,
     prd: &str,
 ) -> anyhow::Result<ManagedWrite> {
-    let path = root.join(file.dir).join(file.file);
+    let rel = Path::new(file.dir).join(file.file);
+    let path = contained_dest(root, &rel)?;
     let replaced = write_owned(fs, &path, &with_prd_path(file.contents, prd))?;
     Ok(ManagedWrite { path, replaced })
 }
@@ -2301,7 +2567,7 @@ fn write_instructions_block(
     block_body: &str,
 ) -> anyhow::Result<PathBuf> {
     validate_agent_file_path(fs, root, instructions_file).map_err(|e| anyhow::anyhow!(e))?;
-    let path = root.join(instructions_file);
+    let path = contained_dest(root, Path::new(instructions_file))?;
     let content = if let Some(existing) = fs.read_to_string(&path)? {
         match (existing.find(MARKER_START), existing.find(MARKER_END)) {
             (Some(start), Some(end)) if end >= start => {
@@ -2767,9 +3033,13 @@ fn set_kimi_fullscreen(fs: &dyn WorkspaceFiles) -> TuiModeGrant {
 /// asks once at its trust screen, exactly as it did before this
 /// function existed.
 ///
-/// `own_command` is what gavin's entries name in this root
-/// (`mcp_command`); `None` when gavin-mcp cannot be found, which leaves
-/// only the `gavin` key as gavin's.
+/// `own_command` is gavin's own resolved, absolute `gavin-mcp` for this
+/// machine. The shared rule matches entries by that path (and args),
+/// never by the key name alone -- a repository can commit any command
+/// under `gavin`. A relative launcher (`mcp_command`'s
+/// `scripts/gavin-mcp`) must not be passed here: the rule treats a
+/// non-absolute value as unknown and withholds. `None` when gavin-mcp
+/// cannot be found likewise withholds any declared server.
 fn grant_kimi_launch_trust(
     fs: &dyn WorkspaceFiles,
     cwd: &Path,
@@ -3024,7 +3294,12 @@ pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home
     let fs = LocalFiles;
     let target = cwd.map(Path::new).unwrap_or_else(|| Path::new(home));
     let workspace = workspace_root.map(Path::new).unwrap_or(target);
-    let own_command = resolve_mcp_binary_path().ok().map(|binary| mcp_command(&fs, workspace, &binary));
+    // Absolute binary only: `mcp_command` may return the repo-relative
+    // launcher in a gavin checkout, and the trust rule must not treat
+    // that as gavin's own (a hostile repo can ship the same files).
+    let own_command = resolve_mcp_binary_path()
+        .ok()
+        .map(|binary| binary.to_string_lossy().into_owned());
     if let Some(TrustGrant::Withheld(reason)) =
         grant_kimi_launch_trust(&fs, target, workspace, own_command.as_deref())
     {
@@ -3047,6 +3322,17 @@ pub fn prepare_kimi_launch(cwd: Option<&str>, workspace_root: Option<&str>, home
 /// path on `/`, or compares it against a path it built itself, silently
 /// misses. Normalised where the string is made rather than at each
 /// consumer, so there is one spelling and not a rule to remember.
+/// A root that looks like a gavin checkout but has no (matching) mark
+/// on this machine. The Integration step asks with `askConfirm` whether
+/// to record one; approving lets the repository's launcher become
+/// gavin's MCP command.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutMarkOffer {
+    /// The relative command that would be written (`scripts/gavin-mcp`).
+    pub launcher: String,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationResult {
@@ -3064,6 +3350,13 @@ pub struct IntegrationResult {
     /// there is nothing left to ask (AG-07).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_foreign: Option<McpForeignServers>,
+    /// Present when this run wrote the absolute binary for a root that
+    /// looks like a gavin checkout and this machine has no matching mark
+    /// yet. The frontend asks with `askConfirm` and re-runs with
+    /// `approve_checkout_mark: true` to record the mark and name the
+    /// relative launcher instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkout_mark_offer: Option<CheckoutMarkOffer>,
 }
 
 #[tauri::command]
@@ -3084,6 +3377,12 @@ pub struct IntegrationResult {
 /// is asked once per distinct set (AG-07). Meaningless, and ignored,
 /// when there is nothing foreign to ask about.
 ///
+/// `approve_checkout_mark` is the answer to a `checkout_mark_offer` a
+/// previous call returned: `Some(true)` records the mark and lets
+/// `mcp_command` name the relative launcher; `Some(false)` declines and
+/// keeps the absolute binary; absent with an unmarked lookalike pauses
+/// the MCP write and returns the offer so the frontend can ask.
+///
 /// For an ssh workspace the files are on the host and so is the
 /// `gavin-mcp` the config must name: both come through the link
 /// (`remote::RemoteFiles`, the banner's `mcpPath`). A host with no
@@ -3099,6 +3398,7 @@ pub async fn setup_agent_integration(
     instructions_file: Option<String>,
     mcp_foreign_choice: Option<String>,
     profile_id: Option<String>,
+    approve_checkout_mark: Option<bool>,
     app_handle: tauri::AppHandle,
 ) -> Result<IntegrationResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -3131,6 +3431,7 @@ pub async fn setup_agent_integration(
                 choice,
                 profile_id.as_deref(),
                 default_agent.as_deref(),
+                approve_checkout_mark,
             );
         }
         run_integration(
@@ -3141,10 +3442,95 @@ pub async fn setup_agent_integration(
             choice,
             profile_id.as_deref(),
             default_agent.as_deref(),
+            approve_checkout_mark,
         )
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Read-only scan of the foreign MCP servers the given profile's agent
+/// would load from `root_path` (the launch cwd / Cursor `projectRoot`).
+/// Reuses `foreign_mcp_servers` so Integration and launch consent see
+/// the same set. Empty when the profile has no MCP layout or the file
+/// is absent; an unparsable file errors the same way Integration does.
+#[tauri::command]
+pub async fn scan_foreign_mcp_servers(
+    root_path: String,
+    profile_id: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<ForeignMcpServer>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let default_agent = app_handle
+            .state::<crate::session::AgentDefaults>()
+            .0
+            .lock()
+            .unwrap()
+            .default_agent
+            .clone();
+        if let crate::remote::Route::Remote(link) =
+            crate::remote::route_for_root(&app_handle, Some(&root_path))?
+        {
+            let host = link.host.clone();
+            let mcp = link.mcp_path.clone();
+            let files = crate::remote::RemoteFiles {
+                link,
+                root: root_path.clone(),
+            };
+            return scan_foreign_mcp_servers_in(
+                &files,
+                Path::new(&root_path),
+                profile_id.as_deref(),
+                default_agent.as_deref(),
+                move || {
+                    mcp.clone().map(PathBuf::from).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "gavin-mcp is not beside gavin-daemon on {host} — install it there and reconnect"
+                        )
+                    })
+                },
+            );
+        }
+        scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            Path::new(&root_path),
+            profile_id.as_deref(),
+            default_agent.as_deref(),
+            resolve_mcp_binary_path,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn scan_foreign_mcp_servers_in(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    profile_id: Option<&str>,
+    default_agent: Option<&str>,
+    resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
+) -> Result<Vec<ForeignMcpServer>, String> {
+    if !fs.is_dir(root) {
+        return Err(format!("root does not exist: {}", root.display()));
+    }
+    let profile_id = profile_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| resolved_profile_id_in(fs, root, default_agent));
+    let profile = profile_for_writes(&profile_id);
+    let Some(layout) = resolved_mcp(fs, root, profile) else {
+        return Ok(Vec::new());
+    };
+    // Own command is only used to exempt gavin's entry (and the
+    // Playwright one written exactly as gavin would). A missing binary
+    // must not abort a read-only scan — fall back to empty so a
+    // non-matching command is disclosed rather than hidden.
+    let own = resolve_binary()
+        .map(|b| mcp_command(fs, root, &b))
+        .unwrap_or_default();
+    let mcp_path = contained_dest(root, Path::new(&layout.config_file)).map_err(|e| e.to_string())?;
+    foreign_mcp_servers(fs, &mcp_path, &layout, &own).map_err(|e| e.to_string())
 }
 
 /// Held for the whole of an integration run (`setup_agent_integration`),
@@ -3170,6 +3556,7 @@ fn run_integration(
     mcp_choice: Option<McpForeignChoice>,
     profile_id: Option<&str>,
     default_agent: Option<&str>,
+    approve_checkout_mark: Option<bool>,
 ) -> Result<IntegrationResult, String> {
     if !fs.is_dir(root) {
         return Err(format!("root does not exist: {}", root.display()));
@@ -3191,6 +3578,7 @@ fn run_integration(
     let mut skipped = Vec::new();
     let mut replaced = Vec::new();
     let mut mcp_foreign = None;
+    let mut checkout_mark_offer = None;
     // Whether gavin's own entry reached the MCP config on this run: the
     // gate on `folder_trust`, since trusting a folder starts every server
     // it declares and the foreign-server disclosure is what says the
@@ -3246,7 +3634,17 @@ fn run_integration(
                     }
                 }
             }
-            let mcp_path = root.join(&layout.config_file);
+            // Approving records the mark before `mcp_command` runs, so
+            // this write names the relative launcher. Without a mark the
+            // absolute binary is written; the offer below lets the
+            // frontend ask and re-run with `Some(true)` to upgrade.
+            if approve_checkout_mark == Some(true)
+                && looks_like_gavin_checkout(fs, root)
+                && !checkout_mark_matches(fs, root)
+            {
+                record_checkout_mark(fs, root).map_err(|e| e.to_string())?;
+            }
+            let mcp_path = contained_dest(root, Path::new(&layout.config_file)).map_err(|e| e.to_string())?;
             let foreign = foreign_mcp_servers(fs, &mcp_path, layout, &mcp_command(fs, root, &binary))
                 .map_err(|e| e.to_string())?;
             if foreign.is_empty() {
@@ -3343,7 +3741,28 @@ fn run_integration(
             replaced.push((protocol::wire_path(&write.path), protocol::wire_path(&backup)));
         }
     }
-    Ok(IntegrationResult { written, skipped, replaced, mcp_foreign })
+
+    // Absolute binary was written for a lookalike with no mark: offer
+    // the human a chance to trust the repo launcher and re-run. Absent
+    // when they already answered this call (`approve_checkout_mark`),
+    // when a mark already matches, or when MCP was not written.
+    if mcp_written
+        && approve_checkout_mark.is_none()
+        && looks_like_gavin_checkout(fs, root)
+        && !checkout_mark_matches(fs, root)
+    {
+        checkout_mark_offer = Some(CheckoutMarkOffer {
+            launcher: MCP_LAUNCHER.to_string(),
+        });
+    }
+
+    Ok(IntegrationResult {
+        written,
+        skipped,
+        replaced,
+        mcp_foreign,
+        checkout_mark_offer,
+    })
 }
 
 // --- What a setup run installed, for the delete wizard to undo ---------
@@ -3381,7 +3800,15 @@ pub struct GavinInstall {
 
 pub fn gavin_install(root: &Path, default_agent: Option<&str>) -> GavinInstall {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
-    let instructions = root.join(resolved_instructions_file(&LocalFiles, root, profile));
+    // Same containment the setup-time writer applies: an absolute or
+    // escaping `[agent] file` must not name a path outside the root for
+    // the delete wizard (or any other reader of this install layout).
+    let file = resolved_instructions_file(&LocalFiles, root, profile);
+    let instructions = if validate_agent_file_path(&LocalFiles, root, &file).is_ok() {
+        root.join(&file)
+    } else {
+        root.join(profile.instructions_file)
+    };
     let mcp = resolved_mcp(&LocalFiles, root, profile);
     let skills = mcp
         .as_ref()
@@ -3405,8 +3832,15 @@ pub fn gavin_install(root: &Path, default_agent: Option<&str>) -> GavinInstall {
 pub fn mcp_entry_present(root: &Path, default_agent: Option<&str>) -> bool {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return false };
-    let path = root.join(&layout.config_file);
-    let Ok(content) = std::fs::read_to_string(&path) else { return false };
+    let Ok(path) = contained_dest(root, Path::new(&layout.config_file)) else {
+        return false;
+    };
+    let Ok(Some(bytes)) = nofollow_read(&path) else {
+        return false;
+    };
+    let Ok(content) = String::from_utf8(bytes) else {
+        return false;
+    };
     match layout.format {
         McpFormat::TomlServers => content
             .parse::<toml_edit::DocumentMut>()
@@ -3435,11 +3869,12 @@ pub fn mcp_entry_present(root: &Path, default_agent: Option<&str>) -> bool {
 pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Result<bool> {
     let profile = profile_for_writes(&resolved_profile_id(root, default_agent));
     let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return Ok(false) };
-    let path = root.join(&layout.config_file);
-    if !path.exists() {
+    let path = contained_dest(root, Path::new(&layout.config_file))?;
+    let Some(bytes) = nofollow_read(&path)? else {
         return Ok(false);
-    }
-    let content = std::fs::read_to_string(&path)?;
+    };
+    let content = String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("{} is not valid UTF-8 text", path.display()))?;
     match layout.format {
         McpFormat::TomlServers => {
             let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|_| {
@@ -3451,7 +3886,7 @@ pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Res
             if table.remove(layout.server_key).is_none() {
                 return Ok(false);
             }
-            std::fs::write(&path, doc.to_string())?;
+            nofollow_write(&path, doc.to_string().as_bytes())?;
         }
         _ => {
             let mut doc: serde_json::Value = serde_json::from_str(&content).map_err(|_| {
@@ -3466,7 +3901,10 @@ pub fn remove_mcp_entry(root: &Path, default_agent: Option<&str>) -> anyhow::Res
             if servers.remove(layout.server_key).is_none() {
                 return Ok(false);
             }
-            std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+            nofollow_write(
+                &path,
+                format!("{}\n", serde_json::to_string_pretty(&doc)?).as_bytes(),
+            )?;
         }
     }
     Ok(true)
@@ -3494,6 +3932,9 @@ pub fn instructions_block_present(path: &Path) -> bool {
 pub fn remove_instructions_block(path: &Path) -> anyhow::Result<bool> {
     if !path.exists() {
         return Ok(false);
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!("{} is a symlink — left alone", path.display());
     }
     let content = std::fs::read_to_string(path)?;
     let (Some(start), Some(end)) = (content.find(MARKER_START), content.find(MARKER_END)) else {
@@ -3955,8 +4396,26 @@ mod tests {
         // models are dated ids from `--list-models`, so none ship here.
         assert_eq!(by("cursor").model_flag, "--model");
         assert!(by("cursor").models.is_empty());
-        assert_eq!(by("cursor").command, "agent --approve-mcps --trust");
-        assert_eq!(by("cursor").headless_args, "-p --force --approve-mcps --trust --");
+        // --approve-mcps / bare --force are consent for every server in
+        // .cursor/mcp.json. They are composed at launch from the
+        // foreign-server disclosure, not pinned on the row (AG-07).
+        assert_eq!(by("cursor").command, "agent --trust");
+        assert_eq!(by("cursor").headless_args, "-p --trust --");
+        assert!(
+            !by("cursor").command.contains("--approve-mcps"),
+            "cursor command must not carry --approve-mcps unconditionally"
+        );
+        assert!(
+            !by("cursor").headless_args.contains("--approve-mcps"),
+            "cursor headless_args must not carry --approve-mcps unconditionally"
+        );
+        assert!(
+            !by("cursor")
+                .headless_args
+                .split_whitespace()
+                .any(|a| a == "--force"),
+            "cursor headless_args must not carry bare --force (it skips MCP approval)"
+        );
     }
 
     /// The two halves have to be exclusive. A row that ships an alias
@@ -4091,7 +4550,7 @@ mod tests {
         assert_eq!(codex.path, None);
         let cursor = rows.iter().find(|r| r.id == "cursor").unwrap();
         assert!(cursor.found);
-        assert_eq!(cursor.command, "agent --approve-mcps --trust");
+        assert_eq!(cursor.command, "agent --trust");
         assert_eq!(cursor.path.as_deref(), Some("/opt/bin/agent"));
     }
 
@@ -4615,7 +5074,7 @@ mod tests {
         // Through `run_integration` rather than the command, which now
         // takes the app handle it routes an ssh root by; the refusal is
         // the run's, on whichever disk it is asked about.
-        let err = run_integration(&LocalFiles, Path::new("/no/such/root"), fake_binary(), None, None, None, None)
+        let err = run_integration(&LocalFiles, Path::new("/no/such/root"), fake_binary(), None, None, None, None, None)
             .unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
@@ -4733,6 +5192,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -4746,18 +5206,18 @@ mod tests {
     }
 
     /// Where the launcher and ssh meet, which is the merge of these two
-    /// changes and belongs to neither alone. `mcp_command` asks two
-    /// questions about the root -- is this a gavin checkout, does it carry
-    /// the launcher -- and for an ssh workspace the root is a path on the
-    /// HOST. Asked of this process's disk they are answered by whatever
-    /// happens to sit at the same spelling here, and the answer decides
-    /// what gavin's own MCP entry executes. So both go through `fs`, and
-    /// the platform half goes through `is_windows`: a Linux host must be
+    /// changes and belongs to neither alone. `mcp_command` asks whether
+    /// this machine has marked the root and whether the launcher still
+    /// matches that mark; the shape check (crate + launcher file) and
+    /// the digest both go through `fs`, because for an ssh workspace the
+    /// root is a path on the HOST. Asked of this process's disk they are
+    /// answered by whatever happens to sit at the same spelling here.
+    /// The platform half goes through `is_windows`: a Linux host must be
     /// checked for `scripts/gavin-mcp`, not for the `.cmd` this desktop
-    /// would run. Neither is answerable from `cfg!` or `Path::is_file`,
-    /// which is what makes this a gate and not a restatement.
+    /// would run. The mark itself stays on the desk.
     #[test]
     fn a_remote_gavin_checkout_that_carries_the_launcher_is_named_by_relative_path() {
+        let _marks = MarksGuard::new();
         let root = PathBuf::from("/remote/gavin");
         // windows: false -- the host is Linux even when this suite is not.
         let fs = MemoryFiles { dirs: vec![root.clone()], ..Default::default() };
@@ -4765,8 +5225,9 @@ mod tests {
             .unwrap();
         fs.write_bytes(&root.join("crates/gavin-mcp/Cargo.toml"), b"[package]\n").unwrap();
         fs.write_bytes(&root.join("scripts").join("gavin-mcp"), b"#!/bin/sh\n").unwrap();
+        record_checkout_mark(&fs, &root).unwrap();
 
-        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None, None)
             .unwrap();
 
         let files = fs.files.lock().unwrap();
@@ -4793,7 +5254,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         assert!(result.written.iter().any(|w| w.ends_with("RULES.md")));
@@ -4817,7 +5278,7 @@ mod tests {
             rooted_with_profile(dir.path(), profile);
             let read = || std::fs::read_to_string(dir.path().join(instructions)).unwrap();
 
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
             assert!(!read().contains("browser_navigate"), "{profile}: no Playwright, no paragraph:\n{}", read());
 
             // What the Playwright step writes: gavin's own command, with
@@ -4839,7 +5300,7 @@ mod tests {
             assert_eq!(block.matches(MARKER_START).count(), 1, "{profile}: one block, rewritten in place");
 
             // And a later setup run keeps it.
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
             assert!(read().contains("browser_navigate"), "{profile}: setup keeps the paragraph");
         }
     }
@@ -4860,7 +5321,7 @@ mod tests {
             r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest"]}}}"#,
         )
         .unwrap();
-        let _ = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None)
+        let _ = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None, None)
             .unwrap();
         let block = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
         assert!(!block.contains("browser_navigate"), "{block}");
@@ -4874,7 +5335,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, Some("codex"), None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, Some("codex"), None, None).unwrap();
 
         assert!(dir.path().join("AGENTS.md").is_file());
         assert!(dir.path().join(".codex/config.toml").is_file());
@@ -4895,7 +5356,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         assert!(dir.path().join(".mcp.json").is_file());
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
@@ -4917,7 +5378,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -4945,7 +5406,7 @@ mod tests {
 
         // No decision yet -> the write is held back and the foreign
         // entry is reported, verbatim.
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let foreign = result.mcp_foreign.expect("a foreign server was present");
         assert!(foreign.file.ends_with(".mcp.json"));
@@ -4970,7 +5431,7 @@ mod tests {
 
         // "keep": merges beside it, same as every run before this fix.
         let result =
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None, None, None).unwrap();
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
         assert!(result.mcp_foreign.is_none());
         let v: serde_json::Value =
@@ -4986,7 +5447,7 @@ mod tests {
             r#"{ "mcpServers": { "evil": { "command": "/bin/sh" } } }"#,
         )
         .unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None, None)
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None, None, None)
             .unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let reason = result
@@ -5016,7 +5477,7 @@ mod tests {
             r#"{ "mcpServers": { "playwright": { "command": "/apps/gavin-mcp", "args": ["playwright"] } } }"#,
         )
         .unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(result.mcp_foreign.is_none(), "{:?}", result.mcp_foreign);
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
@@ -5029,7 +5490,7 @@ mod tests {
                 format!(r#"{{ "mcpServers": {{ "playwright": {{ "command": "{command}", "args": {args} }} }} }}"#),
             )
             .unwrap();
-            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
             let foreign = result.mcp_foreign.expect("someone else's playwright server is disclosed");
             assert_eq!(foreign.servers.len(), 1);
             assert_eq!(foreign.servers[0].name, "playwright");
@@ -5077,7 +5538,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), Some("CLAUDE.md"), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), Some("CLAUDE.md"), None, None, None, None).unwrap();
 
         assert!(dir.path().join("CLAUDE.md").is_file());
         assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
@@ -5092,7 +5553,7 @@ mod tests {
             "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
         )
         .unwrap();
-        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
     }
 
@@ -5107,7 +5568,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -5122,7 +5583,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("RULES.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -5157,7 +5618,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -5176,7 +5637,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -5191,7 +5652,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -5210,7 +5671,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -5233,7 +5694,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap_err();
+            let err = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -5459,16 +5920,16 @@ mod tests {
     fn a_run_that_displaces_an_edited_skill_keeps_it_and_reports_it() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         // A re-run that changes nothing must say nothing, or the report
         // cries wolf on every setup the human runs twice.
-        let quiet = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let quiet = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(quiet.replaced.is_empty(), "{:?}", quiet.replaced);
 
         let skill = dir.path().join(".claude/skills/gavin-develop/SKILL.md");
         std::fs::write(&skill, "### Rate it: `complexity:`\nmy own words\n").unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let (reported, backup) = result
             .replaced
@@ -5499,7 +5960,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -5534,7 +5995,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "cursor");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -5570,7 +6031,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -5612,7 +6073,7 @@ mod tests {
         rooted_with_profile(dir.path(), "kimi-code");
 
         let fs = HomedFiles { home: home.path().to_path_buf() };
-        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         // The last two entries live in the account's kimi home and so
         // cannot be made relative to the root: the folder-trust record
@@ -5747,7 +6208,7 @@ mod tests {
         rooted_with_profile(dir.path(), "kimi-code");
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let root = physical(dir.path());
         let record = record_path(home.path(), &root);
@@ -5774,7 +6235,7 @@ mod tests {
         }
 
         // A re-run neither rewrites it nor reports it again.
-        let again = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let again = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(!again.written.iter().any(|w| w.contains("workspace-trust")), "{:?}", again.written);
         assert_eq!(std::fs::read_to_string(&record).unwrap(), body);
         assert_eq!(trust_records(home.path()).len(), 1);
@@ -5792,7 +6253,7 @@ mod tests {
         std::fs::write(&record, r#"{"root":"theirs","trustedAt":1}"#).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         assert_eq!(std::fs::read_to_string(&record).unwrap(), r#"{"root":"theirs","trustedAt":1}"#);
         assert!(!result.written.iter().any(|w| w.contains("workspace-trust")));
@@ -5815,7 +6276,7 @@ mod tests {
             std::fs::write(dir.path().join(".mcp.json"), foreign).unwrap();
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let result = run_integration(&fs, dir.path(), fake_binary(), None, choice, None, None).unwrap();
+            let result = run_integration(&fs, dir.path(), fake_binary(), None, choice, None, None, None).unwrap();
 
             let label = format!("{choice:?}");
             assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
@@ -5848,7 +6309,7 @@ mod tests {
             }
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+            let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
             assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{body:?}");
             let says = result.skipped.iter().find(|(what, _)| what == "folder trust");
@@ -5868,16 +6329,17 @@ mod tests {
     fn a_launch_below_the_root_gets_its_own_trust_record() {
         let dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
+        let own = "/apps/gavin-mcp";
         std::fs::write(
             dir.path().join(".mcp.json"),
-            r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#,
+            r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#,
         )
         .unwrap();
         let sub = dir.path().join("packages").join("app");
         std::fs::create_dir_all(&sub).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+        let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), Some(own));
 
         let record = record_path(home.path(), &physical(&sub));
         assert!(matches!(grant, Some(TrustGrant::Written(_))), "{grant:?}");
@@ -5888,7 +6350,7 @@ mod tests {
 
         // The next launch in the same folder reads the record and leaves
         // it alone.
-        let again = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+        let again = grant_kimi_launch_trust(&fs, &sub, dir.path(), Some(own));
         assert!(matches!(again, Some(TrustGrant::Present)), "{again:?}");
         assert_eq!(trust_records(home.path()).len(), 1);
     }
@@ -5901,7 +6363,8 @@ mod tests {
     #[test]
     fn a_launch_trust_is_withheld_by_shape_and_by_policy() {
         let foreign = r#"{"mcpServers":{"other":{"command":"/bin/other"}}}"#;
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
         for (label, root_body, between, cwd_name, granted) in [
             ("at the root", gavin_only, None, "", false),
             ("outside the root", gavin_only, None, "../elsewhere", false),
@@ -5936,7 +6399,7 @@ mod tests {
             }
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), None);
+            let grant = grant_kimi_launch_trust(&fs, &sub, dir.path(), own);
 
             assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
             assert_eq!(trust_records(home.path()).len(), usize::from(granted), "{label}");
@@ -5981,9 +6444,19 @@ mod tests {
     /// branch whose copy adds a foreign server withholds.
     #[test]
     fn a_launch_in_a_gavin_worktree_vets_the_worktrees_own_mcp_file() {
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
-        let foreign = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
-        for (label, worktree_body, granted) in [("gavin only", gavin_only, true), ("a foreign server", foreign, false)] {
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let foreign = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp"},"other":{"command":"/bin/other"}}}"#;
+        let hostile = r#"{"mcpServers":{"gavin":{"command":"/bin/sh","args":["-c","echo V21"]}}}"#;
+        let relative = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
+        for (label, worktree_body, granted) in [
+            ("gavin only", gavin_only, true),
+            ("a foreign server", foreign, false),
+            // Audit 2026-10-15: a `gavin` key is not enough -- the command
+            // must be gavin's own absolute gavin-mcp.
+            ("hostile command under gavin", hostile, false),
+            ("relative launcher under gavin", relative, false),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
@@ -5994,7 +6467,7 @@ mod tests {
             std::fs::write(worktree.join(".mcp.json"), worktree_body).unwrap();
             let fs = HomedFiles { home: home.path().to_path_buf() };
 
-            let grant = grant_kimi_launch_trust(&fs, &worktree, dir.path(), None);
+            let grant = grant_kimi_launch_trust(&fs, &worktree, dir.path(), own);
 
             assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
             let want = if granted { vec![record_path(home.path(), &physical(&worktree))] } else { Vec::new() };
@@ -6007,7 +6480,8 @@ mod tests {
     /// withholds, and so does a folder below the worktree's root with one.
     #[test]
     fn an_intermediate_mcp_file_withholds_in_and_out_of_a_worktree() {
-        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+        let gavin_only = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+        let own = Some("/apps/gavin-mcp");
         let dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".mcp.json"), gavin_only).unwrap();
@@ -6022,8 +6496,8 @@ mod tests {
         std::fs::write(below.join(".mcp.json"), gavin_only).unwrap();
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        assert_eq!(grant_kimi_launch_trust(&fs, &plain, dir.path(), None), None);
-        assert_eq!(grant_kimi_launch_trust(&fs, &below, dir.path(), None), None);
+        assert_eq!(grant_kimi_launch_trust(&fs, &plain, dir.path(), own), None);
+        assert_eq!(grant_kimi_launch_trust(&fs, &below, dir.path(), own), None);
         assert!(trust_records(home.path()).is_empty());
     }
 
@@ -6318,6 +6792,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -6339,7 +6814,7 @@ mod tests {
         fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"kimi-code\"\n")
             .unwrap();
 
-        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None, None)
             .unwrap();
 
         let want = home.join(".kimi-code").join("workspace-trust").join(protocol::kimi_trust::trust_key("/work/repo"));
@@ -6364,7 +6839,7 @@ mod tests {
         fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"kimi-code\"\n")
             .unwrap();
 
-        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None)
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None, None, None)
             .unwrap();
 
         let files = fs.files.lock().unwrap();
@@ -6381,7 +6856,7 @@ mod tests {
         rooted_with_profile(dir.path(), "claude-code");
         let fs = HomedFiles { home: home.path().to_path_buf() };
 
-        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result = run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "the home stays empty");
         assert!(!result.written.iter().any(|w| w.contains("workspace-trust")));
@@ -6405,7 +6880,7 @@ mod tests {
         let written = {
             // Mirror run_integration's profile pick when Antigravity wins.
             let _ = profile;
-            run_integration(&fs, dir.path(), binary, None, None, None, None).unwrap()
+            run_integration(&fs, dir.path(), binary, None, None, None, None, None).unwrap()
         };
 
         // When this machine only has legacy `gemini`, profile_by_id binds
@@ -6503,7 +6978,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();
@@ -6563,6 +7038,25 @@ mod tests {
         assert_eq!(resolved_instructions_file(&LocalFiles, dir.path(), profile_by_id("codex")), "NOTES.md");
     }
 
+    /// `gavin_install` must apply the same `[agent] file` containment the
+    /// setup writer does: an absolute value names any file if joined
+    /// blindly, so fall back to the profile default.
+    #[test]
+    fn gavin_install_falls_back_when_agent_file_escapes_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(".gavin-root");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\nfile = \"/tmp/outside.md\"\n",
+        )
+        .unwrap();
+
+        let install = gavin_install(dir.path(), None);
+
+        assert_eq!(install.instructions, dir.path().join("CLAUDE.md"));
+    }
+
     #[test]
     fn read_profile_id_defaults_to_claude_code_without_a_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -6607,9 +7101,10 @@ mod tests {
         std::fs::write(scripts.join("gavin-mcp.cmd"), "@echo off\r\ngavin-mcp %*\r\n").unwrap();
     }
 
-    /// A checkout of gavin itself: the launcher pair AND the crate that
-    /// builds the binary it resolves. Both are required before gavin
-    /// names a repo-relative command -- see `mcp_command`.
+    /// A lookalike of a gavin checkout: the launcher pair AND the crate
+    /// that builds the binary it resolves. That shape is what Integration
+    /// offers a mark for; naming the relative command still needs the
+    /// mark -- see `mcp_command`.
     fn with_launcher(root: &std::path::Path) {
         with_launcher_scripts(root);
         let crate_dir = root.join("crates/gavin-mcp");
@@ -6617,13 +7112,16 @@ mod tests {
         std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"gavin-mcp\"\n").unwrap();
     }
 
-    /// The fix for the flip-flop: a root that carries the launcher gets
-    /// the RELATIVE path to it, so the committed file is the same bytes
-    /// on a Mac and on Windows and no machine's setup run re-points it.
+    /// The fix for the flip-flop: a marked root that carries the launcher
+    /// gets the RELATIVE path to it, so the committed file is the same
+    /// bytes on a Mac and on Windows and no machine's setup run re-points
+    /// it.
     #[test]
     fn mcp_config_names_the_launcher_when_the_root_carries_one() {
+        let _marks = MarksGuard::new();
         let dir = tempfile::tempdir().unwrap();
         with_launcher(dir.path());
+        mark_checkout(dir.path());
 
         let p =
             write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
@@ -6677,8 +7175,10 @@ mod tests {
     /// of the same fault (a Mac path, dead on Windows).
     #[test]
     fn every_dialect_names_the_launcher() {
+        let _marks = MarksGuard::new();
         let dir = tempfile::tempdir().unwrap();
         with_launcher(dir.path());
+        mark_checkout(dir.path());
         let binary = Path::new("/apps/gavin-mcp");
 
         let cursor = write_mcp_config(&LocalFiles, dir.path(), &layout("cursor"), binary).unwrap();
@@ -6698,15 +7198,146 @@ mod tests {
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), MCP_LAUNCHER);
     }
 
-    /// End to end through the wizard's own entry point, which is what
-    /// actually re-pointed the file on every machine.
+    /// Points the mark store at a temp file for the duration of a test,
+    /// restoring whatever was there on drop. Keeps the suite off the
+    /// developer's real `gavin-checkout-marks.json`.
+    struct MarksGuard {
+        _dir: tempfile::TempDir,
+        prev: Option<PathBuf>,
+    }
+
+    impl MarksGuard {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("gavin-checkout-marks.json");
+            let prev = CHECKOUT_MARKS_PATH.with(|p| p.replace(Some(path)));
+            Self { _dir: dir, prev }
+        }
+    }
+
+    impl Drop for MarksGuard {
+        fn drop(&mut self) {
+            CHECKOUT_MARKS_PATH.with(|p| *p.borrow_mut() = self.prev.take());
+        }
+    }
+
+    fn mark_checkout(root: &Path) {
+        record_checkout_mark(&LocalFiles, root).unwrap();
+    }
+
+    /// Audit 2026-10-15: a stub `crates/gavin-mcp/Cargo.toml` plus the
+    /// launcher scripts is not a gavin checkout. Without a human mark on
+    /// this machine, Integration must name the absolute binary — never
+    /// the repository's `scripts/gavin-mcp`.
     #[test]
-    fn integration_writes_the_launcher_for_a_root_that_carries_one() {
+    fn a_forged_gavin_checkout_gets_the_absolute_binary() {
+        let _marks = MarksGuard::new();
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
         with_launcher(dir.path());
 
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        let result =
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None)
+                .unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/command").unwrap(),
+            "/apps/gavin-mcp",
+            "a forged checkout must not get the relative launcher"
+        );
+        assert!(
+            result.checkout_mark_offer.is_some(),
+            "the run should offer the mark so Integration can ask"
+        );
+    }
+
+    /// The combined kimi-code case the audit could not observe: one
+    /// Integration run over a forged checkout must not write the relative
+    /// launcher and then grant folder trust over it. Trust may still be
+    /// written, but only while the gavin entry names the absolute binary.
+    #[test]
+    fn a_kimi_run_over_a_forged_checkout_trusts_only_the_absolute_binary() {
+        let _marks = MarksGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "kimi-code");
+        with_launcher(dir.path());
+        let fs = HomedFiles { home: home.path().to_path_buf() };
+
+        let result =
+            run_integration(&fs, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        let command = v.pointer("/mcpServers/gavin/command").unwrap().as_str().unwrap();
+        assert_eq!(command, "/apps/gavin-mcp", "forged checkout wrote the relative launcher");
+        if result.written.iter().any(|w| w.contains("workspace-trust")) {
+            assert_eq!(
+                command, "/apps/gavin-mcp",
+                "folder trust was granted while the gavin entry named the repo's script"
+            );
+        }
+    }
+
+    /// A marked root still gets the relative launcher — the flip-flop
+    /// fix, now gated on a human mark rather than file existence.
+    #[test]
+    fn a_marked_checkout_keeps_its_launcher() {
+        let _marks = MarksGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher(dir.path());
+        mark_checkout(dir.path());
+
+        assert_eq!(
+            mcp_command(&LocalFiles, dir.path(), Path::new("/apps/gavin-mcp")),
+            MCP_LAUNCHER
+        );
+    }
+
+    /// Editing the launcher's bytes invalidates the mark, so
+    /// `mcp_command` falls back to the absolute binary until the human
+    /// approves again.
+    #[test]
+    fn a_changed_launcher_drops_the_mark() {
+        let _marks = MarksGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher(dir.path());
+        mark_checkout(dir.path());
+        assert_eq!(
+            mcp_command(&LocalFiles, dir.path(), Path::new("/apps/gavin-mcp")),
+            MCP_LAUNCHER
+        );
+
+        let launcher = launcher_file(dir.path(), cfg!(windows));
+        std::fs::write(&launcher, "#!/bin/sh\necho tampered\n").unwrap();
+
+        assert_eq!(
+            mcp_command(&LocalFiles, dir.path(), Path::new("/apps/gavin-mcp")),
+            "/apps/gavin-mcp",
+            "a changed launcher must not keep the relative command"
+        );
+        assert!(
+            !checkout_mark_matches(&LocalFiles, dir.path()),
+            "the stale mark should be gone"
+        );
+    }
+
+    /// End to end through the wizard's own entry point, which is what
+    /// actually re-pointed the file on every machine. The mark must be
+    /// set first — file existence alone is the forgery.
+    #[test]
+    fn integration_writes_the_launcher_for_a_root_that_carries_one() {
+        let _marks = MarksGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        with_launcher(dir.path());
+        mark_checkout(dir.path());
+
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -6728,6 +7359,7 @@ mod tests {
     /// about -- someone commits the dirt and a machine loses its tools.
     #[test]
     fn the_repos_own_committed_configs_name_the_launcher() {
+        let _marks = MarksGuard::new();
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         assert!(
             launcher_file(repo, cfg!(windows)).is_file(),
@@ -6736,6 +7368,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         with_launcher(dir.path());
+        mark_checkout(dir.path());
         for (profile, rel, command) in [
             ("claude-code", ".mcp.json", "/mcpServers/gavin/command"),
             ("gemini", ".agents/mcp_config.json", "/mcpServers/gavin/command"),
@@ -6762,6 +7395,21 @@ mod tests {
             )
             .unwrap();
             let committed = std::fs::read_to_string(repo.join(rel)).unwrap();
+            // Playwright Install lands its entry beside gavin's. This
+            // checkout commits both in `.mcp.json` / `.cursor/mcp.json`;
+            // pin that second write so equality still means "what the
+            // writers produce", not "setup alone wiped the browser row".
+            if committed.contains("\"playwright\"") {
+                write_mcp_server(
+                    &LocalFiles,
+                    &fresh,
+                    mcp.format,
+                    "playwright",
+                    MCP_LAUNCHER,
+                    &["playwright"],
+                )
+                .unwrap();
+            }
             assert_eq!(
                 std::fs::read_to_string(&fresh).unwrap(),
                 committed,
@@ -6791,6 +7439,149 @@ mod tests {
         assert!(!mcp_entry_present(dir.path(), None), "and it is gone");
     }
 
+    /// A committed file symlink must not turn a shared-file edit into a
+    /// write outside the workspace (audit 2026-10-15,
+    /// `workspace-relative-writers-follow-committed-symlinks`).
+    #[cfg(unix)]
+    #[test]
+    fn remove_mcp_entry_refuses_a_symlinked_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        let outside_mcp = outside.path().join(".mcp.json");
+        std::fs::write(
+            &outside_mcp,
+            "{\n  \"mcpServers\": {\n    \"gavin\": { \"command\": \"/bin/gavin-mcp\", \"args\": [] }\n  }\n}\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_mcp, dir.path().join(".mcp.json")).unwrap();
+
+        let err = remove_mcp_entry(dir.path(), None).unwrap_err().to_string();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert!(
+            std::fs::read_to_string(&outside_mcp).unwrap().contains("gavin"),
+            "outside MCP file was edited through the symlink"
+        );
+    }
+
+    /// Setup writers refuse a committed symlink leaf that leads out of
+    /// the workspace, and leave the outside target untouched
+    /// (fingerprint `workspace-relative-writers-follow-committed-symlinks`).
+    #[cfg(unix)]
+    #[test]
+    fn setup_writers_refuse_symlinked_leaves_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+
+        let outside_bashrc = outside.path().join("bashrc");
+        std::fs::write(&outside_bashrc, "export PATH=/bin\n").unwrap();
+        std::os::unix::fs::symlink(&outside_bashrc, dir.path().join("CLAUDE.md")).unwrap();
+
+        let outside_mcp = outside.path().join("global.json");
+        std::fs::write(&outside_mcp, "{\"theme\":\"dark\"}\n").unwrap();
+        std::os::unix::fs::symlink(&outside_mcp, dir.path().join(".mcp.json")).unwrap();
+
+        let outside_claude = outside.path().join("fakeclaude");
+        std::fs::create_dir_all(&outside_claude).unwrap();
+        std::fs::write(outside_claude.join("note.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(&outside_claude, dir.path().join(".claude")).unwrap();
+
+        let err = run_integration(
+            &LocalFiles,
+            dir.path(),
+            fake_binary(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "expected containment refusal, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_bashrc).unwrap(),
+            "export PATH=/bin\n",
+            "instructions write followed the CLAUDE.md symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_mcp).unwrap(),
+            "{\"theme\":\"dark\"}\n",
+            "MCP write followed the .mcp.json symlink"
+        );
+        assert!(
+            !outside_claude.join("skills").exists(),
+            "skill write followed the .claude directory symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside_claude.join("note.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    /// An in-root alias (CLAUDE.md -> AGENTS.md) is allowed: the write
+    /// lands on the resolved path still inside the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn setup_allows_an_in_root_symlink_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(dir.path().join("AGENTS.md"), "# agents\n").unwrap();
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+
+        run_integration(
+            &LocalFiles,
+            dir.path(),
+            fake_binary(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let agents = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            agents.contains("gavin:start"),
+            "in-root alias should receive the marker block: {agents}"
+        );
+        // The symlink leaf itself is untouched as a link.
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("CLAUDE.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_instructions_block_refuses_a_symlinked_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("CLAUDE.md");
+        std::fs::write(
+            &outside_file,
+            "# Mine\n\n<!-- gavin:start -->\nblah\n<!-- gavin:end -->\n",
+        )
+        .unwrap();
+        let link = dir.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let err = remove_instructions_block(&link).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            std::fs::read_to_string(&outside_file).unwrap().contains("gavin:start"),
+            "outside instructions file was edited through the symlink"
+        );
+    }
+
     /// The delete flow resolves the profile the write path used: a
     /// custom-profile root's entry lives in its `[agent] mcp_file`, and
     /// removing it must edit THAT file -- resolving claude-code here
@@ -6800,7 +7591,7 @@ mod tests {
     fn entry_present_and_remove_follow_the_custom_roots_own_config() {
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n");
-        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(dir.path().join("agent.json").is_file());
 
         assert!(mcp_entry_present(dir.path(), None), "the custom config's entry is gavin's");
@@ -6818,7 +7609,7 @@ mod tests {
     fn a_profile_less_root_integrates_the_app_default_agent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
-        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, Some("codex")).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None, Some("codex"), None).unwrap();
         assert!(dir.path().join("AGENTS.md").is_file(), "the default agent's file, not claude's");
         assert!(!dir.path().join("CLAUDE.md").exists());
         assert!(result.written.iter().any(|w| w.contains(".codex/config.toml")), "{:?}", result.written);
@@ -6827,10 +7618,10 @@ mod tests {
         // configured is claude-code, as before the setting existed.
         let other = tempfile::tempdir().unwrap();
         rooted_with_profile(other.path(), "claude-code");
-        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, Some("codex")).unwrap();
+        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None, Some("codex"), None).unwrap();
         assert!(other.path().join("CLAUDE.md").is_file(), "config.toml's profile wins");
         let plain = tempfile::tempdir().unwrap();
-        run_integration(&LocalFiles, plain.path(), fake_binary(), None, None, None, None).unwrap();
+        run_integration(&LocalFiles, plain.path(), fake_binary(), None, None, None, None, None).unwrap();
         assert!(plain.path().join("CLAUDE.md").is_file(), "no default configured is claude-code");
     }
 
@@ -7039,6 +7830,51 @@ mod tests {
         // silent "nothing foreign here".
         std::fs::write(&codex_path, "[[[not toml").unwrap();
         assert!(foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex"), "/apps/gavin-mcp").is_err());
+    }
+
+    /// The read-only launch scan for Cursor's projectRoot (cwd) reuses
+    /// `foreign_mcp_servers` on `.cursor/mcp.json`, so Integration and
+    /// `--approve-mcps` composition see the same set.
+    #[test]
+    fn scan_foreign_mcp_servers_reads_cursor_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let cursor_mcp = dir.path().join(".cursor/mcp.json");
+        std::fs::create_dir_all(cursor_mcp.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cursor_mcp,
+            r#"{ "mcpServers": {
+                "gavin": { "command": "/apps/gavin-mcp", "args": [] },
+                "probe": { "command": "/bin/sh", "args": ["-c", "touch /tmp/x"] }
+            } }"#,
+        )
+        .unwrap();
+        let found = scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            dir.path(),
+            Some("cursor"),
+            None,
+            || Ok(PathBuf::from("/apps/gavin-mcp")),
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            vec![ForeignMcpServer {
+                name: "probe".to_string(),
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "touch /tmp/x".to_string()],
+            }]
+        );
+        // Absent file → empty, not an error (nothing to disclose).
+        let empty = tempfile::tempdir().unwrap();
+        assert!(scan_foreign_mcp_servers_in(
+            &LocalFiles,
+            empty.path(),
+            Some("cursor"),
+            None,
+            || Ok(PathBuf::from("/apps/gavin-mcp")),
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]

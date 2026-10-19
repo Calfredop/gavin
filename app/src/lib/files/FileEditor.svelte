@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy, type Snippet } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import DOMPurify from "dompurify";
-  import { renderMarkdown } from "$lib/files/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { sanitizeMarkdown } from "$lib/files/sanitizeMarkdown";
+  import { markdownLinkClick } from "$lib/files/markdownLinks";
   import {
     canEdit,
     classifyExternalRead,
@@ -127,8 +128,15 @@
   const rendered = $derived.by(() => {
     if (error !== null || effectiveMode !== "formatted") return "";
     // Renders the BUFFER, so preview reflects unsaved edits.
-    return DOMPurify.sanitize(renderMarkdown(buffer));
+    return sanitizeMarkdown(buffer);
   });
+
+  // Repository markdown must not navigate the gavin window. Only http(s)
+  // leaves, through the system browser (ADR 0005).
+  function followMarkdownLink(event: MouseEvent): void {
+    const href = markdownLinkClick(event);
+    if (href) void openUrl(href).catch(() => {});
+  }
 
   export function measure(): void {
     editor?.measure();
@@ -455,7 +463,15 @@
       <div class="notice">This file doesn't exist yet — saving will create it.</div>
     {/if}
     {#if effectiveMode === "formatted"}
-      <div class="markdown"><div class="prose">{@html rendered}</div></div>
+      <div class="markdown">
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
+        <div
+          class="prose"
+          role="presentation"
+          onclick={followMarkdownLink}
+          onauxclick={followMarkdownLink}
+        >{@html rendered}</div>
+      </div>
     {:else if loaded}
       <div class="editor">
         <CodeMirrorView

@@ -27,7 +27,7 @@ import {
   type PairingStart,
 } from "$shell/core/core";
 import { errorCode, readiness, refusalText, type Refusal } from "$shell/keys/deviceKeys";
-import type { DeviceKeysPlugin } from "$shell/native/deviceKeys";
+import type { DeviceKeysPlugin, KeyBacking } from "$shell/native/deviceKeys";
 import { RelayLegError, dialTimeout, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
 import { DIRECT_ADMISSION_REFUSED_PAIRING, directPortAsRelay, relayIsDirectPort } from "$shell/connection/paths";
 
@@ -103,6 +103,7 @@ export async function pair(qr: string, deps: PairingDeps): Promise<PairingOutcom
           qr,
           noisePrivateKey: keys.noisePrivateKey,
           hardwareKey: keys.hardwareKey,
+          keyKind: keys.keyKind,
           deviceName: deps.deviceName,
           entropy,
         })
@@ -179,7 +180,14 @@ function checkAborted(signal: AbortSignal | undefined): void {
 
 interface ReadKeys {
   hardwareKey: string;
+  keyKind: "hardware" | "software-debug";
   noisePrivateKey: string;
+}
+
+/// Collapses the shell's backing to the two kinds the daemon stores
+/// (`hardware` | `software-debug`, 06 §5.7).
+export function keyKindFor(backing: KeyBacking): "hardware" | "software-debug" {
+  return backing === "software-debug" ? "software-debug" : "hardware";
 }
 
 /// The Device's keys: made on the first pairing, and the same for every
@@ -191,7 +199,11 @@ async function deviceKeys(keys: PairingKeys): Promise<ReadKeys> {
     if (!ready.ready) throw failed(refusalText(ready.refusal));
     const made = status.keys ? await keys.publicKeys() : await keys.createKeys();
     const { privateKey } = await keys.noiseKey();
-    return { hardwareKey: made.hardwareKey, noisePrivateKey: privateKey };
+    return {
+      hardwareKey: made.hardwareKey,
+      keyKind: keyKindFor(made.backing),
+      noisePrivateKey: privateKey,
+    };
   } catch (e) {
     if (e instanceof Stop) throw e;
     const code = errorCode(e);

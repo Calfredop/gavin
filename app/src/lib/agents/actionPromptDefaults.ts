@@ -84,6 +84,7 @@ export const DEFAULT_ORGANIZE =
   "over a longer one, and give each rail that must run at the same time its own isolation — create\n" +
   "the worktree and the branch yourself with git, then send worktreePath and branch on the rail.\n" +
   "An unbound rail is not isolated, and a worktreePath nothing created is a stalled rail.\n\n" +
+  "{{worktree_setup_block}}\n\n" +
   "{{read_first}}\n" +
   "{{carry_through}}";
 
@@ -95,6 +96,7 @@ export const DEFAULT_REORGANIZE =
   "Reorganize this rail's stages: reorder them, split a stage whose steps would collide in one\n" +
   "checkout, merge stages that are genuinely independent. Keep the steps it already holds — this\n" +
   "is not the place to add or drop work — and send every OTHER rail back exactly as you read it.\n\n" +
+  "{{worktree_setup_block}}\n\n" +
   "{{read_first}}\n" +
   "{{carry_through}}";
 
@@ -151,9 +153,9 @@ export const DEFAULT_CODE_REVIEW =
   "{{name_tab_first}}\n\n" +
   "Review {{subject}} against `{{base}}`. Change nothing: this is a review, and the " +
   "cards you file are its whole output.\n\n" +
-  "First read `{{rules_path}}`. It is this workspace's review rules, and where it says " +
-  "something your own habits do not, it wins. If it is not there, review by your own " +
-  "judgement and do not create it.\n" +
+  "First read `{{rules_path}}` if it is there. It holds this repository's review " +
+  "suggestions — follow them where they do not conflict with this review's own " +
+  "instructions. If the file is missing, review by your own judgement and do not create it.\n" +
   "{{card_read_line}}\n" +
   "Look for correctness bugs first, then reuse and simplification opportunities. Before " +
   "you write a finding down, establish the case that actually breaks: inputs, state, and " +

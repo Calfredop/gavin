@@ -3169,11 +3169,11 @@ impl CommandConnection {
 /// main one does.
 fn open_command_stream(socket: &Path, compat: &DaemonCompat) -> anyhow::Result<Stream> {
     let conn = Mutex::new(connect_for_handshake(socket)?);
-    if compat.daemon_version >= HELLO_MIN_VERSION {
-        if let Some(token) = read_daemon_token() {
-            app_handshake_command(&conn, &token)?;
-        }
+    if compat.daemon_version < SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(DAEMON_TOO_OLD_FOR_CHALLENGE);
     }
+    let token = read_daemon_token().ok_or_else(|| anyhow::anyhow!(MISSING_TOKEN_BESIDE_PEER))?;
+    app_handshake_command(&conn, &token)?;
     Ok(conn.into_inner().expect("command connection mutex poisoned"))
 }
 
@@ -3301,7 +3301,8 @@ fn send_command(conn: &Mutex<Stream>, req: &Request) -> anyhow::Result<Response>
 /// older daemon that never wrote one, or a first launch racing the write
 /// (the connect that spawned the daemon has already returned by the time
 /// this is read, and the token is written before the socket binds, so this
-/// only ever misses against a pre-v35 daemon).
+/// only ever misses against a pre-v35 daemon). An answering peer beside a
+/// missing file is refused (v76): it is not treated as `local`.
 pub(crate) fn read_daemon_token() -> Option<String> {
     std::fs::read_to_string(protocol::daemon_token_path().ok()?)
         .ok()
@@ -3311,8 +3312,8 @@ pub(crate) fn read_daemon_token() -> Option<String> {
 
 /// Check a `HelloAck` the app received: the daemon must have granted the
 /// `app` role and returned a `server_proof` equal to HMAC(token, nonce).
-/// A mismatch is the DP-06 case -- the app connected to something holding
-/// the socket path that does NOT hold the token -- and is a hard error.
+/// Reached only after `verify_challenge_proof` has already authenticated
+/// the peer; a mismatch here is still a hard error.
 pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow::Result<()> {
     match ack {
         Response::HelloAck { role, server_proof, .. } => {
@@ -3332,14 +3333,70 @@ pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow:
     }
 }
 
-/// Send a `Hello` with the daemon token on the command connection and
-/// verify the proof. The command connection has already exchanged the
-/// version probe, which is fine: `Hello` need only be the first *Hello*,
-/// and both real clients probe the version before it.
+/// Check a `ServerProof` the app received before disclosing the token.
+/// A mismatch is the DP-06 case -- the peer does not hold this user's
+/// daemon token -- and is a hard error.
+pub(crate) fn verify_challenge_proof(resp: Response, token: &str, nonce: &str) -> anyhow::Result<()> {
+    match resp {
+        Response::ServerProof { proof } => {
+            let expected = protocol::challenge_proof(token, nonce);
+            if proof != expected {
+                anyhow::bail!(
+                    "the gavin daemon's identity proof did not match — the socket may be held by \
+                     another process; quit gavin and relaunch"
+                );
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("unexpected reply to ServerChallenge: {other:?}"),
+    }
+}
+
+/// Prove the peer holds `token` without disclosing it, then present Hello
+/// on a mutex-held command connection. Every Hello site that owns a
+/// `Mutex<Stream>` goes through here.
 fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
+    prove_daemon(conn, token)?;
     let nonce = protocol::random_hex(16)?;
     let ack = send_command(conn, &app_hello(token, &nonce, protocol::ConnectionKind::Command))?;
     verify_app_ack(ack, token, &nonce)
+}
+
+/// The pre-Hello challenge on a mutex-held connection.
+fn prove_daemon(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    let resp = send_command(conn, &Request::ServerChallenge { nonce: nonce.clone() })?;
+    verify_challenge_proof(resp, token, &nonce)
+}
+
+/// Prove the peer holds `token` without disclosing it, then present Hello
+/// on a bare stream. Every Hello site that owns a `Stream` goes through
+/// here (or through `prove_daemon_on_stream` + `app_hello` when the
+/// surrounding code must interleave its own reads).
+pub(crate) fn prove_and_hello_on_stream(
+    stream: &mut Stream,
+    token: &str,
+    connection: protocol::ConnectionKind,
+) -> anyhow::Result<()> {
+    prove_daemon_on_stream(stream, token)?;
+    let nonce = protocol::random_hex(16)?;
+    write_message(stream, &app_hello(token, &nonce, connection))?;
+    let mut reader = BufReader::with_capacity(1, &mut *stream);
+    let ack = read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
+    verify_app_ack(ack, token, &nonce)
+}
+
+/// The pre-Hello challenge on a bare stream. Call sites that then send
+/// Hello themselves (command-lane redial, forwarding) use this so none
+/// can skip the step.
+pub(crate) fn prove_daemon_on_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    write_message(stream, &Request::ServerChallenge { nonce: nonce.clone() })?;
+    let mut reader = BufReader::with_capacity(1, &mut *stream);
+    let resp = read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the server challenge"))?;
+    verify_challenge_proof(resp, token, &nonce)
 }
 
 /// The `Hello` that presents this app to its daemon on one of its two
@@ -3361,56 +3418,57 @@ pub(crate) fn app_hello(token: &str, nonce: &str, connection: protocol::Connecti
     }
 }
 
-/// Send a `Hello` with the daemon token directly on the streaming
-/// connection and verify the proof. Read with a one-byte reader so no push
-/// that follows the ack is swallowed -- the same hazard the daemon tests'
+/// Send the challenge, then a `Hello` with the daemon token, on the
+/// streaming connection. Read with a one-byte reader so no push that
+/// follows the ack is swallowed -- the same hazard the daemon tests'
 /// `line_reader` guards, though at bootstrap nothing is attached yet.
 fn app_handshake_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
-    let nonce = protocol::random_hex(16)?;
-    write_message(stream, &app_hello(token, &nonce, protocol::ConnectionKind::Push))?;
-    let mut reader = BufReader::with_capacity(1, &mut *stream);
-    let ack = read_message(&mut reader)?
-        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
-    verify_app_ack(ack, token, &nonce)
+    prove_and_hello_on_stream(stream, token, protocol::ConnectionKind::Push)
 }
 
-/// The first daemon version that understands `Hello`.
+/// The first daemon version that understands `Hello`. Kept for history;
+/// the app's local handshake now requires `SERVER_CHALLENGE_MIN_VERSION`.
+#[allow(dead_code)]
 pub(crate) const HELLO_MIN_VERSION: u32 = 35;
 
-/// Present the app's identity on both connections, when the daemon is new
-/// enough to understand `Hello`. Both become `app` so neither is narrowed
-/// if `require_local_token` is ever turned on: the command connection
-/// carries `CreateSession` (privileged, refused to an untokened local
-/// under the switch), and the streaming connection is given the same
-/// identity so it is `app` too rather than relying on the switch never
-/// reaching the requests it carries.
-///
-/// A daemon older than v35, or a missing token file, is not an error: the
-/// app skips the handshake and continues as `local`, which in phase 1 has
-/// today's full reach. A wrong server_proof IS an error -- that is DP-06.
+/// The first daemon version that answers `ServerChallenge` (v76). The
+/// app refuses any local peer below this — there is no fail-open to the
+/// degraded banner or to `local`.
+pub(crate) const SERVER_CHALLENGE_MIN_VERSION: u32 = 76;
+
+const DAEMON_TOO_OLD_FOR_CHALLENGE: &str =
+    "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
+
+const MISSING_TOKEN_BESIDE_PEER: &str =
+    "the gavin daemon answered but no daemon token file was found — restart it (quit gavin, then relaunch)";
+
+/// Present the app's identity on both connections. Both become `app` so
+/// neither is narrowed if `require_local_token` is on. A peer that cannot
+/// answer `ServerChallenge`, or an answering peer with no token file, is
+/// refused — DP-06 has no fail-open.
 fn app_handshake(
     compat: &DaemonCompat,
     command_conn: &Mutex<Stream>,
     stream: &mut Stream,
 ) -> anyhow::Result<()> {
     let Some(token) = read_daemon_token() else {
-        return Ok(());
+        anyhow::bail!(MISSING_TOKEN_BESIDE_PEER);
     };
     app_handshake_with_token(compat, command_conn, stream, &token)
 }
 
 /// The handshake with the token supplied rather than read from this
 /// machine's token file: a link to a daemon on another host presents the
-/// token its bridge read THERE (`remote.rs`). Same gate on the daemon's
-/// version, same proof check, same two connections.
+/// token its bridge read THERE (`remote.rs`). Same challenge, same
+/// refusal below `SERVER_CHALLENGE_MIN_VERSION`, same two connections.
 pub(crate) fn app_handshake_with_token(
     compat: &DaemonCompat,
     command_conn: &Mutex<Stream>,
     stream: &mut Stream,
     token: &str,
 ) -> anyhow::Result<()> {
-    if compat.daemon_version < HELLO_MIN_VERSION {
-        return Ok(());
+    if compat.daemon_version < SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(DAEMON_TOO_OLD_FOR_CHALLENGE);
     }
     app_handshake_command(command_conn, token)?;
     app_handshake_stream(stream, token)?;
@@ -3427,8 +3485,34 @@ pub fn get_require_local_token() -> bool {
 /// Turn `require_local_token` on (write the marker `0600`) or off (remove
 /// it). The Settings "Remote access" surface calls this; the daemon honours
 /// it on the next request with no restart.
+///
+/// A Device's forwarded call must not flip this switch: clearing the
+/// marker would give an untokened local connection back every direct
+/// privileged request, pairing included (sec-fix-invoke-desktop-remote-only).
 #[tauri::command]
-pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
+pub fn set_require_local_token(
+    enabled: bool,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    refuse_forwarded_require_local_token(crate::forwarding::is_forwarded(&request))?;
+    apply_require_local_token(enabled)
+}
+
+/// Refuse a Device's attempt to flip the marker. Pure so the gate is
+/// unit-tested without a Tauri IPC `Request`.
+fn refuse_forwarded_require_local_token(forwarded: bool) -> Result<(), String> {
+    if forwarded {
+        return Err(
+            "gavin: a Device cannot change require_local_token — turn it off from Settings on the desk"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Write or remove the marker file. Separated so tests can exercise the
+/// flip without a Tauri IPC `Request`.
+fn apply_require_local_token(enabled: bool) -> Result<(), String> {
     let path = protocol::require_local_token_path().map_err(|e| e.to_string())?;
     if enabled {
         std::fs::write(&path, b"1").map_err(|e| e.to_string())?;
@@ -3438,6 +3522,17 @@ pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod require_local_token_tests {
+    use super::*;
+
+    #[test]
+    fn a_forwarded_call_cannot_flip_require_local_token() {
+        assert!(refuse_forwarded_require_local_token(true).is_err());
+        assert!(refuse_forwarded_require_local_token(false).is_ok());
+    }
 }
 
 // -- Remote access, phase 2 (v42) -------------------------------------
@@ -3738,9 +3833,10 @@ pub async fn revoke_device(
 }
 
 /// Revoke every device AND rotate the daemon's static key: the one-button
-/// answer to a lost phone. Every phone pinned the old key, so the
-/// rotation invalidates all of them at once even if `devices.sqlite` is
-/// later restored from a backup.
+/// answer to a lost phone while the store is intact. Every phone pinned
+/// the old key, so the rotation invalidates them for as long as the live
+/// `devices.sqlite` holds the new one. The key lives in that same file,
+/// so a restore of a pre-revocation copy undoes both halves.
 #[tauri::command]
 pub async fn revoke_all_devices(
     state: State<'_, CommandConnection>,
@@ -4476,11 +4572,22 @@ mod command_connection_tests {
 mod app_hello_tests {
     use super::*;
 
-    /// Plays the daemon for one `Hello`: reads it, answers with the proof
-    /// the app expects, and hands the `Hello` back.
+    /// Plays the daemon for one handshake: answers the challenge, then
+    /// Hello, and hands the `Hello` back.
     fn take_hello(daemon: Stream, token: &'static str) -> std::thread::JoinHandle<Request> {
         std::thread::spawn(move || {
             let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let challenge: Request = read_message(&mut reader).unwrap().unwrap();
+            let Request::ServerChallenge { nonce: challenge_nonce } = &challenge else {
+                panic!("expected ServerChallenge, got {challenge:?}")
+            };
+            write_message(
+                &mut &daemon,
+                &Response::ServerProof {
+                    proof: protocol::challenge_proof(token, challenge_nonce),
+                },
+            )
+            .unwrap();
             let hello: Request = read_message(&mut reader).unwrap().unwrap();
             let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
             write_message(
@@ -4539,6 +4646,144 @@ mod app_hello_tests {
 
         assert_eq!(connection_of(command_daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
         assert_eq!(connection_of(stream_daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
+    }
+}
+
+/// DP-06 / Windows pipe squat: the app must not accept a peer that cannot
+/// prove it holds the daemon token *before* seeing it, must not fail open
+/// for a pre-challenge daemon, and must not treat a missing token file as
+/// "continue as local" beside an answering peer.
+#[cfg(test)]
+mod server_identity_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// A peer that answers Hello the way a squatter can: HMAC over the
+    /// token and nonce the Hello just disclosed. It never held the token.
+    fn squatter_that_learns_token_from_hello(daemon: Stream) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            while let Ok(Some(req)) = read_message(&mut reader) {
+                match req {
+                    Request::Hello { auth, nonce, .. } => {
+                        let protocol::HelloAuth::DaemonToken { token: disclosed } = auth else {
+                            panic!("squatter expected a DaemonToken Hello, got {auth:?}");
+                        };
+                        write_message(
+                            &mut &daemon,
+                            &Response::HelloAck {
+                                role: "app".to_string(),
+                                daemon_version: protocol::PROTOCOL_VERSION,
+                                session_id: None,
+                                server_proof: Some(protocol::server_proof(&disclosed, &nonce)),
+                                workspace_root: None,
+                            },
+                        )
+                        .unwrap();
+                    }
+                    // After the fix the app challenges first; a squatter
+                    // that never held the token cannot answer. Refuse so
+                    // the handshake fails closed rather than hanging.
+                    other => {
+                        write_message(
+                            &mut &daemon,
+                            &Response::Error {
+                                message: format!("squatter cannot answer {other:?}"),
+                            },
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn a_peer_that_only_learns_the_token_from_hello_cannot_complete_handshake() {
+        let (client, daemon) = Stream::pair().unwrap();
+        let _squatter = squatter_that_learns_token_from_hello(daemon);
+        let err = app_handshake_command(&Mutex::new(client), "real-daemon-token")
+            .expect_err("a squatter that learns the token from Hello must not pass");
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.is_empty(),
+            "handshake must fail with a named error, got empty"
+        );
+    }
+
+    #[test]
+    fn a_daemon_reporting_version_34_is_refused() {
+        let (command, _command_daemon) = Stream::pair().unwrap();
+        let (mut stream, _stream_daemon) = Stream::pair().unwrap();
+        let compat = DaemonCompat {
+            daemon_version: 34,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: true,
+        };
+        let err = app_handshake_with_token(&compat, &Mutex::new(command), &mut stream, "t0k3n")
+            .expect_err("a daemon older than the server challenge must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("restart") || msg.contains("too old"),
+            "refusal must name restart, got: {msg}"
+        );
+    }
+
+    /// Divert `$HOME` so `read_daemon_token` cannot see this machine's
+    /// real token file. Locked because the suite is multi-threaded and
+    /// `app_support_dir` reads the process environment.
+    fn with_empty_token_home<R>(body: impl FnOnce() -> R) -> R {
+        static LOCK: StdMutex<()> = StdMutex::new(());
+        let _guard = LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: held under LOCK; restored before unlock. The suite
+        // otherwise never mutates HOME (protocol's resolve_app_support_dir
+        // comment); this test is the one that must.
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        unsafe {
+            match prev_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_xdg {
+                Some(x) => std::env::set_var("XDG_DATA_HOME", x),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+        match result {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn an_answering_peer_with_no_token_file_is_refused() {
+        with_empty_token_home(|| {
+            assert!(
+                read_daemon_token().is_none(),
+                "temp HOME must not expose a daemon token"
+            );
+            let (command, _command_daemon) = Stream::pair().unwrap();
+            let (mut stream, _stream_daemon) = Stream::pair().unwrap();
+            let compat = DaemonCompat {
+                daemon_version: protocol::PROTOCOL_VERSION,
+                app_version: protocol::PROTOCOL_VERSION,
+                degraded: false,
+            };
+            let err = app_handshake(&compat, &Mutex::new(command), &mut stream)
+                .expect_err("a missing token beside an answering peer must be refused");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("token") || msg.contains("restart"),
+                "refusal must name the token or a restart, got: {msg}"
+            );
+        });
     }
 }
 
@@ -5440,6 +5685,108 @@ impl RelayOwner {
             }
         }
     }
+
+    fn label(&self) -> String {
+        match self {
+            RelayOwner::Local => "local daemon".to_string(),
+            RelayOwner::Remote { host, .. } => format!("ssh host {host}"),
+        }
+    }
+}
+
+/// Whether a `read_message` failure ends the streaming relay. An over-long
+/// line was drained and the stream is back in sync — skip it, keep reading,
+/// the way the command lane does. Every other error is a real loss.
+fn relay_read_is_loss(err: &anyhow::Error) -> bool {
+    !err.is::<protocol::LineTooLong>()
+}
+
+/// Whether `workspace_id` is an ssh workspace whose `ssh.host` equals
+/// `host`. Every push that arrives on an ssh link — tree, orchestration,
+/// tools — must pass this before the desk stores anything under that id.
+/// Without it, a host that learns a LOCAL workspace id can overwrite
+/// that workspace's in-memory rails or tool library (and a first-seen
+/// `railRuns: running` push would tick with no desk click).
+fn host_owns_ssh_workspace(workspaces: &[Workspace], host: &str, workspace_id: &str) -> bool {
+    workspaces
+        .iter()
+        .find(|w| w.id == workspace_id)
+        .and_then(|w| w.ssh.as_ref())
+        .is_some_and(|ssh| ssh.host == host)
+}
+
+/// A tree that arrived from an ssh link: keep it only when `workspace_id`
+/// is one of that host's own ssh workspaces, and drop every path that
+/// sits outside that workspace's `root_path`. Without this, a host can
+/// name a local absolute path as a card id; the desktop then reads it
+/// from its own disk (route falls through to Local) and can send the
+/// bytes back to the host inside an agent prompt.
+///
+/// Applied once where a host tree enters the desktop
+/// (`GavinTreeChanged` on a remote relay, and `get_gavin_tree` for a
+/// remote route), so every later reader of `card.id` only ever sees
+/// paths that `route_for_path` sends back to the same link.
+fn confine_host_tree(
+    workspaces: &[Workspace],
+    host: &str,
+    workspace_id: &str,
+    mut tree: protocol::GavinTree,
+) -> Option<protocol::GavinTree> {
+    if !host_owns_ssh_workspace(workspaces, host, workspace_id) {
+        return None;
+    }
+    let ws = workspaces.iter().find(|w| w.id == workspace_id)?;
+    let root = ws.root_path.as_deref()?;
+    tree.contexts.retain_mut(|ctx| {
+        if !crate::remote::path_is_under(root, &ctx.folder_path) {
+            return false;
+        }
+        ctx.plans.retain(|p| crate::remote::path_is_under(root, &p.path));
+        ctx.docs.retain(|d| crate::remote::path_is_under(root, &d.path));
+        ctx.specs.retain(|s| crate::remote::path_is_under(root, &s.path));
+        true
+    });
+    Some(tree)
+}
+
+/// Whether a workspace-keyed push on this relay may be emitted. Local
+/// pushes are already from this machine's daemon. A remote push may only
+/// describe that link's own ssh workspaces — the same membership test
+/// `confine_host_tree` starts with.
+fn accept_host_workspace_push(
+    owner: &RelayOwner,
+    workspaces: &[Workspace],
+    workspace_id: &str,
+) -> bool {
+    match owner {
+        RelayOwner::Local => true,
+        RelayOwner::Remote { host, .. } => host_owns_ssh_workspace(workspaces, host, workspace_id),
+    }
+}
+
+/// Whether a push read on this relay should be forwarded to the desk's
+/// webviews (and the forwarding connection).
+///
+/// The Remote-access and Devices surfaces answer for the LOCAL daemon
+/// only — a wrong answer there is invisible. An ssh host's streaming
+/// connection still carries session and workspace pushes the desk needs
+/// (`GavinTreeChanged`, `SessionOwnerChanged`, …); the desk-scoped
+/// device and remote-access pushes must not overwrite local state.
+fn forwarded_from(owner: &RelayOwner, resp: &Response) -> bool {
+    match owner {
+        RelayOwner::Local => true,
+        RelayOwner::Remote { .. } => !matches!(
+            resp,
+            Response::DevicePairingRequested { .. }
+                | Response::DeviceConnected { .. }
+                | Response::DeviceDisconnected { .. }
+                | Response::DeviceRefusalChanged { .. }
+                | Response::DevicePresenceChanged { .. }
+                | Response::RelayStateChanged { .. }
+                | Response::DirectStateChanged { .. }
+                | Response::DeskRelayStateChanged { .. }
+        ),
+    }
 }
 
 pub(crate) fn attach_and_relay(
@@ -5489,6 +5836,20 @@ pub(crate) fn attach_and_relay(
         loop {
             let resp: Option<Response> = match read_message(&mut reader) {
                 Ok(r) => r,
+                Err(e) if !relay_read_is_loss(&e) => {
+                    // Drained oversize line: stream is in sync again.
+                    // Skip it; do not tear the lane down into the overlay.
+                    eprintln!(
+                        "gavin: skipped oversize protocol line from {} (board update too large to show)",
+                        owner.label()
+                    );
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "daemon-request-error",
+                        "this board's update was too large to show".to_string(),
+                    );
+                    continue;
+                }
                 Err(e) => {
                     owner.lost(&reader_app_handle, epoch, e.to_string());
                     break;
@@ -5498,6 +5859,11 @@ pub(crate) fn attach_and_relay(
                 owner.lost(&reader_app_handle, epoch, "daemon closed the connection".to_string());
                 break;
             };
+            // Desk-scoped device / remote-access pushes from an ssh host
+            // must not reach Settings or Devices — see `forwarded_from`.
+            if !forwarded_from(&owner, &resp) {
+                continue;
+            }
             match resp {
                 Response::Output { id, data } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "pty-output", (id, data));
@@ -5554,10 +5920,46 @@ pub(crate) fn attach_and_relay(
                     let _ = crate::forwarding::emit(&reader_app_handle, "queued-inputs-changed", (id, queued));
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    // A host may only describe its own ssh workspaces —
+                    // same membership gate as `confine_host_tree`. A
+                    // forged local id would overwrite that workspace's
+                    // rails and tick them with no desk click.
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        let workspaces = reader_app_handle
+                            .state::<WorkspacesState>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .workspaces
+                            .clone();
+                        if !accept_host_workspace_push(&owner, &workspaces, &workspace_id) {
+                            continue;
+                        }
+                    }
                     let _ = crate::forwarding::emit(&reader_app_handle,
                         "orchestration-changed", (workspace_id, orchestration));
                 }
                 Response::GavinTreeChanged { workspace_id, tree } => {
+                    // A host may only describe its own ssh workspaces, and
+                    // only with paths under that workspace's root — see
+                    // `confine_host_tree`. Local trees are already from
+                    // this machine's daemon, so they pass through.
+                    let tree = match &owner {
+                        RelayOwner::Remote { host, .. } => {
+                            let workspaces = reader_app_handle
+                                .state::<WorkspacesState>()
+                                .0
+                                .lock()
+                                .unwrap()
+                                .workspaces
+                                .clone();
+                            match confine_host_tree(&workspaces, host, &workspace_id, tree) {
+                                Some(tree) => tree,
+                                None => continue,
+                            }
+                        }
+                        RelayOwner::Local => tree,
+                    };
                     let _ = crate::forwarding::emit(&reader_app_handle, "gavin-tree-changed", (workspace_id, tree));
                 }
                 Response::ToolsChanged { workspace_id, tools } => {
@@ -5565,6 +5967,20 @@ pub(crate) fn attach_and_relay(
                     // whole library, never a delta, so the frontend
                     // replaces its rows for this workspace the same way
                     // a fetch would -- and cannot drift by missing one.
+                    // A remote push still has to name this host's own
+                    // ssh workspace (see `accept_host_workspace_push`).
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        let workspaces = reader_app_handle
+                            .state::<WorkspacesState>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .workspaces
+                            .clone();
+                        if !accept_host_workspace_push(&owner, &workspaces, &workspace_id) {
+                            continue;
+                        }
+                    }
                     let _ = crate::forwarding::emit(&reader_app_handle, "tools-changed", (workspace_id, tools));
                 }
                 Response::SessionNamed { session_id, name } => {
@@ -5573,19 +5989,20 @@ pub(crate) fn attach_and_relay(
                     // agent rename and a human rename persist identically.
                     let _ = crate::forwarding::emit(&reader_app_handle, "session-named", (session_id, name));
                 }
-                // The three device pushes (v42). Forwarded verbatim, the
-                // way `remote-link-ready`/`remote-link-lost` are: the
-                // Settings section is the only listener, and what it does
-                // with each is its own (`remoteAccess.ts`).
+                // The three device pushes (v42). From RelayOwner::Local
+                // only (`forwarded_from`): the Settings section and
+                // Devices panel answer for THIS machine, and an ssh
+                // host's copies must not overwrite them. What the
+                // section does with each is its own (`remoteAccess.ts`).
                 //
                 // `DevicePairingRequested` is the one that cannot be
-                // dropped. It is the ONLY notice a phone has finished the
-                // handshake and is waiting on the human -- the daemon
-                // pushes it once and keeps nothing to re-read, because
-                // the pending handshake lives in memory until it is
-                // answered or replaced. So it rides the stream
-                // connection, which is the one the app keeps open for its
-                // whole life.
+                // dropped FROM THE LOCAL daemon. It is the ONLY notice a
+                // phone has finished the handshake and is waiting on the
+                // human -- the daemon pushes it once and keeps nothing to
+                // re-read, because the pending handshake lives in memory
+                // until it is answered or replaced. So it rides the
+                // local stream connection, which is the one the app
+                // keeps open for its whole life.
                 Response::DevicePairingRequested { device_id, name, sas } => {
                     let _ = crate::forwarding::emit(&reader_app_handle,
                         "device-pairing-requested", (device_id, name, sas));
@@ -7432,12 +7849,35 @@ pub async fn get_gavin_tree(
     compat: State<'_, DaemonCompatState>,
 ) -> Result<protocol::GavinTree, String> {
     let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let remote_host = match &route {
+        crate::remote::Route::Remote(link) => Some(link.host.clone()),
+        crate::remote::Route::Local => None,
+    };
     let resp = lanes_for(route, &state, &compat)
-        .request(Request::GetGavinTree { workspace_id })
+        .request(Request::GetGavinTree { workspace_id: workspace_id.clone() })
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
+        Response::GavinTreeSnapshot { tree, .. } => match remote_host {
+            // Same confine as the push path: a host-supplied path outside
+            // this ssh root must never become a card id the desktop reads
+            // from its own disk.
+            Some(host) => {
+                let workspaces = app_handle
+                    .state::<WorkspacesState>()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .workspaces
+                    .clone();
+                confine_host_tree(&workspaces, &host, &workspace_id, tree).ok_or_else(|| {
+                    format!(
+                        "refused host tree for workspace {workspace_id}: not an ssh workspace on {host}, or its root is missing"
+                    )
+                })
+            }
+            None => Ok(tree),
+        },
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -8229,6 +8669,62 @@ mod restart_tests {
         assert!(taken.is_ok() && reached, "input stayed refused after the restart");
     }
 
+    /// An over-long line on the streaming connection must not tear it
+    /// down: `read_message` drains past it, and the relay keeps reading
+    /// so a later `Output` still reaches the frontend. Today every
+    /// `read_message` Err becomes `daemon-error` — the whole-window overlay.
+    #[test]
+    fn an_oversize_streaming_line_is_skipped_and_pty_output_still_arrives() {
+        use protocol::MAX_LINE_BYTES;
+        use std::io::Cursor;
+
+        // Decision the relay loop must make: LineTooLong is not a loss.
+        let oversize: anyhow::Error = protocol::LineTooLong.into();
+        assert!(
+            !relay_read_is_loss(&oversize),
+            "a drained oversize line must not end the streaming relay"
+        );
+        assert!(relay_read_is_loss(&anyhow::anyhow!("connection reset")));
+
+        // End-to-end over a fake daemon stream: oversize, then Output.
+        // Exercises the same classify-and-continue path attach_and_relay uses.
+        let mut buf = Vec::new();
+        buf.extend(std::iter::repeat(b'x').take(MAX_LINE_BYTES as usize + 1));
+        buf.push(b'\n');
+        write_message(
+            &mut buf,
+            &Response::Output { id: "s1".into(), data: "hi".into() },
+        )
+        .unwrap();
+
+        let mut reader = Cursor::new(buf);
+        let mut outputs = Vec::new();
+        let mut lost = None::<String>;
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::Output { id, data })) => outputs.push((id, data)),
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    lost = Some("closed".into());
+                    break;
+                }
+                Err(e) if !relay_read_is_loss(&e) => continue,
+                Err(e) => {
+                    lost = Some(e.to_string());
+                    break;
+                }
+            }
+            if !outputs.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            lost.is_none(),
+            "oversize line tore down the streaming read: {lost:?}"
+        );
+        assert_eq!(outputs, vec![("s1".into(), "hi".into())]);
+    }
+
     /// The streaming connection is handshaken under a deadline and then
     /// handed to the relay, which must wait on a quiet daemon for as long
     /// as the app runs: a bound left behind would read an idle stretch as
@@ -8751,6 +9247,306 @@ mod kanban_command_tests {
     }
 }
 
+#[cfg(test)]
+mod forwarded_from_tests {
+    use super::*;
+
+    fn remote() -> RelayOwner {
+        RelayOwner::Remote {
+            host: "host.example".into(),
+            link_id: 1,
+        }
+    }
+
+    fn desk_scoped_pushes() -> Vec<Response> {
+        vec![
+            Response::DevicePairingRequested {
+                device_id: "d-host".into(),
+                name: "x".into(),
+                sas: "000000".into(),
+            },
+            Response::DeviceConnected {
+                device_id: "d-host".into(),
+            },
+            Response::DeviceDisconnected {
+                device_id: "d-host".into(),
+            },
+            Response::DeviceRefusalChanged {
+                device_id: "d-host".into(),
+                refusal: protocol::DeviceRefusal {
+                    reason: protocol::device_wire::ConnectRefusal::Unlock,
+                    at: 1,
+                },
+            },
+            Response::DevicePresenceChanged {
+                device_id: "d-host".into(),
+                presence: protocol::DevicePresence::default(),
+            },
+            Response::RelayStateChanged {
+                state: protocol::RelayState::NotWanted,
+            },
+            Response::DirectStateChanged {
+                state: protocol::DirectState::NotWanted,
+            },
+            Response::DeskRelayStateChanged {
+                state: protocol::DeskRelayState::NotWanted,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_hosts_device_and_remote_access_pushes_are_not_forwarded() {
+        let remote = remote();
+        for resp in desk_scoped_pushes() {
+            assert!(
+                !forwarded_from(&remote, &resp),
+                "Remote must drop desk-scoped push: {resp:?}"
+            );
+            assert!(
+                forwarded_from(&RelayOwner::Local, &resp),
+                "Local must still forward desk-scoped push: {resp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hosts_session_pushes_are_still_forwarded() {
+        let remote = remote();
+        let session_pushes = [
+            Response::GavinTreeChanged {
+                workspace_id: "ws".into(),
+                tree: protocol::GavinTree {
+                    root_path: "/r".into(),
+                    root_missing: false,
+                    contexts: vec![],
+                },
+            },
+            Response::SessionOwnerChanged {
+                ownership: protocol::SessionOwnership {
+                    session_id: "s1".into(),
+                    owner: None,
+                    changed_by: None,
+                    reason: protocol::OwnerChange::Released,
+                    at: 1,
+                },
+            },
+            Response::PtySizeBorrowed {
+                session_id: "s1".into(),
+                device: None,
+            },
+        ];
+        for resp in &session_pushes {
+            assert!(
+                forwarded_from(&remote, resp),
+                "Remote must still forward host session push: {resp:?}"
+            );
+            assert!(
+                forwarded_from(&RelayOwner::Local, resp),
+                "Local must forward session push: {resp:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod confine_host_tree_tests {
+    use super::*;
+    use protocol::{GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo};
+
+    /// Every field but the four required ones defaulted, the way an older
+    /// config.json loads -- so this helper never has to be revisited when
+    /// a field is added to `Workspace`.
+    fn ws(id: &str, root: Option<&str>, host: Option<&str>) -> Workspace {
+        let mut value = serde_json::json!({ "id": id, "name": id, "pages": [], "activePageId": null });
+        if let Some(root) = root {
+            value["rootPath"] = serde_json::json!(root);
+        }
+        if let Some(host) = host {
+            value["ssh"] = serde_json::json!({ "host": host });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn plan(path: &str) -> PlanFileInfo {
+        serde_json::from_value(serde_json::json!({
+            "path": path,
+            "fileName": "x.md",
+            "title": "x",
+            "kind": "plan",
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false,
+        }))
+        .unwrap()
+    }
+
+    fn md(path: &str) -> MdFileInfo {
+        MdFileInfo {
+            path: path.to_string(),
+            rel_path: "x.md".to_string(),
+        }
+    }
+
+    fn ctx(folder: &str, plans: Vec<PlanFileInfo>, docs: Vec<MdFileInfo>, specs: Vec<MdFileInfo>) -> GavinContext {
+        GavinContext {
+            folder_path: folder.to_string(),
+            kind: GavinContextKind::Root,
+            name: "ws".to_string(),
+            plans,
+            docs,
+            specs,
+            has_prd: false,
+            config_warning: false,
+            agent: None,
+            prd: None,
+            outside: false,
+        }
+    }
+
+    fn tree(root: &str, contexts: Vec<GavinContext>) -> GavinTree {
+        GavinTree {
+            root_path: root.to_string(),
+            root_missing: false,
+            contexts,
+        }
+    }
+
+    #[test]
+    fn a_hosts_tree_drops_a_card_outside_its_root() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![ctx(
+                "/srv/repo",
+                vec![
+                    plan("/srv/repo/.gavin-root/plans/a.md"),
+                    plan("/Users/me/local-ws/secret.md"),
+                ],
+                vec![],
+                vec![],
+            )],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        let paths: Vec<_> = confined.contexts[0].plans.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["/srv/repo/.gavin-root/plans/a.md"]);
+    }
+
+    #[test]
+    fn a_hosts_tree_for_another_workspace_is_dropped() {
+        let workspaces = vec![
+            ws("local-ws", Some("/Users/me/local-ws"), None),
+            ws("ssh-ws", Some("/srv/repo"), Some("h")),
+            ws("other-ssh", Some("/srv/other"), Some("other")),
+        ];
+        let incoming = tree("/srv/repo", vec![ctx("/srv/repo", vec![plan("/srv/repo/a.md")], vec![], vec![])]);
+        assert!(
+            confine_host_tree(&workspaces, "h", "local-ws", incoming.clone()).is_none(),
+            "a local workspace id must not accept a host tree"
+        );
+        assert!(
+            confine_host_tree(&workspaces, "h", "other-ssh", incoming).is_none(),
+            "another host's workspace id must not accept this host's tree"
+        );
+    }
+
+    #[test]
+    fn a_hosts_tree_with_a_sibling_prefix_is_dropped() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![ctx(
+                "/srv/repo",
+                vec![plan("/srv/repo2/x.md")],
+                vec![md("/srv/repo2/doc.md")],
+                vec![md("/srv/repo2/spec.md")],
+            )],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        assert!(confined.contexts[0].plans.is_empty());
+        assert!(confined.contexts[0].docs.is_empty());
+        assert!(confined.contexts[0].specs.is_empty());
+    }
+
+    #[test]
+    fn a_hosts_tree_drops_a_context_folder_outside_its_root() {
+        let workspaces = vec![ws("ssh-ws", Some("/srv/repo"), Some("h"))];
+        let incoming = tree(
+            "/srv/repo",
+            vec![
+                ctx("/srv/repo", vec![plan("/srv/repo/.gavin-root/plans/a.md")], vec![], vec![]),
+                ctx(
+                    "/Users/me/local-ws",
+                    vec![plan("/Users/me/local-ws/.gavin-root/plans/b.md")],
+                    vec![],
+                    vec![],
+                ),
+            ],
+        );
+        let confined = confine_host_tree(&workspaces, "h", "ssh-ws", incoming).expect("kept");
+        assert_eq!(confined.contexts.len(), 1);
+        assert_eq!(confined.contexts[0].folder_path, "/srv/repo");
+    }
+
+}
+
+#[cfg(test)]
+mod host_workspace_push_tests {
+    use super::*;
+
+    /// Every field but the four required ones defaulted, the way an older
+    /// config.json loads -- so this helper never has to be revisited when
+    /// a field is added to `Workspace`.
+    fn ws(id: &str, root: Option<&str>, host: Option<&str>) -> Workspace {
+        let mut value = serde_json::json!({ "id": id, "name": id, "pages": [], "activePageId": null });
+        if let Some(root) = root {
+            value["rootPath"] = serde_json::json!(root);
+        }
+        if let Some(host) = host {
+            value["ssh"] = serde_json::json!({ "host": host });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// OrchestrationChanged / ToolsChanged on a remote relay may only
+    /// name this host's own ssh workspaces. A push naming a local
+    /// workspace id (or another host's) must not be emitted; one for
+    /// this host's own ssh workspace must.
+    #[test]
+    fn a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted() {
+        let workspaces = vec![
+            ws("local-ws", Some("/Users/me/local-ws"), None),
+            ws("ssh-ws", Some("/srv/repo"), Some("h")),
+            ws("other-ssh", Some("/srv/other"), Some("other")),
+        ];
+        let remote = RelayOwner::Remote {
+            host: "h".to_string(),
+            link_id: 1,
+        };
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "local-ws"),
+            "a local workspace id must not accept a host orch/tools push"
+        );
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "other-ssh"),
+            "another host's workspace id must not accept this host's push"
+        );
+        assert!(
+            !accept_host_workspace_push(&remote, &workspaces, "missing"),
+            "an unknown workspace id must not accept a host push"
+        );
+        assert!(
+            accept_host_workspace_push(&remote, &workspaces, "ssh-ws"),
+            "this host's own ssh workspace must still emit"
+        );
+        // The local daemon's own pushes are never filtered by host.
+        assert!(accept_host_workspace_push(
+            &RelayOwner::Local,
+            &workspaces,
+            "local-ws"
+        ));
+    }
+}
 #[cfg(test)]
 mod attach_target_tests {
     use super::*;

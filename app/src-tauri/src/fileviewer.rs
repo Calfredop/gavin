@@ -116,19 +116,23 @@ fn extra_context_roots(root: &Path) -> Vec<PathBuf> {
 /// Resolves an absolute path for containment even when it (or some
 /// ancestor of it) does not exist yet -- `write_file_for_editor` creates
 /// missing parent directories on save, and a PRD/agent-file tab opens
-/// before its file does. Walks up to the nearest EXISTING ancestor,
-/// canonicalizes it (so a symlinked directory anywhere in the existing
-/// prefix is caught exactly the way `resolve_existing` catches one for
-/// the six guarded explorer commands below), then reattaches the still-
-/// missing suffix unresolved -- there is nothing on disk yet for a
-/// symlink to be.
+/// before its file does. Walks up to the nearest existing directory
+/// entry, canonicalizes it (so a symlinked directory anywhere in the
+/// existing prefix is caught exactly the way `resolve_existing` catches
+/// one for the six guarded explorer commands below), then reattaches
+/// the still-missing suffix unresolved.
+///
+/// Existence is from `symlink_metadata`, not `exists()`: a dangling
+/// symlink leaf would otherwise look missing, get reattached under the
+/// root, and then `fs::write` would create the target outside (same
+/// invariant as the daemon's `resolve_for_containment`).
 fn resolve_for_containment(path: &str) -> Result<PathBuf, String> {
     let mut existing = Path::new(path);
     if !existing.is_absolute() {
         return Err(format!("{path} is not an absolute path"));
     }
     let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
-    while !existing.exists() {
+    while existing.symlink_metadata().is_err() {
         let name = existing.file_name().ok_or_else(|| format!("{path} could not be resolved"))?;
         suffix.push(name);
         existing = existing.parent().ok_or_else(|| format!("{path} could not be resolved"))?;
@@ -303,7 +307,10 @@ fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) ->
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&resolved, content).map_err(|e| e.to_string())
+    // O_NOFOLLOW (unix) / symlink-leaf refuse (elsewhere): a link swapped
+    // in after containment cannot redirect the write. Same seam as the
+    // daemon's WriteWorkspaceFile and LocalFiles writers.
+    crate::agent_setup::nofollow_write(&resolved, content.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Resolves a path-shaped candidate string from terminal output against
@@ -1123,18 +1130,119 @@ fn trash_entry_impl(root: &str, path: &str) -> Result<(), String> {
 // workspace and `read_file_for_viewer` would then refuse it; now the
 // external-open half refuses it too, which is the coherent direction:
 // the boundary is the same one, named once.
+//
+// Containment alone is not enough: a cloned repository is an open
+// workspace, and it can ship a `.command`, an `.app` bundle, or a
+// mode-755 extensionless file under a viewable-looking name (or behind
+// a symlink whose chip still reads as markdown). `launch_refusal`
+// refuses those on the resolved target before `/usr/bin/open` runs.
+// Plain folders stay allowed -- sidebar and file-tree "open in Finder"
+// depend on that. An extensionless file with no execute bit (README,
+// LICENSE, Makefile) stays allowed too.
+
+/// Extensions whose default handler runs the file as a program, opens a
+/// location/URL document the OS treats as navigation, or installs /
+/// launches a bundle. Checked on the resolved path so a symlink named
+/// `spec.md` that points at `hello.command` is refused as a command
+/// file, not opened as markdown. A plain directory without one of these
+/// extensions is not in the list -- opening a folder in Finder is
+/// intentional.
+const LAUNCH_HANDLER_EXTENSIONS: &[&str] = &[
+    // macOS launch / install / script / location handlers
+    "app",
+    "command",
+    "tool",
+    "terminal",
+    "webloc",
+    "fileloc",
+    "inetloc",
+    "workflow",
+    "scpt",
+    "scptd",
+    "applescript",
+    "pkg",
+    "mpkg",
+    "dmg",
+    "action",
+    "prefpane",
+    "saver",
+    // Windows launch / install / script / shortcut handlers
+    "exe",
+    "bat",
+    "cmd",
+    "com",
+    "ps1",
+    "vbs",
+    "js",
+    "msi",
+    "lnk",
+    "url",
+    "scr",
+];
+
+fn launch_handler_extension(path: &Path) -> Option<&str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    LAUNCH_HANDLER_EXTENSIONS
+        .iter()
+        .copied()
+        .find(|&e| e == ext)
+}
+
+/// Why `open_path_externally` must not hand `resolved` to the OS launcher,
+/// or `None` when the path is safe to open (a plain folder, a non-
+/// executable document, an extensionless README with no execute bit).
+///
+/// Judgement is on the resolved target and its metadata so every caller
+/// -- attachment chip, terminal Cmd+click, file tree, editor -- refuses
+/// the same way. The message names the target and says Reveal in Finder
+/// is the next step; callers already surface the error and the chip /
+/// file tree offer `reveal_path_externally` beside it.
+fn launch_refusal(resolved: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+    let display = resolved.display().to_string();
+    let refuse = |why: &str| -> String {
+        format!(
+            "{display} was not opened because it would run as a program ({why}). Reveal it in Finder instead."
+        )
+    };
+
+    if let Some(ext) = launch_handler_extension(resolved) {
+        if metadata.is_dir() || metadata.is_file() {
+            return Some(refuse(&format!(".{ext} is a launch-handler type")));
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.is_file() {
+            let mode = metadata.permissions().mode();
+            if mode & 0o111 != 0 {
+                return Some(refuse("the file has an execute bit set"));
+            }
+        }
+    }
+
+    None
+}
 
 /// Hands `path` to the OS's default application for it.
 ///
-/// Refuses a path outside every open workspace. The error carries the
-/// path, because every call site of this shows the human a message --
-/// "Couldn't open in Finder", the editor's `openError`, the card's
-/// `errorMessage` -- and a refusal has to read as a refusal rather than
-/// as a click that did nothing.
+/// Refuses a path outside every open workspace, and refuses a resolved
+/// target the OS launcher would run as a program (launch-handler type,
+/// application bundle, or regular file with an execute bit). The error
+/// carries the path, because every call site of this shows the human a
+/// message -- "Couldn't open in Finder", the editor's `openError`, the
+/// card's `errorMessage` -- and a refusal has to read as a refusal rather
+/// than as a click that did nothing.
 #[tauri::command]
 pub fn open_path_externally(path: String, workspaces: State<WorkspacesState>) -> Result<(), String> {
     let roots = allowed_roots(&workspaces.0.lock().unwrap());
     let resolved = ensure_within_open_workspaces(&path, &roots)?;
+    let metadata = std::fs::metadata(&resolved)
+        .map_err(|e| format!("{} could not be opened: {e}", resolved.display()))?;
+    if let Some(err) = launch_refusal(&resolved, &metadata) {
+        return Err(err);
+    }
     tauri_plugin_opener::open_path(&resolved, None::<&str>).map_err(|e| e.to_string())
 }
 
@@ -1759,6 +1867,37 @@ mod tests {
         assert!(!elsewhere.join("new.md").exists());
     }
 
+    /// A dangling symlink leaf must not be treated as a missing file:
+    /// `exists()` is false for one, so the old walk reattached the name
+    /// under the root and `fs::write` created the outside target.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_for_editor_refuses_a_dangling_symlink_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let victim = elsewhere.join("created.txt");
+        assert!(!victim.exists());
+        std::os::unix::fs::symlink(&victim, workspace.join("CLAUDE.md")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        assert!(
+            write_file_for_editor_impl(
+                &workspace.join("CLAUDE.md").to_string_lossy(),
+                "gavin-written-marker\n".to_string(),
+                &roots,
+            )
+            .is_err(),
+            "dangling symlink leaf must be refused"
+        );
+        assert!(
+            !victim.exists(),
+            "dangling target must not be created outside every open workspace"
+        );
+    }
+
     #[test]
     fn resolve_path_under_cursor_refuses_a_path_outside_every_open_workspace_and_the_cwd() {
         let dir = tempfile::tempdir().unwrap();
@@ -2131,5 +2270,72 @@ mod tests {
         // A path that isn't there at all fails to resolve rather than
         // reporting a delete that never happened.
         assert!(trash_entry_impl(&root_s, &root.join("ghost.md").to_string_lossy()).is_err());
+    }
+
+    // ---- open_path_externally must refuse launchables -----------------
+    //
+    // A cloned repository can ship a mode-755 file or a .command under a
+    // viewable-looking name. The opener used to hand those to `/usr/bin/open`
+    // after only checking workspace containment. These cases pin the
+    // refusal on the resolved target, before any opener call.
+
+    #[cfg(unix)]
+    #[test]
+    fn open_externally_refuses_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes");
+        std::fs::write(&notes, "#!/bin/sh\ntouch /tmp/gavin-v03-marker\n").unwrap();
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let meta = std::fs::metadata(&notes).unwrap();
+        let err = launch_refusal(&notes, &meta).expect("mode-755 extensionless must refuse");
+        assert!(err.contains("notes"), "{err}");
+        assert!(err.contains("would run as a program"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_externally_refuses_a_command_file_behind_a_markdown_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = dir.path().join("hello.command");
+        std::fs::write(&command, "#!/bin/sh\ntouch /tmp/gavin-v03-marker\n").unwrap();
+        let link = dir.path().join("spec.md");
+        std::os::unix::fs::symlink(&command, &link).unwrap();
+        // Judgement is on the resolved target, the way open_path_externally
+        // sees the path after canonicalize.
+        let resolved = std::fs::canonicalize(&link).unwrap();
+        let meta = std::fs::metadata(&resolved).unwrap();
+        let err = launch_refusal(&resolved, &meta).expect("symlink to .command must refuse");
+        assert!(err.contains("hello.command"), "{err}");
+        assert!(err.contains("would run as a program"), "{err}");
+        assert!(!err.contains("spec.md"), "{err}");
+    }
+
+    #[test]
+    fn open_externally_refuses_an_app_bundle_but_opens_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("X.app");
+        std::fs::create_dir(&app).unwrap();
+        let folder = dir.path().join("docs");
+        std::fs::create_dir(&folder).unwrap();
+        let pdf = dir.path().join("guide.pdf");
+        std::fs::write(&pdf, "%PDF").unwrap();
+
+        let app_meta = std::fs::metadata(&app).unwrap();
+        let err = launch_refusal(&app, &app_meta).expect(".app bundle must refuse");
+        assert!(err.contains("X.app"), "{err}");
+        assert!(err.contains("would run as a program"), "{err}");
+
+        let folder_meta = std::fs::metadata(&folder).unwrap();
+        assert!(
+            launch_refusal(&folder, &folder_meta).is_none(),
+            "plain folder must stay allowed for Reveal/open in Finder"
+        );
+
+        let pdf_meta = std::fs::metadata(&pdf).unwrap();
+        assert!(
+            launch_refusal(&pdf, &pdf_meta).is_none(),
+            "non-executable .pdf must stay allowed"
+        );
     }
 }

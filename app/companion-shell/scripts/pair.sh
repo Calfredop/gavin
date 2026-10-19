@@ -111,8 +111,9 @@ done
 # property list, and `am start` would split it at its spaces.
 code=$(base64 <"$qr" | tr -d '\n')
 
-# Launches the app, with `$@` as what it is launched with, writing what it
-# logs to the file named first.
+# Launches the app, with `$@` as what it is launched with (iOS launch
+# arguments only), writing what it logs to the file named first. Android
+# script triggers are written via android_debug_request beforehand.
 launch() {
   out=$1
   shift
@@ -126,7 +127,7 @@ launch() {
       "$adb" -s "$target" logcat -c
       "$adb" -s "$target" logcat -v raw -s Capacitor/Console:* GavinShell:* >"$out" 2>&1 &
       watcher=$!
-      "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" "$@" >/dev/null
+      "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" >/dev/null
       ;;
   esac
 }
@@ -135,7 +136,9 @@ if [ "$platform" = android ]; then
   # The Relay is on this Mac's loopback; the emulator's own is its own.
   port=$(node -e 'const u = new URL(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).rendezvous[0]); console.log(u.port)' "$qr")
   "$adb" -s "$target" reverse "tcp:$port" "tcp:$port" >/dev/null
-  launch "$log" --es gavinPairCode "$code"
+  android_debug_clear
+  android_debug_request pair-code "$code"
+  launch "$log"
 else
   launch "$log" -GavinPairCode "$code"
 fi

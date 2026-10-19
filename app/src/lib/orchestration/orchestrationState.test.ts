@@ -84,6 +84,8 @@ vi.mock("$lib/core/layoutState", () => ({
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
   promptExtrasFor: vi.fn((): string[] => []),
+  // Pass-through: these tests are not about the AG-07 Cursor gate.
+  prepareCursorAgentLaunch: vi.fn(async (_ws: string, _root: string, agent: unknown) => agent),
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
   // agent -- and a test that moves one has to move both, or a rail's
@@ -114,6 +116,14 @@ vi.mock("$lib/core/layoutState", () => ({
   // nobody has read. True by default, since almost every fixture here is
   // about scheduling rather than about provenance.
   cardReviewed: vi.fn(() => true),
+  // Organize/Reorganize also read config trust for the worktree-setup
+  // block they put in the prompt. Approved by default.
+  configTrustFor: vi.fn(() => ({
+    trusted: true,
+    keys: { command: "", file: "", setup: [] },
+    hash: "",
+    needsApproval: false,
+  })),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   retainTabOnExit: vi.fn(),
   // tick() reads this through get(), so it has to be a real store.
@@ -218,6 +228,8 @@ vi.mock("$lib/core/gavinState", () => ({
   },
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
+  // Organize/Reorganize read the trusted setup list from this store.
+  worktreeSetups: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
 }));
 // The daemon's own pushes, capturable: initOrchestrationListeners is the
 // third place a plan can arrive, and the only one that needs a real
@@ -362,7 +374,7 @@ import { appDuty } from "$lib/shell/appDuty";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
-import { noPromptReason } from "$lib/cards/cardRun";
+import { noPromptReason, shellQuote } from "$lib/cards/cardRun";
 import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
@@ -954,7 +966,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1"
+      `claude --resume ${shellQuote("conv-1")}`
     );
     // The same conversation id, the new session, and the budget
     // UNTOUCHED: a human's press is not an automatic attempt.
@@ -995,7 +1007,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       { profileId: "claude-code", withoutHeadroom: true }
     );
     expect(isAwaitingFirstSubmit("sess-2")).toBe(true);
@@ -1021,7 +1033,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       "claude-code"
     );
   });
@@ -1735,7 +1747,7 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     await setRailRunAction("ws-1", "r1", "paused", "s1");
     expect(await resumeStep("ws-1", "t1")).toBeNull();
     expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
-      ...pageArgs("claude --resume conv-1")
+      ...pageArgs(`claude --resume ${shellQuote("conv-1")}`)
     );
   });
 });
@@ -4475,6 +4487,14 @@ describe("a rail armed from outside the app (a push carrying run state)", () => 
     await settle();
     expect(backend.getOrchestration).not.toHaveBeenCalled();
   });
+
+  // A remote OrchestrationChanged naming a LOCAL workspace id used to
+  // reach this listener and tick that workspace (observation:
+  // "applies a push under whatever workspace id the payload names").
+  // The refuse is in session.rs now — `accept_host_workspace_push` /
+  // `a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted`
+  // — so a forged id never becomes a Tauri event. This suite cannot
+  // drive the relay; the listener below still trusts whatever arrives.
 });
 
 // ---- What a running step says about itself ---------------------------------

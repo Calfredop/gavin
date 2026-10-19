@@ -1285,7 +1285,10 @@ fn name_session(
 ) -> anyhow::Result<String> {
     let session_id = session_id.ok_or_else(|| anyhow::anyhow!(NOT_IN_A_SESSION))?;
     let name = clean_session_name(raw_name)?;
-    let agent_conversation_id = raw_agent_conversation_id.and_then(|raw| clean_agent_conversation_id(&raw));
+    let agent_conversation_id = match raw_agent_conversation_id.as_deref() {
+        Some(raw) => clean_agent_conversation_id(raw)?,
+        None => None,
+    };
     let resp = transport.request(&Request::NameSession {
         session_id,
         name: name.clone(),
@@ -1299,18 +1302,27 @@ fn name_session(
 }
 
 /// A native CLI session/conversation id, not a display label: trimmed
-/// like `name`, but never whitespace-collapsed or length-capped -- a
-/// codex/gemini/opencode id is an opaque token, not prose a tab bar has
-/// to fit. Empty or whitespace-only is treated as absent rather than an
-/// error, so a caller that ran a discovery command and got nothing back
+/// like `name`. Empty or whitespace-only is treated as absent rather than
+/// an error, so a caller that ran a discovery command and got nothing back
 /// can still pass the empty string without the whole tool call failing.
-fn clean_agent_conversation_id(raw: &str) -> Option<String> {
+///
+/// Anything else must be an opaque token (`[A-Za-z0-9._:-]`, ≤128 bytes):
+/// the same grammar the daemon's NameSession enforces. Defence in depth
+/// for sec-fix-conversation-id-token-grammar — a value that would splice
+/// into a Resume `sh -c` line must never leave this process.
+fn clean_agent_conversation_id(raw: &str) -> anyhow::Result<Option<String>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+        return Ok(None);
     }
+    let ok = trimmed.len() <= 128
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'));
+    if !ok {
+        anyhow::bail!("agent_conversation_id must be your CLI's opaque session id");
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Whether this card is DRAWN INSIDE another's: `kind: task`, a
@@ -4672,6 +4684,37 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// Defence in depth for sec-fix-conversation-id-token-grammar: an
+    /// agent-supplied id that would splice into `sh -c` must never leave
+    /// this process. The daemon also rejects; this is the first gate.
+    #[test]
+    fn a_malicious_agent_conversation_id_is_refused_without_calling_the_daemon() {
+        let mut t = mock(vec![]);
+        let err = name_session(
+            "codex run",
+            Some("u1; touch /tmp/pwned".into()),
+            Some("s-1".into()),
+            &mut t,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("opaque session id") || err.to_string().contains("agent_conversation_id"));
+        assert!(t.requests.is_empty());
+    }
+
+    #[test]
+    fn an_oversized_agent_conversation_id_is_refused() {
+        let mut t = mock(vec![]);
+        let err = name_session(
+            "codex run",
+            Some("a".repeat(129)),
+            Some("s-1".into()),
+            &mut t,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("agent_conversation_id") || err.to_string().contains("opaque"));
+        assert!(t.requests.is_empty());
     }
 
     #[test]

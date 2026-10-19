@@ -353,6 +353,17 @@ export function relaunchNote(path: string): string {
   );
 }
 
+/// Strip a `relaunchNote` an earlier re-launch appended, leaving the
+/// command buildRunCommand wrote. Shared by withRelaunchNote (so a second
+/// re-launch replaces rather than stacks) and isGavinBuiltCommand (so a
+/// stored command that already carries the note still counts as one
+/// gavin built).
+function baseWithoutRelaunchNote(command: string): string {
+  if (!command.endsWith("'")) return command;
+  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
+  return earlier === -1 ? command : command.slice(0, earlier);
+}
+
 /// A remembered launch command with `relaunchNote` appended to its
 /// prompt.
 ///
@@ -368,9 +379,61 @@ export function relaunchNote(path: string): string {
 /// replaced, not kept, because the card may have moved since.
 export function withRelaunchNote(command: string | null, path: string): string | null {
   if (!command?.endsWith("'")) return command;
-  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
-  const base = earlier === -1 ? command : command.slice(0, earlier);
-  return base + shellQuote(relaunchNote(path));
+  return baseWithoutRelaunchNote(command) + shellQuote(relaunchNote(path));
+}
+
+/// Whether `s` is exactly one shell-quoted token as shellQuote writes it:
+/// a leading `'`, a trailing `'`, and interior apostrophes only as `'\''`.
+/// Anything after the closing quote, or a bare `'` in the middle, fails.
+function isShellQuotedToken(s: string): boolean {
+  if (s.length < 2 || s[0] !== "'" || s[s.length - 1] !== "'") return false;
+  let i = 1;
+  while (i < s.length - 1) {
+    if (s[i] === "'") {
+      if (s.slice(i, i + 4) !== "'\\''") return false;
+      i += 4;
+    } else {
+      i += 1;
+    }
+  }
+  return true;
+}
+
+/// The sentence Re-launch answers with when the binding's command is not
+/// one buildRunCommand could have written for the card's agent. Link and
+/// Claim can store an arbitrary string; replaying it would run that
+/// string as the user. Launch as new session composes a fresh command
+/// from the card instead.
+export const FOREIGN_RELAUNCH_COMMAND =
+  "the remembered command was not one gavin built — use Launch as new session instead";
+
+/// Whether `command` is one buildRunCommand could have written for this
+/// agent: the card's launchCommand, optionally the profile's session-id
+/// argv and an id, then promptArgs and a single shell-quoted prompt. A
+/// prior re-launch's note is stripped first, so a stored command that
+/// already carries it still matches. Anything else — `sh -c '…'`, a
+/// different binary, trailing junk after the prompt — is refused.
+export function isGavinBuiltCommand(
+  command: string,
+  agent: { launchCommand: string; promptArgs: string | null; sessionIdArgs: string }
+): boolean {
+  if (agent.promptArgs === null) return false;
+  const cmd = baseWithoutRelaunchNote(command);
+  if (!cmd.startsWith(agent.launchCommand)) return false;
+  let rest = cmd.slice(agent.launchCommand.length);
+  const args = agent.sessionIdArgs.trim();
+  if (args) {
+    const marker = ` ${args} `;
+    if (rest.startsWith(marker)) {
+      const after = rest.slice(marker.length);
+      const sp = after.indexOf(" ");
+      if (sp <= 0) return false;
+      rest = after.slice(sp);
+    }
+  }
+  const prefix = ` ${agent.promptArgs}`;
+  if (!rest.startsWith(prefix)) return false;
+  return isShellQuotedToken(rest.slice(prefix.length));
 }
 
 /// Drop a relaunch note an earlier re-launch appended, leaving the original
@@ -486,6 +549,12 @@ export function rebindRunCommand(
 /// everywhere else -- a profile with no `TokenLog`, a CLI pointed at
 /// another config dir, the check itself failing -- the CLI is the one
 /// that answers, which is what it always did.
+/// Opaque conversation-id token an agent may self-report, and that a
+/// Resume line may splice in. Matches the daemon/MCP NameSession grammar
+/// (sec-fix-conversation-id-token-grammar): only these characters, at
+/// most 128 bytes, so a stored value cannot change a `sh -c` line's shape.
+const CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
 export function buildResumeCommand(
   agentCommand: string,
   resumeArgs: string,
@@ -493,9 +562,11 @@ export function buildResumeCommand(
   log: ConversationLog = "unknown"
 ): string | null {
   const args = resumeArgs.trim();
-  if (!args || !conversationId?.trim()) return null;
+  const id = conversationId?.trim() ?? "";
+  if (!args || !id) return null;
+  if (!CONVERSATION_ID.test(id)) return null;
   if (log === "missing") return null;
-  return `${agentCommand} ${args} ${conversationId.trim()}`;
+  return `${agentCommand} ${args} ${shellQuote(id)}`;
 }
 
 /// Whether the conversation a binding recorded is still on this machine

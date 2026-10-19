@@ -35,6 +35,9 @@ function scriptedCore(
 } {
   const started: Array<Record<string, unknown>> = [];
   const exchange: CoreExchange = {
+    bundleCheck: () => {
+      throw new Error("no bundle here");
+    },
     bundleOpen: () => {
       throw new Error("no bundle here");
     },
@@ -181,6 +184,7 @@ describe("pairing a phone with a Workstation", () => {
         qr: "the-qr",
         noisePrivateKey: "11".repeat(32),
         hardwareKey: `04${"66".repeat(64)}`,
+        keyKind: "hardware",
         deviceName: "iPhone",
         entropy: expect.any(Uint8Array),
       },

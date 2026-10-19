@@ -226,3 +226,18 @@ describe("publicKeysProblem", () => {
     );
   });
 });
+
+/// Script-only debug triggers must not come from Intent extras on the
+/// exported launcher: any co-installed app can start MainActivity with
+/// those extras. The seam reads private files only (DebugLaunch).
+describe("MainActivity debug launch", () => {
+  it("does not honour gavin* Intent extras", () => {
+    const sources = import.meta.glob(
+      ["../../../android/app/src/main/java/com/gavin/companion/MainActivity.java"],
+      { query: "?raw", import: "default", eager: true }
+    ) as Record<string, string>;
+    expect(Object.keys(sources)).toHaveLength(1);
+    const source = Object.values(sources)[0];
+    expect(source).not.toMatch(/getIntent\(\)\s*\.\s*get\w*Extra\s*\(\s*"gavin/);
+  });
+});

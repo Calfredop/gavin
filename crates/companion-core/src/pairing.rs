@@ -191,6 +191,9 @@ pub struct PairingClient {
     inbox: Inbox,
     workstation_key: Vec<u8>,
     hardware_key: Vec<u8>,
+    /// `None` when an older shell omitted the field: the proof then
+    /// omits it too, and the trust-store row holds NULL.
+    key_kind: Option<protocol::device_wire::KeyKind>,
     name: String,
     /// The six digits, known once the handshake is done and shown once
     /// the Workstation has taken the proof.
@@ -211,6 +214,26 @@ impl PairingClient {
         offer: &PairingQr,
         keys: &DeviceKeys,
         hardware_key: &[u8],
+        device_name: &str,
+        entropy: Entropy,
+    ) -> Result<(Self, Vec<u8>), CoreError> {
+        Self::start_with_kind(
+            offer,
+            keys,
+            hardware_key,
+            Some(protocol::device_wire::KeyKind::Hardware),
+            device_name,
+            entropy,
+        )
+    }
+
+    /// `start`, naming what backs the hardware key (06 §5.7). `None`
+    /// omits the field on the wire (an older shell).
+    pub fn start_with_kind(
+        offer: &PairingQr,
+        keys: &DeviceKeys,
+        hardware_key: &[u8],
+        key_kind: Option<protocol::device_wire::KeyKind>,
         device_name: &str,
         entropy: Entropy,
     ) -> Result<(Self, Vec<u8>), CoreError> {
@@ -249,6 +272,7 @@ impl PairingClient {
             inbox: Inbox::default(),
             workstation_key,
             hardware_key,
+            key_kind,
             name: bounded_name(device_name),
             sas: None,
         };
@@ -265,6 +289,7 @@ impl PairingClient {
         let proof = UnlockProof {
             signature: protocol::hex_encode(signature),
             hardware_key: Some(protocol::hex_encode(&self.hardware_key)),
+            key_kind: self.key_kind,
         };
         self.prove_with(&proof.to_bytes())
     }
@@ -623,6 +648,7 @@ mod tests {
             UnlockProof {
                 signature: protocol::hex_encode(SIGNATURE),
                 hardware_key: Some(protocol::hex_encode(&hardware_key())),
+                key_kind: Some(protocol::device_wire::KeyKind::Hardware),
             }
         );
     }

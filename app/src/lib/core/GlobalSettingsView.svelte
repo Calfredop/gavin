@@ -1725,9 +1725,10 @@
       </span>
       <p class="hint">
         Off by default, so nothing changes today. On, a same-user program that connects without
-        the app's token can still read the board and your sessions, but cannot start a shell,
-        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
-        tools you do not trust as your own user.
+        the app's token can still read the board, list sessions, and read daemon status, but
+        cannot start a shell or agent, type into or read a session, read or list files, store or
+        start a launch, tool or rail, stop the daemon, or change remote access. Turn it on only
+        if you run tools you do not trust as your own user.
         {#if clientIdentityBlocked}
           <span class="warn">{clientIdentityBlocked}</span>
         {/if}

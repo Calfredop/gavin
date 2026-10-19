@@ -315,9 +315,15 @@ without warning** is gavin's — it chose to merge silently rather than surface
 
 Gavin's *own* writes cannot be redirected: stock profiles use fixed relative
 paths; a `custom` profile's `mcp_file` is validated by `usable_mcp_path`
-(`agent_setup.rs:137`), which rejects absolute paths and `..` (test `:2137`). A
-symlinked `.gemini/` etc. would let the OS redirect the write, but that is an A1
-prerequisite (the attacker already writing the repo), not an A2 escalation.
+(`agent_setup.rs:137`), which rejects absolute paths and `..` (test `:2137`).
+The relative launcher `scripts/gavin-mcp` is named only when this machine holds
+a human-recorded mark for the root (app data dir, digest of the launcher file)
+— never because the repository merely ships `crates/gavin-mcp/Cargo.toml` and
+the script. A symlinked `.gemini/` (or `CLAUDE.md`, `.mcp.json`, `.gitignore`,
+…) that leads out of the workspace is refused by `contained_dest` before the
+write: a committed symlink is cloned-repo content (A2), not an A1 prerequisite,
+and git materialises it on clone with no same-user process involved. The leaf
+is then opened with `O_NOFOLLOW` so a swap after the check still fails.
 
 **Reproduction (yes, existing test).** `agent_setup.rs:2444-2452` writes
 `{"mcpServers":{"other":{"command":"/bin/other"},"gavin":{"command":"/old"}}}`,
@@ -342,6 +348,17 @@ over an existing record, and never for an ssh workspace, whose home is the host'
 The run reports the path it wrote. Kimi does not inherit trust to subdirectories,
 so worktrees are not covered by it.
 
+**Update 2026-10-16 — Cursor's `--approve-mcps` follows the same disclosure.**
+The Cursor profile's static launch line no longer carries `--approve-mcps` (or
+bare `--force` on the headless line, which also skips MCP approval). Those
+flags are composed at `resolveAgentConfig` only when the foreign set in the
+launch cwd's `.cursor/mcp.json` is empty or the human answered Keep for exactly
+that hash (`cursorMcpApproval` / `prepareCursorAgentLaunch`). Otherwise an
+interactive launch goes out without the flag so Cursor's own dialog asks, and
+a headless or unattended launch refuses with a disclosure reason rather than
+stalling or silently approving. `--trust` stays on the row: workspace trust
+alone does not skip MCP approval (Cursor CLI 2026.10.16).
+
 **Update 2026-10-12 — launches, worktrees included, get their own record.** Since
 kimi keys the record on the exact cwd, a launch in a context folder below the root
 or in a `.gavin-worktrees/<branch>` checkout is untrusted even when the root is
@@ -358,7 +375,9 @@ Integration grant's rules:
   the root. The one exception is a gavin worktree's own root. A worktree is its own
   git work tree, so kimi reads its committed `.mcp.json`. That file is vetted by
   the root's rule instead of being refused.
-- The root's files, and the worktree's, may declare nothing but gavin's own entries.
+- The root's files, and the worktree's, may declare nothing but gavin's own entries
+  (recognised by the absolute `gavin-mcp` they run and its args, never by the key
+  name `gavin` alone -- a repository can commit any command under that name).
   An unreadable file withholds.
 - It never writes over an existing record, follows `KIMI_CODE_HOME`, and writes
   owner-only.
@@ -455,6 +474,19 @@ pass 01.
 level, but the presence of `GAVIN_SESSION_ID` should not be mistaken for
 identity: it is a hint, and the report on the MCP should not lean on it as a
 scope.
+
+---
+
+### Accepted residual — agent headless browser CDP (2026-10-19)
+
+An agent session's headless browser listens on a loopback DevTools port with no
+secret for the browser's lifetime. Any process on the machine that can open
+loopback TCP can attach to it. Gavin accepts this on single-user machines
+(AD-1); on a host with other OS accounts, those accounts can drive the agent's
+browser. The proxy secret is visible in the process table, so on Linux without
+hidepid any local account can read it. Multi-account hosts remain out of scope
+per `00-threat-model.md` ("another uid or root on the same host"); the
+secret-gated CDP proxy still gates the legitimate Playwright MCP path.
 
 ---
 

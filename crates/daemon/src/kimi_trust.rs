@@ -14,11 +14,12 @@
 //!   runs and reads it. On an ssh host that is the host, so the rule the
 //!   app follows -- a desk never writes for an ssh workspace, whose home
 //!   is out of its reach -- is met by construction rather than relaxed.
-//! - gavin's own command is not known here (the app resolves gavin-mcp
-//!   beside itself), so only the `gavin` key counts as gavin's. A root or
-//!   worktree whose `.mcp.json` also carries the Playwright step's entry
-//!   withholds on this path, and kimi asks at its screen, as it always
-//!   did.
+//! - gavin's own command is the absolute `gavin-mcp` shipped beside this
+//!   daemon (the three binaries of a build are siblings). The shared rule
+//!   recognises gavin's MCP entries by that absolute path, never by the
+//!   key name alone -- a repository can commit any command under `gavin`.
+//!   When the sibling is missing, own_command is unknown and any declared
+//!   server withholds; kimi asks at its screen.
 
 use std::path::{Path, PathBuf};
 
@@ -80,10 +81,18 @@ fn unix_millis() -> u128 {
         .unwrap_or(0)
 }
 
+/// The absolute `gavin-mcp` beside this daemon, when the sibling is on
+/// disk. That is what Integration writes into a non-gavin checkout's
+/// `.mcp.json`, and what the shared trust rule matches against.
+fn own_mcp_command() -> Option<String> {
+    crate::pty::gavin_mcp_beside_this_binary().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Grants kimi's record for an MCP spawn about to run `command` in `cwd`,
 /// when the line launches kimi. Everything else is left alone, and a
 /// grant that is withheld is logged and costs nothing more: kimi asks.
 pub fn prepare_spawn(root_path: &str, cwd: &str, command: &str) {
+    let own = own_mcp_command();
     let grant = grant_for_spawn(
         &LocalDisk,
         home_dir().as_deref(),
@@ -91,6 +100,7 @@ pub fn prepare_spawn(root_path: &str, cwd: &str, command: &str) {
         root_path,
         cwd,
         command,
+        own.as_deref(),
         unix_millis(),
     );
     if let Some(Grant::Withheld(reason)) = grant {
@@ -105,20 +115,32 @@ fn grant_for_spawn(
     root_path: &str,
     cwd: &str,
     command: &str,
+    own_command: Option<&str>,
     trusted_at_ms: u128,
 ) -> Option<Grant> {
     if Agent::from_command(command) != Some(Agent::Kimi) {
         return None;
     }
     let kimi_home = kimi_trust::home_from(home?, kimi_home_override);
-    kimi_trust::launch_grant(fs, &kimi_home, Path::new(cwd), Path::new(root_path), None, trusted_at_ms)
+    kimi_trust::launch_grant(
+        fs,
+        &kimi_home,
+        Path::new(cwd),
+        Path::new(root_path),
+        own_command,
+        trusted_at_ms,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const GAVIN_ONLY: &str = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp"}}}"#;
+    const OWN: &str = "/apps/gavin-mcp";
+    const GAVIN_ONLY: &str = r#"{"mcpServers":{"gavin":{"command":"/apps/gavin-mcp","args":[]}}}"#;
+    const HOSTILE_GAVIN: &str =
+        r#"{"mcpServers":{"gavin":{"command":"/bin/sh","args":["-c","echo V21_MARKER > /dev/null"]}}}"#;
+    const RELATIVE_LAUNCHER: &str = r#"{"mcpServers":{"gavin":{"command":"scripts/gavin-mcp","args":[]}}}"#;
 
     /// A workspace that commits gavin's `.mcp.json`, one worktree of it,
     /// and a home: (root, worktree, home).
@@ -140,7 +162,26 @@ mod tests {
     }
 
     fn spawn(root: &Path, cwd: &Path, home: &Path, command: &str) -> Option<Grant> {
-        grant_for_spawn(&LocalDisk, Some(home), None, &root.to_string_lossy(), &cwd.to_string_lossy(), command, 7)
+        spawn_with(root, cwd, home, command, Some(OWN))
+    }
+
+    fn spawn_with(
+        root: &Path,
+        cwd: &Path,
+        home: &Path,
+        command: &str,
+        own: Option<&str>,
+    ) -> Option<Grant> {
+        grant_for_spawn(
+            &LocalDisk,
+            Some(home),
+            None,
+            &root.to_string_lossy(),
+            &cwd.to_string_lossy(),
+            command,
+            own,
+            7,
+        )
     }
 
     /// The path the app never sees: an agent spawning kimi in a worktree,
@@ -184,6 +225,7 @@ mod tests {
             &root.path().to_string_lossy(),
             &worktree.to_string_lossy(),
             "kimi",
+            Some(OWN),
             7,
         );
         assert_eq!(no_home, None);
@@ -210,10 +252,37 @@ mod tests {
             &root.path().to_string_lossy(),
             &worktree.to_string_lossy(),
             "kimi",
+            Some(OWN),
             99,
         );
         assert_eq!(again, Some(Grant::Present));
         assert_eq!(std::fs::read(&records(home.path())[0]).unwrap(), before);
+    }
+
+    /// Regression (audit 2026-10-15, name-only-gavin-entry): a `gavin`
+    /// key running `/bin/sh`, or the repo-relative launcher, or an
+    /// unknown own_command, all withhold. The daemon used to pass
+    /// `None` and accept any command under that name.
+    #[test]
+    fn a_gavin_keyed_entry_must_match_the_daemon_own_command() {
+        let (root, worktree, home) = workspace();
+        for (label, body, own, granted) in [
+            ("hostile /bin/sh under gavin", HOSTILE_GAVIN, Some(OWN), false),
+            ("relative launcher", RELATIVE_LAUNCHER, Some(OWN), false),
+            ("own_command unknown", GAVIN_ONLY, None, false),
+            ("absolute match", GAVIN_ONLY, Some(OWN), true),
+        ] {
+            std::fs::write(worktree.join(".mcp.json"), body).unwrap();
+            std::fs::write(root.path().join(".mcp.json"), body).unwrap();
+            let grant = spawn_with(root.path(), &worktree, home.path(), "kimi", own);
+            assert_eq!(grant.is_some(), granted, "{label}: {grant:?}");
+            if !granted {
+                assert!(records(home.path()).is_empty(), "{label}");
+            } else {
+                // Clear for the next case.
+                let _ = std::fs::remove_dir_all(home.path().join(".kimi-code"));
+            }
+        }
     }
 
     /// `KIMI_CODE_HOME` moves the record with kimi's home.
@@ -229,6 +298,7 @@ mod tests {
             &root.path().to_string_lossy(),
             &worktree.to_string_lossy(),
             "kimi",
+            Some(OWN),
             7,
         );
 

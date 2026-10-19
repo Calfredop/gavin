@@ -199,9 +199,12 @@ pub fn establish(
     banner: &Banner,
 ) -> anyhow::Result<DaemonCompat> {
     let compat = crate::session::verify_daemon_protocol(command)?;
-    if let Some(token) = banner.daemon_token.as_deref() {
-        crate::session::app_handshake_with_token(&compat, command, stream, token)?;
-    }
+    let token = banner.daemon_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "the host's gavin daemon answered but no daemon token was in the bridge banner — restart it on the host"
+        )
+    })?;
+    crate::session::app_handshake_with_token(&compat, command, stream, token)?;
     Ok(compat)
 }
 
@@ -309,23 +312,24 @@ impl Drop for BridgeProcess {
 }
 
 /// A bridge presented as the app, the way `establish` presents the link's
-/// two: `Hello` with the token the bridge read on the host, its proof
-/// checked. Read a byte at a time, so nothing the daemon sends after the
-/// ack is swallowed. A daemon too old for `Hello`, or one with no token,
-/// is spoken to as `local`, as the link is.
+/// two: challenge, then `Hello` with the token the bridge read on the
+/// host. A host daemon older than the challenge, or one with no token
+/// beside an answering peer, is refused — the host's own endpoint is
+/// what the check protects (same policy as the local desk).
 fn present_own(bridge: Bridge, compat: &DaemonCompat, kind: protocol::ConnectionKind) -> anyhow::Result<(Stream, BridgeProcess)> {
     let Bridge { mut stream, banner, child, .. } = bridge;
     let process = BridgeProcess { child };
-    if let Some(token) = banner.daemon_token.as_deref() {
-        if compat.daemon_version >= crate::session::HELLO_MIN_VERSION {
-            let nonce = protocol::random_hex(16)?;
-            protocol::write_message(&mut stream, &crate::session::app_hello(token, &nonce, kind))?;
-            let mut reader = BufReader::with_capacity(1, &mut stream);
-            let ack = protocol::read_message(&mut reader)?
-                .ok_or_else(|| anyhow::anyhow!("the host's daemon closed the connection during the Hello"))?;
-            crate::session::verify_app_ack(ack, token, &nonce)?;
-        }
+    if compat.daemon_version < crate::session::SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(
+            "the host's gavin daemon is too old to talk to this app — restart it on the host"
+        );
     }
+    let token = banner.daemon_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "the host's gavin daemon answered but no daemon token was in the bridge banner — restart it on the host"
+        )
+    })?;
+    crate::session::prove_and_hello_on_stream(&mut stream, token, kind)?;
     Ok((stream, process))
 }
 
@@ -1630,7 +1634,7 @@ mod tests {
         }
     }
 
-    fn ack(token: &str, nonce: &str) -> Response {
+    fn hello_ack(token: &str, nonce: &str) -> Response {
         Response::HelloAck {
             role: "app".to_string(),
             daemon_version: protocol::PROTOCOL_VERSION,
@@ -1650,13 +1654,44 @@ mod tests {
         }
     }
 
+    /// Answer one connection's challenge + Hello. `challenge_token` is
+    /// what the peer holds for ServerProof; `hello_token` is what HelloAck
+    /// proves (may differ to exercise a mismatch after the challenge).
+    fn answer_handshake(
+        stream: &Stream,
+        reader: &mut BufReader<Stream>,
+        challenge_token: &str,
+        hello_token: &str,
+    ) -> Option<Request> {
+        let Ok(Some(challenge)) = read_message::<_, Request>(reader) else {
+            return None;
+        };
+        let Request::ServerChallenge { nonce: challenge_nonce } = &challenge else {
+            panic!("expected ServerChallenge, got {challenge:?}")
+        };
+        write_message(
+            &mut &*stream,
+            &Response::ServerProof {
+                proof: protocol::challenge_proof(challenge_token, challenge_nonce),
+            },
+        )
+        .unwrap();
+        let Ok(Some(hello)) = read_message::<_, Request>(reader) else {
+            return None;
+        };
+        let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
+        write_message(&mut &*stream, &hello_ack(hello_token, nonce)).unwrap();
+        Some(hello)
+    }
+
     /// The far daemon's side of `establish`: answers the version probe on
-    /// the command connection, then a Hello on each connection with a
-    /// proof computed by `prove`. Returns what the two Hellos carried.
+    /// the command connection, then challenge+Hello on each connection.
+    /// `challenge_token` / `hello_token` may differ to fail after proving.
     fn fake_daemon(
         daemon_cmd: Stream,
         daemon_stream: Stream,
-        prove: impl Fn(&str) -> Response + Send + 'static,
+        challenge_token: &'static str,
+        hello_token: &'static str,
     ) -> std::thread::JoinHandle<Vec<Request>> {
         std::thread::spawn(move || {
             let mut seen = Vec::new();
@@ -1668,19 +1703,18 @@ mod tests {
                 &Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION },
             )
             .unwrap();
-            let Ok(Some(hello)) = read_message::<_, Request>(&mut cmd_reader) else {
+            if let Some(hello) = answer_handshake(&daemon_cmd, &mut cmd_reader, challenge_token, hello_token)
+            {
+                seen.push(hello);
+            } else {
                 return seen;
-            };
-            let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
-            write_message(&mut &daemon_cmd, &prove(nonce)).unwrap();
-            seen.push(hello);
+            }
             let mut s_reader = BufReader::new(daemon_stream.try_clone().unwrap());
-            let Ok(Some(hello)) = read_message::<_, Request>(&mut s_reader) else {
-                return seen;
-            };
-            let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
-            write_message(&mut &daemon_stream, &prove(nonce)).unwrap();
-            seen.push(hello);
+            if let Some(hello) =
+                answer_handshake(&daemon_stream, &mut s_reader, challenge_token, hello_token)
+            {
+                seen.push(hello);
+            }
             seen
         })
     }
@@ -1689,7 +1723,7 @@ mod tests {
     fn establish_probes_the_version_then_presents_the_token_on_both_connections() {
         let (mut app_stream, daemon_stream) = Stream::pair().unwrap();
         let (app_cmd, daemon_cmd) = Stream::pair().unwrap();
-        let daemon = fake_daemon(daemon_cmd, daemon_stream, |nonce| ack("t0k3n", nonce));
+        let daemon = fake_daemon(daemon_cmd, daemon_stream, "t0k3n", "t0k3n");
 
         let app_cmd = Mutex::new(app_cmd);
         let compat = establish(&mut app_stream, &app_cmd, &banner_with(Some("t0k3n"))).unwrap();
@@ -1714,7 +1748,8 @@ mod tests {
     fn establish_refuses_a_daemon_whose_proof_does_not_match() {
         let (mut app_stream, daemon_stream) = Stream::pair().unwrap();
         let (app_cmd, daemon_cmd) = Stream::pair().unwrap();
-        let _daemon = fake_daemon(daemon_cmd, daemon_stream, |nonce| ack("other", nonce));
+        // Challenge fails first: the peer never held the banner token.
+        let _daemon = fake_daemon(daemon_cmd, daemon_stream, "other", "other");
         let app_cmd = Mutex::new(app_cmd);
         let err = establish(&mut app_stream, &app_cmd, &banner_with(Some("t0k3n")))
             .unwrap_err()
@@ -1722,16 +1757,18 @@ mod tests {
         assert!(err.contains("proof"), "{err}");
     }
 
-    /// A host daemon too old to have written a token is still a daemon
-    /// inside the window: the link continues as `local` there, exactly as
-    /// the app does at home against such a daemon.
+    /// A host daemon that answers with no token in the banner is refused
+    /// — same policy as a missing token file beside a local peer.
     #[test]
-    fn establish_sends_no_hello_when_the_banner_carries_no_token() {
+    fn establish_refuses_when_the_banner_carries_no_token() {
         let (mut app_stream, daemon_stream) = Stream::pair().unwrap();
         let (app_cmd, daemon_cmd) = Stream::pair().unwrap();
-        let daemon = fake_daemon(daemon_cmd, daemon_stream, |nonce| ack("unused", nonce));
+        let daemon = fake_daemon(daemon_cmd, daemon_stream, "unused", "unused");
         let app_cmd = Mutex::new(app_cmd);
-        establish(&mut app_stream, &app_cmd, &banner_with(None)).unwrap();
+        let err = establish(&mut app_stream, &app_cmd, &banner_with(None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("token"), "{err}");
         drop(app_cmd);
         drop(app_stream);
         assert!(daemon.join().unwrap().is_empty(), "a Hello was sent with nothing to present");

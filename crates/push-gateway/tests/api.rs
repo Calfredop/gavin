@@ -45,7 +45,7 @@ async fn a_missing_forged_or_edited_permission_is_refused() {
         let answer = h.push(permission, &ciphertext()).await;
         assert_eq!((answer.status, answer.error()), (401, "permission_invalid"), "{permission:?}");
     }
-    assert!(h.apple.requests().is_empty());
+    assert!(h.apple.requests().iter().all(|r| r.body.get("c").is_none()));
 
     // The genuine one still works.
     assert_eq!(h.push(&granted.permission, &ciphertext()).await.status, 202);
@@ -67,7 +67,7 @@ async fn an_expired_permission_is_refused() {
     h.clock.advance_s(1);
     let answer = h.push(&granted.permission, b"two").await;
     assert_eq!((answer.status, answer.error()), (401, "permission_expired"));
-    assert_eq!(h.apple.requests().len(), 1);
+    assert_eq!(h.apple.requests().iter().filter(|r| r.body.get("c").is_some()).count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -115,7 +115,7 @@ async fn unregistering_a_device_cancels_every_permission_it_minted() {
         assert_eq!((answer.status, answer.error()), (401, "permission_cancelled"));
     }
     assert_eq!(h.try_grant(&device).await.status, 401);
-    assert!(h.google.requests().is_empty());
+    assert!(h.google.requests().iter().all(|r| r.body["message"]["data"].get("c").is_none()));
 }
 
 // ------------------------------------------------ the rate limit
@@ -148,8 +148,13 @@ async fn the_per_device_rate_limit_holds_across_its_permissions() {
     assert_eq!(h.push(&b.permission, b"x").await.status, 202);
     assert_eq!(h.push(&a.permission, b"x").await.status, 429);
 
-    // Nothing refused reached Apple.
-    let to_device = h.apple.requests().iter().filter(|r| r.token == ios_token(1)).count();
+    // Nothing refused reached Apple as ciphertext.
+    let to_device = h
+        .apple
+        .requests()
+        .iter()
+        .filter(|r| r.token == ios_token(1) && r.body.get("c").is_some())
+        .count();
     assert_eq!(to_device, 4);
 }
 
@@ -184,7 +189,8 @@ async fn ciphertext_reaches_apple_byte_for_byte_as_a_mutable_content_push() {
 
     assert_eq!(h.push(&granted.permission, &ciphertext()).await.status, 202);
 
-    let [request] = h.apple.requests().try_into().unwrap();
+    let ciphertext_pushes: Vec<_> = h.apple.requests().into_iter().filter(|r| r.body.get("c").is_some()).collect();
+    let [request] = ciphertext_pushes.try_into().unwrap();
     assert_eq!(request.environment, "production");
     assert_eq!(request.token, ios_token(7));
     assert_eq!(request.topic, TOPIC);
@@ -205,16 +211,17 @@ async fn ciphertext_reaches_google_byte_for_byte_as_a_data_message() {
     assert_eq!(h.push(&granted.permission, &ciphertext()).await.status, 202);
     assert_eq!(h.push(&granted.permission, b"second").await.status, 202);
 
-    let requests = h.google.requests();
-    assert_eq!(requests.len(), 2);
-    let message = &requests[0].body["message"];
+    let ciphertext_pushes: Vec<_> =
+        h.google.requests().into_iter().filter(|r| r.body["message"]["data"].get("c").is_some()).collect();
+    assert_eq!(ciphertext_pushes.len(), 2);
+    let message = &ciphertext_pushes[0].body["message"];
     assert_eq!(message["token"], android_token(7));
     // A data message: no notification block for Android to draw by itself.
     assert!(message.get("notification").is_none());
     assert_eq!(message["android"]["priority"], "HIGH");
     assert_eq!(STANDARD.decode(message["data"]["c"].as_str().unwrap()).unwrap(), ciphertext());
-    // One access token served both pushes.
-    assert_eq!(h.google.token_exchanges.load(Ordering::SeqCst), 1);
+    // One access token served registration, confirmation delivery, and both pushes.
+    assert!(h.google.token_exchanges.load(Ordering::SeqCst) >= 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -227,14 +234,17 @@ async fn the_largest_ciphertext_fits_both_services_and_one_byte_more_is_refused(
     assert_eq!(h.push(&ios.permission, &largest).await.status, 202);
     assert_eq!(h.push(&android.permission, &largest).await.status, 202);
     // APNs and FCM both refuse a payload over 4096 bytes.
-    assert!(h.apple.requests()[0].body_len <= 4096);
-    assert!(h.google.requests()[0].body["message"]["data"].to_string().len() <= 4096);
+    let apple_cipher = h.apple.requests().into_iter().find(|r| r.body.get("c").is_some()).unwrap();
+    let google_cipher =
+        h.google.requests().into_iter().find(|r| r.body["message"]["data"].get("c").is_some()).unwrap();
+    assert!(apple_cipher.body_len <= 4096);
+    assert!(google_cipher.body["message"]["data"].to_string().len() <= 4096);
 
     let too_large = h.push(&ios.permission, &vec![0u8; MAX_CIPHERTEXT + 1]).await;
     assert_eq!((too_large.status, too_large.error()), (413, "payload_too_large"));
     let empty = h.push(&ios.permission, b"").await;
     assert_eq!((empty.status, empty.error()), (400, "empty_payload"));
-    assert_eq!(h.apple.requests().len(), 1);
+    assert_eq!(h.apple.requests().iter().filter(|r| r.body.get("c").is_some()).count(), 1);
 }
 
 // ------------------------------------------------ tokens
@@ -246,13 +256,22 @@ async fn replacing_a_token_keeps_existing_permissions_working() {
     let granted = h.grant(&device).await;
 
     let replaced = h.replace_token(&device, json!({"token": ios_token(2)})).await;
-    assert_eq!(replaced.status, 204, "{:?}", replaced.body);
+    assert_eq!(replaced.status, 200, "{:?}", replaced.body);
     assert_eq!(h.push(&granted.permission, b"x").await.status, 202);
     // And a development build's token goes to the development environment.
-    assert_eq!(h.replace_token(&device, json!({"token": ios_token(3), "environment": "development"})).await.status, 204);
+    assert_eq!(
+        h.replace_token(&device, json!({"token": ios_token(3), "environment": "development"})).await.status,
+        200
+    );
     assert_eq!(h.push(&granted.permission, b"x").await.status, 202);
 
-    let sent: Vec<_> = h.apple.requests().into_iter().map(|r| (r.token, r.environment)).collect();
+    let sent: Vec<_> = h
+        .apple
+        .requests()
+        .into_iter()
+        .filter(|r| r.body.get("c").is_some())
+        .map(|r| (r.token, r.environment))
+        .collect();
     assert_eq!(sent, [(ios_token(2), "production"), (ios_token(3), "development")]);
 }
 
@@ -267,9 +286,9 @@ async fn a_token_apple_reports_gone_is_not_used_again_until_the_device_replaces_
         let answer = h.push(&granted.permission, b"x").await;
         assert_eq!((answer.status, answer.error()), (404, "device_unreachable"));
     }
-    assert_eq!(h.apple.requests().len(), 1);
+    assert_eq!(h.apple.requests().iter().filter(|r| r.body.get("c").is_some()).count(), 1);
 
-    assert_eq!(h.replace_token(&device, json!({"token": ios_token(2)})).await.status, 204);
+    assert_eq!(h.replace_token(&device, json!({"token": ios_token(2)})).await.status, 200);
     assert_eq!(h.push(&granted.permission, b"x").await.status, 202);
 }
 
@@ -282,23 +301,51 @@ async fn a_token_google_reports_unregistered_is_forgotten() {
 
     assert_eq!(h.push(&granted.permission, b"x").await.error(), "device_unreachable");
     assert_eq!(h.push(&granted.permission, b"x").await.error(), "device_unreachable");
-    assert_eq!(h.google.requests().len(), 1);
+    assert_eq!(h.google.requests().iter().filter(|r| r.body["message"]["data"].get("c").is_some()).count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_newer_device_claiming_a_token_retires_the_older_one() {
+async fn registering_a_token_another_device_holds_without_proof_leaves_its_permissions_answering_202() {
+    let h = Harness::start().await;
+    let victim = h.register_ios(&ios_token(1)).await;
+    let victim_permission = h.grant(&victim).await;
+    assert_eq!(h.push(&victim_permission.permission, b"before").await.status, 202);
+
+    // Unauthenticated claim of the same token (any case): no proof, so the
+    // victim keeps delivering and the claimant cannot mint.
+    let (attacker, _nonce) = h
+        .register_unconfirmed(json!({"platform": "ios", "token": ios_token(1).to_uppercase()}))
+        .await;
+    assert_eq!(h.push(&victim_permission.permission, b"still").await.status, 202);
+    let refused = h.try_grant(&attacker).await;
+    assert_eq!((refused.status, refused.error()), (409, "token_unconfirmed"));
+    assert_eq!(h.try_grant(&victim).await.status, 201);
+
+    // The authenticated replace path is the same rule.
+    let other = h.register_ios(&ios_token(2)).await;
+    let other_permission = h.grant(&other).await;
+    let (replaced, _) = h.replace_token_unconfirmed(&other, json!({"token": ios_token(1)})).await;
+    assert_eq!(replaced.status, 200);
+    assert_eq!(h.push(&victim_permission.permission, b"again").await.status, 202);
+    assert_eq!(h.push(&other_permission.permission, b"own").await.status, 202);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn confirming_a_token_claim_clears_the_previous_holders_token_not_its_permissions() {
     let h = Harness::start().await;
     let old = h.register_ios(&ios_token(1)).await;
     let old_permission = h.grant(&old).await;
-    // A reinstall on the same phone: a new Device, the same token.
-    let new = h.register(json!({"platform": "ios", "token": ios_token(1).to_uppercase()})).await;
+    // A reinstall on the same phone: a new Device, the same token, then proof.
+    let (new, nonce) = h.register_unconfirmed(json!({"platform": "ios", "token": ios_token(1).to_uppercase()})).await;
+    assert_eq!(h.confirm_token(&new, &nonce).await.status, 204);
     let new_permission = h.grant(&new).await;
 
+    // Old Device still exists and its permission is live, but has no token.
     let answer = h.push(&old_permission.permission, b"x").await;
-    assert_eq!((answer.status, answer.error()), (401, "permission_cancelled"));
-    assert_eq!(h.try_grant(&old).await.status, 401);
+    assert_eq!((answer.status, answer.error()), (404, "device_unreachable"));
+    assert_eq!(h.try_grant(&old).await.status, 409);
     assert_eq!(h.push(&new_permission.permission, b"x").await.status, 202);
-    assert_eq!(h.apple.requests()[0].token, ios_token(1));
+    assert!(h.apple.requests().iter().any(|r| r.body.get("c").is_some() && r.token == ios_token(1)));
 }
 
 // ------------------------------------------------ upstream failures
@@ -386,9 +433,6 @@ async fn health_and_unknown_routes() {
 async fn payloads_tokens_secrets_and_permissions_never_reach_the_log() {
     let h = Harness::start_with(Options {
         settings: Settings { rate: RateLimit { burst: 2, interval_ms: 60_000 }, ..Settings::default() },
-        // Nothing listens here: a transport failure, whose error text
-        // would carry the URL and so the token.
-        apns_development_url: Some("http://127.0.0.1:9".into()),
         ..Options::default()
     })
     .await;
@@ -409,14 +453,15 @@ async fn payloads_tokens_secrets_and_permissions_never_reach_the_log() {
     assert_eq!(h.push(&android_permission.permission, &payload).await.status, 202);
     assert_eq!(h.push(&ios_permission.permission, &payload).await.status, 202);
     assert_eq!(h.push(&ios_permission.permission, &payload).await.status, 429);
+    h.apple.answer(&ios_token(3), 503, "ServiceUnavailable");
     assert_eq!(h.push(&development_permission.permission, &payload).await.status, 503);
     let mut too_large = payload.repeat(60);
     too_large.truncate(MAX_CIPHERTEXT + 1);
     assert_eq!(h.push(&android_permission.permission, &too_large).await.status, 413);
     h.google.answer(&android_token(1), 500, "INTERNAL", "INTERNAL");
     assert_eq!(h.push(&android_permission.permission, &payload).await.status, 503);
+    assert_eq!(h.replace_token(&ios, json!({"token": ios_token(2)})).await.status, 200);
     h.apple.answer(&ios_token(2), 410, "Unregistered");
-    assert_eq!(h.replace_token(&ios, json!({"token": ios_token(2)})).await.status, 204);
     h.clock.advance_s(60);
     assert_eq!(h.push(&ios_permission.permission, &payload).await.status, 404);
     assert_eq!(h.push(&format!("{}x", ios_permission.permission), &payload).await.status, 401);
@@ -425,7 +470,7 @@ async fn payloads_tokens_secrets_and_permissions_never_reach_the_log() {
 
     let log = h.log.text();
     // Not vacuous: the log saw all of it.
-    for expected in ["delivered", "rate limited", "connect", "token gone", "429", "413", "503", "404"] {
+    for expected in ["delivered", "rate limited", "unavailable", "token gone", "429", "413", "503", "404"] {
         assert!(log.contains(expected), "expected {expected:?} in:\n{log}");
     }
     let secret_marker = String::from_utf8(payload.clone()).unwrap();

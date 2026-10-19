@@ -20,6 +20,8 @@ function gateway() {
   const client: PushGatewayClient = {
     registerDevice: vi.fn(),
     putToken: vi.fn(),
+    confirmToken: vi.fn(),
+    tokenPending: vi.fn(async () => false),
     mintPermission: vi.fn(async () => {
       minted += 1;
       return { permissionId: `pid-${minted}`, permission: `perm-${minted}`, expiresAt: NOW + 90 * 86_400 };

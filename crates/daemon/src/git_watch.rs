@@ -69,7 +69,7 @@ pub fn is_relevant(rel: &Path) -> bool {
 /// inside `cwd` itself (`WorktreeWatch::arm_initial` watches it directly
 /// in that case, off `ONE_RECURSIVE_WATCH`).
 pub fn gitdir_for(cwd: &Path) -> Option<PathBuf> {
-    let out = crate::program::command("git")
+    let out = crate::git_status::git()
         .args(["--no-optional-locks", "rev-parse", "--absolute-git-dir"])
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -120,6 +120,18 @@ fn is_top_level_watch_target(entry_name: &std::ffi::OsStr) -> bool {
     entry_name != ".git" && entry_name != WORKTREES_DIR
 }
 
+/// Whether a top-level `read_dir` entry may receive a Recursive watch.
+/// Shared with the RepoPoller's `setup_filesystem_watch` so both refuse
+/// the same shapes. Symlinks are refused: notify would otherwise follow
+/// a directory link out of the worktree
+/// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+pub(crate) fn is_recursive_top_level_entry(entry: &std::fs::DirEntry) -> bool {
+    if !is_top_level_watch_target(&entry.file_name()) {
+        return false;
+    }
+    !entry.file_type().is_ok_and(|ft| ft.is_symlink())
+}
+
 /// Owns the OS-level watch for one worktree root. Off `ONE_RECURSIVE_WATCH`
 /// (Linux), a `RecursiveMode::Recursive` registration only covers what
 /// already existed under a path the moment `watch()` ran, so a brand-new
@@ -167,7 +179,7 @@ impl WorktreeWatch {
             watcher.watch(&self.root, notify::RecursiveMode::NonRecursive)?;
             if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten() {
-                    if !is_top_level_watch_target(&entry.file_name()) {
+                    if !is_recursive_top_level_entry(&entry) {
                         continue;
                     }
                     let path = entry.path();
@@ -216,7 +228,9 @@ impl WorktreeWatch {
     fn rearm_new_top_level_dirs(&self, events: &[DebouncedEvent]) {
         for e in events {
             let Ok(rel) = e.path.strip_prefix(&self.root) else { continue };
-            if rel.components().count() != 1 || !e.path.is_dir() {
+            // `is_dir` uses symlink_metadata, so a directory symlink is
+            // not treated as a folder to Recursive-watch.
+            if rel.components().count() != 1 || !is_dir(&e.path) {
                 continue;
             }
             if !is_top_level_watch_target(rel.as_os_str()) {
@@ -512,7 +526,7 @@ fn load_tracked_ignored(root: &Path) -> Option<TrackedIgnored> {
 
 /// `git <args>` in `root`: its stdout, when it exits 0.
 fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let out = crate::program::command("git")
+    let out = crate::git_status::git()
         .arg("--no-optional-locks")
         .args(args)
         .current_dir(root)
@@ -902,6 +916,97 @@ mod tests {
         );
     }
 
+    /// A committed directory symlink at the worktree root must not land in
+    /// `armed`: Recursive on it would follow out of the tree
+    /// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+    /// Off `ONE_RECURSIVE_WATCH` (Linux) `arm_initial` fills `armed`; elsewhere
+    /// the same decision is the filter `is_recursive_top_level_entry`.
+    #[test]
+    fn a_top_level_directory_symlink_is_not_armed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), root.join("x")).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(outside.path(), root.join("x")).is_err() {
+                return;
+            }
+        }
+
+        let entries: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().collect();
+        let src = entries.iter().find(|e| e.file_name() == "src").unwrap();
+        let x = entries.iter().find(|e| e.file_name() == "x").unwrap();
+        assert!(is_recursive_top_level_entry(src), "a real directory stays armed");
+        assert!(
+            !is_recursive_top_level_entry(x),
+            "a directory symlink must not get a Recursive watch"
+        );
+
+        if !ONE_RECURSIVE_WATCH {
+            let watch = spawn_worktree_watcher(&root, || {}).unwrap();
+            let armed = watch.armed.lock().unwrap();
+            assert!(armed.contains(&root.join("src")), "src must still be armed");
+            assert!(
+                !armed.contains(&root.join("x")),
+                "directory symlink must be absent from the armed set"
+            );
+        }
+    }
+
+    /// A directory symlink created after arm must not be re-armed: the
+    /// re-arm gate used to follow links via `Path::is_dir`.
+    #[test]
+    fn a_new_top_level_directory_symlink_is_not_rearmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+
+        let watch = Arc::new(WorktreeWatch {
+            root: root.clone(),
+            debouncer: Mutex::new(None),
+            armed: Mutex::new(HashSet::new()),
+        });
+        let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
+        let debouncer = new_debouncer(move |res: notify_debouncer_mini::DebounceEventResult| {
+            let Ok(events) = res else { return };
+            let Some(watch) = weak.upgrade() else { return };
+            watch.rearm_new_top_level_dirs(&events);
+        })
+        .unwrap();
+        *watch.debouncer.lock().unwrap() = Some(debouncer);
+        watch
+            .debouncer
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .watcher()
+            .watch(&root, notify::RecursiveMode::NonRecursive)
+            .unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let link = root.join("x");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(outside.path(), &link).is_err() {
+                return;
+            }
+        }
+
+        // Give the NonRecursive root watch time to see the create and re-arm.
+        std::thread::sleep(GIT_WATCH_DEBOUNCE * 3 + Duration::from_millis(200));
+        assert!(
+            !watch.armed.lock().unwrap().contains(&link),
+            "a new top-level directory symlink must not be re-armed"
+        );
+    }
+
     /// The regression this whole card exists to fix, measured the way its
     /// own Verify section says to: real inotify watch counts under a real
     /// kernel, not a proxy for them. Linux-only -- on macOS/Windows
@@ -935,6 +1040,35 @@ mod tests {
         // near that would mean the split failed to skip the folder. The
         // real cost is just root itself, `.git`, `.git/refs`, and `src`.
         assert!(watches < 20, "expected a bounded watch count regardless of nested worktree size, got {watches}");
+    }
+
+    /// A top-level directory symlink into a deep outside tree must not
+    /// spend ~one inotify watch per outside directory.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_directory_symlink_does_not_spend_inotify_watches_on_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let mut nested = outside.path().to_path_buf();
+        for i in 0..200 {
+            nested = nested.join(format!("d{i}"));
+            std::fs::create_dir(&nested).unwrap();
+        }
+        std::os::unix::fs::symlink(outside.path(), root.join("x")).unwrap();
+
+        let before = inotify_watch_count();
+        let _watch = spawn_worktree_watcher(&root, || {}).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let added = inotify_watch_count().saturating_sub(before);
+        // Repo itself: root, src, .git, .git/refs — nowhere near 200.
+        assert!(
+            added < 40,
+            "directory symlink must not pull the outside tree into inotify, added {added}"
+        );
     }
 
     /// Sums the watch descriptors across every inotify instance this

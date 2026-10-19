@@ -144,12 +144,21 @@ pub fn with_block(content: &str, present: bool) -> String {
     format!("{}\n", rest)
 }
 
-fn gitignore_path(root: &str) -> std::path::PathBuf {
-    std::path::Path::new(root).join(".gitignore")
+fn gitignore_path(root: &str) -> Result<std::path::PathBuf, String> {
+    crate::agent_setup::contained_dest(
+        std::path::Path::new(root),
+        std::path::Path::new(".gitignore"),
+    )
+    .map_err(|e| e.to_string())
 }
 
-fn read_gitignore(root: &str) -> String {
-    std::fs::read_to_string(gitignore_path(root)).unwrap_or_default()
+fn read_gitignore(root: &str) -> Result<String, String> {
+    let path = gitignore_path(root)?;
+    match crate::agent_setup::nofollow_read(&path).map_err(|e| e.to_string())? {
+        Some(bytes) => String::from_utf8(bytes)
+            .map_err(|_| format!("could not read .gitignore: not valid UTF-8 text")),
+        None => Ok(String::new()),
+    }
 }
 
 fn is_repo(root: &str) -> bool {
@@ -224,7 +233,7 @@ pub fn status(root: &str) -> Result<GavinTracking, String> {
         is_repo: true,
         tracked: rule.is_none(),
         ignored_by: rule,
-        gavin_managed: has_block(&read_gitignore(root)),
+        gavin_managed: has_block(&read_gitignore(root)?),
         indexed: indexed_files(root).len(),
     })
 }
@@ -262,17 +271,24 @@ pub fn set(root: &str, tracked: bool, untrack_indexed: bool) -> Result<GavinTrac
     if !std::path::Path::new(root).is_dir() {
         return Err(format!("directory not found: {root}"));
     }
-    let path = gitignore_path(root);
-    let before = read_gitignore(root);
+    let path = gitignore_path(root)?;
+    let before = read_gitignore(root)?;
     let after = with_block(&before, !tracked);
     if after != before {
         if after.is_empty() {
             // Only ever reached by an "on" that removed the sole block
             // from a file gavin created for it. Removing the file is the
-            // rest of that undo.
+            // rest of that undo. Refuse to unlink through a symlink leaf.
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(format!(
+                    "{} is a symlink; gavin will not remove through it",
+                    path.display()
+                ));
+            }
             let _ = std::fs::remove_file(&path);
         } else {
-            std::fs::write(&path, &after).map_err(|e| format!("could not write .gitignore: {e}"))?;
+            crate::agent_setup::nofollow_write(&path, after.as_bytes())
+                .map_err(|e| format!("could not write .gitignore: {e}"))?;
         }
     }
     if !tracked && untrack_indexed && is_repo(root) {
@@ -478,5 +494,47 @@ mod tests {
         let tracked = run_git(root, &["ls-files"], None).unwrap().stdout_str();
         assert!(tracked.contains("crates/lib/src/main.rs"));
         assert!(!tracked.contains(".gavin/"));
+    }
+
+    /// A committed `.gitignore` symlink out of the workspace must not be
+    /// overwritten when tracking is turned off (audit 2026-10-15).
+    #[cfg(unix)]
+    #[test]
+    fn set_refuses_a_symlinked_gitignore_pointing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        repo(dir.path());
+        let victim = outside.path().join("data.bin");
+        std::fs::write(&victim, [0u8, 0xff, 0xfe]).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(".gitignore")).unwrap();
+
+        let err = set(root, false, false).unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("symlink"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), [0u8, 0xff, 0xfe]);
+    }
+
+    /// A non-UTF-8 `.gitignore` must abort rather than be replaced with
+    /// the ignore block (same fingerprint: treating InvalidData as empty
+    /// destroyed the target).
+    #[test]
+    fn set_refuses_a_non_utf8_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        repo(dir.path());
+        std::fs::write(dir.path().join(".gitignore"), [0u8, 0xff, 0xfe]).unwrap();
+
+        let err = set(root, false, false).unwrap_err();
+        assert!(
+            err.contains("UTF-8") || err.contains("gitignore"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(".gitignore")).unwrap(),
+            [0u8, 0xff, 0xfe]
+        );
     }
 }

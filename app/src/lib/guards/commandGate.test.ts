@@ -178,7 +178,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   ],
   revoke_all_devices: [
     "destructive",
-    "revoke_device for every row, plus a rotation of the daemon's static key -- the half that is irreversible in the strong sense, because the old key is gone and every phone pinned it. Deliberately not gated for revoke_device's reason, and more so: this is §3's one-button answer to a lost phone, and a confirmation the host has to mint is a hurdle in front of the one control whose whole job is to be reachable in a hurry. The app confirms it on every route (revokeAllCopy).",
+    "revoke_device for every row, plus a rotation of the daemon's static key -- the half that cuts every phone off while the live store holds the new key, because each one pinned the old. Deliberately not gated for revoke_device's reason, and more so: this is §3's one-button answer to a lost phone, and a confirmation the host has to mint is a hurdle in front of the one control whose whole job is to be reachable in a hurry. The app confirms it on every route (revokeAllCopy).",
   ],
 
   // ---- ordinary ----
@@ -354,6 +354,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_playwright_pane_open: ["ordinary"],
   set_playwright_pane_open: ["ordinary"],
   setup_agent_integration: ["ordinary"],
+  scan_foreign_mcp_servers: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.
   detect_agent_binaries: ["ordinary"],

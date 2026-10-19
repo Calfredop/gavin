@@ -163,6 +163,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "get_playwright_pane_open",
     "set_playwright_pane_open",
     "setup_agent_integration",
+    "scan_foreign_mcp_servers",
     "agent_profiles",
     "detect_agent_binaries",
     "agent_model_catalog",

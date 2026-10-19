@@ -94,6 +94,27 @@ function conflictBlock(conflictSummary: string[], railName: string | null): stri
     : `Gavin currently flags no conflicts${where}.`;
 }
 
+/// The worktree setup lines this launch may run — already filtered by
+/// `trustedSetup` / config trust. The skill used to tell the agent to
+/// read `[worktree] setup` from config.toml itself; that bypassed the
+/// gate every in-app worktree path honours. The prompt is the only list
+/// the agent is allowed to run.
+export function worktreeSetupBlock(trustedSetupLines: readonly string[]): string {
+  if (trustedSetupLines.length === 0) {
+    return (
+      "This workspace has no approved worktree setup commands. After you cut a worktree, " +
+      "leave the checkout as git left it — never read `[worktree] setup` from " +
+      "`.gavin-root/config.toml` yourself."
+    );
+  }
+  const list = trustedSetupLines.map((line) => `- ${line}`).join("\n");
+  return (
+    "When you cut a worktree, run only these approved setup commands in the new checkout, " +
+    "joined with `&&` so a failed install stops the rest — and never read `[worktree] setup` " +
+    `from \`.gavin-root/config.toml\` yourself:\n${list}`
+  );
+}
+
 /// "Organize with agent…" — the job is the cards nobody has placed. The
 /// tab's own picture rides along so the agent starts from what the human
 /// is looking at; it still reads gavin_get_orchestration for the truth.
@@ -111,7 +132,10 @@ export function composeOrganizePrompt(
   unplaced: CardEntry[],
   conflictSummary: string[],
   template?: string,
-  nameTabBase?: string
+  nameTabBase?: string,
+  /// Already passed through `trustedSetup` — empty when the config is
+  /// unapproved. Never the raw `[worktree] setup` from disk.
+  trustedSetupLines: readonly string[] = []
 ): string {
   // The whole list is one gavin_get_orchestration call away, and this one
   // arrives as a launch argument -- so a big backlog is cut here and SAID
@@ -140,6 +164,7 @@ export function composeOrganizePrompt(
     unplaced_block,
     rails_block,
     conflicts_block: conflictBlock(conflictSummary, null),
+    worktree_setup_block: worktreeSetupBlock(trustedSetupLines),
     read_first: READ_FIRST,
     carry_through: CARRY_THROUGH,
   });
@@ -156,7 +181,10 @@ export function composeRailPrompt(
   /// Already narrowed to this rail by the caller (conflictsForRail).
   conflictSummary: string[],
   template?: string,
-  nameTabBase?: string
+  nameTabBase?: string,
+  /// Already passed through `trustedSetup` — empty when the config is
+  /// unapproved. Never the raw `[worktree] setup` from disk.
+  trustedSetupLines: readonly string[] = []
 ): string {
   const stages = [...rail.stages].sort((a, b) => a.position - b.position);
   const body = stages
@@ -179,6 +207,7 @@ export function composeRailPrompt(
     rail_name: rail.name,
     rail_body,
     conflicts_block: conflictBlock(conflictSummary, `this rail`),
+    worktree_setup_block: worktreeSetupBlock(trustedSetupLines),
     read_first: READ_FIRST,
     carry_through: CARRY_THROUGH,
   });

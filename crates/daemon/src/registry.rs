@@ -117,7 +117,15 @@ impl SessionStatus {
 pub struct SessionRecord {
     pub id: String,
     pub workspace_path: String,
+    /// Display cwd: launch directory at insert, then whatever OSC 7 last
+    /// reported. Attach, CwdChanged and the repo-mapping pump read this.
+    /// It is NOT an authorization root — see `scope_cwd`.
     pub cwd: String,
+    /// Launch cwd, fixed for the life of the row. A session-token Hello
+    /// builds the agent identity's scope from this column (plus
+    /// `workspace_path`), never from `cwd`: PTY output must not be able
+    /// to move an agent's daemon-side reach.
+    pub scope_cwd: String,
     pub command: Option<String>,
     pub status: SessionStatus,
     pub restored: bool,
@@ -299,9 +307,25 @@ impl Registry {
             // ever routed a session through Headroom.
             "ALTER TABLE sessions ADD COLUMN compressed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN uncompressed_reason TEXT",
+            // Authorization scope root, fixed at create. Display `cwd` is
+            // rewritten by OSC 7; this column is not. Added beside the
+            // CREATE (which no-ops on an existing table) so a pre-existing
+            // registry gains it — then backfilled from cwd so every live
+            // row keeps the launch directory it already had.
+            "ALTER TABLE sessions ADD COLUMN scope_cwd TEXT",
         ] {
             let _ = conn.execute(stmt, []);
         }
+        // Backfill after the ALTER so a row written before this column
+        // existed keeps its then-cwd as its forever scope. Re-running is
+        // a no-op once every row has a value. Swallowed like the ALTERs:
+        // a sessions table with no `cwd` column is not a real registry
+        // (the permissions-fixture test builds one), and there is nothing
+        // to backfill from.
+        let _ = conn.execute(
+            "UPDATE sessions SET scope_cwd = cwd WHERE scope_cwd IS NULL",
+            [],
+        );
         let previous: i64 = conn
             .query_row(
                 "SELECT value FROM registry_meta WHERE key = 'generation'",
@@ -327,12 +351,13 @@ impl Registry {
 
     pub fn insert(&self, record: &SessionRecord) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, failure_reason, compressed, uncompressed_reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO sessions (id, workspace_path, cwd, scope_cwd, command, status, restored, generation, interrupted, pid, started_at_us, failure_reason, compressed, uncompressed_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 record.id,
                 record.workspace_path,
                 record.cwd,
+                record.scope_cwd,
                 record.command,
                 record.status.as_str(),
                 record.restored as i64,
@@ -652,29 +677,9 @@ impl Registry {
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions",
+            "SELECT id, workspace_path, cwd, scope_cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let status_str: String = row.get(4)?;
-            let restored: i64 = row.get(5)?;
-            let interrupted: i64 = row.get(7)?;
-            let compressed: i64 = row.get(13)?;
-            Ok(SessionRecord {
-                id: row.get(0)?,
-                workspace_path: row.get(1)?,
-                cwd: row.get(2)?,
-                command: row.get(3)?,
-                status: SessionStatus::from_str(&status_str),
-                restored: restored != 0,
-                generation: row.get(6)?,
-                interrupted: interrupted != 0,
-                process: handle_from(row.get(8)?, row.get(9)?),
-                orphan: handle_from(row.get(10)?, row.get(11)?),
-                failure_reason: row.get(12)?,
-                compressed: compressed != 0,
-                uncompressed_reason: row.get(14)?,
-            })
-        })?;
+        let rows = stmt.query_map([], |row| Ok(row_to_record(row)?))?;
         let mut result = Vec::new();
         for row in rows {
             result.push(row?);
@@ -682,6 +687,8 @@ impl Registry {
         Ok(result)
     }
 
+    /// Updates the display cwd only. OSC 7 and recovery land here;
+    /// `scope_cwd` is deliberately not touched.
     pub fn update_cwd(&self, id: &str, cwd: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE sessions SET cwd = ?1 WHERE id = ?2",
@@ -692,34 +699,42 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> anyhow::Result<Option<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions WHERE id = ?1",
+            "SELECT id, workspace_path, cwd, scope_cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            let status_str: String = row.get(4)?;
-            let restored: i64 = row.get(5)?;
-            let interrupted: i64 = row.get(7)?;
-            let compressed: i64 = row.get(13)?;
-            Ok(SessionRecord {
-                id: row.get(0)?,
-                workspace_path: row.get(1)?,
-                cwd: row.get(2)?,
-                command: row.get(3)?,
-                status: SessionStatus::from_str(&status_str),
-                restored: restored != 0,
-                generation: row.get(6)?,
-                interrupted: interrupted != 0,
-                process: handle_from(row.get(8)?, row.get(9)?),
-                orphan: handle_from(row.get(10)?, row.get(11)?),
-                failure_reason: row.get(12)?,
-                compressed: compressed != 0,
-                uncompressed_reason: row.get(14)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], |row| Ok(row_to_record(row)?))?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
     }
+}
+
+fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
+    let status_str: String = row.get(5)?;
+    let restored: i64 = row.get(6)?;
+    let interrupted: i64 = row.get(8)?;
+    let compressed: i64 = row.get(14)?;
+    // COALESCE-equivalent: a NULL scope_cwd (should not survive open()'s
+    // backfill) falls back to cwd so a half-migrated row still scopes
+    // somewhere rather than panicking the reader.
+    let cwd: String = row.get(2)?;
+    let scope_cwd: Option<String> = row.get(3)?;
+    Ok(SessionRecord {
+        id: row.get(0)?,
+        workspace_path: row.get(1)?,
+        cwd: cwd.clone(),
+        scope_cwd: scope_cwd.unwrap_or(cwd),
+        command: row.get(4)?,
+        status: SessionStatus::from_str(&status_str),
+        restored: restored != 0,
+        generation: row.get(7)?,
+        interrupted: interrupted != 0,
+        process: handle_from(row.get(9)?, row.get(10)?),
+        orphan: handle_from(row.get(11)?, row.get(12)?),
+        failure_reason: row.get(13)?,
+        compressed: compressed != 0,
+        uncompressed_reason: row.get(15)?,
+    })
 }
 
 #[cfg(test)]
@@ -731,6 +746,7 @@ mod tests {
             id: id.to_string(),
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp/ws".to_string(),
+            scope_cwd: "/tmp/ws".to_string(),
             command: None,
             status: SessionStatus::Idle,
             restored: false,
@@ -887,6 +903,62 @@ mod tests {
 
         let sessions = registry.list().unwrap();
         assert_eq!(sessions[0].cwd, "/Users/alice/new-project");
+        // Display only: the launch scope must stay where create put it.
+        assert_eq!(sessions[0].scope_cwd, "/tmp/ws");
+    }
+
+    #[test]
+    fn a_database_written_before_scope_cwd_gains_the_column_backfilled_from_cwd() {
+        // The CLAUDE.md trap: a column only in CREATE TABLE IF NOT EXISTS
+        // never reaches an existing database. Built with the schema a
+        // daemon that still shared one cwd column left behind, then opened
+        // (ALTER + backfill), then the display update is proved not to
+        // move the new scope column.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    command TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    restored INTEGER NOT NULL DEFAULT 0,
+                    generation INTEGER NOT NULL DEFAULT 0,
+                    interrupted INTEGER NOT NULL DEFAULT 0,
+                    pid INTEGER,
+                    started_at_us INTEGER,
+                    orphan_pid INTEGER,
+                    orphan_started_at_us INTEGER,
+                    failure_reason TEXT,
+                    token_hash TEXT,
+                    compressed INTEGER NOT NULL DEFAULT 0,
+                    uncompressed_reason TEXT
+                );
+                CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                INSERT INTO sessions (id, workspace_path, cwd, command)
+                VALUES ('old-1', '/tmp/ws', '/tmp/launch', 'claude')",
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+        let old = registry.get("old-1").unwrap().expect("the old row survives the migration");
+        assert_eq!(old.cwd, "/tmp/launch");
+        assert_eq!(
+            old.scope_cwd, "/tmp/launch",
+            "backfill must pin the then-cwd as the forever scope"
+        );
+
+        registry.update_cwd("old-1", "/").unwrap();
+        let after = registry.get("old-1").unwrap().unwrap();
+        assert_eq!(after.cwd, "/");
+        assert_eq!(
+            after.scope_cwd, "/tmp/launch",
+            "OSC 7 / update_cwd must never rewrite the authorization root"
+        );
     }
 
     #[test]

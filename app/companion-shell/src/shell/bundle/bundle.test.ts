@@ -97,24 +97,38 @@ function mapStore(): BundleStore & { files: Map<string, BundleFile[]> } {
   };
 }
 
-/// A core whose `bundleOpen` accepts a bundle signed by a trusted key
-/// and refuses the rest, the way the real one does by signature.
-function fakeCore(): { core: () => Promise<CoreModule>; opened: Array<{ archive: Uint8Array; trustedKeys: string[] }> } {
+/// A core whose `bundleOpen` / `bundleCheck` accept a bundle signed by a
+/// trusted key and refuse the rest, the way the real one does by signature.
+function fakeCore(): {
+  core: () => Promise<CoreModule>;
+  opened: Array<{ archive: Uint8Array; trustedKeys: string[] }>;
+  checked: Array<{ manifest: BundleManifest; trustedKeys: string[] }>;
+} {
   const opened: Array<{ archive: Uint8Array; trustedKeys: string[] }> = [];
+  const checked: Array<{ manifest: BundleManifest; trustedKeys: string[] }> = [];
+  const refuse = (manifest: BundleManifest, trustedKeys: string[]) => {
+    if (!trustedKeys.includes(manifest.signer)) {
+      throw new CoreError("bundle", "the bundle was signed by a key this Companion does not trust");
+    }
+    if (manifest.signature.startsWith("ff") || manifest.signature === "00".repeat(64)) {
+      throw new CoreError("bundle", "the bundle's signature does not verify");
+    }
+  };
   const core: CoreModule = {
     exchange: async () =>
       ({
+        bundleCheck({ manifest, trustedKeys }: { manifest: BundleManifest; trustedKeys: string[] }) {
+          checked.push({ manifest, trustedKeys });
+          refuse(manifest, trustedKeys);
+        },
         bundleOpen({ archive, manifest, trustedKeys }: { archive: Uint8Array; manifest: BundleManifest; trustedKeys: string[] }) {
           opened.push({ archive, trustedKeys });
-          if (!trustedKeys.includes(manifest.signer)) {
-            throw new CoreError("bundle", "the bundle was signed by a key this Companion does not trust");
-          }
-          if (manifest.signature.startsWith("ff")) throw new CoreError("bundle", "the bundle's signature does not verify");
+          refuse(manifest, trustedKeys);
           return { hash: manifest.hash, files: [{ path: "index.html", data: toBase64(archive) }] };
         },
       }) as never,
   };
-  return { core: async () => core, opened };
+  return { core: async () => core, opened, checked };
 }
 
 describe("the bundle answer", () => {
@@ -280,7 +294,7 @@ describe("readying a bundle", () => {
   it("fetches, verifies and installs a bundle the cache does not hold, then hits the cache", async () => {
     const ws = workstation({ manifest: m, archive });
     const store = mapStore();
-    const { core, opened } = fakeCore();
+    const { core, opened, checked } = fakeCore();
     const said: string[] = [];
     const first = await readyBundle({ connection: ws.connection, store, core, trusted: [PUBLISHER, DEV], say: (t) => said.push(t) });
     expect(first).toEqual({ hash: m.hash, manifest: m, fetched: true });
@@ -292,13 +306,65 @@ describe("readying a bundle", () => {
     expect(said).toContain("Checking its signature…");
     expect(said.at(-1)).toBe("Installing it…");
 
-    // An unchanged hash is a cache hit: the manifest is asked for, and
-    // nothing is fetched or opened.
+    // An unchanged hash is a cache hit: the manifest is asked for, the
+    // signature is checked (one manifest-only core call), and nothing is
+    // fetched or opened.
     ws.asks.length = 0;
+    checked.length = 0;
     const again = await readyBundle({ connection: ws.connection, store, core, trusted: [PUBLISHER, DEV] });
     expect(again).toEqual({ hash: m.hash, manifest: m, fetched: false });
     expect(ws.asks).toEqual([{ offset: 0, length: 0 }]);
     expect(opened).toHaveLength(1);
+    expect(checked).toHaveLength(1);
+  });
+
+  it("a cache hit under a rotated trust set refuses a forged manifest that only names a current key", async () => {
+    // Fingerprint: companion-shell/bundle.ts:readyBundle:cache-hit-opens-without-signature-verify
+    // Install under K_OLD, then open under K_NEW with a forged manifest that
+    // claims the cached hash. store.installed must not decide the outcome.
+    const kOld = DEV;
+    const kNew = PUBLISHER;
+    const ws = workstation({ manifest: m, archive });
+    const store = mapStore();
+    const { core, opened, checked } = fakeCore();
+    await readyBundle({ connection: ws.connection, store, core, trusted: [kOld] });
+    expect(await store.installed(m.hash)).toBe(true);
+    expect(opened).toHaveLength(1);
+
+    const forged = manifest({
+      hash: m.hash,
+      size: m.size,
+      signer: kNew,
+      signature: "00".repeat(64),
+      gavinVersion: m.gavinVersion,
+    });
+    ws.replace({ manifest: forged, archive });
+    ws.asks.length = 0;
+    opened.length = 0;
+    checked.length = 0;
+    await expect(readyBundle({ connection: ws.connection, store, core, trusted: [kNew] })).rejects.toThrow(
+      /signature does not verify/
+    );
+    expect(ws.asks).toEqual([{ offset: 0, length: 0 }]);
+    expect(opened).toHaveLength(0);
+    expect(await store.installed(m.hash)).toBe(true);
+  });
+
+  it("a genuine cached bundle still opens with fetched=false and no archive fetch", async () => {
+    const ws = workstation({ manifest: m, archive });
+    const store = mapStore();
+    const { core, opened, checked } = fakeCore();
+    await readyBundle({ connection: ws.connection, store, core, trusted: [DEV] });
+    ws.asks.length = 0;
+    opened.length = 0;
+    checked.length = 0;
+    const again = await readyBundle({ connection: ws.connection, store, core, trusted: [DEV] });
+    expect(again).toEqual({ hash: m.hash, manifest: m, fetched: false });
+    expect(ws.asks).toEqual([{ offset: 0, length: 0 }]);
+    expect(opened).toHaveLength(0);
+    expect(checked).toHaveLength(1);
+    expect(checked[0].manifest).toEqual(m);
+    expect(checked[0].trustedKeys).toEqual([DEV]);
   });
 
   it("a Workstation upgrade names a new hash, which is fetched", async () => {

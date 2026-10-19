@@ -5,8 +5,10 @@
       "command": "scripts/gavin-mcp"
     },
     "playwright": {
-      "command": "scripts/gavin-mcp",
-      "args": ["playwright"]
+      "args": [
+        "playwright"
+      ],
+      "command": "scripts/gavin-mcp"
     }
   }
 }

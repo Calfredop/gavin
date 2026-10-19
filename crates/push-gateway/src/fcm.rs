@@ -6,7 +6,7 @@
 
 use crate::clock::Clock;
 use crate::jwt;
-use crate::sender::{http_client, reason_code, transport_reason, Delivery};
+use crate::sender::{http_client, reason_code, transport_reason, Delivery, PushBody};
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -112,15 +112,19 @@ impl Fcm {
         Ok(token.access_token)
     }
 
-    pub async fn send(&self, token: &str, ciphertext: &[u8]) -> Delivery {
+    pub async fn send(&self, token: &str, body: PushBody<'_>) -> Delivery {
         let access_token = match self.access_token().await {
             Ok(t) => t,
             Err(delivery) => return delivery,
         };
+        let data = match body {
+            PushBody::Ciphertext(ciphertext) => json!({"c": STANDARD.encode(ciphertext)}),
+            PushBody::Verification(nonce) => json!({"v": nonce}),
+        };
         let body = json!({
             "message": {
                 "token": token,
-                "data": {"c": STANDARD.encode(ciphertext)},
+                "data": data,
                 "android": {"priority": "HIGH", "ttl": TTL},
             }
         });

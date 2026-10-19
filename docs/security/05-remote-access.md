@@ -264,9 +264,13 @@ greyed has to be the row the daemon will actually refuse.
 **Revocation.** From the desktop: the Settings device list has Revoke per row and
 "Revoke all devices". Revoke marks `revoked_at`, and the daemon drops every live
 connection carrying that `device_id` immediately (the connection holds its identity,
-so this is a lookup, not a hunt). "Revoke all" also rotates the daemon's static key,
-which invalidates every phone at once even if the store is somehow restored, because
-each phone pinned the old key. From the phone: an `Unpair` request removes the phone's
+so this is a lookup, not a hunt). "Revoke all" also rotates the daemon's static key
+inside `devices.sqlite`, the same file as the Device rows, so every phone's pinned
+key stops matching for as long as that file stays the live store. Restoring a copy of
+that file from before the Revoke all brings back the old key and the unrevoked rows
+together, and a revoked phone that is unlocked by its owner can connect again for up
+to 90 days after it was last seen. After restoring the gavin data folder from a
+backup, run Revoke all again. From the phone: an `Unpair` request removes the phone's
 own row; it is a courtesy, not a control, because a lost phone will not send it. On
 loss: "Revoke all devices" is the one-button answer, and the pairing screen says so.
 

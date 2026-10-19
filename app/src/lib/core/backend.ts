@@ -1279,6 +1279,13 @@ export interface McpForeignServers {
   isolateRefusal?: string;
 }
 
+/// A root that looks like a gavin checkout but has no matching mark on
+/// this machine. Present after a run that wrote the absolute binary so
+/// Integration can ask whether to trust the repo launcher.
+export interface CheckoutMarkOffer {
+  launcher: string;
+}
+
 /// What a setup run wrote, and what it could not (spec §6). `skipped` is
 /// [what, why] pairs, rendered verbatim so an unavailable MCP config is
 /// visible rather than silent. `mcpForeign` is set instead of the MCP
@@ -1294,6 +1301,7 @@ export interface IntegrationResult {
   /// already there.
   replaced: Array<[string, string]>;
   mcpForeign?: McpForeignServers;
+  checkoutMarkOffer?: CheckoutMarkOffer;
 }
 
 /// `instructionsFile` is the workspace's RESOLVED agent file — the one
@@ -1307,18 +1315,34 @@ export interface IntegrationResult {
 /// Omit it (or pass a value that does not match what is on disk right
 /// now) to have the MCP write held back and `mcpForeign` reported
 /// instead, rather than assume any particular answer.
+///
+/// `approveCheckoutMark` is true when the human approved a previous
+/// call's `checkoutMarkOffer` — records the mark and names the relative
+/// launcher. Omit or pass false to keep the absolute binary.
 export function setupAgentIntegration(
   rootPath: string,
   instructionsFile: string,
   mcpForeignChoice?: "keep" | "isolate",
-  profileId?: string
+  profileId?: string,
+  approveCheckoutMark?: boolean
 ): Promise<IntegrationResult> {
   return invoke("setup_agent_integration", {
     rootPath,
     instructionsFile,
     mcpForeignChoice,
     profileId,
+    approveCheckoutMark,
   });
+}
+
+/// Read-only AG-07 scan of the foreign servers the given profile's agent
+/// would load from `rootPath` (the launch cwd / Cursor `projectRoot`).
+/// Empty when there is nothing foreign or the profile has no MCP layout.
+export function scanForeignMcpServers(
+  rootPath: string,
+  profileId?: string
+): Promise<ForeignMcpServer[]> {
+  return invoke("scan_foreign_mcp_servers", { rootPath, profileId });
 }
 
 export function createPlan(

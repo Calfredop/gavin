@@ -2822,7 +2822,8 @@ fn a_paired_device_connects_and_is_given_the_remote_role() {
 /// The spec's seam 1: "pairing over the Relay registers the hardware
 /// key". What the row holds is what the Device's hardware holds the
 /// private half of, and the notification key is the one the Device was
-/// told.
+/// told. The test Device's key is software, so the row records
+/// `software-debug` and a debug daemon still admits the connection.
 #[test]
 fn pairing_through_the_relay_registers_the_hardware_key() {
     let relay = LocalRelay::start();
@@ -2832,19 +2833,26 @@ fn pairing_through_the_relay_registers_the_hardware_key() {
 
     let paired = workstation.pair(&device);
 
-    let (noise, hardware, notification): (Vec<u8>, Vec<u8>, Vec<u8>) = workstation
-        .store()
-        .query_row(
-            "SELECT public_key, hardware_key, notification_key FROM devices WHERE device_id = ?1",
-            [&paired.device_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
+    let (noise, hardware, notification, kind): (Vec<u8>, Vec<u8>, Vec<u8>, Option<String>) =
+        workstation
+            .store()
+            .query_row(
+                "SELECT public_key, hardware_key, notification_key, key_kind \
+                 FROM devices WHERE device_id = ?1",
+                [&paired.device_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
     assert_eq!(noise, device.keys.public);
     assert_eq!(hardware, device.hardware.public());
     assert_eq!(hardware.len(), 65);
     assert_eq!(notification, paired.notification_key);
     assert_eq!(notification.len(), 32);
+    assert_eq!(kind.as_deref(), Some("software-debug"));
+
+    // A debug daemon accepts the software-debug row on connect too.
+    let _conn = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
 
     // The desk's list carries neither: a screen has no use for a key.
     let listed = serde_json::to_string(&workstation.devices()).unwrap();

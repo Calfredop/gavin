@@ -10,6 +10,8 @@ import {
   composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
   withPromptExtras,
   buildResumeCommand,
   unresumableConversationReason,
@@ -516,10 +518,12 @@ describe("mintConversationId", () => {
 describe("buildResumeCommand", () => {
   // No prompt. Resume puts the agent back at the end of its OWN
   // transcript; a prompt here would be a fresh instruction on top of a
-  // conversation that already holds the whole task.
+  // conversation that already holds the whole task. The id is one
+  // shell-quoted token so a stored value cannot change the line's shape
+  // under `sh -c` (sec-fix-conversation-id-token-grammar).
   it("reopens the conversation and hands the agent nothing else", () => {
     expect(buildResumeCommand("claude --model opus", "--resume", "u1")).toBe(
-      "claude --model opus --resume u1"
+      `claude --model opus --resume ${shellQuote("u1")}`
     );
   });
 
@@ -545,9 +549,32 @@ describe("buildResumeCommand", () => {
   // a CLAUDE_CONFIG_DIR pointed elsewhere, the check itself failing -- is
   // today's behaviour: build the command and let the CLI answer.
   it("reopens a conversation whose log is present or unknowable", () => {
-    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1")).toBe("claude --resume u1");
+    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+  });
+
+  // An agent can overwrite card_sessions.conversation_id via NameSession.
+  // A stored id outside the opaque-token grammar must not reach `sh -c`
+  // as extra argv or a second command — fall through to reconstruction.
+  it("refuses a stored id outside the opaque token grammar", () => {
+    expect(buildResumeCommand("claude", "--resume", "u1; touch /tmp/pwned")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "id with spaces")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "a".repeat(129))).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "")).toBeNull();
+  });
+
+  it("shell-quotes a grammar-valid id so metacharacters cannot split the line", () => {
+    const id = "rollout-abc123._:OK";
+    expect(buildResumeCommand("claude", "--resume", id)).toBe(
+      `claude --resume ${shellQuote(id)}`
+    );
   });
 });
 
@@ -655,6 +682,35 @@ describe("promptFromRunCommand / commandUsesLaunchAgent / rebindRunCommand", () 
       command: "claude --model opus 'do the thing'",
       conversationId: null,
     });
+  });
+});
+
+describe("isGavinBuiltCommand", () => {
+  const claude = { launchCommand: "claude --model opus", promptArgs: "", sessionIdArgs: "" };
+  const withId = { ...claude, sessionIdArgs: "--session-id" };
+  const opencode = { launchCommand: "opencode", promptArgs: "--prompt=", sessionIdArgs: "" };
+
+  it("accepts what buildRunCommand writes", () => {
+    expect(isGavinBuiltCommand(buildRunCommand(claude.launchCommand, "", "do it")!, claude)).toBe(true);
+    expect(
+      isGavinBuiltCommand(
+        buildRunCommand(withId.launchCommand, "", "do it", "--session-id", "u1")!,
+        withId
+      )
+    ).toBe(true);
+    expect(isGavinBuiltCommand(buildRunCommand("opencode", "--prompt=", "do it")!, opencode)).toBe(true);
+  });
+
+  it("accepts a stored command that already carries a re-launch note", () => {
+    const once = withRelaunchNote(buildRunCommand(claude.launchCommand, "", "do it"), "/p/t.md")!;
+    expect(isGavinBuiltCommand(once, claude)).toBe(true);
+  });
+
+  it("refuses a command no gavin launch could have built", () => {
+    expect(isGavinBuiltCommand("sh -c 'touch x'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude --model opus 'ok'; sh -c 'bad'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude 'x'", claude)).toBe(false);
+    expect(FOREIGN_RELAUNCH_COMMAND).toMatch(/Launch as new session/);
   });
 });
 

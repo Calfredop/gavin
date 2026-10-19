@@ -300,7 +300,7 @@ pub fn diff_since(
     until: Option<&str>,
 ) -> Result<FileDiff, String> {
     let root = repo_root(cwd)?.ok_or_else(|| format!("not a git repository: {cwd}"))?;
-    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-U3"];
+    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U3"];
     if untracked {
         args.extend(["--no-index", "--", "/dev/null", path]);
     } else {

@@ -521,15 +521,17 @@ fn dial(session_id: &str, compat: &DaemonCompat, size: BrowserViewSize, max_fps:
     crate::session::gate(&request, compat).map_err(anyhow::Error::msg)?;
     let socket = protocol::socket_path()?;
     let mut stream = crate::session::connect_local(&socket)?;
-    if let Some(token) = crate::session::read_daemon_token() {
-        let nonce = protocol::random_hex(16)?;
-        write_message(&mut stream, &crate::session::app_hello(&token, &nonce, ConnectionKind::Command))?;
-        // One byte at a time, so nothing after the ack is swallowed.
-        let mut reader = BufReader::with_capacity(1, &mut stream);
-        let ack = read_message(&mut reader)?
-            .ok_or_else(|| anyhow::anyhow!("the daemon closed the connection during the browser view's Hello"))?;
-        crate::session::verify_app_ack(ack, &token, &nonce)?;
+    if compat.daemon_version < crate::session::SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(
+            "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)"
+        );
     }
+    let token = crate::session::read_daemon_token().ok_or_else(|| {
+        anyhow::anyhow!(
+            "the gavin daemon answered but no daemon token file was found — restart it (quit gavin, then relaunch)"
+        )
+    })?;
+    crate::session::prove_and_hello_on_stream(&mut stream, &token, ConnectionKind::Command)?;
     send_watch(stream, &request)
 }
 
