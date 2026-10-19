@@ -86,6 +86,17 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v76 is the server challenge that proves the local daemon before the
+/// app discloses its token (`sec-fix-windows-pipe-server-identity.md`).
+/// `ServerChallenge` / `ServerProof` replace the Hello-era `server_proof`
+/// as the DP-06 control: the old HMAC was keyed by the token the app had
+/// just sent in that same Hello, so a Windows pipe squatter could echo it.
+/// The app refuses any local peer below this version (and any answering
+/// peer when the token file is missing). Windows also gains
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE` and a client-side owner check; those
+/// are not wire changes. `MIN_COMPATIBLE_VERSION` stands, but the app's
+/// local handshake no longer degrades through it.
+///
 /// v75 is the direct-prompt task (`feat-direct-prompt-task.md`): a
 /// `kind: task` card whose `direct: true` line says its body goes to the
 /// agent exactly as written, with none of gavin's framing around it.
@@ -961,7 +972,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 75;
+pub const PROTOCOL_VERSION: u32 = 76;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1989,21 +2000,30 @@ pub enum Request {
         #[serde(default)]
         agent_conversation_id: Option<String>,
     },
-    /// The first request on a Unix-socket connection, establishing the
-    /// client's identity for the connection's whole life
+    /// Prove the peer holds this user's daemon token *before* the app
+    /// sends it (v76, DP-06). The app's nonce is answered as
+    /// `Response::ServerProof` = HMAC(token, `"gavin-server-challenge-v1" ||
+    /// nonce`); the domain separator keeps a Hello-era proof from being
+    /// replayed as one. Only then does the app send `Hello` with the
+    /// token. A peer that cannot answer is refused -- there is no
+    /// fail-open for an older version or a missing token file.
+    ServerChallenge {
+        nonce: String,
+    },
+
+    /// The first identity-establishing request on a local connection
     /// (`sec-fix-client-identity.md`, remote-access design §4). Optional
-    /// and, if sent, must be first; a second `Hello` on one connection is
-    /// refused. Sending anything else first leaves the connection `local`,
-    /// which is what keeps every pre-v35 client working unchanged.
+    /// and, if sent, must be the first *Hello*; a second `Hello` on one
+    /// connection is refused. The app now sends `ServerChallenge` before
+    /// this (v76); other clients may still lead with `Hello`.
     ///
     /// `auth` decides the role: the daemon token yields `app`, a session
     /// token yields `agent` scoped to that session, nothing yields
-    /// `local`. `nonce` is the client's random challenge; the daemon
-    /// answers `HelloAck.server_proof` = HMAC(daemon_token, nonce), which
-    /// lets the app tell the real daemon from a socket squatter (DP-06)
-    /// without the token ever crossing back in the clear. `client` is
-    /// advisory -- it names the binary for the Sessions manager; the role
-    /// never comes from it.
+    /// `local`. `nonce` is still answered as `HelloAck.server_proof` =
+    /// HMAC(daemon_token, nonce) for the already-authenticated channel;
+    /// the DP-06 squat check is `ServerChallenge`, not this field.
+    /// `client` is advisory -- it names the binary for the Sessions
+    /// manager; the role never comes from it.
     Hello {
         client: String,
         protocol_version: u32,
@@ -2849,6 +2869,10 @@ pub fn min_version_for(req: &Request) -> u32 {
         // borrow, so no FEATURE_MIN_VERSION entry is owed.
         Request::ReturnPtySize { .. } => 74,
 
+        // Server challenge before Hello (v76). One new TYPE; the only
+        // sender is the Tauri host, so no FEATURE_MIN_VERSION entry.
+        Request::ServerChallenge { .. } => 76,
+
         Request::Shutdown => 12,
 
         // Client identity on the local socket (phase 1 of the
@@ -3172,11 +3196,26 @@ fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     hex_encode(&outer.finalize())
 }
 
-/// The daemon's answer to a `Hello` nonce: HMAC(daemon token, nonce). The
-/// app computes the same from the token file and compares, which proves
-/// the peer holds the token without the token itself crossing back (DP-06).
+/// The daemon's answer to a `Hello` nonce: HMAC(daemon token, nonce).
+/// Kept for the Hello round-trip after `challenge_proof` has already
+/// authenticated the peer; it is no longer the DP-06 squat check — a
+/// peer that just received the token in that Hello can compute this.
 pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
     hmac_sha256_hex(daemon_token.as_bytes(), nonce.as_bytes())
+}
+
+/// Domain separator for `challenge_proof`, so a Hello-era HMAC value can
+/// never be replayed as a `ServerProof` (or the other way around).
+const SERVER_CHALLENGE_CONTEXT: &[u8] = b"gavin-server-challenge-v1";
+
+/// The daemon's answer to `ServerChallenge`: HMAC(token,
+/// `"gavin-server-challenge-v1" || nonce`). The app verifies this against
+/// its token file *before* sending the token in `Hello` (DP-06, v76).
+pub fn challenge_proof(daemon_token: &str, nonce: &str) -> String {
+    let mut msg = Vec::with_capacity(SERVER_CHALLENGE_CONTEXT.len() + nonce.len());
+    msg.extend_from_slice(SERVER_CHALLENGE_CONTEXT);
+    msg.extend_from_slice(nonce.as_bytes());
+    hmac_sha256_hex(daemon_token.as_bytes(), &msg)
 }
 
 /// The domain separator for `pairing_sas`. A fixed ASCII prefix so this
@@ -3493,6 +3532,9 @@ pub enum Response {
         #[serde(default)]
         workspace_root: Option<String>,
     },
+    /// The answer to `Request::ServerChallenge` (v76): HMAC of the daemon
+    /// token over the domain-separated nonce. See `challenge_proof`.
+    ServerProof { proof: String },
     /// A request refused by `authorize` because the connection's role may
     /// not make it. Only ever sent to a connection that sent a `Hello` or
     /// completed a remote handshake -- a client that by construction knows
@@ -6936,6 +6978,15 @@ mod tests {
         assert_ne!(server_proof("tokA", "n1"), server_proof("tokB", "n1"));
     }
 
+    /// The challenge proof is separated from the Hello-era proof so one
+    /// cannot be replayed as the other, and is deterministic in the nonce.
+    #[test]
+    fn challenge_proof_differs_from_hello_proof_and_binds_the_nonce() {
+        assert_eq!(challenge_proof("tok", "n1"), challenge_proof("tok", "n1"));
+        assert_ne!(challenge_proof("tok", "n1"), challenge_proof("tok", "n2"));
+        assert_ne!(challenge_proof("tok", "n1"), server_proof("tok", "n1"));
+    }
+
     /// A hashed token is not the token, and equal tokens hash equal.
     #[test]
     fn hash_token_is_stable_and_hides_the_token() {
@@ -8313,7 +8364,9 @@ mod tests {
         // SetPlanFrontmatterField key -- the direct-prompt task. No new
         // variant, so this match is blind to it; daemonCompat.ts's
         // `directPrompt` is its only gate.
-        assert_eq!(PROTOCOL_VERSION, 75);
+        // v76: Request::ServerChallenge + Response::ServerProof -- prove
+        // the daemon before the app discloses its token (DP-06).
+        assert_eq!(PROTOCOL_VERSION, 76);
     }
 
     #[test]
@@ -8830,6 +8883,8 @@ mod tests {
                 nonce: "n".into(),
                 connection: None,
             },
+            // v76: prove the daemon before disclosing the token.
+            Request::ServerChallenge { nonce: "n".into() },
             // v42's remote access: pairing, the device list, revocation.
             Request::BeginPairing,
             Request::ConfirmPairing { device_id: "d1".into() },
@@ -9065,6 +9120,8 @@ mod tests {
         expected.insert(72, 2);
         // ReturnPtySize -- the desk taking its PTY size back.
         expected.insert(74, 1);
+        // ServerChallenge -- prove the daemon before disclosing the token.
+        expected.insert(76, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

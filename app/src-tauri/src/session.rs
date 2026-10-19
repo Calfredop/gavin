@@ -3169,11 +3169,11 @@ impl CommandConnection {
 /// main one does.
 fn open_command_stream(socket: &Path, compat: &DaemonCompat) -> anyhow::Result<Stream> {
     let conn = Mutex::new(connect_for_handshake(socket)?);
-    if compat.daemon_version >= HELLO_MIN_VERSION {
-        if let Some(token) = read_daemon_token() {
-            app_handshake_command(&conn, &token)?;
-        }
+    if compat.daemon_version < SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(DAEMON_TOO_OLD_FOR_CHALLENGE);
     }
+    let token = read_daemon_token().ok_or_else(|| anyhow::anyhow!(MISSING_TOKEN_BESIDE_PEER))?;
+    app_handshake_command(&conn, &token)?;
     Ok(conn.into_inner().expect("command connection mutex poisoned"))
 }
 
@@ -3301,7 +3301,8 @@ fn send_command(conn: &Mutex<Stream>, req: &Request) -> anyhow::Result<Response>
 /// older daemon that never wrote one, or a first launch racing the write
 /// (the connect that spawned the daemon has already returned by the time
 /// this is read, and the token is written before the socket binds, so this
-/// only ever misses against a pre-v35 daemon).
+/// only ever misses against a pre-v35 daemon). An answering peer beside a
+/// missing file is refused (v76): it is not treated as `local`.
 pub(crate) fn read_daemon_token() -> Option<String> {
     std::fs::read_to_string(protocol::daemon_token_path().ok()?)
         .ok()
@@ -3311,8 +3312,8 @@ pub(crate) fn read_daemon_token() -> Option<String> {
 
 /// Check a `HelloAck` the app received: the daemon must have granted the
 /// `app` role and returned a `server_proof` equal to HMAC(token, nonce).
-/// A mismatch is the DP-06 case -- the app connected to something holding
-/// the socket path that does NOT hold the token -- and is a hard error.
+/// Reached only after `verify_challenge_proof` has already authenticated
+/// the peer; a mismatch here is still a hard error.
 pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow::Result<()> {
     match ack {
         Response::HelloAck { role, server_proof, .. } => {
@@ -3332,14 +3333,70 @@ pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow:
     }
 }
 
-/// Send a `Hello` with the daemon token on the command connection and
-/// verify the proof. The command connection has already exchanged the
-/// version probe, which is fine: `Hello` need only be the first *Hello*,
-/// and both real clients probe the version before it.
+/// Check a `ServerProof` the app received before disclosing the token.
+/// A mismatch is the DP-06 case -- the peer does not hold this user's
+/// daemon token -- and is a hard error.
+pub(crate) fn verify_challenge_proof(resp: Response, token: &str, nonce: &str) -> anyhow::Result<()> {
+    match resp {
+        Response::ServerProof { proof } => {
+            let expected = protocol::challenge_proof(token, nonce);
+            if proof != expected {
+                anyhow::bail!(
+                    "the gavin daemon's identity proof did not match — the socket may be held by \
+                     another process; quit gavin and relaunch"
+                );
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("unexpected reply to ServerChallenge: {other:?}"),
+    }
+}
+
+/// Prove the peer holds `token` without disclosing it, then present Hello
+/// on a mutex-held command connection. Every Hello site that owns a
+/// `Mutex<Stream>` goes through here.
 fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
+    prove_daemon(conn, token)?;
     let nonce = protocol::random_hex(16)?;
     let ack = send_command(conn, &app_hello(token, &nonce, protocol::ConnectionKind::Command))?;
     verify_app_ack(ack, token, &nonce)
+}
+
+/// The pre-Hello challenge on a mutex-held connection.
+fn prove_daemon(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    let resp = send_command(conn, &Request::ServerChallenge { nonce: nonce.clone() })?;
+    verify_challenge_proof(resp, token, &nonce)
+}
+
+/// Prove the peer holds `token` without disclosing it, then present Hello
+/// on a bare stream. Every Hello site that owns a `Stream` goes through
+/// here (or through `prove_daemon_on_stream` + `app_hello` when the
+/// surrounding code must interleave its own reads).
+pub(crate) fn prove_and_hello_on_stream(
+    stream: &mut Stream,
+    token: &str,
+    connection: protocol::ConnectionKind,
+) -> anyhow::Result<()> {
+    prove_daemon_on_stream(stream, token)?;
+    let nonce = protocol::random_hex(16)?;
+    write_message(stream, &app_hello(token, &nonce, connection))?;
+    let mut reader = BufReader::with_capacity(1, &mut *stream);
+    let ack = read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
+    verify_app_ack(ack, token, &nonce)
+}
+
+/// The pre-Hello challenge on a bare stream. Call sites that then send
+/// Hello themselves (command-lane redial, forwarding) use this so none
+/// can skip the step.
+pub(crate) fn prove_daemon_on_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    write_message(stream, &Request::ServerChallenge { nonce: nonce.clone() })?;
+    let mut reader = BufReader::with_capacity(1, &mut *stream);
+    let resp = read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the server challenge"))?;
+    verify_challenge_proof(resp, token, &nonce)
 }
 
 /// The `Hello` that presents this app to its daemon on one of its two
@@ -3361,56 +3418,57 @@ pub(crate) fn app_hello(token: &str, nonce: &str, connection: protocol::Connecti
     }
 }
 
-/// Send a `Hello` with the daemon token directly on the streaming
-/// connection and verify the proof. Read with a one-byte reader so no push
-/// that follows the ack is swallowed -- the same hazard the daemon tests'
+/// Send the challenge, then a `Hello` with the daemon token, on the
+/// streaming connection. Read with a one-byte reader so no push that
+/// follows the ack is swallowed -- the same hazard the daemon tests'
 /// `line_reader` guards, though at bootstrap nothing is attached yet.
 fn app_handshake_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
-    let nonce = protocol::random_hex(16)?;
-    write_message(stream, &app_hello(token, &nonce, protocol::ConnectionKind::Push))?;
-    let mut reader = BufReader::with_capacity(1, &mut *stream);
-    let ack = read_message(&mut reader)?
-        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
-    verify_app_ack(ack, token, &nonce)
+    prove_and_hello_on_stream(stream, token, protocol::ConnectionKind::Push)
 }
 
-/// The first daemon version that understands `Hello`.
+/// The first daemon version that understands `Hello`. Kept for history;
+/// the app's local handshake now requires `SERVER_CHALLENGE_MIN_VERSION`.
+#[allow(dead_code)]
 pub(crate) const HELLO_MIN_VERSION: u32 = 35;
 
-/// Present the app's identity on both connections, when the daemon is new
-/// enough to understand `Hello`. Both become `app` so neither is narrowed
-/// if `require_local_token` is ever turned on: the command connection
-/// carries `CreateSession` (privileged, refused to an untokened local
-/// under the switch), and the streaming connection is given the same
-/// identity so it is `app` too rather than relying on the switch never
-/// reaching the requests it carries.
-///
-/// A daemon older than v35, or a missing token file, is not an error: the
-/// app skips the handshake and continues as `local`, which in phase 1 has
-/// today's full reach. A wrong server_proof IS an error -- that is DP-06.
+/// The first daemon version that answers `ServerChallenge` (v76). The
+/// app refuses any local peer below this — there is no fail-open to the
+/// degraded banner or to `local`.
+pub(crate) const SERVER_CHALLENGE_MIN_VERSION: u32 = 76;
+
+const DAEMON_TOO_OLD_FOR_CHALLENGE: &str =
+    "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
+
+const MISSING_TOKEN_BESIDE_PEER: &str =
+    "the gavin daemon answered but no daemon token file was found — restart it (quit gavin, then relaunch)";
+
+/// Present the app's identity on both connections. Both become `app` so
+/// neither is narrowed if `require_local_token` is on. A peer that cannot
+/// answer `ServerChallenge`, or an answering peer with no token file, is
+/// refused — DP-06 has no fail-open.
 fn app_handshake(
     compat: &DaemonCompat,
     command_conn: &Mutex<Stream>,
     stream: &mut Stream,
 ) -> anyhow::Result<()> {
     let Some(token) = read_daemon_token() else {
-        return Ok(());
+        anyhow::bail!(MISSING_TOKEN_BESIDE_PEER);
     };
     app_handshake_with_token(compat, command_conn, stream, &token)
 }
 
 /// The handshake with the token supplied rather than read from this
 /// machine's token file: a link to a daemon on another host presents the
-/// token its bridge read THERE (`remote.rs`). Same gate on the daemon's
-/// version, same proof check, same two connections.
+/// token its bridge read THERE (`remote.rs`). Same challenge, same
+/// refusal below `SERVER_CHALLENGE_MIN_VERSION`, same two connections.
 pub(crate) fn app_handshake_with_token(
     compat: &DaemonCompat,
     command_conn: &Mutex<Stream>,
     stream: &mut Stream,
     token: &str,
 ) -> anyhow::Result<()> {
-    if compat.daemon_version < HELLO_MIN_VERSION {
-        return Ok(());
+    if compat.daemon_version < SERVER_CHALLENGE_MIN_VERSION {
+        anyhow::bail!(DAEMON_TOO_OLD_FOR_CHALLENGE);
     }
     app_handshake_command(command_conn, token)?;
     app_handshake_stream(stream, token)?;
@@ -4514,11 +4572,22 @@ mod command_connection_tests {
 mod app_hello_tests {
     use super::*;
 
-    /// Plays the daemon for one `Hello`: reads it, answers with the proof
-    /// the app expects, and hands the `Hello` back.
+    /// Plays the daemon for one handshake: answers the challenge, then
+    /// Hello, and hands the `Hello` back.
     fn take_hello(daemon: Stream, token: &'static str) -> std::thread::JoinHandle<Request> {
         std::thread::spawn(move || {
             let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let challenge: Request = read_message(&mut reader).unwrap().unwrap();
+            let Request::ServerChallenge { nonce: challenge_nonce } = &challenge else {
+                panic!("expected ServerChallenge, got {challenge:?}")
+            };
+            write_message(
+                &mut &daemon,
+                &Response::ServerProof {
+                    proof: protocol::challenge_proof(token, challenge_nonce),
+                },
+            )
+            .unwrap();
             let hello: Request = read_message(&mut reader).unwrap().unwrap();
             let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
             write_message(
@@ -4577,6 +4646,144 @@ mod app_hello_tests {
 
         assert_eq!(connection_of(command_daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
         assert_eq!(connection_of(stream_daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
+    }
+}
+
+/// DP-06 / Windows pipe squat: the app must not accept a peer that cannot
+/// prove it holds the daemon token *before* seeing it, must not fail open
+/// for a pre-challenge daemon, and must not treat a missing token file as
+/// "continue as local" beside an answering peer.
+#[cfg(test)]
+mod server_identity_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// A peer that answers Hello the way a squatter can: HMAC over the
+    /// token and nonce the Hello just disclosed. It never held the token.
+    fn squatter_that_learns_token_from_hello(daemon: Stream) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            while let Ok(Some(req)) = read_message(&mut reader) {
+                match req {
+                    Request::Hello { auth, nonce, .. } => {
+                        let protocol::HelloAuth::DaemonToken { token: disclosed } = auth else {
+                            panic!("squatter expected a DaemonToken Hello, got {auth:?}");
+                        };
+                        write_message(
+                            &mut &daemon,
+                            &Response::HelloAck {
+                                role: "app".to_string(),
+                                daemon_version: protocol::PROTOCOL_VERSION,
+                                session_id: None,
+                                server_proof: Some(protocol::server_proof(&disclosed, &nonce)),
+                                workspace_root: None,
+                            },
+                        )
+                        .unwrap();
+                    }
+                    // After the fix the app challenges first; a squatter
+                    // that never held the token cannot answer. Refuse so
+                    // the handshake fails closed rather than hanging.
+                    other => {
+                        write_message(
+                            &mut &daemon,
+                            &Response::Error {
+                                message: format!("squatter cannot answer {other:?}"),
+                            },
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn a_peer_that_only_learns_the_token_from_hello_cannot_complete_handshake() {
+        let (client, daemon) = Stream::pair().unwrap();
+        let _squatter = squatter_that_learns_token_from_hello(daemon);
+        let err = app_handshake_command(&Mutex::new(client), "real-daemon-token")
+            .expect_err("a squatter that learns the token from Hello must not pass");
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.is_empty(),
+            "handshake must fail with a named error, got empty"
+        );
+    }
+
+    #[test]
+    fn a_daemon_reporting_version_34_is_refused() {
+        let (command, _command_daemon) = Stream::pair().unwrap();
+        let (mut stream, _stream_daemon) = Stream::pair().unwrap();
+        let compat = DaemonCompat {
+            daemon_version: 34,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: true,
+        };
+        let err = app_handshake_with_token(&compat, &Mutex::new(command), &mut stream, "t0k3n")
+            .expect_err("a daemon older than the server challenge must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("restart") || msg.contains("too old"),
+            "refusal must name restart, got: {msg}"
+        );
+    }
+
+    /// Divert `$HOME` so `read_daemon_token` cannot see this machine's
+    /// real token file. Locked because the suite is multi-threaded and
+    /// `app_support_dir` reads the process environment.
+    fn with_empty_token_home<R>(body: impl FnOnce() -> R) -> R {
+        static LOCK: StdMutex<()> = StdMutex::new(());
+        let _guard = LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: held under LOCK; restored before unlock. The suite
+        // otherwise never mutates HOME (protocol's resolve_app_support_dir
+        // comment); this test is the one that must.
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        unsafe {
+            match prev_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_xdg {
+                Some(x) => std::env::set_var("XDG_DATA_HOME", x),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+        match result {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn an_answering_peer_with_no_token_file_is_refused() {
+        with_empty_token_home(|| {
+            assert!(
+                read_daemon_token().is_none(),
+                "temp HOME must not expose a daemon token"
+            );
+            let (command, _command_daemon) = Stream::pair().unwrap();
+            let (mut stream, _stream_daemon) = Stream::pair().unwrap();
+            let compat = DaemonCompat {
+                daemon_version: protocol::PROTOCOL_VERSION,
+                app_version: protocol::PROTOCOL_VERSION,
+                degraded: false,
+            };
+            let err = app_handshake(&compat, &Mutex::new(command), &mut stream)
+                .expect_err("a missing token beside an answering peer must be refused");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("token") || msg.contains("restart"),
+                "refusal must name the token or a restart, got: {msg}"
+            );
+        });
     }
 }
 

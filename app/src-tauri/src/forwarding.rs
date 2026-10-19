@@ -468,13 +468,8 @@ fn connect_forward(socket: &Path) -> anyhow::Result<Stream> {
 }
 
 fn handshake_forward(stream: &Stream, token: &str) -> anyhow::Result<()> {
-    let nonce = protocol::random_hex(16)?;
-    let hello = crate::session::app_hello(token, &nonce, ConnectionKind::Forward);
-    write_message(&mut &*stream, &hello)?;
-    let mut reader = BufReader::with_capacity(1, stream.try_clone()?);
-    let ack = read_message(&mut reader)?
-        .ok_or_else(|| anyhow::anyhow!("daemon closed during forwarding Hello"))?;
-    crate::session::verify_app_ack(ack, token, &nonce)
+    let mut owned = stream.try_clone()?;
+    crate::session::prove_and_hello_on_stream(&mut owned, token, ConnectionKind::Forward)
 }
 
 /// Test-only: a Hello that claims Forward, used by the unit that pins

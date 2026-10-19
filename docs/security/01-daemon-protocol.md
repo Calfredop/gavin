@@ -21,7 +21,7 @@ adversaries A1–A3, surfaces S1–S12, accepted-by-design AD-1..AD-7.
 | DP-03 | Medium | A2 (A1 boundary) | vulnerability | yes | Path-taking writes are not confined: `SetPlanFrontmatterField`, `SetChecklistItem`, `InitGavinRoot`, `CreateGavinContext`, `AddExternalGavinContext` act on any path — a guard `DeleteCardFile` has but they don't. |
 | DP-04 | Low | A1 | boundary (AD-1/AD-5) | n.a. (observed) | Queued-input text sits in `registry.sqlite` in plaintext; DB files are `0644` (not `0600`). Threat-model correction: screen snapshots are NOT persisted. |
 | DP-05 | Low | A2 | vulnerability | no (argued) | No caps on sessions, connections, or threads; a hostile repo's plan files are read uncapped on every rescan, and symlinked dirs are followed out of the repo. |
-| DP-06 | Low | A1 | boundary (AD-1) | no (argued) | Socket squatting: a same-user process that binds the socket path first becomes "the daemon" and MITMs the app (no server authentication either). |
+| DP-06 | Low (macOS/Linux); High (Windows) | A1 / cross-user on Windows | fixed (v76) | argued; Windows VM human-tested | Socket/pipe squatting: on Unix still AD-1 (same-uid). On Windows the pipe namespace is machine-global — fixed by `FILE_FLAG_FIRST_PIPE_INSTANCE`, a client-side owner SID check, and `ServerChallenge` before Hello. |
 
 ---
 
@@ -282,30 +282,48 @@ was not needed to establish the absence of a cap, which is visible in the code.)
 
 ---
 
-## DP-06 — Socket squatting: a rogue daemon impersonates gavin to the app
+## DP-06 — Socket / pipe squatting: a rogue daemon impersonates gavin to the app
 
-**What.** `bind_server` (`server.rs:3439`): if the socket path exists and a
-`UnixStream::connect` to it succeeds, the daemon concludes "another gavin-daemon is
-already listening" and **bails**. So a same-user process that binds
-`~/Library/Application Support/gavin/daemon.sock` *first* holds the name, and the real
-daemon refuses to start. Because there is no *server* authentication either (the app
-does not verify what it connected to beyond `GetProtocolVersion`), the app then talks to
-the impostor: it can serve fabricated boards and trees, capture every keystroke and
-pasted secret the human types into "terminals," and spawn real PTYs of its own.
+**What.** `bind_server`: if a connect to the endpoint succeeds, the daemon concludes
+"another gavin-daemon is already listening" and **bails**. On macOS/Linux the endpoint
+is a socket file in a `0700` per-user directory, so a squatter is same-uid (AD-1). On
+Windows the endpoint is a machine-global named pipe (`\\.\pipe\gavin-…`, hashed from
+`%LOCALAPPDATA%\gavin\daemon[-dev].sock`), so another local account that creates the
+name first — with a DACL that admits the victim — becomes the app's daemon: the app's
+`connect_or_spawn` connects and spawns nothing, and the real daemon's bind probe
+treats the foreign pipe as "already listening".
 
-**Where.** `server.rs:3439`–`3452` (`bind_server` probe-and-bail), `protocol/lib.rs:2160`
-(`socket_path` — a fixed, predictable location).
+The original DP-06 control (Hello's `server_proof` = HMAC(token, nonce)) could not
+tell the daemon from a squatter: both inputs were fields of the Hello the app had
+just sent. It was also skipped for any peer reporting version 5..34 and whenever the
+token file was missing.
 
-**Impact per adversary.** **A1**, boundary (AD-1). A same-user process can already read
-`~/Library` and exec anything; squatting adds no privilege it lacked. It is recorded
-because it is the concrete mechanism by which "A1 can reach the daemon" becomes "A1 is a
-persistent man-in-the-middle of the human's app," which is the shape a client-identity
-scheme (below) has to defeat, and which pass 05 must weigh for any remote design.
-Not applicable to A2/A3 today.
+**Fix (v76, `sec-fix-windows-pipe-server-identity.md`).** Three layers, one change:
 
-**Reproduction.** Not reproduced — argued from reading `bind_server`.
+1. Windows servers pass `FILE_FLAG_FIRST_PIPE_INSTANCE` on the first instance
+   (`Listener::bind_at`, `Stream::pair`); later accept instances do not. Pair names
+   come from `random_hex`, not pid+counter.
+2. Windows clients refuse a server whose process token user SID is not their own
+   (`connect_at` after `CreateFileW`). `bind_server` / `connect_or_spawn` surface
+   that as "held by another account" and do not spawn onto a held name.
+3. Before any Hello, the app sends `ServerChallenge { nonce }` and accepts only
+   `ServerProof` = HMAC(token, `"gavin-server-challenge-v1" || nonce`). A peer below
+   v76, or an answering peer with no token file, is refused with a restart message
+   — no fail-open to the degraded banner or to `local`.
 
-**AD.** AD-1.
+**Where.** `crates/protocol/src/transport.rs` (pipe create/connect), 
+`app/src-tauri/src/session.rs` (challenge + handshake), `crates/daemon/src/server.rs`
+(ServerChallenge handler, bind_server probe).
+
+**Impact per adversary.** **A1** on Unix — still AD-1. **Cross-user on Windows** —
+was a real privilege escalation into the victim's daemon channel; the fix closes it.
+Not applicable to A2/A3 via this path.
+
+**Reproduction.** Argued from source on the audit host (no Windows VM). Regression
+tests cover the challenge and fail-open removals; a two-account Windows VM check is
+filed as a Human test on the fix card.
+
+**AD.** AD-1 on macOS/Linux only. Windows is no longer AD-1 for this finding.
 
 ---
 

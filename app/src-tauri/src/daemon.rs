@@ -32,16 +32,26 @@ pub fn connect_or_spawn(
     timeout: Duration,
     mut spawn_daemon: impl FnMut() -> anyhow::Result<std::process::Child>,
 ) -> anyhow::Result<Stream> {
-    if let Ok(stream) = Stream::connect(socket_path) {
-        return Ok(stream);
+    match Stream::connect(socket_path) {
+        Ok(stream) => return Ok(stream),
+        // A Windows pipe held by another account: fail closed. Spawning
+        // our daemon onto a name we cannot take would loop forever.
+        Err(e) if protocol::transport::pipe_held_by_another_account(&e) => {
+            return Err(e.into());
+        }
+        Err(_) => {}
     }
 
     spawn_daemon()?;
 
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(stream) = Stream::connect(socket_path) {
-            return Ok(stream);
+        match Stream::connect(socket_path) {
+            Ok(stream) => return Ok(stream),
+            Err(e) if protocol::transport::pipe_held_by_another_account(&e) => {
+                return Err(e.into());
+            }
+            Err(_) => {}
         }
         if Instant::now() >= deadline {
             anyhow::bail!(
