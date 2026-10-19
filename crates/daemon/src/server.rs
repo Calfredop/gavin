@@ -8142,6 +8142,24 @@ fn serve_connection(
             None => break,
         };
 
+        // A Device's identity is fixed by the transport: re-check the
+        // store on every request so a revocation stops work already
+        // buffered in this reader, not only the next empty read after
+        // the stream is shut.
+        if fixed_by_transport {
+            if let Some(device_id) = identity.device_id.as_deref() {
+                if let Some(refusal) = manager.device_refusal(device_id) {
+                    let _ = write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::Error {
+                            message: refusal.to_string(),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+
         // Prove the daemon before the client discloses its token (v76,
         // DP-06). Not authorized and not dispatched -- it answers from
         // the token on disk, and never establishes a role.
@@ -13716,6 +13734,54 @@ mod tests {
         let (again, _) = run_ceremony(&manager, &second, "second phone, same photo");
         let err = again.unwrap_err();
         assert!(err.to_string().contains("no pairing is in progress"), "{err}");
+    }
+
+    /// A store-only revocation (no stream shutdown) must still stop the
+    /// next request on a transport-fixed connection, including one that
+    /// was already buffered before the loop read it.
+    #[test]
+    fn a_revoked_device_is_refused_on_the_next_buffered_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+
+        let (client, server) = Stream::pair().unwrap();
+        let serve = Arc::clone(&manager);
+        let join = std::thread::spawn(move || {
+            handle_connection_as(server, serve, ClientIdentity::remote("dev-1"))
+        });
+        let mut client = client;
+        // Wait until the loop is past registration.
+        let first = request(&mut client, &Request::GetProtocolVersion);
+        assert!(matches!(first, Response::Forbidden { .. }), "{first:?}");
+
+        // Two requests into the near end; revoke the store row between
+        // them without shutting the stream, so only the loop's own check
+        // can refuse the second.
+        write_message(&mut client, &Request::GetProtocolVersion).unwrap();
+        manager.trust().unwrap().revoke("dev-1").unwrap();
+        write_message(&mut client, &Request::ListSessions).unwrap();
+
+        let mut reader = line_reader(client.try_clone().unwrap());
+        // The first may still be answered (it was already past the check
+        // or was the liveness probe above); drain until the refusal.
+        let mut saw_refusal = false;
+        for _ in 0..4 {
+            let msg: Option<Response> = read_message(&mut reader).unwrap();
+            match msg {
+                Some(Response::Error { message }) if message.contains("revoked") => {
+                    saw_refusal = true;
+                    break;
+                }
+                Some(Response::Forbidden { .. }) | Some(Response::ProtocolVersion { .. }) => {
+                    continue;
+                }
+                Some(other) => panic!("unexpected response before refusal: {other:?}"),
+                None => break,
+            }
+        }
+        assert!(saw_refusal, "expected a revoked Error on the buffered request");
+        let _ = join.join();
     }
 
     /// Revoking from the wire is the store's half AND the connections'
