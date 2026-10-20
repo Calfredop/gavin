@@ -2451,7 +2451,7 @@ export async function recordMcpForeignChoice(workspaceId: string, choice: McpFor
 
 /// Profiles a workspace may resolve against: built-ins ∪ app customs ∪
 /// that workspace's locals. Locals win on id collision.
-function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
+export function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   return mergeAgentProfiles(
     get(agentProfilesStore),
@@ -3891,6 +3891,54 @@ export async function addTab(targetSessionId: string): Promise<void> {
   const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: newId }));
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+/// `addTab`, but the new tab runs an agent instead of a bare shell --
+/// the tab row's "New agent tab" button. No `profileId` launches the
+/// workspace's own agent; one names a profile picked from the button's
+/// dropdown, resolved the way a fallback launch resolves it
+/// (`agentForProfile`), so the workspace's stored agent is untouched.
+///
+/// A launch is more than a command, exactly as on a page `createPage`
+/// opens with an agent: Cursor's MCP answer is settled at the last
+/// trusted point, and failure detection is armed, or a broken agent in
+/// the new tab reads as one that finished.
+export async function addAgentTab(targetSessionId: string, profileId?: string): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const { workspaceId } = location;
+  const root = workspaceRootPath(workspaceId);
+  const base = resolvedAgentFor(workspaceId, root);
+  const chosen = profileId && profileId !== base.profileId ? agentForProfile(workspaceId, profileId) : base;
+  const prepared = root ? await prepareCursorAgentLaunch(workspaceId, root, chosen, "interactive") : chosen;
+  if (typeof prepared === "string") {
+    setError(prepared);
+    return;
+  }
+  const agent = prepared;
+  let newId: string;
+  try {
+    newId = await createDaemonSession(
+      freshSessionCwd(workspaceId),
+      agent.launchCommand,
+      root ?? undefined,
+      profileIdForLaunch(agent)
+    );
+  } catch (e) {
+    reportRequestError(e);
+    return;
+  }
+  void armFailureDetection(newId, agent.failurePatterns, agent.untrustedOsc133);
+  // Re-read: the launch awaited (Cursor's scan, the spawn), and a tab
+  // opened or closed on this page meanwhile must survive the write.
+  const now = get(layoutState);
+  const page = now.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === location.pageId);
+  const newTree = layout.addTab(page?.layout ?? location.tree, targetSessionId, newId);
+  const withTree = workspace.updatePageLayout(now, workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, workspaceId, location.pageId, newId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: newId }));
+  await persistWorkspaces(data.workspaces, now.activeWorkspaceId);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {

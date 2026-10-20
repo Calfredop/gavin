@@ -66,6 +66,7 @@
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
+  import NewAgentTabButton from "$lib/panes/NewAgentTabButton.svelte";
   import NextWaitingButton from "$lib/agents/NextWaitingButton.svelte";
   import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
@@ -855,6 +856,7 @@
             onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
           />
         {/if}
+        <NewAgentTabButton target={active} />
         <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
         <span class="divider"></span>
         <IconButton icon={Columns2} label="Split Right" size={14} shortcut="split-right" onclick={() => split("row")} />
