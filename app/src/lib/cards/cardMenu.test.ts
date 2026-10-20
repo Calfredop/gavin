@@ -82,6 +82,9 @@ vi.mock("$lib/core/layoutState", () => ({
   // export is an unmocked-import throw at the click.
   workspaceRootPath: vi.fn(() => "/p"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
+  // Develop settles Cursor's MCP answer before it launches; none of these
+  // fixtures is a Cursor profile, so the agent passes through unchanged.
+  prepareCursorAgentLaunch: vi.fn(async (_ws: string, _root: string, agent: unknown) => agent),
 
   // null = no conversation id, which is what a daemon too old to persist
   // one gives every launch. These tests are about which menu entries

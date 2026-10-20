@@ -64,11 +64,12 @@ describe("resolution", () => {
   // app-wide efforts in: a path that forgot would launch at the agent's
   // default with the setting still showing in the panel. `defaultAgent`
   // trails `agentEfforts` in the argument list, so a call ending in it
-  // passed both.
+  // passed both. Matched as the pair rather than as the call's end:
+  // Cursor's MCP input now trails `defaultAgent`.
   it("passes the app-wide efforts to every resolveAgentConfig in layoutState", () => {
     const layout = source("layoutState.ts");
     const calls = layout.split("resolveAgentConfig(").length - 1;
-    const withEfforts = (layout.match(/\.defaultAgent\n\s*\)/g) ?? []).length;
+    const withEfforts = (layout.match(/\.agentEfforts,\n\s*\S+\.defaultAgent\b/g) ?? []).length;
     expect(calls).toBeGreaterThan(0);
     expect(withEfforts).toBe(calls);
   });

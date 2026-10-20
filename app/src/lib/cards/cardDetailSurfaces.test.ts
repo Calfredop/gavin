@@ -77,7 +77,7 @@ describe("the session bar", () => {
     const bar = at(DETAIL, 'class="session-bar');
     expect(bar).toBeLessThan(at(DETAIL, '<div class="scroll"'));
     // And the card's own text is below it, which is the inversion.
-    expect(bar).toBeLessThan(at(DETAIL, '<div class="body-preview">'));
+    expect(bar).toBeLessThan(at(DETAIL, 'class="body-preview"'));
   });
 
   it("asks cardDetail.ts what the situation is instead of nesting the branches again", () => {
