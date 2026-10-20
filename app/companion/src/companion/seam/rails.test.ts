@@ -380,9 +380,18 @@ describe("organizing with an agent from the phone", () => {
     return agentPresses({ workspace, daemonBlocked: null, unplacedCount: unplaced.length });
   }
   const run = () => get(layoutState).workspaces.find((w) => w.id === DEMO.atlas)!.orchestrationAgent;
+  /// A Workstation where atlas-api's cards need no first-run review, so a
+  /// launch reaches the agent: the gate is the last test's subject, and
+  /// the desk's own Organize tests switch it off the same way
+  /// (orchestrationAgentRun.test.ts mocks `cardReviewed` true).
+  function reviewOff(): DemoWorkstation {
+    const demo = createDemoWorkstation();
+    demo.state.workspaces.workspaces.find((w) => w.id === DEMO.atlas)!.requireReview = false;
+    return demo;
+  }
 
   it("is the desk's Organize: an agent in the root, recorded as the workspace's run, shown here", async () => {
-    const demo = await visit();
+    const demo = await visit(reviewOff());
     const at = demo.received().length;
     expect(await organizeRails(DEMO.atlas, presses().organize)).toBeNull();
     await heard();
@@ -406,7 +415,7 @@ describe("organizing with an agent from the phone", () => {
   });
 
   it("shows the run holding the slot instead of starting a second, from any press", async () => {
-    const demo = await visit();
+    const demo = await visit(reviewOff());
     await organizeRails(DEMO.atlas, presses().organize);
     await heard();
     const sessionId = run()!.sessionId;
@@ -423,12 +432,25 @@ describe("organizing with an agent from the phone", () => {
   });
 
   it("is a rail's Reorganize from its editor, the run named after the rail", async () => {
-    const demo = await visit();
+    const demo = await visit(reviewOff());
     const at = demo.received().length;
     expect(await reorganizeRail(DEMO.atlas, "rail-fixes", presses().reorganize("rail-fixes"))).toBeNull();
     await heard();
     expect(run()).toMatchObject({ label: "Reorganize “fixes”", railId: "rail-fixes" });
     expect(String(wroteSince(demo, at).find((s) => s.cmd === "create_session")!.args.command)).toContain('reorganize the rail "fixes" — that rail only');
+  });
+
+  it("refuses cards nobody has reviewed yet, naming them, and starts nothing", async () => {
+    const demo = await visit();
+    const at = demo.received().length;
+    const organize = await organizeRails(DEMO.atlas, presses().organize);
+    expect(organize).toMatch(/^Review these cards before an agent reads them: /);
+    const reorganize = await reorganizeRail(DEMO.atlas, "rail-fixes", presses().reorganize("rail-fixes"));
+    expect(reorganize).toMatch(/^Review these cards before an agent reads them: /);
+    await heard();
+    // It reads each card's body for the digest, and starts nothing.
+    expect(wroteSince(demo, at).filter((s) => DESK_WORK.includes(s.cmd) || s.cmd === "set_workspace_settings")).toEqual([]);
+    expect(run()).toBeFalsy();
   });
 
   it("says why it cannot start, and asks the Workstation nothing", async () => {
