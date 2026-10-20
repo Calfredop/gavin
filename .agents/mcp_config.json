@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gavin": {
+      "args": [],
+      "command": "scripts/gavin-mcp"
+    }
+  }
+}

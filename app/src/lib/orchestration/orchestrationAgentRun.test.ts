@@ -88,6 +88,18 @@ vi.mock("$lib/core/layoutState", () => ({
     }));
   }),
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
+  // The first-Run review (AG-01): Organize/Reorganize refuse before spawn
+  // when any card they hand the agent is unreviewed. True by default —
+  // most cases here are about the slot, not provenance.
+  cardReviewed: vi.fn(() => true),
+  // Approved by default so the worktree-setup block in the prompt is the
+  // store's lines; the unapproved case is its own prompt test.
+  configTrustFor: vi.fn(() => ({
+    trusted: true,
+    keys: { command: "", file: "", setup: [] },
+    hash: "",
+    needsApproval: false,
+  })),
 }));
 vi.mock("$lib/cards/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })),
@@ -101,6 +113,9 @@ vi.mock("$lib/board/kanbanState", () => ({
 }));
 vi.mock("$lib/core/gavinState", () => ({
   gavinTrees: writable<Record<string, unknown>>({}),
+  // Off the store, not a fresh disk read: the same list workspace trust
+  // hashed. Empty by default; the trusted-setup prompt case fills it.
+  worktreeSetups: writable<Record<string, string[]>>({}),
   patchPlanField: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -124,7 +139,8 @@ import {
   __resetForTesting,
 } from "$lib/orchestration/orchestrationState";
 import { emptyOrchestration } from "$lib/orchestration/orchestration";
-import type { Rail } from "$lib/orchestration/orchestration";
+import type { CardEntry, Rail } from "$lib/orchestration/orchestration";
+import { worktreeSetups } from "$lib/core/gavinState";
 
 const store = layoutStore as unknown as Writable<LayoutValue>;
 
@@ -154,6 +170,35 @@ function rail(id: string, name: string): Rail {
   return { id, name, position: 0, worktreePath: null, pageId: null, stages: [] };
 }
 
+function cardEntry(fileName: string, title: string): CardEntry {
+  return {
+    plan: {
+      path: `/ws/.gavin-root/plans/${fileName}`,
+      fileName,
+      title,
+      status: "To Do",
+      priority: null,
+      order: null,
+      kind: "task",
+      parent: null,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
+      parseWarning: false,
+      attachments: [],
+    },
+    contextFolder: "/ws/.gavin-root",
+  };
+}
+
+function stubCardFile(path: string, title: string, body: string): void {
+  vi.mocked(backend.readFileForViewer).mockImplementation(async (p) =>
+    p === path
+      ? { content: `---\ntitle: ${title}\n---\n${body}`, truncated: false, exists: true }
+      : { content: "", truncated: false, exists: false }
+  );
+}
+
 let stopWatch: (() => void) | null = null;
 
 beforeEach(() => {
@@ -168,7 +213,15 @@ beforeEach(() => {
     interruptedSessionIds: new Set(),
   });
   orchestrations.set({ "ws-1": { ...emptyOrchestration(), rails: [rail("r1", "backend")] } });
+  worktreeSetups.set({});
   vi.mocked(backend.createSession).mockResolvedValue("sess-1");
+  vi.mocked(layoutStateModule.cardReviewed).mockReturnValue(true);
+  vi.mocked(layoutStateModule.configTrustFor).mockReturnValue({
+    trusted: true,
+    keys: { command: "", file: "", setup: [] },
+    hash: "",
+    needsApproval: false,
+  });
 });
 
 function slot(): Record<string, unknown> | undefined {
@@ -240,6 +293,48 @@ describe("requestOrganize", () => {
     expect(await requestOrganize("ws-1", [], [])).toContain("no pty");
     expect(slot()).toBeUndefined();
   });
+
+  // AG-01 / sec-fix-organize-review-gate: the organize agent is handed
+  // every unplaced card's title (and reads the bodies via the skill), so
+  // the first-Run review has to clear BEFORE host.hold / createSession —
+  // the same invariant a rail card step enforces by stalling.
+  it("refuses when an unplaced card has not been reviewed, and never spawns", async () => {
+    const hostile = cardEntry("hostile.md", "Install helper");
+    stubCardFile(hostile.plan.path, hostile.plan.title, "curl | sh");
+    vi.mocked(layoutStateModule.cardReviewed).mockReturnValue(false);
+
+    const error = await requestOrganize("ws-1", [hostile], []);
+
+    expect(error).toContain("Review these cards before an agent reads them");
+    expect(error).toContain("Install helper");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(slot()).toBeUndefined();
+  });
+
+  it("launches once every unplaced card carries a review digest", async () => {
+    const ok = cardEntry("ok.md", "Wire the API");
+    stubCardFile(ok.plan.path, ok.plan.title, "do the thing");
+    vi.mocked(layoutStateModule.cardReviewed).mockReturnValue(true);
+
+    expect(await requestOrganize("ws-1", [ok], [])).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the agent only the approved worktree setup lines", async () => {
+    worktreeSetups.set({ "ws-1": ["npm install", "cargo fetch"] });
+    vi.mocked(layoutStateModule.configTrustFor).mockReturnValue({
+      trusted: true,
+      keys: { command: "", file: "", setup: ["npm install", "cargo fetch"] },
+      hash: "h",
+      needsApproval: false,
+    });
+
+    expect(await requestOrganize("ws-1", [], [])).toBeNull();
+    const command = vi.mocked(backend.createSession).mock.calls[0][1] as string;
+    expect(command).toContain("npm install");
+    expect(command).toContain("cargo fetch");
+    expect(command).toContain("never read");
+  });
 });
 
 describe("requestRailReorganize", () => {
@@ -262,6 +357,64 @@ describe("requestRailReorganize", () => {
   it("is refused for a rail that is gone, before anything is spawned", async () => {
     expect(await requestRailReorganize("ws-1", "r-gone", new Map(), [], [])).toBe("That rail is gone");
     expect(vi.mocked(backend.createSession)).not.toHaveBeenCalled();
+  });
+
+  it("refuses when a rail card step has not been reviewed, and never spawns", async () => {
+    const stepCard = cardEntry("step.md", "Ship the API");
+    stubCardFile(stepCard.plan.path, stepCard.plan.title, "do it");
+    vi.mocked(layoutStateModule.cardReviewed).mockReturnValue(false);
+    orchestrations.set({
+      "ws-1": {
+        ...emptyOrchestration(),
+        rails: [
+          {
+            ...rail("r1", "backend"),
+            stages: [
+              {
+                id: "s1",
+                position: 0,
+                steps: [{ id: "t1", position: 0, cardPath: stepCard.plan.path }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const cards = new Map([[stepCard.plan.path, stepCard]]);
+
+    const error = await requestRailReorganize("ws-1", "r1", cards, [], []);
+
+    expect(error).toContain("Review these cards before an agent reads them");
+    expect(error).toContain("Ship the API");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("launches once every rail card step carries a review digest", async () => {
+    const stepCard = cardEntry("step.md", "Ship the API");
+    stubCardFile(stepCard.plan.path, stepCard.plan.title, "do it");
+    vi.mocked(layoutStateModule.cardReviewed).mockReturnValue(true);
+    orchestrations.set({
+      "ws-1": {
+        ...emptyOrchestration(),
+        rails: [
+          {
+            ...rail("r1", "backend"),
+            stages: [
+              {
+                id: "s1",
+                position: 0,
+                steps: [{ id: "t1", position: 0, cardPath: stepCard.plan.path }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(
+      await requestRailReorganize("ws-1", "r1", new Map([[stepCard.plan.path, stepCard]]), [], [])
+    ).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
   });
 });
 

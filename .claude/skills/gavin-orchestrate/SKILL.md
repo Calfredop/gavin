@@ -208,13 +208,15 @@ the one every absolute card path in the read payload sits under.
    folder beside the repository, and never a line in the root
    `.gitignore` or in `.git/info/exclude`: the folder's own file is the
    whole arrangement, so nothing tracked changes on any branch.
-3. **Then its setup.** `[worktree] setup` in `.gavin-root/config.toml`
-   declares what a fresh checkout needs — `npm install`, `cargo fetch`, an
-   `.env` copy. Gavin runs those for a worktree made in the app; nothing
-   runs them for one made here, so run them yourself in the new checkout,
-   joined with `&&` so a failed install stops the rest. A worktree whose
-   setup failed is worse than no worktree: the rail's first agent looks
-   like it started fine and spends its turn on the install.
+3. **Then its setup.** The Organize / Reorganize prompt hands you the
+   worktree setup commands this workspace has approved. Run only that
+   list in the new checkout, joined with `&&` so a failed install stops
+   the rest. If the prompt lists none, leave the checkout as git left
+   it. Never read `[worktree] setup` from `.gavin-root/config.toml`
+   yourself: that file ships with the repository, and only the approved
+   list in the prompt is safe to run. A worktree whose setup failed is
+   worse than no worktree: the rail's first agent looks like it started
+   fine and spends its turn on the install.
 4. **A branch with no worktree** is `git branch <name>` — created, never
    checked out. The rail's own first step is what moves a checkout, once,
    and the human is working in the root one meanwhile. Never

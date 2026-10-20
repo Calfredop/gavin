@@ -54,6 +54,23 @@ export interface CardContent {
   body: string;
   /// The `attachments:` entries, raw, in card order.
   attachments: string[];
+  /// Frontmatter that reaches the launch line. Optional; omitted (or
+  /// empty) keeps the digest on `gavin-card-review/1` so ordinary cards
+  /// keep their existing markers.
+  agent?: string;
+  model?: string;
+  effort?: string;
+}
+
+/// Non-empty launch overrides, or null when the card names none.
+function launchOverrides(
+  content: CardContent
+): { agent: string; model: string; effort: string } | null {
+  const agent = (content.agent ?? "").trim();
+  const model = (content.model ?? "").trim();
+  const effort = (content.effort ?? "").trim();
+  if (!agent && !model && !effort) return null;
+  return { agent, model, effort };
 }
 
 /// A version-tagged digest of exactly that content.
@@ -64,6 +81,11 @@ export interface CardContent {
 /// tagged so that widening `CardContent` later cannot silently collide
 /// with a marker approved under today's fields.
 ///
+/// `gavin-card-review/1` covers title, body and attachments alone — the
+/// historical encoding. `/2` adds agent/model/effort when the card names
+/// any of them, so a later edit to those fields asks for review again
+/// without invalidating markers of cards that never named an agent.
+///
 /// The attachments' RESOLUTION is not in here, and does not need to be:
 /// where an entry lands is a function of its own text and the workspace
 /// root, so an entry that reads the same resolves the same. The one way
@@ -71,13 +93,49 @@ export interface CardContent {
 /// re-pointed outside it — which makes gavin strictly more cautious (an
 /// `outside` attachment is withheld, not read), never less.
 export function cardContentDigest(content: CardContent): string {
+  const launch = launchOverrides(content);
+  if (!launch) {
+    return sha256Hex(
+      `gavin-card-review/1\n${JSON.stringify({
+        title: content.title,
+        body: content.body,
+        attachments: content.attachments,
+      })}`
+    );
+  }
   return sha256Hex(
-    `gavin-card-review/1\n${JSON.stringify({
+    `gavin-card-review/2\n${JSON.stringify({
       title: content.title,
       body: content.body,
       attachments: content.attachments,
+      agent: launch.agent,
+      model: launch.model,
+      effort: launch.effort,
     })}`
   );
+}
+
+/// Build `CardContent` from a card's visible fields, trimming launch
+/// overrides and dropping empties so they do not widen the digest.
+export function cardContentOf(input: {
+  title: string;
+  body: string;
+  attachments?: readonly string[] | null;
+  agent?: string | null;
+  model?: string | null;
+  effort?: string | null;
+}): CardContent {
+  const agent = (input.agent ?? "").trim();
+  const model = (input.model ?? "").trim();
+  const effort = (input.effort ?? "").trim();
+  return {
+    title: input.title,
+    body: input.body,
+    attachments: [...(input.attachments ?? [])],
+    ...(agent ? { agent } : {}),
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+  };
 }
 
 /// Whether this exact content is what the human reviewed for this card.
@@ -272,6 +330,14 @@ export function reviewLines(
   );
   if (hasAutoCommit(content.body)) {
     lines.push("It carries the auto-commit block: the agent is told to commit its work when it is done.");
+  }
+  const launch = launchOverrides(content);
+  if (launch) {
+    const parts: string[] = [];
+    if (launch.agent) parts.push(`agent ${launch.agent}`);
+    if (launch.model) parts.push(`model ${launch.model}`);
+    if (launch.effort) parts.push(`effort ${launch.effort}`);
+    lines.push(`It asks for ${parts.join(", ")}, which change the launch line.`);
   }
   if (attachments.length === 0) {
     lines.push("No attachments.");

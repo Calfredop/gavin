@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { languageIdForPath } from "$lib/files/codeMirror";
+import { completionThemeStyles, languageIdForPath } from "$lib/files/codeMirror";
 
 describe("languageIdForPath", () => {
   it("maps known extensions to a language id", () => {
@@ -26,5 +26,24 @@ describe("languageIdForPath", () => {
 
   it("is case-insensitive on the extension", () => {
     expect(languageIdForPath("/tmp/README.MD")).toBe("markdown");
+  });
+});
+
+describe("completionThemeStyles", () => {
+  it("paints the completion tooltip with app tokens, not CodeMirror defaults", () => {
+    const styles = completionThemeStyles();
+    const flat = JSON.stringify(styles);
+    for (const token of [
+      "--surface-raised",
+      "--surface-selected",
+      "--text",
+      "--text-muted",
+      "--accent-text",
+      "--border",
+    ]) {
+      expect(flat, token).toContain(token);
+    }
+    expect(styles).toHaveProperty(".cm-tooltip-autocomplete ul li[aria-selected]");
+    expect(styles).toHaveProperty(".cm-completionMatchedText");
   });
 });

@@ -160,14 +160,19 @@ impl PtySession {
                 // an npm-global install and many other Windows CLIs take.
                 // See `rewrite_for_windows_shim`'s doc comment. A no-op on
                 // every non-Windows platform (PATHEXT is unset there).
-                let c = crate::shell::rewrite_for_windows_shim(c, &resolve_against);
+                let c = crate::shell::rewrite_for_windows_shim(c, &resolve_against)
+                    .map_err(|message| anyhow::anyhow!("{message}"))?;
                 cmd.args(["-c", &c]);
                 if let Some(path) = path {
                     cmd.env("PATH", path);
                 }
                 cmd
             }
-            None => CommandBuilder::new(crate::shell::interactive_shell().as_os_str()),
+            None => {
+                let mut cmd = CommandBuilder::new(crate::shell::interactive_shell().as_os_str());
+                cmd.args(crate::shell::interactive_shell_args());
+                cmd
+            }
         };
         cmd.cwd(cwd);
         // A daemon auto-spawned by the GUI (not launched from an interactive
@@ -235,6 +240,11 @@ impl PtySession {
         // when the file is missing rather than fatal: a half-built tree
         // still opens a terminal, and the launcher falls back as before.
         if let Some(mcp) = gavin_mcp_beside_this_binary() {
+            // The same file again, for the shell-write hook: its presence
+            // is this build's word that the gavin-mcp has the subcommand
+            // (`protocol::shell_writes::HOOK_BINARY_ENV` says why that
+            // cannot be `GAVIN_MCP`).
+            cmd.env(protocol::shell_writes::HOOK_BINARY_ENV, &mcp);
             cmd.env("GAVIN_MCP", mcp);
         }
         cmd.env("TERM_PROGRAM", "ghostty");
@@ -304,10 +314,10 @@ impl PtySession {
         // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
         // *install* -- two sessions of the same install share it -- so
         // none of those are this bug. Deliberately still passed in above:
-        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN, GAVIN_SESSION_SOCKET and
-        // GAVIN_MCP, which name THIS session, the daemon serving it and
-        // the gavin-mcp beside that daemon, and are the entire point of
-        // setting them.
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN, GAVIN_SESSION_SOCKET,
+        // GAVIN_MCP and GAVIN_SHELL_WRITES, which name THIS session, the
+        // daemon serving it and the gavin-mcp beside that daemon, and are
+        // the entire point of setting them.
         for key in [
             // "you are running under Claude Code", and by which entrypoint.
             "CLAUDECODE",
@@ -603,7 +613,7 @@ impl PtySession {
 /// its own (`resolve_mcp_binary_path`): the three binaries of a build are
 /// siblings by construction. `None` when `current_exe` cannot be read or
 /// the sibling is not on disk yet — the caller skips the env pin then.
-fn gavin_mcp_beside_this_binary() -> Option<std::path::PathBuf> {
+pub(crate) fn gavin_mcp_beside_this_binary() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let path = exe
         .parent()?
@@ -724,6 +734,43 @@ mod tests {
         session.kill().unwrap();
         std::env::remove_var("TERM_PROGRAM");
         assert!(output.contains("TPMARK=[ghostty]"), "got: {output}");
+    }
+
+    /// A plain tab on macOS is a login shell, so the login profile runs
+    /// before the rc file. The bug this exists for: the release app,
+    /// started from Finder, opened every tab with `~/.zshrc:115: command
+    /// not found: ng`, because `ng` lives in `/opt/homebrew/bin` and only
+    /// `~/.zprofile` puts that on PATH. `ZDOTDIR` points zsh at a profile
+    /// of the test's own, so nothing here reads the real one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_plain_tab_on_macos_reads_the_login_profile() {
+        let _guard = lock_env();
+        let dotdir = tempfile::tempdir().unwrap();
+        std::fs::write(dotdir.path().join(".zprofile"), "export GAVIN_PROFILED=yes\n").unwrap();
+        let shell = std::env::var_os("SHELL");
+        let zdotdir = std::env::var_os("ZDOTDIR");
+        std::env::set_var("SHELL", "/bin/zsh");
+        std::env::set_var("ZDOTDIR", dotdir.path());
+
+        let spawned = PtySession::spawn("/tmp", None, "test-session", None);
+        match shell {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        match zdotdir {
+            Some(v) => std::env::set_var("ZDOTDIR", v),
+            None => std::env::remove_var("ZDOTDIR"),
+        }
+        let mut session = spawned.unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'LP%s=[%s]\\n' MARK \"$GAVIN_PROFILED\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "LPMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        assert!(output.contains("LPMARK=[yes]"), "got: {output}");
     }
 
     #[test]
@@ -992,6 +1039,24 @@ mod tests {
         let output = read_until_contains(&mut *reader, "SIDMARK=[", Duration::from_secs(3));
         session.kill().unwrap();
         assert!(output.contains("SIDMARK=[sid-42]"), "got: {output}");
+    }
+
+    /// A minted session token must reach the PTY: gavin-mcp presents it
+    /// in Hello for the `agent` role, and Cursor's `${env:GAVIN_SESSION_TOKEN}`
+    /// interpolation reads it from the agent process. Without it,
+    /// PlaywrightEndpoint is Forbidden as a bare `local` connection.
+    #[test]
+    fn spawn_exports_the_session_token_into_the_pty() {
+        let mut session =
+            PtySession::spawn("/tmp", Some("/bin/sh"), "sid-tok", Some("tok-deadbeef")).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'TOK%s=[%s]\\n' MARK \"$GAVIN_SESSION_TOKEN\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "TOKMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains("TOKMARK=[tok-deadbeef]"), "got: {output}");
     }
 
     #[test]

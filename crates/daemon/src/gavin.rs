@@ -3,6 +3,7 @@ use protocol::{
     HumanItemKind, HumanItemOutcome, HumanItemState, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
 use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -11,6 +12,18 @@ use std::time::{Duration, Instant, SystemTime};
 pub const GAVIN_ROOT_DIR: &str = ".gavin-root";
 pub const GAVIN_DIR: &str = ".gavin";
 const MAX_SCAN_DEPTH: usize = 12;
+/// Aggregate ceiling for `.md` files one `.gavin*` walk returns. With a
+/// visited set the real tree is already linear; this keeps a hostile
+/// flat directory of cards from pushing a `GavinTreeChanged` line past
+/// `MAX_LINE_BYTES` on its own.
+const MAX_MD_FILES: usize = 10_000;
+/// Cap on one frontmatter string value (title, labels raw, agent, model,
+/// attachments raw). serde_json writes each control character as a
+/// 6-byte `\u00XX` escape, so an uncapped hostile value alone can push a
+/// `GavinTreeChanged` line past [`protocol::MAX_LINE_BYTES`].
+const MAX_FRONTMATTER_VALUE_CHARS: usize = 4_096;
+/// Cap on how many comma-separated labels or attachments one card keeps.
+const MAX_FRONTMATTER_LIST_ITEMS: usize = 64;
 const EXCLUDED_DIRS: &[&str] =
     &[".git", "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__"];
 
@@ -73,6 +86,33 @@ fn parse_frontmatter(content: &str) -> Frontmatter {
     }
     // Opening marker, no closing marker before EOF.
     Frontmatter { fields: vec![], present: false, warning: true }
+}
+
+/// Truncates a frontmatter string to [`MAX_FRONTMATTER_VALUE_CHARS`].
+/// Returns whether it was clamped (caller sets `parse_warning`).
+fn clamp_frontmatter_value(value: &str) -> (String, bool) {
+    let mut chars = value.chars();
+    let kept: String = chars.by_ref().take(MAX_FRONTMATTER_VALUE_CHARS).collect();
+    (kept, chars.next().is_some())
+}
+
+/// Splits a comma-separated frontmatter list, clamping the raw value and
+/// the item count. Sets `*warning` when either clamp fires.
+fn clamp_frontmatter_list(raw: &str, warning: &mut bool) -> Vec<String> {
+    let (clamped, was_clamped) = clamp_frontmatter_value(raw);
+    if was_clamped {
+        *warning = true;
+    }
+    let mut items: Vec<String> = clamped
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.len() > MAX_FRONTMATTER_LIST_ITEMS {
+        *warning = true;
+        items.truncate(MAX_FRONTMATTER_LIST_ITEMS);
+    }
+    items
 }
 
 /// Strict, spelled-out match rather than Priority::from_str: from_str maps
@@ -155,28 +195,18 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         }
     };
     let labels: Vec<String> = get("labels")
-        .map(|raw| {
-            raw.split(',')
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        })
+        .map(|raw| clamp_frontmatter_list(&raw, &mut warning))
         .unwrap_or_default();
-    // Split exactly like labels, and kept RAW: an entry that does not
-    // resolve -- a moved file, a hand-typed `..` -- has to survive the
-    // scan so the card can show it as broken and the run gate can refuse
-    // to spawn on it. Validating here would drop it instead, and an
-    // attachment that silently disappears is the failure this whole
-    // field exists to prevent. Parsed on every card kind (a note is a
-    // fine place to park a reference); only task and plan cards put it
-    // in a prompt.
+    // Split exactly like labels, and kept RAW (within the length/count
+    // caps above): an entry that does not resolve -- a moved file, a
+    // hand-typed `..` -- has to survive the scan so the card can show it
+    // as broken and the run gate can refuse to spawn on it. Validating
+    // here would drop it instead, and an attachment that silently
+    // disappears is the failure this whole field exists to prevent.
+    // Parsed on every card kind (a note is a fine place to park a
+    // reference); only task and plan cards put it in a prompt.
     let attachments: Vec<String> = get("attachments")
-        .map(|raw| {
-            raw.split(',')
-                .map(|a| a.trim().to_string())
-                .filter(|a| !a.is_empty())
-                .collect()
-        })
+        .map(|raw| clamp_frontmatter_list(&raw, &mut warning))
         .unwrap_or_default();
     // Unreadable degrades to None PLUS a warning, unlike `labels` and
     // `attachments` which keep whatever junk was written. Those two are
@@ -207,17 +237,60 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     // Parsed on every kind, like `complexity` and for the same reason: a
     // note is a fine place to record that something will need the big
     // model, even though nothing will ever run it.
-    let agent = get("agent").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let model = get("model").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let agent = get("agent").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
+    let model = get("model").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
     // The third half of the same override (v56): how hard that agent
     // thinks. Raw for `model`'s reason -- the levels are the CLI's.
-    let effort = get("effort").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let effort = get("effort").and_then(|v| {
+        let (v, clamped) = clamp_frontmatter_value(v.trim());
+        if clamped {
+            warning = true;
+        }
+        (!v.is_empty()).then_some(v)
+    });
+    // A direct-prompt task (v75): its body is the whole prompt. Read
+    // gavin's own way -- unreadable is a warning and false, never a
+    // guess -- and only on a task, `parent:`'s posture: a plan's prompt
+    // is "read this file" and a note runs nothing, so the line on either
+    // describes a run that cannot happen.
+    let direct = match get("direct") {
+        None => false,
+        Some(raw) => match parse_direct(&raw) {
+            Some(d) if kind == CardKind::Task => d,
+            _ => {
+                warning = true;
+                false
+            }
+        },
+    };
     let (checklist_done, checklist_total) = checklist_counts(content);
+    let title = match get("title") {
+        Some(raw) => {
+            let (title, clamped) = clamp_frontmatter_value(&raw);
+            if clamped {
+                warning = true;
+            }
+            if title.is_empty() { stem } else { title }
+        }
+        None => stem,
+    };
     PlanFileInfo {
         path: protocol::wire_path(path),
         modified_at: file_modified_at(path),
         file_name,
-        title: get("title").unwrap_or(stem),
+        title,
         status: get("status"),
         priority,
         order,
@@ -229,6 +302,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         agent,
         model,
         effort,
+        direct,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -237,6 +311,18 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         // daemon that has no such field at all, and the oversize card
         // below whose body was never read.
         human_items: Some(human_items(content)),
+    }
+}
+
+/// A `direct:` value, or None for one gavin cannot read. Only the two
+/// words the writers produce: a flag that decides whether the agent is
+/// told which card it is working is not a place to be generous about
+/// spellings.
+fn parse_direct(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
@@ -599,6 +685,12 @@ pub fn file_human_item(
     if text.contains('\n') || text.contains('\r') {
         anyhow::bail!("a human item is one checklist line — it cannot contain a newline");
     }
+    // Every other C0 control (ESC included) is refused too: tab is the
+    // only one a checklist line may carry. Without this, an agent-filed
+    // item could plant ESC[201~ that later rides a bracketed paste.
+    if text.chars().any(|c| c.is_control() && c != '\t') {
+        anyhow::bail!("a human item cannot contain control characters");
+    }
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -633,6 +725,9 @@ pub fn file_human_item(
     };
     let mut new_lines = vec![format!("- [ ] {marker}: {text}")];
     let options: Vec<&str> = options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+    if options.iter().any(|o| o.chars().any(|c| c.is_control() && c != '\t')) {
+        anyhow::bail!("a human item option cannot contain control characters");
+    }
     if !options.is_empty() {
         let labelled: Vec<String> = options
             .iter()
@@ -897,15 +992,74 @@ pub fn prd_relative_path(root: &Path) -> String {
         .unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string())
 }
 
-pub fn read_prd(root: &Path) -> anyhow::Result<String> {
-    let prd = root.join(prd_relative_path(root));
-    if !prd.is_file() {
-        anyhow::bail!("no PRD found at {}", prd.display());
+/// `rel` under `root`, resolved through every symlink, or an error when
+/// the resolved target is not inside the canonical root.
+///
+/// The last trusted decision for any reader that turns a fixed or
+/// repository-configured relative path into bytes returned to a
+/// principal (DP-05 / audit 2026-10-15): a committed symlink must not
+/// pull a file from outside the workspace into an agent transcript.
+fn resolve_inside_root(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
+    let canonical_root = root.canonicalize()?;
+    let target = root.join(rel).canonicalize()?;
+    if !target.starts_with(&canonical_root) {
+        anyhow::bail!("{rel} resolves outside the workspace");
     }
-    if std::fs::metadata(&prd)?.len() > MAX_PRD_BYTES {
+    Ok(target)
+}
+
+/// DP-05 for writes: refuses a target when it, or any directory between
+/// `root` and it, is a symlink resolving outside `root` -- or a dangling
+/// one, whose write would create the link's target wherever it points.
+///
+/// The scan already refuses to descend such links (`safe_to_descend`);
+/// every writer that lands in a workspace's `.gavin*` tree must apply
+/// the same rule before `create_dir_all` / `read_to_string` / `write`,
+/// or a repository-committed symlink turns an ordinary Settings /
+/// wizard / card-create action into a write outside the workspace
+/// (audit 2026-10-15, `fixed-path-writers-follow-repo-committed-symlinks`).
+fn confine_write_target(root: &Path, target: &Path) -> anyhow::Result<()> {
+    let canonical_root = root.canonicalize()?;
+    let rel = target
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("{} is outside {}", target.display(), root.display()))?;
+    let mut at = root.to_path_buf();
+    for comp in rel.components() {
+        at.push(comp);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let resolved = at
+                    .canonicalize()
+                    .map_err(|_| anyhow::anyhow!("{} is a dangling symlink", at.display()))?;
+                if !resolved.starts_with(&canonical_root) {
+                    anyhow::bail!("{} is a symlink leaving the workspace", at.display());
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+pub fn read_prd(root: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let rel = prd_relative_path(root);
+    let display = root.join(&rel);
+    let prd = resolve_inside_root(root, &rel)
+        .map_err(|_| anyhow::anyhow!("no PRD found at {}", display.display()))?;
+    let mut file = std::fs::File::open(&prd)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        anyhow::bail!("no PRD found at {}", display.display());
+    }
+    if meta.len() > MAX_PRD_BYTES {
         anyhow::bail!("PRD exceeds the 1 MB read cap");
     }
-    Ok(std::fs::read_to_string(&prd)?)
+    let mut content = String::new();
+    (&mut file).take(MAX_PRD_BYTES).read_to_string(&mut content)?;
+    Ok(content)
 }
 
 /// Canonical plan authoring for agents (spec §2): everything validated,
@@ -921,6 +1075,7 @@ pub fn create_plan_file(
     parent: Option<&str>,
     attachments: Option<&str>,
     complexity: Option<&str>,
+    direct: bool,
 ) -> anyhow::Result<PathBuf> {
     let kind = match kind {
         None => "plan",
@@ -937,6 +1092,11 @@ pub fn create_plan_file(
         if !valid {
             anyhow::bail!("parent must match [A-Za-z0-9._-]+.md, got: {p}");
         }
+    }
+    // Refused rather than dropped: the scan would read the line on any
+    // other kind as a warning, so filing one is filing a broken card.
+    if direct && kind != "task" {
+        anyhow::bail!("direct requires kind task, got: {kind}");
     }
     let gavin_dir = if context_folder.join(GAVIN_ROOT_DIR).is_dir() {
         context_folder.join(GAVIN_ROOT_DIR)
@@ -998,6 +1158,9 @@ pub fn create_plan_file(
     };
 
     let plans = gavin_dir.join("plans");
+    // DP-05: a committed `plans/` symlink (or a dangling one) must not
+    // let card creation land outside the context folder.
+    confine_write_target(context_folder, &plans)?;
     std::fs::create_dir_all(&plans)?;
     // File names are unique per context (that is what `parent:` resolves
     // on), so the check spans the whole tree -- a flat `x.md` and an
@@ -1018,8 +1181,10 @@ pub fn create_plan_file(
     } else {
         plans.clone()
     };
+    confine_write_target(context_folder, &dir)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(file_name);
+    confine_write_target(context_folder, &path)?;
 
     let mut content = String::from("---\n");
     if kind != "plan" {
@@ -1040,6 +1205,9 @@ pub fn create_plan_file(
     }
     if let Some(c) = complexity {
         content.push_str(&format!("complexity: {}\n", c.as_str()));
+    }
+    if direct {
+        content.push_str("direct: true\n");
     }
     content.push_str("---\n");
     match body.map(str::trim).filter(|b| !b.is_empty()) {
@@ -1127,26 +1295,50 @@ fn in_archive(path: &Path, plans_root: &Path) -> bool {
 ///
 /// The entry's own type decides what to descend into, which the
 /// directory listing already carries -- asking the path would stat every
-/// card. A symlink is still resolved, so one to a folder is walked as it
-/// always was.
+/// card. Directory symlinks are never descended: a committed
+/// `plans/a -> .` would otherwise multiply the walk until the OS
+/// symlink or path-length limit (DP-05 / audit 2026-10-15). A file
+/// symlink whose own name ends in `.md` is still listed.
 fn plans_tree_files(plans_root: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    fn walk(
+        dir: &Path,
+        boundary: &Path,
+        depth: usize,
+        seen: &mut HashSet<PathBuf>,
+        out: &mut Vec<PathBuf>,
+    ) {
+        if depth > MAX_SCAN_DEPTH || out.len() >= MAX_MD_FILES {
+            return;
+        }
+        let Ok(real) = dir.canonicalize() else { return };
+        if !seen.insert(real) {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
+            if out.len() >= MAX_MD_FILES {
+                return;
+            }
             let path = entry.path();
-            let is_dir = match entry.file_type() {
-                Ok(kind) if !kind.is_symlink() => kind.is_dir(),
-                _ => path.is_dir(),
-            };
-            if is_dir {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "md") {
+            let Ok(kind) = entry.file_type() else { continue };
+            // Never follow a directory symlink inside plans/: containment
+            // alone (safe_to_descend) cannot stop an in-root self-loop.
+            if kind.is_dir() && !kind.is_symlink() {
+                if safe_to_descend(&path, boundary) {
+                    walk(&path, boundary, depth + 1, seen, out);
+                }
+            } else if !kind.is_dir() && path.extension().is_some_and(|e| e == "md") {
+                // Includes a file symlink named *.md; excludes a
+                // directory symlink even if its name ends in .md.
                 out.push(path);
             }
         }
     }
+    if !safe_to_descend(plans_root, plans_root) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    walk(plans_root, &mut out);
+    walk(plans_root, plans_root, 0, &mut HashSet::new(), &mut out);
     out.sort();
     out
 }
@@ -1485,7 +1677,7 @@ pub fn set_plan_field(
     if value.is_empty() {
         match key {
             "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
-            | "model" | "effort" => {
+            | "model" | "effort" | "direct" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path, index);
             }
@@ -1560,6 +1752,18 @@ pub fn set_plan_field(
             if value.contains('\n') {
                 anyhow::bail!("{key} must be a single line");
             }
+        }
+        // Written in `parse_direct`'s own spelling, so a hand-typed
+        // "True" reads back the same as a toggled one. Not checked
+        // against the card's kind: the scan already shows the line on a
+        // plan or a note as a warning, and refusing here would leave a
+        // card whose kind changed under it with a flag nobody can clear
+        // except by clearing it, which the empty value above still does.
+        "direct" => {
+            let direct = parse_direct(value)
+                .ok_or_else(|| anyhow::anyhow!("direct must be true or false, got: {value}"))?;
+            write_plan_field(path, key, if direct { "true" } else { "false" })?;
+            return relocate_for_status(path, index);
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
@@ -1724,6 +1928,7 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         // and inheriting the level would spend the plan's model on every
         // checklist item promoted out of it.
         None,
+        false,
     )?;
 
     let line = lines[line_index];
@@ -1862,6 +2067,7 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
     };
     if value.trim().is_empty() && CLEARABLE_KEYS.contains(&key) {
         let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        confine_write_target(root, &path)?;
         // No file means no key to remove. Returning early rather than
         // falling through keeps a clear from CREATING an empty
         // config.toml, which is the one thing this path could do that
@@ -1896,6 +2102,7 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
         value.to_string()
     };
     let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &path)?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
@@ -1918,11 +2125,13 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
     Ok(())
 }
 
-fn scaffold_gavin_dir(gavin_dir: &Path) -> anyhow::Result<()> {
+fn scaffold_gavin_dir(root: &Path, gavin_dir: &Path) -> anyhow::Result<()> {
     for sub in ["plans", "docs", "specs"] {
         let dir = gavin_dir.join(sub);
+        confine_write_target(root, &dir)?;
         std::fs::create_dir_all(&dir)?;
         let keep = dir.join(".gitkeep");
+        confine_write_target(root, &keep)?;
         if !keep.exists() {
             std::fs::write(&keep, "")?;
         }
@@ -1953,9 +2162,11 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
         anyhow::bail!("root does not exist or is not a directory: {}", root.display());
     }
     let gavin_dir = root.join(GAVIN_ROOT_DIR);
+    confine_write_target(root, &gavin_dir)?;
     std::fs::create_dir_all(&gavin_dir)?;
-    scaffold_gavin_dir(&gavin_dir)?;
+    scaffold_gavin_dir(root, &gavin_dir)?;
     let config = gavin_dir.join("config.toml");
+    confine_write_target(root, &config)?;
     if !config.exists() {
         std::fs::write(&config, ROOT_CONFIG_TEMPLATE)?;
     }
@@ -1963,8 +2174,10 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
     // re-running init on a root pointing at its own `docs/PRD.md` would
     // otherwise leave a second, unread PRD behind.
     let prd = root.join(prd_relative_path(root));
+    confine_write_target(root, &prd)?;
     if !prd.exists() {
         if let Some(parent) = prd.parent() {
+            confine_write_target(root, parent)?;
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&prd, PRD_TEMPLATE.replace("{workspace}", workspace_name))?;
@@ -2028,9 +2241,11 @@ pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
         anyhow::bail!("parent does not exist or is not a directory: {}", parent.display());
     }
     let gavin_dir = parent.join(GAVIN_DIR);
+    confine_write_target(parent, &gavin_dir)?;
     std::fs::create_dir_all(&gavin_dir)?;
-    scaffold_gavin_dir(&gavin_dir)?;
+    scaffold_gavin_dir(parent, &gavin_dir)?;
     let config = gavin_dir.join("config.toml");
+    confine_write_target(parent, &config)?;
     if !config.exists() {
         let name = parent.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         std::fs::write(&config, format!("name = \"{name}\"\n"))?;
@@ -2039,9 +2254,12 @@ pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
 }
 
 /// Top-level `extra_contexts` array of the root config: absolute folder
-/// paths OUTSIDE the workspace that scans should include. Anything that
-/// isn't a string array (or a file that doesn't parse) reads as empty --
-/// config_warning already covers the parse failure.
+/// paths OUTSIDE the workspace. Raw parse only — a value that arrived
+/// with the repository is not yet a registration. Callers that include
+/// outside contexts in a scan or in workspace containment go through
+/// `registered_extra_contexts` instead. Anything that isn't a string
+/// array (or a file that doesn't parse) reads as empty -- config_warning
+/// already covers the parse failure.
 fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(config_path) else { return vec![] };
     let Ok(table) = content.parse::<toml::Table>() else { return vec![] };
@@ -2050,6 +2268,16 @@ fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default()
+}
+
+/// `extra_contexts` entries the HUMAN registered on this machine: present
+/// in the root config AND in the machine-local registration list that
+/// only `add_external_context` / `AddExternalGavinContext` writes. A
+/// value that arrived with the repository is inert until registered.
+fn registered_extra_contexts(root: &Path) -> Vec<String> {
+    let listed = parse_extra_contexts(&root.join(GAVIN_ROOT_DIR).join("config.toml"));
+    let approved = crate::outside_contexts::registered_outside_contexts(root);
+    listed.into_iter().filter(|f| approved.iter().any(|a| a == f)).collect()
 }
 
 /// Scaffolds `.gavin` in a folder outside the workspace root and records
@@ -2076,6 +2304,7 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
         );
     }
     let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &config_path)?;
     if !config_path.is_file() {
         anyhow::bail!("no {} -- is {} a gavin root?", config_path.display(), root.display());
     }
@@ -2095,6 +2324,10 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
         arr.push(entry.as_str());
     }
     std::fs::write(&config_path, doc.to_string())?;
+    // Machine-local mark: config.toml alone is not a registration (a
+    // clone can ship the same key). Scans honour the entry only when
+    // this list says the human registered it here.
+    crate::outside_contexts::register_outside_context(root, folder)?;
     Ok(())
 }
 
@@ -2104,28 +2337,32 @@ pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
 /// caller asked for already holds.
 pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
     let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    confine_write_target(root, &config_path)?;
     let Ok(existing) = std::fs::read_to_string(&config_path) else { return Ok(()) };
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", config_path.display())
     })?;
     let entry = folder.to_string_lossy().to_string();
     let Some(arr) = doc.get_mut("extra_contexts").and_then(|i| i.as_array_mut()) else {
+        // Config had nothing to drop; still clear a stale machine-local
+        // mark so a re-add is the only way back in.
+        crate::outside_contexts::unregister_outside_context(root, folder)?;
         return Ok(());
     };
     arr.retain(|v| v.as_str() != Some(entry.as_str()));
     std::fs::write(&config_path, doc.to_string())?;
+    crate::outside_contexts::unregister_outside_context(root, folder)?;
     Ok(())
 }
 
-/// Whether a directory entry found during a root-scoped walk is safe to
-/// descend into. A plain directory always is; a symlinked one only when
-/// its target's canonical path stays under `boundary` -- otherwise a
-/// hostile repo could point a directory anywhere inside itself (even a
-/// top-level `.gavin-root`) at `/etc`, the user's home directory, or an
-/// unrelated project, and the scan would read whatever it found there
-/// and report it as the repo's own plans/docs/specs (DP-05, read
-/// amplification within the uid). A symlinked FILE is unaffected: only
-/// directory descent is guarded.
+/// Whether a directory or file entry found during a root-scoped walk is
+/// safe to open. A plain entry always is; a symlink only when its
+/// target's canonical path stays under `boundary` -- otherwise a hostile
+/// repo could point a directory (or a `plans/*.md` / `PRD.md` file)
+/// anywhere inside itself (even a top-level `.gavin-root`) at `/etc`,
+/// the user's home directory, or an unrelated project, and the scan
+/// would read whatever it found there and report it as the repo's own
+/// plans/docs/specs (DP-05, read amplification within the uid).
 fn safe_to_descend(path: &Path, boundary: &Path) -> bool {
     let is_symlink = std::fs::symlink_metadata(path)
         .map(|m| m.file_type().is_symlink())
@@ -2176,6 +2413,7 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         agent: None,
         model: None,
         effort: None,
+        direct: false,
         // None, not an empty list: the body was never read, so "this
         // card has nothing waiting on you" is a claim nothing here can
         // make. It rides out with `parse_warning: true` beside it.
@@ -2183,18 +2421,86 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
     }
 }
 
+/// Every card `scan_root` finds under `root`, archived ones included,
+/// each with the body that follows its frontmatter -- what the card index
+/// embeds (`memory_index::Memories::search_cards`). A card too large for
+/// the scan to read, or one whose frontmatter never closes, comes back
+/// with an empty body: its title is all anything here knows of it.
+pub fn cards_with_bodies(root: &Path) -> Vec<(PlanFileInfo, String)> {
+    card_bodies(scan_root(root))
+}
+
+/// `cards_with_bodies` for a tree already scanned -- what a watcher's
+/// scan hands the background card index, rather than scanning again.
+pub fn card_bodies(tree: GavinTree) -> Vec<(PlanFileInfo, String)> {
+    tree.contexts
+        .into_iter()
+        .flat_map(|ctx| ctx.plans)
+        .map(|info| {
+            let path = Path::new(&info.path);
+            let body = match std::fs::metadata(path) {
+                Ok(meta) if meta.len() <= MAX_SCANNED_FILE_BYTES => std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|content| {
+                        body_start(&content).map(|start| content.lines().skip(start).collect::<Vec<_>>().join("\n"))
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            (info, body)
+        })
+        .collect()
+}
+
 /// Lists every `.md` file under `dir`, refusing to follow a directory
-/// symlink whose canonical path leaves `boundary` (see `safe_to_descend`).
-fn list_md_files(dir: &Path, boundary: &Path) -> Vec<MdFileInfo> {
-    fn walk(dir: &Path, base: &Path, boundary: &Path, out: &mut Vec<MdFileInfo>) {
+/// or file symlink whose canonical path leaves `boundary` (see
+/// `safe_to_descend`) and refusing directory-symlink descent entirely so
+/// an in-root self-loop cannot multiply the walk. Each real directory is
+/// visited at most once; depth and entry caps keep a flat hostile tree
+/// bounded too.
+///
+/// The second return is whether the walk stopped early on `MAX_MD_FILES`
+/// (depth / visited cuts do not set it): the caller surfaces that as a
+/// `parse_warning` on the context's plans rather than silently dropping
+/// the leftover cards.
+fn list_md_files(dir: &Path, boundary: &Path) -> (Vec<MdFileInfo>, bool) {
+    fn walk(
+        dir: &Path,
+        base: &Path,
+        boundary: &Path,
+        depth: usize,
+        seen: &mut HashSet<PathBuf>,
+        out: &mut Vec<MdFileInfo>,
+        truncated: &mut bool,
+    ) {
+        if depth > MAX_SCAN_DEPTH || out.len() >= MAX_MD_FILES {
+            if out.len() >= MAX_MD_FILES {
+                *truncated = true;
+            }
+            return;
+        }
+        // A directory reached twice (a symlink loop, or two links to one
+        // folder) is walked once: cost follows the real tree.
+        let Ok(real) = dir.canonicalize() else { return };
+        if !seen.insert(real) {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
+            if out.len() >= MAX_MD_FILES {
+                *truncated = true;
+                return;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() && !kind.is_symlink() {
                 if safe_to_descend(&path, boundary) {
-                    walk(&path, base, boundary, out);
+                    walk(&path, base, boundary, depth + 1, seen, out, truncated);
                 }
-            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+            } else if !kind.is_dir()
+                && path.extension().map(|e| e == "md").unwrap_or(false)
+                && safe_to_descend(&path, boundary)
+            {
                 out.push(MdFileInfo {
                     path: protocol::wire_path(&path),
                     rel_path: protocol::wire_path(path.strip_prefix(base).unwrap_or(&path)),
@@ -2203,12 +2509,21 @@ fn list_md_files(dir: &Path, boundary: &Path) -> Vec<MdFileInfo> {
         }
     }
     if !safe_to_descend(dir, boundary) {
-        return Vec::new();
+        return (Vec::new(), false);
     }
     let mut out = Vec::new();
-    walk(dir, dir, boundary, &mut out);
+    let mut truncated = false;
+    walk(
+        dir,
+        dir,
+        boundary,
+        0,
+        &mut HashSet::new(),
+        &mut out,
+        &mut truncated,
+    );
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
-    out
+    (out, truncated)
 }
 
 fn build_context(
@@ -2228,7 +2543,8 @@ fn build_context(
     };
     let folder_name =
         folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let plans = list_md_files(&gavin_dir.join("plans"), root)
+    let (plan_mds, plans_truncated) = list_md_files(&gavin_dir.join("plans"), root);
+    let mut plans: Vec<PlanFileInfo> = plan_mds
         .into_iter()
         .map(|md| {
             let path = PathBuf::from(&md.path);
@@ -2241,20 +2557,33 @@ fn build_context(
             }
         })
         .collect();
+    // Cap hit: surface it the same way an oversize card does, so the
+    // desk can see the walk stopped rather than silently omitting cards.
+    if plans_truncated {
+        let marker = gavin_dir.join("plans").join("_scan_truncated.md");
+        let mut warning = oversize_plan_file_info(&marker);
+        warning.title = "scan truncated".to_string();
+        plans.push(warning);
+    }
+    let (docs, _) = list_md_files(&gavin_dir.join("docs"), root);
+    let (specs, _) = list_md_files(&gavin_dir.join("specs"), root);
     GavinContext {
         folder_path: protocol::wire_path(folder),
         kind: kind.clone(),
         name: config_name.unwrap_or(folder_name),
         plans,
-        docs: list_md_files(&gavin_dir.join("docs"), root),
-        specs: list_md_files(&gavin_dir.join("specs"), root),
+        docs,
+        specs,
         // Resolved, not configured: "is there a PRD" has to answer for
         // the file the workspace actually points at, or a project with
-        // its own docs/PRD.md reads as having none.
+        // its own docs/PRD.md reads as having none. Same containment as
+        // `read_prd`: a symlink that leaves the root is "no PRD".
         has_prd: matches!(kind, GavinContextKind::Root)
-            && folder
-                .join(prd.clone().unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string()))
-                .is_file(),
+            && resolve_inside_root(
+                folder,
+                &prd.clone().unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string()),
+            )
+            .is_ok_and(|p| p.is_file()),
         config_warning,
         // Only the root context carries an agent block: `.gavin`
         // sub-contexts scope plans, not how the workspace is worked on.
@@ -2291,18 +2620,25 @@ pub fn scan_root(root: &Path) -> GavinTree {
         skip_gavin_here: bool,
         contexts: &mut Vec<GavinContext>,
         root: &Path,
+        seen: &mut HashSet<PathBuf>,
     ) {
         if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        let Ok(real) = dir.canonicalize() else { return };
+        if !seen.insert(real) {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            // Refuses a directory symlink whose target leaves `root`
-            // before even asking whether it's a `.gavin*` marker -- a
-            // symlinked marker directory is exactly the shape of trap
-            // this guards (DP-05).
-            if !path.is_dir() || !safe_to_descend(&path, root) {
+            let Ok(kind) = entry.file_type() else { continue };
+            // Directory symlinks are not descended: an in-root self-loop
+            // (`foo -> .`) would otherwise re-walk the tree up to
+            // MAX_SCAN_DEPTH at every level. Escape-the-root links are
+            // still refused by safe_to_descend for any plain dir we do
+            // enter via a later rename/mount shape.
+            if !kind.is_dir() || kind.is_symlink() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -2321,14 +2657,14 @@ pub fn scan_root(root: &Path) -> GavinTree {
             {
                 continue;
             }
-            walk(&path, depth + 1, false, contexts, root);
+            walk(&path, depth + 1, false, contexts, root, seen);
         }
     }
     // Depth 1 = the root's immediate children. skip_gavin_here applies the
     // spec §1 both-markers rule to the root level only: when `.gavin-root`
     // exists, a root-level `.gavin` is ignored rather than double-listing
     // the root folder as two contexts.
-    walk(root, 1, root_has_gavin_root, &mut contexts, root);
+    walk(root, 1, root_has_gavin_root, &mut contexts, root, &mut HashSet::new());
 
     // Root context first, then by folder path.
     contexts.sort_by(|a, b| {
@@ -2337,13 +2673,15 @@ pub fn scan_root(root: &Path) -> GavinTree {
         b_root.cmp(&a_root).then(a.folder_path.cmp(&b.folder_path))
     });
 
-    // Outside contexts (`extra_contexts` in the root config) come after
-    // every scanned one, sorted by path. Entries under the root would
-    // double-list a scanned folder and are skipped; so is a folder that
-    // vanished or lost its `.gavin` -- the navigator simply stops showing
-    // it until it is back.
+    // Outside contexts the human registered on this machine come after
+    // every scanned one, sorted by path. A value merely listed in the
+    // committed `extra_contexts` array is inert until
+    // `add_external_context` records it locally. Entries under the root
+    // would double-list a scanned folder and are skipped; so is a folder
+    // that vanished or lost its `.gavin` -- the navigator simply stops
+    // showing it until it is back.
     if root_has_gavin_root {
-        let mut extras = parse_extra_contexts(&root_gavin.join("config.toml"));
+        let mut extras = registered_extra_contexts(root);
         extras.sort();
         extras.dedup();
         for folder in extras {
@@ -2480,18 +2818,25 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
         depth: usize,
         targets: &mut Vec<(PathBuf, notify::RecursiveMode)>,
         root: &Path,
+        seen: &mut HashSet<PathBuf>,
     ) {
         if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        let Ok(real) = dir.canonicalize() else { return };
+        if !seen.insert(real) {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
             // Mirrors scan_root's own symlink guard (DP-05): a watch is
             // cheap to register but pointless -- and, on a re-scan,
             // actively misleading -- for a directory the scanner itself
-            // will never descend into.
-            if !path.is_dir() || !safe_to_descend(&path, root) {
+            // will never descend into. Directory symlinks are skipped for
+            // the same in-root self-loop reason as scan_root.
+            if !kind.is_dir() || kind.is_symlink() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -2503,10 +2848,10 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
                 continue;
             }
             targets.push((path.clone(), NonRecursive));
-            walk(&path, depth + 1, targets, root);
+            walk(&path, depth + 1, targets, root, seen);
         }
     }
-    walk(root, 1, &mut targets, root);
+    walk(root, 1, &mut targets, root, &mut HashSet::new());
     targets
 }
 
@@ -2910,13 +3255,43 @@ impl GavinWatcher {
         if inner.last_tree.as_ref() == Some(&tree) {
             return; // change-gated: identical trees never re-emit
         }
-        inner.last_tree = Some(tree.clone());
         let response =
-            Response::GavinTreeChanged { workspace_id: self.workspace_id.clone(), tree };
+            Response::GavinTreeChanged { workspace_id: self.workspace_id.clone(), tree: tree.clone() };
+        // Serialize first: never write a line no reader can accept. An
+        // over-cap tree used to tear down the desktop's streaming lane
+        // (`sec-fix-streaming-lane-oversize-line`); leave last_tree unset
+        // so a later, smaller tree still pushes.
+        let line = match serde_json::to_string(&response) {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!(
+                    "gavin: failed to serialize GavinTreeChanged for {}: {e}",
+                    self.workspace_id
+                );
+                return;
+            }
+        };
+        if (line.len() as u64) >= protocol::MAX_LINE_BYTES {
+            eprintln!(
+                "gavin: GavinTreeChanged for {} is {} bytes (cap {}); not pushing",
+                self.workspace_id,
+                line.len(),
+                protocol::MAX_LINE_BYTES
+            );
+            self.report_watch_limit(Some(format!(
+                "this board's update was too large to show ({} bytes; max {})",
+                line.len(),
+                protocol::MAX_LINE_BYTES
+            )));
+            return;
+        }
+        inner.last_tree = Some(tree);
         // A dead writer (app restarted) fails silently; the next
         // WatchGavinRoot from the fresh connection replaces this watcher.
         let mut writer = self.writer.lock().unwrap();
-        let _ = protocol::write_message(&mut *writer, &response);
+        let _ = writer.write_all(line.as_bytes());
+        let _ = writer.write_all(b"\n");
+        let _ = writer.flush();
     }
 
     /// The paths currently registered with the OS, for tests that need to
@@ -2984,14 +3359,15 @@ impl GavinWatcher {
 // spelled here because this is the machine whose disk it is.
 
 /// The roots a workspace's files may live under: the root itself, then
-/// every `extra_contexts` folder its config names -- canonical, so a
-/// symlinked checkout compares by where it is.
+/// every outside folder the human registered for it -- canonical, so a
+/// symlinked checkout compares by where it is. Committed-but-unregistered
+/// `extra_contexts` entries do not widen containment.
 fn workspace_roots(root: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(canonical) = protocol::canonical_path(root) {
         roots.push(canonical);
     }
-    for extra in parse_extra_contexts(&root.join(".gavin-root").join("config.toml")) {
+    for extra in registered_extra_contexts(root) {
         if let Ok(canonical) = protocol::canonical_path(Path::new(&extra)) {
             roots.push(canonical);
         }
@@ -3004,13 +3380,17 @@ fn workspace_roots(root: &Path) -> Vec<PathBuf> {
 /// inside the root that points outside resolves to where it leads, and a
 /// file that does not exist yet -- the one a write is about to make --
 /// still has a place to be judged by. Absolute only.
+///
+/// Existence is from `symlink_metadata`, not `exists()`: a dangling
+/// symlink leaf would otherwise look missing, get reattached under the
+/// root, and then `fs::write` would create the target outside.
 fn resolve_for_containment(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.is_absolute() {
         anyhow::bail!("{} is not an absolute path", path.display());
     }
     let mut existing = path;
     let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
-    while !existing.exists() {
+    while std::fs::symlink_metadata(existing).is_err() {
         let name = existing
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("{} could not be resolved", path.display()))?;
@@ -3086,14 +3466,34 @@ pub fn read_workspace_file(root: &Path, path: &str) -> anyhow::Result<(Option<St
     Ok((Some(text.to_string()), truncated))
 }
 
-/// `WriteWorkspaceFile`: parents created, the file written whole. Plain
-/// `fs::write`, the convention `write_plan_field` set.
+/// `WriteWorkspaceFile`: parents created, the file written whole. The leaf
+/// is opened with `O_NOFOLLOW` so a symlink swapped in after `confined`
+/// cannot redirect the write (the desktop's LocalFiles writers do the
+/// same for a local root).
 pub fn write_workspace_file(root: &Path, path: &str, content: &str) -> anyhow::Result<()> {
+    use std::io::Write;
     let resolved = confined(root, path)?;
     if let Some(parent) = resolved.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&resolved, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&resolved)?;
+        file.write_all(content.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        if std::fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{path} is a symlink; gavin will not write through it");
+        }
+        std::fs::write(&resolved, content)?;
+    }
     Ok(())
 }
 
@@ -3881,6 +4281,95 @@ mod tests {
         assert!(set_plan_field(&path, "effort", "high\nmax").is_err());
     }
 
+    /// A direct-prompt task (v75): read only on a task, and only in the
+    /// two spellings gavin writes. Anything else is a warning and false,
+    /// never a guess -- a card wrongly read as direct would go out with
+    /// no card path and no status line around it.
+    #[test]
+    fn direct_parses_on_a_task_only_and_warns_rather_than_guessing() {
+        let p = plan("---\nkind: task\ntitle: T\ndirect: true\n---\nDo it\n");
+        assert!(p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\ndirect: FALSE\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(!p.parse_warning);
+        let p = plan("---\nkind: task\ntitle: T\ndirect: yes\n---\nDo it\n");
+        assert!(!p.direct);
+        assert!(p.parse_warning);
+        for kind in ["plan", "note"] {
+            let p = plan(&format!("---\nkind: {kind}\ntitle: T\ndirect: true\n---\nbody\n"));
+            assert!(!p.direct, "{kind}");
+            assert!(p.parse_warning, "{kind}");
+        }
+    }
+
+    #[test]
+    fn set_plan_field_writes_clears_and_rejects_direct() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\nkind: task\ntitle: T\n---\nbody\n",
+        );
+
+        // Written in gavin's own spelling, whatever case it was handed.
+        set_plan_field(&path, "direct", "True").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\ndirect: true\n"), "{content}");
+        let info = plan_file_info(&path, &content);
+        assert!(info.direct);
+        assert!(!info.parse_warning);
+
+        set_plan_field(&path, "direct", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\nkind: task\ntitle: T\n---\nbody\n");
+        assert!(set_plan_field(&path, "direct", "yes").is_err());
+    }
+
+    #[test]
+    fn create_plan_file_writes_direct_on_a_task_and_refuses_it_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        let path = create_plan_file(
+            dir.path(),
+            "raw.md",
+            "Raw one",
+            None,
+            None,
+            Some("Say hello."),
+            Some("task"),
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nkind: task\ntitle: Raw one\nstatus: To Do\ndirect: true\n---\nSay hello.\n"
+        );
+        for kind in [None, Some("plan"), Some("note")] {
+            let err = create_plan_file(
+                dir.path(),
+                "bad.md",
+                "Bad",
+                None,
+                None,
+                None,
+                kind,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("direct requires kind task"), "{kind:?}: {err}");
+        }
+    }
+
     #[test]
     fn create_plan_file_writes_a_complexity_line_and_refuses_an_unknown_level() {
         let dir = tempfile::tempdir().unwrap();
@@ -3896,6 +4385,7 @@ mod tests {
             None,
             None,
             Some("Intricate"),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -3915,6 +4405,7 @@ mod tests {
             None,
             None,
             Some("gnarly"),
+            false,
         )
         .is_err());
     }
@@ -4484,6 +4975,20 @@ mod tests {
         assert!(
             file_human_item(&path, HumanItemKind::Decision, "a\nb", &[], "2026-09-23").is_err()
         );
+        assert!(
+            file_human_item(&path, HumanItemKind::Decision, "say\x1b[201~", &[], "2026-09-23")
+                .is_err()
+        );
+        assert!(
+            file_human_item(
+                &path,
+                HumanItemKind::Decision,
+                "which?",
+                &["keep\x1b[Z".into()],
+                "2026-09-23"
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no writes on error");
 
         let loose = tempfile::tempdir().unwrap();
@@ -4897,12 +5402,57 @@ mod tests {
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
+        // Hand-written config is not a registration; even a path that
+        // would otherwise be skipped for being inside the root must not
+        // appear as `outside` from the extras list.
         let tree = scan_root(&root);
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
             tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
         assert_eq!(src_entries, 1);
         assert!(tree.contexts.iter().all(|c| !c.outside));
+    }
+
+    /// Committed `extra_contexts` alone must not disclose another
+    /// workspace's cards. Registration on this machine is what arms them.
+    #[test]
+    fn committed_extra_contexts_are_inert_until_registered() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&root_dir);
+        let outside = wire_root(&outside_dir);
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(outside.join(GAVIN_DIR).join("plans")).unwrap();
+        std::fs::write(
+            outside.join(GAVIN_DIR).join("plans").join("secret.md"),
+            "---\ntitle: Victim card\n---\n",
+        )
+        .unwrap();
+
+        let config = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        let mut body = std::fs::read_to_string(&config).unwrap();
+        body.push_str(&format!("extra_contexts = ['{}']\n", outside.display()));
+        std::fs::write(&config, body).unwrap();
+
+        let tree = scan_root(&root);
+        assert!(
+            tree.contexts.iter().all(|c| !c.outside),
+            "a clone-committed extra_contexts path must not appear until registered"
+        );
+        assert!(
+            !tree.contexts.iter().any(|c| c.folder_path == wire_spelling(&outside)),
+            "victim folder must not be in the tree before registration"
+        );
+
+        add_external_context(&root, &outside).unwrap();
+        let tree = scan_root(&root);
+        let ctx = tree
+            .contexts
+            .iter()
+            .find(|c| c.folder_path == wire_spelling(&outside))
+            .expect("registered outside folder appears after add_external_context");
+        assert!(ctx.outside);
+        assert!(ctx.plans.iter().any(|p| p.file_name == "secret.md"));
     }
 
     #[test]
@@ -5076,8 +5626,8 @@ mod tests {
     }
 
     /// The same guard has to apply to a symlinked FILE's plain sibling
-    /// content too -- i.e. a symlinked file itself must still be read
-    /// normally, only directory descent is restricted.
+    /// content too -- i.e. a symlinked file whose target stays inside the
+    /// root is still read; only an escape is refused.
     #[test]
     fn symlinked_file_inside_a_context_is_still_read() {
         let root = tempfile::tempdir().unwrap();
@@ -5091,6 +5641,206 @@ mod tests {
 
         let tree = scan_root(root.path());
         assert!(tree.contexts[0].plans.iter().any(|p| p.file_name == "linked.md" && p.title == "Real"));
+    }
+
+    /// DP-05 / audit 2026-10-15: a committed PRD.md symlink must not let
+    /// `read_prd` (or the tree's `has_prd`) return a file outside the
+    /// workspace root to an agent that is only scoped to that root.
+    #[test]
+    fn prd_symlink_leaving_the_root_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("marker.txt");
+        std::fs::write(&secret, "OUTSIDE-PRD-MARKER\n").unwrap();
+
+        let prd = root.path().join(GAVIN_ROOT_DIR).join("PRD.md");
+        std::fs::remove_file(&prd).unwrap();
+        if !try_symlink(&secret, &prd) {
+            return;
+        }
+
+        let err = read_prd(root.path()).unwrap_err().to_string();
+        assert!(err.contains("no PRD found"), "{err}");
+        assert!(!err.contains("OUTSIDE-PRD-MARKER"), "{err}");
+        assert!(!scan_root(root.path()).contexts[0].has_prd);
+    }
+
+    /// A PRD that is a symlink to another file still inside the root is
+    /// a normal layout (e.g. pointing at docs/PRD.md) and must keep
+    /// reading.
+    #[test]
+    fn prd_symlink_to_a_file_inside_the_root_still_reads() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        std::fs::create_dir_all(root.path().join("docs")).unwrap();
+        let real = root.path().join("docs/PRD.md");
+        std::fs::write(&real, "# inside\n").unwrap();
+
+        let prd = root.path().join(GAVIN_ROOT_DIR).join("PRD.md");
+        std::fs::remove_file(&prd).unwrap();
+        if !try_symlink(&real, &prd) {
+            return;
+        }
+
+        assert_eq!(read_prd(root.path()).unwrap(), "# inside\n");
+        assert!(scan_root(root.path()).contexts[0].has_prd);
+    }
+
+    /// A plans/*.md file symlink whose target leaves the root must not
+    /// appear in the scan or the card-index bodies -- the outside title
+    /// and body are what an agent would otherwise see via gavin_get_tree.
+    #[test]
+    fn plan_file_symlink_leaving_the_root_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("card.txt");
+        std::fs::write(
+            &secret,
+            "---\ntitle: OUTSIDE-CARD-MARKER\nstatus: To Do\n---\nsecret body\n",
+        )
+        .unwrap();
+
+        let link = root.path().join(GAVIN_ROOT_DIR).join("plans").join("linked.md");
+        if !try_symlink(&secret, &link) {
+            return;
+        }
+
+        let tree = scan_root(root.path());
+        assert!(
+            tree.contexts[0].plans.iter().all(|p| p.file_name != "linked.md"),
+            "escaped plan still listed: {:?}",
+            tree.contexts[0].plans.iter().map(|p| &p.file_name).collect::<Vec<_>>()
+        );
+        assert!(tree.contexts[0].plans.iter().all(|p| p.title != "OUTSIDE-CARD-MARKER"));
+
+        let bodies = cards_with_bodies(root.path());
+        assert!(bodies.iter().all(|(info, body)| {
+            info.file_name != "linked.md" && !body.contains("secret body")
+        }));
+    }
+
+    /// A top-level `.gavin-root` directory symlink that resolves outside
+    /// the workspace must not let `read_prd` follow it and return the
+    /// outside PRD (scan_root already refuses the context via
+    /// `safe_to_descend`).
+    #[test]
+    fn gavin_root_directory_symlink_leaving_the_root_makes_read_prd_fail() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        init_gavin_root(outside.path(), "Outside").unwrap();
+        // Prove the outside PRD is readable on its own path, then point
+        // this workspace's `.gavin-root` at that outside tree.
+        let outside_prd = read_prd(outside.path()).unwrap();
+        assert!(outside_prd.contains("Outside"));
+
+        let link = root.path().join(GAVIN_ROOT_DIR);
+        if !try_symlink(outside.path().join(GAVIN_ROOT_DIR).as_path(), &link) {
+            return;
+        }
+
+        assert!(read_prd(root.path()).is_err());
+        let tree = scan_root(root.path());
+        assert!(
+            tree.contexts.is_empty() || !tree.contexts[0].has_prd,
+            "escaped .gavin-root still reported a PRD"
+        );
+    }
+
+    /// Self-loop directory symlinks inside plans/ must not multiply a card.
+    /// Without a visited set (or refusing directory-symlink descent), two
+    /// links `a -> .` and `b -> .` explode the walk as (N^(d+1)-1)/(N-1).
+    #[test]
+    fn plans_self_loop_symlinks_report_each_card_once() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "one.md", "---\ntitle: One\nstatus: To Do\n---\n# one card\n");
+        // Long names match the audit fixture (path-length caps the depth);
+        // short names would push past 2^30 visits without a fix. Three
+        // links used to report the one card 29,524 times.
+        let a = plans.join("a".repeat(100));
+        let b = plans.join("b".repeat(100));
+        let c = plans.join("c".repeat(100));
+        if !try_symlink(Path::new("."), &a)
+            || !try_symlink(Path::new("."), &b)
+            || !try_symlink(Path::new("."), &c)
+        {
+            return;
+        }
+
+        let started = Instant::now();
+        let tree = scan_root(root.path());
+        let elapsed = started.elapsed();
+        let plans_listed = &tree.contexts[0].plans;
+        assert_eq!(
+            plans_listed.len(),
+            1,
+            "self-loop links must not multiply the one real card; got {}",
+            plans_listed.len()
+        );
+        assert_eq!(plans_listed[0].file_name, "one.md");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "scan with three self-loop links took {elapsed:?}"
+        );
+
+        // find_in_plans_tree / CreatePlan's uniqueness check walks the
+        // same tree; it must stay constant-time in the link count.
+        let started = Instant::now();
+        let found = find_in_plans_tree(&plans, "one.md");
+        let lookup = started.elapsed();
+        assert_eq!(found.as_deref(), Some(plans.join("one.md").as_path()));
+        assert!(
+            lookup < Duration::from_millis(200),
+            "plans_tree_files with three self-loop links took {lookup:?}"
+        );
+
+        let started = Instant::now();
+        create_plan_file(
+            root.path(),
+            "new-card.md",
+            "x",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let create = started.elapsed();
+        assert!(
+            create < Duration::from_millis(500),
+            "CreatePlan against a three-link self-loop tree took {create:?}"
+        );
+    }
+
+    /// A single 1-character self-link used to be followed to the OS
+    /// symlink-resolution limit (~33 levels). It must return promptly
+    /// with the one real card, not one entry per depth.
+    #[test]
+    fn single_char_self_loop_symlink_returns_promptly() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "one.md", "---\ntitle: One\nstatus: To Do\n---\n");
+        if !try_symlink(Path::new("."), &plans.join("x")) {
+            return;
+        }
+
+        let started = Instant::now();
+        let tree = scan_root(root.path());
+        let elapsed = started.elapsed();
+        assert_eq!(tree.contexts[0].plans.len(), 1);
+        assert_eq!(tree.contexts[0].plans[0].file_name, "one.md");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "1-char self-loop scan took {elapsed:?}"
+        );
     }
 
     #[test]
@@ -5395,6 +6145,175 @@ mod tests {
         );
     }
 
+    /// DP-05 / audit 2026-10-15: a dangling `config.toml` symlink must
+    /// not let Settings / the wizard create the link's target outside
+    /// the workspace. The write is refused; the outside path stays absent.
+    #[test]
+    fn config_toml_dangling_symlink_refuses_writers_and_creates_nothing_outside() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("created-by-gavin.toml");
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        let err = set_root_config_field(root.path(), "profile", "claude-code")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("dangling symlink") || err.contains("symlink leaving"),
+            "{err}"
+        );
+        assert!(!target.exists(), "dangling target must not be created");
+
+        let ext = outside.path().join("ext-folder");
+        std::fs::create_dir_all(&ext).unwrap();
+        assert!(add_external_context(root.path(), &ext).is_err());
+        assert!(!target.exists());
+        assert!(remove_external_context(root.path(), &ext).is_err());
+        assert!(!target.exists());
+    }
+
+    /// DP-05 / audit 2026-10-15: a `config.toml` symlink aimed at an
+    /// existing outside TOML must be refused; the outside file stays
+    /// byte-identical through set / add / remove.
+    #[test]
+    fn config_toml_symlink_leaving_the_root_refuses_writers_and_leaves_outside_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("existing.toml");
+        let before = b"name = \"outside\"\n";
+        std::fs::write(&target, before).unwrap();
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        assert!(set_root_config_field(root.path(), "model", "opus").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+
+        let ext = outside.path().join("ext-folder");
+        std::fs::create_dir_all(&ext).unwrap();
+        assert!(add_external_context(root.path(), &ext).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+        assert!(remove_external_context(root.path(), &ext).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+    }
+
+    /// An in-root `config.toml` symlink (e.g. pointing at another file
+    /// still under the workspace) is a legitimate layout and must keep
+    /// accepting writes.
+    #[test]
+    fn config_toml_symlink_inside_the_root_is_still_writable() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        let real = gavin.join("real-config.toml");
+        let link = gavin.join("config.toml");
+        std::fs::rename(&link, &real).unwrap();
+        if !try_symlink(&real, &link) {
+            return;
+        }
+
+        set_root_config_field(root.path(), "profile", "codex").unwrap();
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert!(text.contains("profile = \"codex\""), "{text}");
+    }
+
+    /// DP-05 / audit 2026-10-15: a `plans/` directory symlink leaving
+    /// the root must not let card creation write outside; the response
+    /// is Err and the outside directory stays empty of the new card.
+    #[test]
+    fn plans_symlink_leaving_the_root_refuses_create_plan_file() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        let outside = tempfile::tempdir().unwrap();
+        let outside_plans = outside.path().join("plans-target");
+        std::fs::create_dir_all(&outside_plans).unwrap();
+        // Replace the real plans/ with a symlink aimed outside.
+        std::fs::remove_dir_all(&plans).unwrap();
+        if !try_symlink(&outside_plans, &plans) {
+            return;
+        }
+
+        let err = create_plan_file(
+            root.path(),
+            "hello-card.md",
+            "Hello card",
+            None,
+            None,
+            Some("dummy body written by the human"),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("dangling symlink") || err.contains("symlink leaving"),
+            "{err}"
+        );
+        assert!(
+            !outside_plans.join("hello-card.md").exists(),
+            "card must not land outside the workspace"
+        );
+    }
+
+    /// A `plans/` symlink whose target stays inside the root is still
+    /// a writable plans tree.
+    #[test]
+    fn plans_symlink_inside_the_root_still_accepts_create_plan_file() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        let real_plans = gavin.join("real-plans");
+        let plans = gavin.join("plans");
+        std::fs::rename(&plans, &real_plans).unwrap();
+        if !try_symlink(&real_plans, &plans) {
+            return;
+        }
+
+        let path = create_plan_file(
+            root.path(),
+            "inside.md",
+            "Inside",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(path.starts_with(root.path()) || real_plans.join("inside.md").exists());
+        assert!(real_plans.join("inside.md").is_file());
+    }
+
+    /// init_gavin_root must refuse a dangling committed `config.toml`
+    /// symlink rather than create its outside target.
+    #[test]
+    fn init_gavin_root_refuses_a_dangling_config_toml_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gavin = root.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&gavin).unwrap();
+        let target = outside.path().join("init-created.toml");
+        if !try_symlink(&target, &gavin.join("config.toml")) {
+            return;
+        }
+
+        assert!(init_gavin_root(root.path(), "WS").is_err());
+        assert!(!target.exists());
+    }
+
     #[test]
     fn unparseable_config_toml_falls_back_to_folder_name_with_warning() {
         let dir = tempfile::tempdir().unwrap();
@@ -5411,7 +6330,7 @@ mod tests {
     fn create_plan_file_writes_canonical_content_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None, None).unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None, None, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
@@ -5427,6 +6346,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -5440,20 +6360,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
         // A nested child: kind task + parent, no status line at all.
-        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None, None).unwrap();
+        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None, None, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "---\nkind: task\ntitle: Child\nparent: parent-plan.md\n---\n# Child\n"
         );
         // A note keeps the default/explicit status.
-        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None, None).unwrap();
+        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None, None, false).unwrap();
         assert!(std::fs::read_to_string(&n).unwrap().starts_with("---\nkind: note\ntitle: Note\nstatus: Done\n"));
         // kind plan writes no kind line (backward-canonical).
-        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None, None).unwrap();
+        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None, None, false).unwrap();
         assert!(std::fs::read_to_string(&pl).unwrap().starts_with("---\ntitle: P\nstatus: To Do\n"));
-        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None, None).is_err());
-        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None, None).is_err());
+        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None, None, false).is_err());
     }
 
     #[test]
@@ -5461,17 +6381,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
         // Not a context:
-        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None, None, false).is_err());
         // Bad names ("../esc.md" doubles as the path-escape guard):
         for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
-            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None, None).is_err(), "{bad}");
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None, None, false).is_err(), "{bad}");
         }
         // Bad priority / bad title:
-        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None, None, false).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None, None, false).is_err());
         // Never overwrites:
-        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None, None).unwrap();
-        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None, None);
+        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None, None, false).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None, None, false);
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
@@ -5491,6 +6411,7 @@ mod tests {
                     <!-- /gavin:auto-commit -->";
         let path = create_plan_file(
             dir.path(), "ac.md", "T", None, None, Some(body), Some("task"), None, None, None,
+            false,
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -5510,6 +6431,105 @@ mod tests {
         assert!(read_prd(dir.path()).is_err());
         init_gavin_root(dir.path(), "My WS").unwrap();
         assert!(read_prd(dir.path()).unwrap().starts_with("# My WS — Product Requirements"));
+    }
+
+    /// A card whose `labels:` value is 200,000 U+0001 characters must not
+    /// push a `GavinTreeChanged` past `MAX_LINE_BYTES`: frontmatter values
+    /// are capped, the card is flagged `parse_warning`, and the serialized
+    /// tree stays under the line cap.
+    #[test]
+    fn a_huge_labels_value_is_clamped_and_the_tree_fits_under_max_line_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let labels = "\u{0001}".repeat(200_000);
+        write_card(&plans, "huge.md", &format!("---\nlabels: {labels}\ntitle: Huge\n---\n"));
+
+        let tree = scan_root(dir.path());
+        let card = tree.contexts[0]
+            .plans
+            .iter()
+            .find(|p| p.file_name == "huge.md")
+            .expect("card still listed");
+        assert!(
+            card.parse_warning,
+            "a clamped frontmatter value must set parse_warning"
+        );
+        assert!(
+            card.labels.iter().map(|l| l.len()).sum::<usize>() < 200_000,
+            "labels were kept raw at full length: {} chars",
+            card.labels.iter().map(|l| l.len()).sum::<usize>()
+        );
+        let response = Response::GavinTreeChanged {
+            workspace_id: "ws-1".into(),
+            tree,
+        };
+        let line = serde_json::to_string(&response).unwrap();
+        assert!(
+            (line.len() as u64) < protocol::MAX_LINE_BYTES,
+            "GavinTreeChanged is {} bytes, at or past MAX_LINE_BYTES",
+            line.len()
+        );
+    }
+
+    /// A watcher whose serialized tree cannot fit under `MAX_LINE_BYTES`
+    /// must not write the line: it reports why (like a watch limit) and
+    /// leaves `last_tree` unset so a later, smaller tree still pushes.
+    #[test]
+    fn a_tree_past_the_line_cap_is_reported_not_pushed() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        // Enough cards with long control-character labels that the JSON
+        // escapes alone push the tree past MAX_LINE_BYTES even after a
+        // per-value frontmatter cap (~4 KiB).
+        let label = "\u{0001}".repeat(4_096);
+        for i in 0..60 {
+            write_card(
+                &plans,
+                &format!("c{i}.md"),
+                &format!("---\nlabels: {label}\ntitle: C{i}\n---\n"),
+            );
+        }
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(800))).unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::new(Mutex::new(theirs)), None);
+
+        let mut reader = BufReader::new(ours);
+        match protocol::read_message::<_, Response>(&mut reader) {
+            Ok(Some(Response::Error { message })) => {
+                assert!(
+                    message.to_ascii_lowercase().contains("too large")
+                        || message.to_ascii_lowercase().contains("board"),
+                    "unexpected error text: {message}"
+                );
+            }
+            Ok(Some(Response::GavinTreeChanged { .. })) => {
+                panic!("an over-cap tree was pushed as GavinTreeChanged")
+            }
+            Ok(Some(other)) => panic!("unexpected push: {other:?}"),
+            Ok(None) => panic!("connection closed before any report"),
+            Err(e) => panic!("oversize line reached the wire (stream torn for readers): {e}"),
+        }
+
+        // Shrink: drop the hostile cards so a later tree fits, and it must
+        // still push because last_tree was left unset.
+        for i in 0..60 {
+            let _ = std::fs::remove_file(plans.join(format!("c{i}.md")));
+        }
+        write_card(&plans, "ok.md", "---\ntitle: Ok\nstatus: To Do\n---\n");
+        watcher.rescan_and_push();
+        let after: Response = protocol::read_message(&mut reader)
+            .expect("a later smaller tree must still be readable")
+            .expect("a later smaller tree must still push");
+        assert!(
+            matches!(after, Response::GavinTreeChanged { .. }),
+            "expected GavinTreeChanged after shrink, got {after:?}"
+        );
     }
 
     #[test]
@@ -5985,6 +7005,61 @@ mod tests {
         // it wakes and pushes whatever changed, so a second scan beside
         // it is a wait for a tree already on its way.
         assert!(!snapshot_must_scan(Some(MIN_RESCAN_INTERVAL + Duration::from_millis(5)), 1));
+    }
+
+    /// A symlink under a Recursive-watched `.gavin-root` must not pull an
+    /// outside tree into this process's inotify quota
+    /// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_symlink_inside_gavin_root_does_not_spend_inotify_watches_on_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let mut nested = outside.path().to_path_buf();
+        for i in 0..200 {
+            nested = nested.join(format!("d{i}"));
+            std::fs::create_dir(&nested).unwrap();
+        }
+        let link = root.join(GAVIN_ROOT_DIR).join("plans").join("x");
+        if !try_symlink(outside.path(), &link) {
+            return;
+        }
+
+        let before = inotify_watch_count();
+        let (_ours, theirs) = Stream::pair().unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        std::thread::sleep(Duration::from_millis(200));
+        let added = inotify_watch_count().saturating_sub(before);
+        assert!(
+            added < 40,
+            "marker Recursive watch must not follow plans/x out of the tree, added {added}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn inotify_watch_count() -> usize {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let Ok(target) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            if !target.to_string_lossy().contains("anon_inode:inotify") {
+                continue;
+            }
+            let fdinfo_path = format!("/proc/self/fdinfo/{}", entry.file_name().to_string_lossy());
+            let Ok(contents) = std::fs::read_to_string(&fdinfo_path) else {
+                continue;
+            };
+            total += contents.lines().filter(|l| l.starts_with("inotify")).count();
+        }
+        total
     }
 
     #[test]
@@ -6485,7 +7560,7 @@ mod tests {
         let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
 
         let done =
-            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None, None)
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None, None, false)
                 .unwrap();
         assert_eq!(done, plans.join("done").join("shipped.md"));
 
@@ -6501,13 +7576,14 @@ mod tests {
             Some("shipped.md"),
             None,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(child, plans.join("done").join("sub.md"));
 
         // A file name already used anywhere in the tree is refused.
         assert!(
-            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None, None).is_err()
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None, None, false).is_err()
         );
     }
 
@@ -6923,7 +7999,48 @@ mod tests {
         assert!(write_workspace_file(dir.path(), "../planted", "x").is_err());
     }
 
-    /// A card in an outside context the root config names is the
+    /// A committed symlink leaf whose target already exists outside must
+    /// not redirect a host-side workspace write — RemoteFiles reaches
+    /// this path.
+    #[cfg(unix)]
+    #[test]
+    fn write_workspace_file_refuses_a_symlinked_leaf_pointing_outside() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("bashrc");
+        std::fs::write(&victim, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("CLAUDE.md")).unwrap();
+        let err = write_workspace_file(dir.path(), "CLAUDE.md", "hijack\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("outside") || err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep\n");
+    }
+
+    /// Audit 2026-10-15 (`daemon-gavin-resolve_for_containment-dangling-
+    /// symlink-write`): a dangling symlink leaf must not be judged as a
+    /// file not created yet. `Path::exists` is false for one, so the old
+    /// walk reattached the link's name under the root and `fs::write`
+    /// created the outside target. Refuse, and leave nothing outside.
+    #[cfg(unix)]
+    #[test]
+    fn write_workspace_file_refuses_a_dangling_symlink_leaf() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("created.txt");
+        assert!(!victim.exists());
+        std::os::unix::fs::symlink(&victim, dir.path().join("CLAUDE.md")).unwrap();
+        assert!(
+            write_workspace_file(dir.path(), "CLAUDE.md", "gavin-written-marker\n").is_err(),
+            "dangling symlink leaf must be refused"
+        );
+        assert!(
+            !victim.exists(),
+            "dangling target must not be created outside the workspace root"
+        );
+    }
+
+    /// A card in an outside context the human registered is the
     /// workspace's too, exactly as the tree says it is.
     #[test]
     fn workspace_files_reach_an_extra_context_the_root_config_names() {

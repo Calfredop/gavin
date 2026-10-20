@@ -15,3 +15,12 @@ say nothing about one it refuses.
 
 Each case is `url`, and either `dial` — with the `host`, `port` and whether the
 host is `local` — or `refuse`, with the reason's name.
+
+A case may also carry `thisMachine`: the `hosts` this machine answers to and the
+`directPorts` its daemons' direct listeners take (ADR 0009). Such a case is
+judged as above and then by `RelayUrl::refuse_direct_listener` (and
+`relayUrlProblem`'s same check): a URL naming one of this machine's direct
+listeners is refused as `direct-listener`, because a direct listener is not a
+Relay and the daemon would be dialling itself. Loopback, `localhost` and the
+unspecified address are this machine whatever `hosts` says. A case without
+`thisMachine` is judged by `parse` alone.

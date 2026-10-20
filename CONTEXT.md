@@ -103,3 +103,9 @@ _Avoid_: notification server, push server
 **Send permission**:
 What a Device gives one Workstation so that the Push gateway will deliver that Workstation's notifications to it. The Push gateway signs it, and the Device can cancel it.
 _Avoid_: push token (that is Apple's or Google's address for the Device), grant, subscription
+
+### Distribution
+
+**Preview build**:
+An unsigned desktop installer published from every push to `main` that passes CI, replacing the previous one at a single download address. What a person installs before Gavin has a signed version, not a version of its own.
+_Avoid_: release (that is the session term above, and the signed tag build is a different thing), nightly, main build

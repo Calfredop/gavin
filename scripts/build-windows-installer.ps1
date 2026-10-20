@@ -11,18 +11,22 @@
     app/src-tauri/BUNDLING.md for why that --config flag must stay.
 
     Defaults to THIS checkout so a local fix (MCP env passthrough, Cursor
-    flags, ...) lands in the installer you are about to run. Pass -Stable
-    to rebuild the sibling gavin-stable worktree instead (the recipe in
-    .gavin-root/plans/done/chore-stable-release-install-on-windows.md).
+    flags, ...) lands in the installer you are about to run. Pass -Release
+    to rebuild the sibling gavin-release worktree instead (the recipe in
+    .gavin-root/plans/archive/chore-stable-release-install-on-windows.md).
+
+    `npm run bundle` stamps the build number (app/src-tauri/bundle.mjs): the
+    commit count of the tree it builds, shown after the version in Settings.
 
     Stops only Gavin / gavin-daemon / gavin-mcp processes whose Path is
     under this build's target\release\, so the linker can replace them.
     Never kills by bare process name, and never touches an install under
     Programs\Gavin -- upgrading that is running the new setup.exe.
 
-.PARAMETER Stable
-    Build in ..\gavin-stable instead of this checkout. Re-cuts that
-    worktree to this repo's main tip first (same as start-stable-win.ps1).
+.PARAMETER Release
+    Build in ..\gavin-release instead of this checkout. Re-cuts that
+    worktree to this repo's main tip first (same as start-release-win.ps1).
+    -Stable, its name before the rename, still works.
 
 .PARAMETER SkipNpmCi
     Skip `npm ci` even when node_modules is missing. Useful when you
@@ -38,11 +42,12 @@
     powershell -ExecutionPolicy Bypass -File scripts\build-windows-installer.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\build-windows-installer.ps1 -Stable
+    powershell -ExecutionPolicy Bypass -File scripts\build-windows-installer.ps1 -Release
 #>
 [CmdletBinding()]
 param(
-    [switch]$Stable,
+    [Alias('Stable')]
+    [switch]$Release,
     [switch]$SkipNpmCi,
     [switch]$DryRun,
     [switch]$NoOpen
@@ -59,12 +64,18 @@ function Have($n) { return [bool](Get-Command $n -ErrorAction SilentlyContinue) 
 
 # --- which tree ------------------------------------------------------------
 
-if ($Stable) {
-    $BuildRoot = Join-Path (Split-Path -Parent $Root) 'gavin-stable'
+if ($Release) {
+    $BuildRoot = Join-Path (Split-Path -Parent $Root) 'gavin-release'
+    # The worktree's name before the rename. start-release-win.ps1 moves it
+    # on its next rebuild; until then, build it where it is.
+    $legacy = Join-Path (Split-Path -Parent $Root) 'gavin-stable'
+    if (-not (Test-Path $BuildRoot) -and (Test-Path (Join-Path $legacy '.git'))) {
+        $BuildRoot = $legacy
+    }
     if (-not (Test-Path (Join-Path $BuildRoot '.git'))) {
         Die ("no worktree at $BuildRoot.`n" +
             "Create one with:`n  git worktree add --detach $BuildRoot main`n" +
-            "or drop -Stable to build this checkout.")
+            "or drop -Release to build this checkout.")
     }
 }
 else {
@@ -98,23 +109,23 @@ if ($hostLine.Count -gt 0 -and $hostLine[0] -notlike '*windows-msvc*') {
     Warn "rustc host is '$($hostLine[0] -replace '^host: ', '')'. Gavin expects *-pc-windows-msvc."
 }
 
-# --- optional stable worktree refresh --------------------------------------
+# --- optional release worktree refresh -------------------------------------
 
-if ($Stable) {
+if ($Release) {
     if (-not (Have 'git')) {
-        Die 'git not found; -Stable needs it to re-cut the worktree.'
+        Die 'git not found; -Release needs it to re-cut the worktree.'
     }
     $mainTip = (git -C $Root rev-parse main).Trim()
-    $stableHead = (git -C $BuildRoot rev-parse HEAD).Trim()
-    if ($stableHead -ne $mainTip) {
-        Say "moving gavin-stable from $stableHead to main ($mainTip)"
+    $releaseHead = (git -C $BuildRoot rev-parse HEAD).Trim()
+    if ($releaseHead -ne $mainTip) {
+        Say "moving $BuildRoot from $releaseHead to main ($mainTip)"
         git -C $BuildRoot checkout -m --detach $mainTip
         if ($LASTEXITCODE -ne 0) {
             Die "could not move $BuildRoot to $mainTip -- resolve it by hand."
         }
     }
     else {
-        Say "gavin-stable already at main ($mainTip)"
+        Say "$BuildRoot already at main ($mainTip)"
     }
 }
 
@@ -180,7 +191,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'gavin'
 Say 'Install tip: quit Gavin and run the setup from a plain terminal, not an agent tab.'
 Say ("  It stops the daemon itself (every open session ends with it), installs to")
 Say ("  $programs, and refuses $stateDir, the daemon's data folder.")
-Say 'Then: scripts\start-stable-win.ps1 -SkipBuild   (or the Start menu entry)'
+Say 'Then: scripts\start-release-win.ps1 -SkipBuild   (or the Start menu entry)'
 
 if (-not $NoOpen) {
     # /select highlights the setup exe in the folder.

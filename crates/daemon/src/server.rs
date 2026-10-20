@@ -34,11 +34,64 @@ const ATTACH_FAILURE_EXIT_CODE: i32 = -2;
 /// A1/A2 from exhausting all three). Generous -- ordinary use is a handful
 /// of terminals per open workspace, dozens across every workspace at once.
 ///
+/// Assumes soft `RLIMIT_NOFILE` has been raised at startup
+/// (`protocol::nofile::raise_soft_nofile`, to 8192). Under macOS's
+/// launchd soft default of 256, this ceiling is unreachable: each session
+/// holds ~3 PTY FDs, so `openpty` hits EMFILE first. The named EMFILE
+/// refusal (`refuse_emfile`) is that backstop; this ceiling is the one
+/// that fires once the soft limit is high enough.
+///
 /// Held on the manager as an `AtomicUsize` seeded from this constant,
 /// rather than compared against the bare constant, so the boundary test
 /// can lower it directly (tests share this module and can already reach
 /// private fields) instead of spawning hundreds of real PTYs.
 const MAX_LIVE_SESSIONS: usize = 256;
+
+/// What `create_session` (and recovery) says when `openpty` fails because
+/// the process is out of file descriptors. Same shape as the session
+/// ceiling refusal: named, actionable, and what the app banners rather
+/// than wrapping as `expected SessionCreated, got Error { … }`.
+const TOO_MANY_OPEN_FILES: &str =
+    "gavin-daemon: too many open files — close some sessions before starting another";
+
+/// Whether an `openpty` / spawn error is EMFILE (or ENFILE), including:
+/// - portable-pty: `failed to openpty: Os { … "Too many open files" }`
+/// - filedescriptor (portable-pty's dup of the master): `dup of fd N failed`
+///   — the form seen when soft RLIMIT_NOFILE is still macOS's launchd 256
+///   and the next session tries to clone a master near that ceiling.
+fn is_emfile(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if let Some(code) = io.raw_os_error() {
+                #[cfg(unix)]
+                if code == libc::EMFILE || code == libc::ENFILE {
+                    return true;
+                }
+                // Windows ERROR_TOO_MANY_OPEN_FILES.
+                #[cfg(windows)]
+                if code == 4 {
+                    return true;
+                }
+            }
+            let text = io.to_string();
+            if text.contains("Too many open files") || text.contains("dup of fd") {
+                return true;
+            }
+        }
+    }
+    let text = format!("{err:#}");
+    text.contains("Too many open files") || text.contains("dup of fd")
+}
+
+/// Map an EMFILE spawn failure to [`TOO_MANY_OPEN_FILES`]; leave every
+/// other error alone.
+fn refuse_emfile(err: anyhow::Error) -> anyhow::Error {
+    if is_emfile(&err) {
+        anyhow::anyhow!(TOO_MANY_OPEN_FILES)
+    } else {
+        err
+    }
+}
 
 /// Ceiling on connections `handle_connection` will admit to its request
 /// loop before refusing the rest with the same named error. `serve` spawns
@@ -355,8 +408,14 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
 /// delivery, rather than stored: the stored string is what the tab shows
 /// the human back, and a list of escape sequences is not a list of
 /// messages.
+///
+/// Every ESC in `text` becomes U+241B before wrapping, the same rule
+/// xterm.js and the Companion's `pasteBytes` apply: a pasted body that
+/// already carries `ESC[201~` must not end the paste early and leave the
+/// rest as typed keystrokes.
 fn bracketed_paste(text: &str) -> String {
-    format!("\x1b[200~{text}\x1b[201~\r")
+    let body = text.replace('\x1b', "\u{241b}");
+    format!("\x1b[200~{body}\x1b[201~\r")
 }
 
 /// How long a freshly spawned session's follow-up queue may wait for its
@@ -807,6 +866,48 @@ fn strip_tui_decoration(line: &str) -> String {
     }
 }
 
+/// The key-hint rows an agent paints under a dialog that is waiting on
+/// the human, as `(opening, also)` pairs: a visible row that, trimmed,
+/// STARTS with the opening and also contains the second part is that
+/// dialog's footer.
+///
+/// Kimi Code's two, measured in a pty against kimi 2.1.1 on 2026-10-12:
+///
+/// - the AskUserQuestion picker, `↑↓ select  1-3 / ↵ choose  ←/→/tab
+///   switch  esc cancel` -- which fires no hook event at all, so the
+///   screen is the only place it shows;
+/// - the approval dialog ("Run this command?"), `↑/↓ select · 1/2/3/4
+///   choose · ↵ confirm`, which also rings `gavin-attention` through
+///   its PermissionRequest hook -- this is the floor under that bell.
+///
+/// Held here rather than supplied per session like `failure_patterns`,
+/// which is a deliberate difference. A false failure is a verdict --
+/// rails pause, auto-resume relaunches -- so failure text is only ever
+/// the profile's own, verified. A false match here is a badge on a tab
+/// that went quiet, and anchoring it at the row's START keeps it to a
+/// TUI's own chrome: a source listing or a diff that quotes these
+/// strings starts its row with something else.
+const ASKING_ON_SCREEN: &[(&str, &str)] = &[("↑↓ select", "choose"), ("↑/↓ select", "choose")];
+
+/// Whether this session's RENDERED screen is showing a dialog that waits
+/// on the human (`ASKING_ON_SCREEN`). The screen model for the same
+/// reason as `failure_on_screen`: the footer is painted in fragments
+/// between cursor moves, and is one contiguous row only here.
+fn asking_on_screen(manager: &Arc<SessionManager>, id: &str) -> bool {
+    let Some(screen) = manager.screens.lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    let contents = screen.lock().unwrap().contents();
+    screen_is_asking(&contents)
+}
+
+fn screen_is_asking(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        let row = line.trim_start();
+        ASKING_ON_SCREEN.iter().any(|(opening, also)| row.starts_with(opening) && row.contains(also))
+    })
+}
+
 /// The opening of the one failure reason gavin writes ITSELF rather than
 /// quoting from an agent's screen.
 ///
@@ -1005,6 +1106,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         let quiet_since = inner.last_activity;
         drop(inner);
         let verdict = failure_verdict(&manager, &id);
+        // Not a failure, but maybe not a finished turn either: an agent
+        // that went quiet under its own question or approval dialog is
+        // waiting on the human, and calling that `idle` lets a rail
+        // advance past a question nobody answered. Read here, with
+        // `inner` still dropped, for the same lock-order reason.
+        let asking = verdict.is_none() && asking_on_screen(&manager, &id);
 
         // Re-taken, and re-validated: anything could have happened while
         // the screen was being read. New output means this verdict
@@ -1023,6 +1130,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         // reordered relative to a concurrent pump-thread decision.
         match verdict {
             Some(reason) => persist_and_emit_failure(&manager, &id, &reason),
+            // Exactly the bare BEL's state: renewed output -- the human
+            // answering -- is what ends it, never more quiet.
+            None if asking => {
+                inner.waiting_for_input = true;
+                persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
+            }
             None => persist_and_emit_status(&manager, &id, SessionStatus::Idle),
         }
     });
@@ -1320,11 +1433,9 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     let _ = debouncer.watcher().watch(std::path::Path::new(repo_root), notify::RecursiveMode::NonRecursive);
     if let Ok(entries) = std::fs::read_dir(repo_root) {
         for entry in entries.flatten() {
-            // `.gavin-worktrees` holds OTHER checkouts: every build an
-            // agent runs in one would recheck this one's status, and on
-            // Linux each of their node_modules and target directories
-            // would cost an inotify watch of this process's own.
-            if entry.file_name() == ".git" || entry.file_name() == crate::git_watch::WORKTREES_DIR {
+            // `.gavin-worktrees` / `.git` / directory symlinks: see
+            // `git_watch::is_recursive_top_level_entry`.
+            if !crate::git_watch::is_recursive_top_level_entry(&entry) {
                 continue;
             }
             let _ = debouncer.watcher().watch(&entry.path(), notify::RecursiveMode::Recursive);
@@ -1710,6 +1821,10 @@ pub struct SessionManager {
     /// store read that names a Device taking a session: nothing takes
     /// this while holding the trust store.
     session_owners: Mutex<crate::ownership::Owners>,
+    /// Which Device each session's PTY is sized for, and the size the desk
+    /// last asked for (v74, `pty_borrow.rs`). In memory, for ownership's
+    /// reason. Leaf lock.
+    pty_borrows: Mutex<crate::pty_borrow::Borrows>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -1755,6 +1870,10 @@ pub struct SessionManager {
     /// `direct.rs` and read by `GetDirectState`, for `relay_state`'s
     /// reasons.
     direct_state: Mutex<protocol::DirectState>,
+    /// Where the Relay the desk runs stands (v73), written by
+    /// `desk_relay.rs` and read by `GetDeskRelayState`, for
+    /// `relay_state`'s reasons.
+    desk_relay_state: Mutex<protocol::DeskRelayState>,
     /// Hands out `PendingPairing::ticket`.
     next_pairing_ticket: AtomicU64,
     /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
@@ -1857,6 +1976,8 @@ struct PendingPairing {
     /// The hardware key the Device proved it holds, which the row will
     /// hold once the desk confirms (ADR 0001).
     hardware_key: Vec<u8>,
+    /// What backs that key (06 §5.7).
+    key_kind: Option<protocol::device_wire::KeyKind>,
     name: String,
     /// Where the human's answer goes, when someone is holding the
     /// Device's stream open for it. `None` for a handshake nobody is
@@ -1929,6 +2050,10 @@ pub const MAX_CONNECTIONS_PER_DEVICE: usize = 4;
 struct DeviceConnection {
     device_id: String,
     stream: Stream,
+    /// What the connection's own answers are written through, so a push
+    /// meant for every Device (`push_to_devices`) never lands in the middle
+    /// of one.
+    writer: Arc<Mutex<Stream>>,
 }
 
 /// Removes a connection's `device_connections` entry when its thread ends,
@@ -1965,6 +2090,11 @@ impl Drop for DeviceConnectionSlot<'_> {
                     .unwrap()
                     .device_away(&conn.device_id, crate::remote::epoch_seconds());
                 self.manager.announce_owners(away);
+                // The sizes it borrowed go back at once: no grace, since
+                // the desk is left looking at a phone-width terminal, and
+                // the Companion sizes its terminal again when it is back.
+                let returned = self.manager.pty_borrows.lock().unwrap().device_gone(&conn.device_id);
+                self.manager.restore_desk_sizes(returned);
             }
             self.manager
                 .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
@@ -2098,8 +2228,9 @@ pub struct Revocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevokeAll {
     /// The daemon's rotated static public key. Every phone pinned the old
-    /// one, so this is the fact that invalidates them all at once even if
-    /// the store is somehow restored from a backup (§3).
+    /// one, so this is the fact that invalidates them while the live
+    /// store holds the new key (§3). The key lives in the same file as
+    /// the rows; a restore of that file undoes the rotation too.
     pub new_public_key: Vec<u8>,
     pub connections_dropped: usize,
 }
@@ -2145,6 +2276,7 @@ impl SessionManager {
             device_refusals: Mutex::new(HashMap::new()),
             device_presence: Mutex::new(crate::presence::Presences::default()),
             session_owners: Mutex::new(crate::ownership::Owners::default()),
+            pty_borrows: Mutex::new(crate::pty_borrow::Borrows::default()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
@@ -2153,6 +2285,7 @@ impl SessionManager {
             build_profile: Mutex::new(protocol::BuildProfile::current()),
             relay_state: Mutex::new(protocol::RelayState::NotWanted),
             direct_state: Mutex::new(protocol::DirectState::NotWanted),
+            desk_relay_state: Mutex::new(protocol::DeskRelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(None),
@@ -2203,6 +2336,27 @@ impl SessionManager {
         self.push_to_apps_speaking(
             protocol::DIRECT_ACCESS_MIN_VERSION,
             &Response::DirectStateChanged { state },
+        );
+    }
+
+    /// Where the desk's own Relay stands. See `desk_relay_state`.
+    pub fn desk_relay_state(&self) -> protocol::DeskRelayState {
+        self.desk_relay_state.lock().unwrap().clone()
+    }
+
+    /// Records where the desk's Relay stands and, if that is a change,
+    /// tells every live app that speaks v73. A repeat pushes nothing.
+    pub fn set_desk_relay_state(&self, state: protocol::DeskRelayState) {
+        {
+            let mut held = self.desk_relay_state.lock().unwrap();
+            if *held == state {
+                return;
+            }
+            *held = state.clone();
+        }
+        self.push_to_apps_speaking(
+            protocol::DESK_RELAY_MIN_VERSION,
+            &Response::DeskRelayStateChanged { state },
         );
     }
 
@@ -2397,6 +2551,7 @@ impl SessionManager {
         &self,
         device_id: &str,
         stream: Stream,
+        writer: Arc<Mutex<Stream>>,
     ) -> Result<u64, protocol::device_wire::ConnectRefusal> {
         use protocol::device_wire::ConnectRefusal;
 
@@ -2407,7 +2562,7 @@ impl SessionManager {
             if held >= MAX_CONNECTIONS_PER_DEVICE {
                 return Err(ConnectRefusal::Busy);
             }
-            live.insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+            live.insert(token, DeviceConnection { device_id: device_id.to_string(), stream, writer });
         }
         // The row is read AFTER the entry exists, and that order is the
         // point. A revocation marks the row and then shuts the
@@ -2444,7 +2599,7 @@ impl SessionManager {
         match self.trust() {
             None => Some(ConnectRefusal::NotPaired),
             // A store that cannot be read has not said yes.
-            Some(trust) => match trust.admit_id(device_id) {
+            Some(trust) => match trust.admit_id(device_id, self.build_profile()) {
                 Ok(admission) => admission.connect_refusal(),
                 Err(_) => Some(ConnectRefusal::Other),
             },
@@ -2617,19 +2772,24 @@ impl SessionManager {
             Some(protocol::RemoteAllowance::Refused) => Response::Error {
                 message: format!("gavin-daemon: remote role may not invoke `{command}`"),
             },
-            Some(protocol::RemoteAllowance::Daemon) => self.answer_in_daemon(device_id, command, &args),
+            Some(protocol::RemoteAllowance::Daemon) => self.answer_in_daemon(device_id, command, args),
             Some(protocol::RemoteAllowance::Allowed) => {
                 if let Some(refusal) = device_id.and_then(|device_id| self.device_input(device_id, command, &args)) {
                     return Response::DesktopResult { value: None, error: Some(refusal.to_error()) };
                 }
-                let what = format!("`{command}`");
-                let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
-                match self.ask_desktop(&what, FORWARD_BUDGET, push) {
-                    Ok(ForwardOutcome::Done { value, error }) => Response::DesktopResult { value, error },
-                    Ok(_) => Response::Error { message: "gavin-daemon: the desktop app answered something else".into() },
-                    Err(reason) => Response::Error { message: desktop_unreachable(reason).into() },
-                }
+                self.forward_to_desktop(command, args)
             }
+        }
+    }
+
+    /// Hands `command` to the desktop and waits for its `ForwardResult`.
+    fn forward_to_desktop(&self, command: &str, args: serde_json::Value) -> Response {
+        let what = format!("`{command}`");
+        let push = |call_id| Response::ForwardCommand { call_id, command: command.to_string(), args };
+        match self.ask_desktop(&what, FORWARD_BUDGET, push) {
+            Ok(ForwardOutcome::Done { value, error }) => Response::DesktopResult { value, error },
+            Ok(_) => Response::Error { message: "gavin-daemon: the desktop app answered something else".into() },
+            Err(reason) => Response::Error { message: desktop_unreachable(reason).into() },
         }
     }
 
@@ -2794,6 +2954,15 @@ impl SessionManager {
             .count()
     }
 
+    /// Writes `resp` to every live Device connection. Returns how many it
+    /// reached. A Device sends no `Hello`, so nothing holds a push back by
+    /// version: only a push an older shell passes over belongs here.
+    pub(crate) fn push_to_devices(&self, resp: &Response) -> usize {
+        let writers: Vec<Arc<Mutex<Stream>>> =
+            self.device_connections.lock().unwrap().values().map(|c| Arc::clone(&c.writer)).collect();
+        writers.iter().filter(|writer| write_message(&mut *writer.lock().unwrap(), resp).is_ok()).count()
+    }
+
     /// Records that `device_id` was refused a connection for `reason`, and
     /// tells the desks that can be told (v62).
     ///
@@ -2826,7 +2995,11 @@ impl SessionManager {
             use protocol::device_wire::ConnectRefusal;
             if matches!(
                 reason,
-                ConnectRefusal::NotPaired | ConnectRefusal::Revoked | ConnectRefusal::Stale | ConnectRefusal::PairAgain
+                ConnectRefusal::NotPaired
+                    | ConnectRefusal::Revoked
+                    | ConnectRefusal::Stale
+                    | ConnectRefusal::PairAgain
+                    | ConnectRefusal::SoftwareDebug
             ) {
                 self.release_device_sessions(device_id);
             }
@@ -2966,9 +3139,31 @@ impl SessionManager {
 
     /// A command the table marks `Daemon`, answered here as `device_id`
     /// with the arguments the webview's `invoke` would pass.
-    fn answer_in_daemon(&self, device_id: Option<&str>, command: &str, args: &serde_json::Value) -> Response {
+    fn answer_in_daemon(&self, device_id: Option<&str>, command: &str, args: serde_json::Value) -> Response {
         let text = |key: &str| args.get(key).and_then(serde_json::Value::as_str).filter(|s| !s.is_empty());
+        let size = |key: &str| args.get(key).and_then(serde_json::Value::as_u64).and_then(|n| u16::try_from(n).ok());
         let answer = match command {
+            "resize_session" => match (text("sessionId"), size("cols"), size("rows")) {
+                (Some(session_id), Some(cols), Some(rows)) => {
+                    // A session this daemon does not host is one the desk
+                    // reaches on another host (an ssh workspace), which only
+                    // the desk can route to: forwarded, as before v74.
+                    if !self.sessions.lock().unwrap().contains_key(session_id) {
+                        return self.forward_to_desktop(command, args);
+                    }
+                    self.device_resize_session(device_id, session_id, cols, rows)
+                        .map(|()| serde_json::Value::Null)
+                        .map_err(|e| e.to_string())
+                }
+                _ => Err("gavin-daemon: resize_session needs a sessionId, cols and rows".to_string()),
+            },
+            "return_pty_size" => match text("sessionId") {
+                None => Err("gavin-daemon: return_pty_size needs a sessionId".to_string()),
+                Some(session_id) => {
+                    self.return_pty_size(session_id, device_id);
+                    Ok(serde_json::Value::Null)
+                }
+            },
             "set_session_owner" => match text("sessionId") {
                 None => Err("gavin-daemon: set_session_owner needs a sessionId".to_string()),
                 Some(session_id) => {
@@ -3005,6 +3200,66 @@ impl SessionManager {
     fn end_session_owner(&self, session_id: &str) {
         let ended = self.session_owners.lock().unwrap().session_ended(session_id, crate::remote::epoch_seconds());
         self.announce_owners(ended.into_iter().collect());
+        self.pty_borrows.lock().unwrap().session_ended(session_id);
+    }
+
+    // -- a Device borrowing a PTY's size (v74, `pty_borrow.rs`) ---------
+
+    /// The desk's `ResizeSession`: applied, unless a Device has the size --
+    /// then remembered for when it comes back, and the borrow announced
+    /// again, which is how a desk that reloaded mid-borrow hears of it.
+    pub fn desk_resize_session(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        if !self.sessions.lock().unwrap().contains_key(id) {
+            anyhow::bail!("unknown session: {id}");
+        }
+        let decision = self.pty_borrows.lock().unwrap().desk_resize(id, (cols, rows));
+        match decision {
+            crate::pty_borrow::DeskResize::Apply => self.resize_session(id, cols, rows),
+            crate::pty_borrow::DeskResize::Held(device) => {
+                self.announce_pty_borrow(id, Some(device));
+                Ok(())
+            }
+        }
+    }
+
+    /// A Device's resize: it has the size from now on. `None` is a
+    /// connection that carries no Device, which is the desk's.
+    fn device_resize_session(&self, device_id: Option<&str>, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let Some(device_id) = device_id else {
+            return self.desk_resize_session(id, cols, rows);
+        };
+        // Named before the lock: a trust-store read.
+        let device = protocol::LiveDevice { device_id: device_id.to_string(), name: self.device_name(device_id) };
+        let borrowed = self.pty_borrows.lock().unwrap().device_resize(id, device);
+        self.resize_session(id, cols, rows)?;
+        if let Some(device) = borrowed {
+            self.announce_pty_borrow(id, Some(device));
+        }
+        Ok(())
+    }
+
+    /// Ends the session's borrow and puts the desk's size back. `by` is
+    /// the Device asking, `None` for the desk; see `Borrows::give_back`.
+    pub fn return_pty_size(&self, id: &str, by: Option<&str>) {
+        let returned = self.pty_borrows.lock().unwrap().give_back(id, by);
+        self.restore_desk_sizes(returned.into_iter().collect());
+    }
+
+    fn restore_desk_sizes(&self, returned: Vec<crate::pty_borrow::Returned>) {
+        for back in returned {
+            if let Some((cols, rows)) = back.desk_size {
+                // A session that ended meanwhile has nothing to resize.
+                let _ = self.resize_session(&back.session_id, cols, rows);
+            }
+            self.announce_pty_borrow(&back.session_id, None);
+        }
+    }
+
+    fn announce_pty_borrow(&self, session_id: &str, device: Option<protocol::LiveDevice>) {
+        self.push_to_apps_speaking(
+            protocol::PTY_BORROW_MIN_VERSION,
+            &Response::PtySizeBorrowed { session_id: session_id.to_string(), device },
+        );
     }
 
     /// Records a command the desktop ran for `device_id`, and tells the
@@ -3059,11 +3314,16 @@ impl SessionManager {
             let trust = self.trust_or_err()?;
             (trust.static_public_key()?, trust.remote_access()?, trust.direct_identity()?)
         };
-        let rendezvous = settings.rendezvous();
-        // The token goes with the Relay it admits to. With no Relay to
-        // present it to, it would be a credential drawn on a screen for
-        // nothing.
-        let relay_admission = if rendezvous.is_empty() { None } else { settings.relay_admission };
+        // A Relay URL naming this machine's own direct listener is not a
+        // Relay: a Device given it spends a try on the listener under the
+        // wrong name, and the human reads one port offered twice
+        // (2026-10-14). Left out -- the direct addresses below are that
+        // listener under its right one.
+        let rendezvous: Vec<String> = settings
+            .rendezvous()
+            .into_iter()
+            .filter(|url| crate::direct::names_a_direct_listener_here(self, url).is_none())
+            .collect();
         // The direct listener's addresses, if it is listening now (ADR
         // 0009): worked out afresh, since the one the QR is drawn from is
         // the one the Device will keep. A listener that is switched on
@@ -3074,6 +3334,12 @@ impl SessionManager {
             _ => Vec::new(),
         };
         let direct_pin = (!direct.is_empty()).then(|| direct_identity.pin());
+        // The token goes with every way in that asks for it: the Relay,
+        // and the direct listener while the desk holds one (ADR 0009,
+        // amended 2026-10-15). Carried once, for both. With neither, it
+        // would be a credential drawn on a screen for nothing.
+        let relay_admission =
+            if rendezvous.is_empty() && direct.is_empty() { None } else { settings.relay_admission };
         let offer = crate::pairing::PairingOffer::mint(crate::trust::now_us())?;
         let qr = protocol::PairingQr {
             daemon_public_key: crate::pairing::hex_encode(&daemon_public_key),
@@ -3222,6 +3488,7 @@ impl SessionManager {
             &keys,
             &offer,
             crate::trust::now_us(),
+            self.build_profile(),
         )?;
 
         // The secret is spent HERE, by the handshake that completed, and
@@ -3273,6 +3540,7 @@ impl SessionManager {
             name: outcome.name,
             public_key: outcome.public_key,
             hardware_key: outcome.hardware_key,
+            key_kind: outcome.key_kind,
             sas: outcome.sas,
             transport: outcome.transport,
         };
@@ -3283,6 +3551,7 @@ impl SessionManager {
             PendingPairing {
                 public_key: handshake.public_key.clone(),
                 hardware_key: handshake.hardware_key.clone(),
+                key_kind: handshake.key_kind,
                 name: handshake.name.clone(),
                 decided,
                 ticket,
@@ -3319,6 +3588,7 @@ impl SessionManager {
                 name: pending.name.clone(),
                 role: crate::trust::DeviceRole::Remote,
                 hardware_key: pending.hardware_key.clone(),
+                key_kind: pending.key_kind,
                 notification_key,
             },
         );
@@ -3409,6 +3679,9 @@ impl SessionManager {
             relay_admission_set: settings.relay_admission.is_some(),
             push_gateway_url: trust.push_gateway_url()?,
             direct_access_enabled: trust.direct_enabled()?,
+            desk_relay_enabled: trust.desk_relay_enabled()?,
+            relay_admission_set_at: trust.admission_set_at()?,
+            relay_admission_by_desk: trust.admission_by_desk()?,
         })
     }
 
@@ -3485,6 +3758,29 @@ impl SessionManager {
                 trust.direct_identity()?;
             }
         }
+        self.remote_wake.poke();
+        Ok(())
+    }
+
+    /// `SetDeskRelay`: store "Run a Relay on this Mac", and wake the
+    /// daemon's Relay supervisor (v73). As with `set_direct_access`,
+    /// nothing here starts a process: `desk_relay.rs` re-reads the store
+    /// and starts `gavin-relay`, or stops it, on its own -- and only in a
+    /// release build's daemon.
+    pub fn set_desk_relay(&self, enabled: bool) -> anyhow::Result<()> {
+        self.trust_or_err()?.set_desk_relay_enabled(enabled)?;
+        self.remote_wake.poke();
+        Ok(())
+    }
+
+    /// `RefreshRelayAdmission`: replaces the token the desk minted (v73).
+    /// The old one stays accepted for `desk_relay::admission_grace()`.
+    /// The desk's Relay reads the new set, and every Device connected to
+    /// either daemon is handed the new token, by `desk_relay.rs`, which
+    /// sees the rotation in the store either daemon may have written.
+    pub fn refresh_relay_admission(&self) -> anyhow::Result<()> {
+        let now = (crate::trust::now_us() / 1_000_000).max(0) as u64;
+        self.trust_or_err()?.rotate_desk_admission(now, crate::desk_relay::admission_grace())?;
         self.remote_wake.poke();
         Ok(())
     }
@@ -3674,9 +3970,12 @@ impl SessionManager {
     /// every live connection that carries any device id (§3).
     ///
     /// The rotation is what makes this the one-button answer to a lost
-    /// phone: marking rows is a change to a file, but a new static key
-    /// invalidates every phone at once even if the file is restored,
-    /// because each one pinned the old key.
+    /// phone while the store is intact: marking rows is a change to a
+    /// file, but a new static key invalidates every phone that pinned
+    /// the old one. The key lives in that same file, so restoring a
+    /// pre-revocation copy brings the old key and the unrevoked rows
+    /// back together — run Revoke all again after restoring the gavin
+    /// data folder.
     #[allow(dead_code)]
     pub fn revoke_all_devices(&self) -> anyhow::Result<RevokeAll> {
         let new_public_key = {
@@ -3818,7 +4117,14 @@ impl SessionManager {
         let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
         let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
-            weak.upgrade()?.recover_moved_card_paths(workspace_id, tree)
+            let manager = weak.upgrade()?;
+            // Keeps the card index up with the board, so gavin_find_cards
+            // finds it ready. Returns at once: the embedding runs on a
+            // thread of its own, never on this scan's.
+            if let Some(memories) = manager.memories.get() {
+                memories.index_cards_in_background(tree);
+            }
+            manager.recover_moved_card_paths(workspace_id, tree)
         });
         let watcher = crate::gavin::GavinWatcher::start(
             workspace_id.to_string(),
@@ -4007,6 +4313,11 @@ impl SessionManager {
     /// resume treats a self-reported id and a minted one alike. A
     /// session with no bound card is a no-op, not an error: there is
     /// nothing yet to link it to, and the tab still gets renamed.
+    ///
+    /// The id must be an opaque token (`[A-Za-z0-9._:-]`, ≤128 bytes):
+    /// this is the last trusted writer an agent can reach for that
+    /// column, and a Resume line splices it into `sh -c`
+    /// (sec-fix-conversation-id-token-grammar).
     pub fn name_session(
         &self,
         session_id: &str,
@@ -4015,6 +4326,13 @@ impl SessionManager {
     ) -> anyhow::Result<()> {
         if self.registry.lock().unwrap().get(session_id)?.is_none() {
             anyhow::bail!("no such session: {session_id}");
+        }
+        if let Some(conversation_id) = agent_conversation_id {
+            if !is_opaque_conversation_id(conversation_id) {
+                anyhow::bail!(
+                    "agent_conversation_id must be an opaque token ([A-Za-z0-9._:-], at most 128 bytes)"
+                );
+            }
         }
         // Cloned out of the map first: this file never holds a lock
         // across the blocking write below.
@@ -4085,19 +4403,31 @@ impl SessionManager {
         // Headroom as it is then.
         let compression =
             self.decide_compression(workspace_path, launch, &id, command, without_headroom);
+        // Codex's recipe hands its base URL over on the command line.
+        let line = compression.command().or(command);
+        // And a Claude Code launch is handed the shell-write hook the same
+        // way (`shell_writes`), whatever the recipe made of its line.
+        let hooked = line.and_then(|line| {
+            crate::shell_writes::with_claude_hooks(
+                line,
+                launch,
+                crate::pty::gavin_mcp_beside_this_binary().is_some(),
+            )
+        });
         let pty = PtySession::spawn_with_env(
             cwd,
-            // Codex's recipe hands its base URL over on the command line.
-            compression.command().or(command),
+            hooked.as_deref().or(line),
             &id,
             Some(&session_token),
             compression.env(),
-        )?;
+        )
+        .map_err(refuse_emfile)?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
             workspace_path: workspace_path.to_string(),
             cwd: cwd.to_string(),
+            scope_cwd: cwd.to_string(),
             // The line that was asked for, never the one a recipe made
             // of it. The one it made names this session's tag and this
             // Headroom's port, and a relaunch built from it would carry
@@ -4696,6 +5026,28 @@ impl SessionManager {
         let mut kanban = self.kanban.lock().unwrap();
         kanban.abandon_runs_for_sessions(&gone)?;
         kanban.card_runs(workspace_id, path)
+    }
+
+    /// Keeps what one shell call of an agent wrote (`gavin-mcp
+    /// shell-writes`). Both ids are required: they are the only way the
+    /// record is ever found again, and a row under an empty one would be
+    /// read back as some other run's.
+    pub fn record_shell_writes(
+        &self,
+        conversation_id: &str,
+        tool_call_id: &str,
+        root: &str,
+        paths: &[String],
+    ) -> anyhow::Result<()> {
+        if conversation_id.trim().is_empty() || tool_call_id.trim().is_empty() {
+            anyhow::bail!("gavin-daemon: a shell-write record needs its conversation and call ids");
+        }
+        self.kanban.lock().unwrap().record_shell_writes(conversation_id, tool_call_id, root, paths)
+    }
+
+    /// Every shell call recorded for a conversation, for the Review tab.
+    pub fn shell_writes(&self, conversation_id: &str) -> anyhow::Result<protocol::shell_writes::ShellWrites> {
+        self.kanban.lock().unwrap().shell_writes(conversation_id)
     }
 
     /// Whether a session's agent talked to its model through Headroom,
@@ -5534,6 +5886,7 @@ impl SessionManager {
                     }
                 }
                 Err(e) => {
+                    let e = refuse_emfile(e);
                     eprintln!("failed to recover session {} (cwd {cwd}): {e}", record.id);
                     if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
                         eprintln!("failed to mark session {} exited: {e}", record.id);
@@ -6227,8 +6580,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             Ok(Response::SessionOwners { owners: list.owners, devices: list.devices, you: list.you })
         }
         Request::ResizeSession { id, cols, rows } => manager
-            .resize_session(&id, cols, rows)
+            .desk_resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
+        Request::ReturnPtySize { id } => {
+            manager.return_pty_size(&id, None);
+            Ok(Response::Ok)
+        }
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
         Request::SessionProcesses => manager
             .session_processes()
@@ -6328,6 +6685,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.delete_group_template(&id).map(|_| Response::Ok)
         }
         Request::Hello { .. } => unreachable!("Hello is intercepted in handle_connection"),
+        Request::ServerChallenge { .. } => {
+            unreachable!("ServerChallenge is intercepted in handle_connection")
+        }
         Request::ForwardedInput { .. } => {
             unreachable!("ForwardedInput is unwrapped in handle_connection")
         }
@@ -6447,6 +6807,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .memories_or_err()
             .and_then(|m| m.search(std::path::Path::new(&root_path), &query, &topics, limit))
             .map(|hits| Response::MemoryHits { hits }),
+        Request::SearchCards { root_path, query, limit } => manager
+            .memories_or_err()
+            .and_then(|m| m.search_cards(std::path::Path::new(&root_path), &query, limit))
+            .map(|hits| Response::CardHits { hits }),
         // Workspace files for a desktop on another machine (v39). Confined
         // to the root and its extra contexts inside `gavin`, so this
         // dispatch decides nothing about paths.
@@ -6519,6 +6883,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             parent,
             attachments,
             complexity,
+            direct,
         } => {
             crate::gavin::create_plan_file(
                 std::path::Path::new(&context_folder),
@@ -6531,6 +6896,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 parent.as_deref(),
                 attachments.as_deref(),
                 complexity.as_deref(),
+                direct,
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
@@ -6605,6 +6971,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
+        }
+        // What a shell call wrote (v72). An agent reaches the write only
+        // for a root in its own scope (`agent_allows`); the read is the
+        // app's.
+        Request::RecordShellWrites { conversation_id, tool_call_id, root, paths } => manager
+            .record_shell_writes(&conversation_id, &tool_call_id, &root, &paths)
+            .map(|_| Response::Ok),
+        Request::ShellWrites { conversation_id } => {
+            manager.shell_writes(&conversation_id).map(|writes| Response::ShellWrites { writes })
         }
         Request::StartToolRun {
             workspace_id,
@@ -6700,6 +7075,11 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetDirectAccess { enabled } => {
             manager.set_direct_access(enabled).map(|_| Response::Ok)
         }
+        Request::GetDeskRelayState => {
+            Ok(Response::DeskRelayState { state: manager.desk_relay_state() })
+        }
+        Request::SetDeskRelay { enabled } => manager.set_desk_relay(enabled).map(|_| Response::Ok),
+        Request::RefreshRelayAdmission => manager.refresh_relay_admission().map(|_| Response::Ok),
         // Answered `Ok` rather than with what changed: the app refetches
         // the list, which is the only account of the store that cannot
         // disagree with the store.
@@ -7005,6 +7385,19 @@ fn agent_owns_session(id: &ClientIdentity, session_id: &str) -> bool {
     id.session_id.as_deref() == Some(session_id)
 }
 
+/// Opaque token grammar for a self-reported agent conversation id
+/// (sec-fix-conversation-id-token-grammar). NameSession is the last
+/// trusted writer an agent can reach for `card_sessions.conversation_id`,
+/// and Resume splices that column into `sh -c` — so only these bytes,
+/// at most 128 of them.
+fn is_opaque_conversation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+}
+
 /// What an `agent` connection may do, as an EXHAUSTIVE match over every
 /// `Request` -- so a new variant fails to compile until someone classifies
 /// it here (item 4 of the card), exactly like `min_version_for`.
@@ -7027,7 +7420,9 @@ fn agent_owns_session(id: &ClientIdentity, session_id: &str) -> bool {
 fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
     match req {
         // Identity and the version probe: always.
-        Request::Hello { .. } | Request::GetProtocolVersion => true,
+        Request::Hello { .. }
+        | Request::ServerChallenge { .. }
+        | Request::GetProtocolVersion => true,
 
         // Scoped reads/writes by ROOT (gavin-mcp's own workspace).
         Request::ScanGavinRoot { root_path }
@@ -7036,6 +7431,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // tool's whole point. `EnsureMemoryIndex` stays out: it can start
         // a model download, which is the human's call at setup.
         | Request::SearchMemories { root_path, .. }
+        // Its own workspace's cards ranked by meaning: the same tree
+        // `ScanGavinRoot` hands it, in another order.
+        | Request::SearchCards { root_path, .. }
         | Request::GetBoardByRoot { root_path }
         | Request::GetOrchestrationByRoot { root_path }
         | Request::GetToolsByRoot { root_path }
@@ -7073,6 +7471,15 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
         Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
         Request::GitDirtyPaths { cwd, .. } => agent_path_in_scope(id, cwd),
+        // The shell-write hook's record (v72), sent by `gavin-mcp
+        // shell-writes` from inside the agent's own tab, so it arrives on
+        // the agent's token. Scoped by root like the `*ByRoot` family --
+        // bidirectionally, because the repository root the hook finds can
+        // sit ABOVE a workspace that is a folder of a larger repo. The
+        // conversation id is the agent's word and is not checked against
+        // the session: what it could forge is a line in a Review tab, about
+        // files in a root it already writes to.
+        Request::RecordShellWrites { root, .. } => agent_root_in_scope(id, root),
 
         // Spawning is allowed but confined: an agent may open another
         // visible session in its OWN workspace (an orchestration agent
@@ -7115,6 +7522,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // The desk host's write for a Device; an agent is neither.
         | Request::ForwardedInput { .. }
         | Request::ResizeSession { .. }
+        | Request::ReturnPtySize { .. }
         | Request::KillSession { .. }
         | Request::Attach { .. }
         | Request::Snapshot { .. }
@@ -7146,6 +7554,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnlinkCardSession { .. }
         | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
+        // What every run's shell calls wrote (v72): the Review tab's
+        // read. An agent records its own and has no use for this one.
+        | Request::ShellWrites { .. }
         // Every card's savings in every workspace (v49): the run history
         // above, read across the whole daemon, and no more the agent's
         // than a card run is.
@@ -7191,10 +7602,13 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ListDevices
         | Request::GetRelayState
         | Request::GetDirectState
+        | Request::GetDeskRelayState
+        | Request::RefreshRelayAdmission
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }
         | Request::SetDirectAccess { .. }
+        | Request::SetDeskRelay { .. }
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. }
         | Request::PushCompanionNotify { .. }
@@ -7399,6 +7813,8 @@ fn is_privileged(req: &Request) -> bool {
             | Request::RevokeAllDevices
             | Request::SetRemoteAccess { .. }
             | Request::SetDirectAccess { .. }
+            | Request::SetDeskRelay { .. }
+            | Request::RefreshRelayAdmission
             | Request::SetPushGatewayUrl { .. }
             | Request::SetDeviceSendPermission { .. }
             | Request::PushCompanionNotify { .. }
@@ -7716,7 +8132,7 @@ fn serve_connection(
     // an ordinary local connection pays nothing for it.
     let device_slot = match initial_identity.device_id.as_deref() {
         Some(device_id) => {
-            match manager.register_device_connection(device_id, stream.try_clone()?) {
+            match manager.register_device_connection(device_id, stream.try_clone()?, Arc::clone(&writer)) {
                 Ok(token) => Some(DeviceConnectionSlot { manager: &manager, token }),
                 // Not one to serve: revoked or removed since it was
                 // judged, or one connection more than a Device may hold.
@@ -7780,6 +8196,36 @@ fn serve_connection(
             Some(r) => r,
             None => break,
         };
+
+        // A Device's identity is fixed by the transport: re-check the
+        // store on every request so a revocation stops work already
+        // buffered in this reader, not only the next empty read after
+        // the stream is shut.
+        if fixed_by_transport {
+            if let Some(device_id) = identity.device_id.as_deref() {
+                if let Some(refusal) = manager.device_refusal(device_id) {
+                    let _ = write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::Error {
+                            message: refusal.to_string(),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+
+        // Prove the daemon before the client discloses its token (v76,
+        // DP-06). Not authorized and not dispatched -- it answers from
+        // the token on disk, and never establishes a role.
+        if let Request::ServerChallenge { nonce } = &req {
+            let proof = protocol::challenge_proof(manager.daemon_token(), nonce);
+            write_message(
+                &mut *writer.lock().unwrap(),
+                &Response::ServerProof { proof },
+            )?;
+            continue;
+        }
 
         // `Hello` establishes identity for the connection. Handled here,
         // never authorized (it is what SETS the role) and never dispatched
@@ -8212,6 +8658,30 @@ fn serve_connection(
 
 #[cfg(test)]
 mod tests {
+    /// ESC inside paste text must not mint a second end marker: the body
+    /// is defused to U+241B so exactly one `\x1b[201~` reaches the PTY
+    /// (the envelope's own), and the markers account for both ESC bytes.
+    #[test]
+    fn bracketed_paste_neutralises_esc_so_text_cannot_end_the_paste_early() {
+        for text in ["say hello\x1b[201~\x1b[Z", "x\x1b[201~\r!echo X"] {
+            let paste = super::bracketed_paste(text);
+            assert_eq!(
+                paste.matches("\x1b[201~").count(),
+                1,
+                "exactly one end marker for {text:?}: {paste:?}"
+            );
+            assert_eq!(
+                paste.bytes().filter(|&b| b == 0x1b).count(),
+                2,
+                "only the envelope markers carry ESC for {text:?}: {paste:?}"
+            );
+            assert!(
+                paste.contains('\u{241b}'),
+                "body ESC becomes U+241B for {text:?}: {paste:?}"
+            );
+        }
+    }
+
     #[test]
     fn nested_worktree_churn_is_not_this_checkouts_change() {
         use std::path::Path;
@@ -9101,6 +9571,7 @@ mod tests {
             parent: None,
             attachments: None,
             complexity: None,
+            direct: false,
         }, false)
         .is_ok());
         assert!(authorize(&id, &Request::GitDirtyPaths { cwd: cwd.clone(), limit: 10 }, false).is_ok());
@@ -9283,9 +9754,67 @@ mod tests {
         );
     }
 
-    /// An agent searches its own workspace's adopted memories and no
-    /// other's; building the index, which can start a model download, is
-    /// the human's.
+    /// The shell-write hook rides the agent's own token: it may record for
+    /// the root it is standing in -- or a repository root above it, the
+    /// shape of a workspace that is a folder of a larger repo -- and for no
+    /// other. Reading the records is the app's; a Device gets neither.
+    #[test]
+    fn an_agent_records_its_own_shell_writes_and_reads_none() {
+        let repo = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let ws = repo.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws = ws.to_string_lossy().to_string();
+        let agent = ClientIdentity::agent("sess-1", &ws, &ws);
+        let record = |root: String| Request::RecordShellWrites {
+            conversation_id: "c".into(),
+            tool_call_id: "t".into(),
+            root,
+            paths: vec!["a.ts".into()],
+        };
+        assert!(authorize(&agent, &record(ws.clone()), false).is_ok());
+        assert!(authorize(&agent, &record(repo.path().to_string_lossy().to_string()), false).is_ok());
+        assert!(authorize(&agent, &record(other.path().to_string_lossy().to_string()), false).is_err());
+        let read = Request::ShellWrites { conversation_id: "c".into() };
+        assert!(matches!(
+            authorize(&agent, &read, false),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+        let device = ClientIdentity::remote("dev-1");
+        assert!(authorize(&device, &record(ws.clone()), false).is_err());
+        assert!(authorize(&device, &read, false).is_err());
+    }
+
+    /// A record goes in, the folded read comes out; an empty id is
+    /// refused, since nothing could ever find that row again.
+    #[test]
+    fn shell_writes_answer_over_the_wire() {
+        let dirs = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dirs);
+        let record = |call: &str, paths: &[&str]| Request::RecordShellWrites {
+            conversation_id: "c-1".into(),
+            tool_call_id: call.into(),
+            root: "/r".into(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+        };
+        assert!(matches!(handle_request(&manager, record("t-1", &["a.ts"])), Response::Ok));
+        assert!(matches!(handle_request(&manager, record("t-2", &[])), Response::Ok));
+        assert!(matches!(handle_request(&manager, record(" ", &["b.ts"])), Response::Error { .. }));
+        match handle_request(&manager, Request::ShellWrites { conversation_id: "c-1".into() }) {
+            Response::ShellWrites { writes } => {
+                assert_eq!(writes.calls, ["t-1", "t-2"]);
+                assert_eq!(
+                    writes.files,
+                    [protocol::shell_writes::RootFiles { root: "/r".into(), paths: vec!["a.ts".into()] }]
+                );
+            }
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    /// An agent searches its own workspace's adopted memories and cards
+    /// and no other's; building the index, which can start a model
+    /// download, is the human's.
     #[test]
     fn an_agent_may_search_its_own_memories_and_build_none() {
         let ws = tempfile::tempdir().unwrap();
@@ -9300,6 +9829,9 @@ mod tests {
         };
         assert!(authorize(&agent, &search(root.clone()), false).is_ok());
         assert!(authorize(&agent, &search(other.path().to_string_lossy().to_string()), false).is_err());
+        let cards = |root_path: String| Request::SearchCards { root_path, query: "q".into(), limit: None };
+        assert!(authorize(&agent, &cards(root.clone()), false).is_ok());
+        assert!(authorize(&agent, &cards(other.path().to_string_lossy().to_string()), false).is_err());
         for req in [
             Request::GetMemoryIndex { root_path: root.clone() },
             Request::EnsureMemoryIndex { root_path: root.clone(), download: false },
@@ -9360,6 +9892,7 @@ mod tests {
             Request::GetMemoryIndex { root_path: "/x".into() },
             Request::EnsureMemoryIndex { root_path: "/x".into(), download: true },
             Request::SearchMemories { root_path: "/x".into(), query: "q".into(), topics: vec![], limit: None },
+            Request::SearchCards { root_path: "/x".into(), query: "q".into(), limit: None },
             Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::ListSessions,
             Request::SessionProcesses,
@@ -9619,6 +10152,7 @@ mod tests {
                 id: "s1".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -9809,6 +10343,7 @@ mod tests {
                 id: "sess-rail".into(),
                 workspace_path: workspace.into(),
                 cwd: worktree.into(),
+                scope_cwd: worktree.into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -10395,6 +10930,31 @@ mod tests {
         assert!(matches!(resp, Response::Error { .. }));
     }
 
+    /// Watching a workspace is what keeps its card index ready: the scan
+    /// the watch starts with embeds its cards before any search asks.
+    #[test]
+    fn watching_a_root_indexes_its_cards_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        std::fs::write(ws.path().join(".gavin-root/plans/a.md"), "---\ntitle: Fix the login flow\n---\nRedirect loops.\n")
+            .unwrap();
+        let manager = test_manager(&dir);
+        let (memories, embedded) = crate::memory_index::tests::fake_memories(dir.path());
+        manager.set_memories(memories);
+        let (_ours, theirs) = Stream::pair().unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        crate::memory_index::tests::eventually("the card indexed", || {
+            embedded.load(std::sync::atomic::Ordering::SeqCst) == 1
+        });
+        manager.unwatch_gavin_root("ws-1");
+    }
+
     #[test]
     fn a_watch_superseded_while_starting_is_never_installed() {
         // Watchers start off the connection thread now, so two answers
@@ -10533,6 +11093,20 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let mut cmd = Stream::connect(&socket_path).unwrap();
+        // App role so CreateSession works whether or not require_local_token
+        // is on for this machine.
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+
         // A session id this daemon never issued is refused rather than
         // pushed anywhere: an agent outliving its tab must hear about it.
         let resp = request(
@@ -10569,6 +11143,17 @@ mod tests {
         // watches a root -- naming is deliberately independent of that,
         // so an agent in a rail's worktree can still name its tab.
         let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
         let mut app_reader = line_reader(app.try_clone().unwrap());
 
@@ -10649,6 +11234,17 @@ mod tests {
     fn a_self_reported_conversation_id_for_an_unbound_session_is_still_a_successful_rename() {
         let (socket_path, _dir) = start_test_server();
         let mut cmd = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
 
         let resp = request(
             &mut cmd,
@@ -10667,6 +11263,17 @@ mod tests {
         };
 
         let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -10684,6 +11291,137 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
+    fn opaque_conversation_id_token_grammar() {
+        assert!(is_opaque_conversation_id("rollout-abc123"));
+        assert!(is_opaque_conversation_id("a.b_c:d-1"));
+        assert!(is_opaque_conversation_id(&"a".repeat(128)));
+        assert!(!is_opaque_conversation_id(""));
+        assert!(!is_opaque_conversation_id("u1; touch /tmp/pwned"));
+        assert!(!is_opaque_conversation_id("id with spaces"));
+        assert!(!is_opaque_conversation_id(&"a".repeat(129)));
+        assert!(!is_opaque_conversation_id("has/slash"));
+    }
+
+    /// sec-fix-conversation-id-token-grammar: NameSession is the last
+    /// trusted writer of card_sessions.conversation_id an agent can reach.
+    /// An id that would change a Resume line under `sh -c` must be refused
+    /// here, before the kanban write.
+    #[test]
+    fn name_session_rejects_an_agent_conversation_id_outside_the_opaque_token_grammar() {
+        let (socket_path, _dir) = start_test_server();
+        // App role: CreateSession is privileged once require_local_token is
+        // on (a machine-local switch), and these tests must pass either way.
+        let mut cmd = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+                profile_id: None,
+                api_family: None,
+                without_headroom: false,
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id, .. } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        let mut app = Stream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut app,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "n2".into(),
+                connection: None,
+            },
+        );
+        assert!(matches!(resp, Response::HelloAck { .. }), "{resp:?}");
+        write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        // Wait until Attach has registered so a rejection is about the id,
+        // not "that session is not open in gavin".
+        loop {
+            let resp = request(
+                &mut cmd,
+                &Request::NameSession {
+                    session_id: session_id.clone(),
+                    name: "probe".to_string(),
+                    agent_conversation_id: None,
+                },
+            );
+            if matches!(resp, Response::Ok) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let resp = request(
+            &mut cmd,
+            &Request::LinkCardSession {
+                workspace_id: "ws-1".to_string(),
+                path: "/p/t.md".to_string(),
+                session_id: session_id.clone(),
+                cwd: "/tmp".to_string(),
+                command: None,
+                conversation_id: Some("minted-before".to_string()),
+                launch_cwd: None,
+                resume_attempts: None,
+                base_sha: None,
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession {
+                session_id: session_id.clone(),
+                name: "attack".to_string(),
+                agent_conversation_id: Some("u1; touch /tmp/pwned".to_string()),
+            },
+        );
+        match resp {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("opaque token") || message.contains("agent_conversation_id"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected Error refusing out-of-grammar id, got {other:?}"),
+        }
+
+        // The minted id must still be on the card — the write never ran.
+        let resp = request(&mut cmd, &Request::GetBoard { workspace_id: "ws-1".to_string() });
+        match resp {
+            Response::Board { card_sessions, .. } => {
+                let bound = card_sessions.iter().find(|s| s.path == "/p/t.md").expect("card not bound");
+                assert_eq!(bound.conversation_id, Some("minted-before".to_string()));
+            }
+            other => panic!("expected Board, got {other:?}"),
         }
 
         let resp = request(&mut cmd, &Request::KillSession { id: session_id });
@@ -10805,6 +11543,7 @@ mod tests {
                 body: None,
                 attachments: None,
                 complexity: Some("simple".to_string()),
+                direct: false,
             },
         );
         let created_path = match resp {
@@ -11440,6 +12179,7 @@ mod tests {
                 id: "sess-quiet".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -11477,6 +12217,7 @@ mod tests {
                 id: "sess-painted".into(),
                 workspace_path: "/tmp/ws".into(),
                 cwd: "/tmp/ws".into(),
+                scope_cwd: "/tmp/ws".into(),
                 command: None,
                 status: SessionStatus::Idle,
                 restored: false,
@@ -11696,6 +12437,42 @@ mod tests {
         assert!(matches!(resp, Response::Error { .. }));
     }
 
+    /// portable-pty turns `openpty` EMFILE into an anyhow string that
+    /// embeds the OS error's Debug form; `refuse_emfile` must still
+    /// recognise it and rewrite it to the named refusal the app banners.
+    #[test]
+    fn refuse_emfile_rewrites_portable_pty_style_message() {
+        #[cfg(unix)]
+        let code = libc::EMFILE;
+        #[cfg(windows)]
+        let code = 4;
+        let raw = anyhow::anyhow!(
+            "failed to openpty: {:?}",
+            std::io::Error::from_raw_os_error(code)
+        );
+        assert!(is_emfile(&raw), "{raw}");
+        let named = refuse_emfile(raw);
+        assert_eq!(named.to_string(), TOO_MANY_OPEN_FILES);
+    }
+
+    /// The form that shows up under macOS soft-256 before openpty itself
+    /// fails: portable-pty dups the master via `filedescriptor`, which
+    /// reports `dup of fd 252 failed` (fd number near the soft ceiling).
+    #[test]
+    fn refuse_emfile_rewrites_filedescriptor_dup_failure() {
+        let raw = anyhow::anyhow!("dup of fd 252 failed");
+        assert!(is_emfile(&raw), "{raw}");
+        assert_eq!(refuse_emfile(raw).to_string(), TOO_MANY_OPEN_FILES);
+    }
+
+    #[test]
+    fn refuse_emfile_leaves_unrelated_spawn_errors_alone() {
+        let raw = anyhow::anyhow!("cwd does not exist or is not a directory: /nope");
+        assert!(!is_emfile(&raw));
+        let kept = refuse_emfile(raw);
+        assert!(kept.to_string().contains("cwd does not exist"), "{kept}");
+    }
+
     /// DP-05: `create_session` must refuse once it is already holding
     /// `session_ceiling` live PTYs, with a named error rather than
     /// spawning without bound. Driven against a lowered ceiling -- see
@@ -11845,6 +12622,7 @@ mod tests {
                     name: device_id.to_string(),
                     role: crate::trust::DeviceRole::Remote,
                     hardware_key,
+                    key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                     notification_key: vec![key; 32],
                 },
             )
@@ -12263,6 +13041,7 @@ mod tests {
                 PendingPairing {
                     public_key: phone.public_key.clone(),
                     hardware_key: crate::unlock::testing::HardwareKey::generate().public(),
+                    key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                     name: "iPhone".into(),
                     decided: None,
                     ticket: 9_999,
@@ -13048,6 +13827,54 @@ mod tests {
         assert!(err.to_string().contains("no pairing is in progress"), "{err}");
     }
 
+    /// A store-only revocation (no stream shutdown) must still stop the
+    /// next request on a transport-fixed connection, including one that
+    /// was already buffered before the loop read it.
+    #[test]
+    fn a_revoked_device_is_refused_on_the_next_buffered_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+
+        let (client, server) = Stream::pair().unwrap();
+        let serve = Arc::clone(&manager);
+        let join = std::thread::spawn(move || {
+            handle_connection_as(server, serve, ClientIdentity::remote("dev-1"))
+        });
+        let mut client = client;
+        // Wait until the loop is past registration.
+        let first = request(&mut client, &Request::GetProtocolVersion);
+        assert!(matches!(first, Response::Forbidden { .. }), "{first:?}");
+
+        // Two requests into the near end; revoke the store row between
+        // them without shutting the stream, so only the loop's own check
+        // can refuse the second.
+        write_message(&mut client, &Request::GetProtocolVersion).unwrap();
+        manager.trust().unwrap().revoke("dev-1").unwrap();
+        write_message(&mut client, &Request::ListSessions).unwrap();
+
+        let mut reader = line_reader(client.try_clone().unwrap());
+        // The first may still be answered (it was already past the check
+        // or was the liveness probe above); drain until the refusal.
+        let mut saw_refusal = false;
+        for _ in 0..4 {
+            let msg: Option<Response> = read_message(&mut reader).unwrap();
+            match msg {
+                Some(Response::Error { message }) if message.contains("revoked") => {
+                    saw_refusal = true;
+                    break;
+                }
+                Some(Response::Forbidden { .. }) | Some(Response::ProtocolVersion { .. }) => {
+                    continue;
+                }
+                Some(other) => panic!("unexpected response before refusal: {other:?}"),
+                None => break,
+            }
+        }
+        assert!(saw_refusal, "expected a revoked Error on the buffered request");
+        let _ = join.join();
+    }
+
     /// Revoking from the wire is the store's half AND the connections'
     /// half (§3), and the desktop is told about the second one.
     #[test]
@@ -13093,9 +13920,8 @@ mod tests {
     }
 
     /// "Revoke all devices" over the wire: every row revoked, every
-    /// connection dropped, and the key rotated -- which is the half that
-    /// holds even if `devices.sqlite` is later restored from a backup
-    /// (§3).
+    /// connection dropped, and the key rotated so phones that pinned the
+    /// old one no longer match the live store (§3).
     #[test]
     fn revoke_all_devices_over_the_wire_rotates_the_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -13426,6 +14252,25 @@ mod tests {
         let qr = offer(&mut app);
         assert!(qr.rendezvous.is_empty());
         assert_eq!(qr.relay_admission, None);
+    }
+
+    /// A Relay URL that is this machine's own direct listener is left out
+    /// of the QR, and its token with it: the phone would otherwise be
+    /// handed the same port twice, once under the wrong name (2026-10-14).
+    #[test]
+    fn the_qr_leaves_out_a_relay_url_naming_this_machines_direct_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        set_remote_access(&mut app, true, Some("ws://127.0.0.1:8445"), Some("let-me-in"));
+        match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => {
+                let qr = protocol::PairingQr::parse(&qr).unwrap();
+                assert!(qr.rendezvous.is_empty(), "{:?}", qr.rendezvous);
+                assert_eq!(qr.relay_admission, None);
+            }
+            other => panic!("expected PairingOffer, got {other:?}"),
+        }
     }
 
     /// `remote.rs` sleeps until something it dials from has changed.
@@ -15199,6 +16044,45 @@ mod tests {
         await_status(&mut reader, &id, "idle");
     }
 
+    /// The footer rows of kimi 2.1.1's two dialogs, verbatim from a pty
+    /// capture rendered through the same vt100 model (2026-10-12), with
+    /// the rows around them. Kimi's idle prompt and a source line that
+    /// quotes the footer are the negatives: the match is anchored at the
+    /// row's start.
+    #[test]
+    fn kimis_question_and_approval_footers_read_as_asking() {
+        let picker = " question\n\n  Colour    Submit \n\n ? Which colour do you prefer?\n\n  → [1] Red\n    [2] Blue\n    [3] Other\n\n  ↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel\n";
+        let approval = "  ▶ Run this command?\n\n  Dangerous: recursive delete\n\n  ▶ 1. Approve once\n    2. Approve for this session\n    3. Reject\n    4. Reject with feedback\n\n  ↑/↓ select · 1/2/3/4 choose · ↵ confirm\n";
+        let prompt = "● Done — the command ran and exited successfully.\n╭──────╮\n│ >    │\n╰──────╯\nAsk When Needed  K3 thinking: high\n";
+        let quoted = "  812 | const ASKING_ON_SCREEN: &[(&str, &str)] = &[(\"↑↓ select\", \"choose\")];\n";
+        assert!(screen_is_asking(picker), "the AskUserQuestion picker");
+        assert!(screen_is_asking(approval), "the approval dialog");
+        assert!(!screen_is_asking(prompt), "kimi at its prompt");
+        assert!(!screen_is_asking(quoted), "a listing that quotes the footer");
+    }
+
+    /// End to end through the quiet timer: a session that goes quiet
+    /// with a dialog footer on screen reads `waiting_for_input`, not
+    /// `idle`. Octal escapes, so the typed command line -- which the
+    /// shell echoes -- never carries the footer itself.
+    #[test]
+    fn a_quiet_session_under_a_dialog_footer_waits_for_input_not_idle() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+
+        write_message(
+            &mut stream,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '  \\342\\206\\221/\\342\\206\\223 select \\302\\267 1/2/3/4 choose \\302\\267 \\342\\206\\265 confirm\\n'\n"
+                    .to_string(),
+            },
+        )
+        .unwrap();
+
+        await_status(&mut reader, &id, "waiting_for_input");
+    }
+
     #[test]
     fn an_empty_pattern_list_means_no_detection_rather_than_matching_everything() {
         let (socket_path, _dir) = start_test_server();
@@ -15634,6 +16518,7 @@ mod tests {
                     id: "unrecoverable-1".to_string(),
                     workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
                     cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    scope_cwd: "/definitely/does/not/exist/anywhere".to_string(),
                     command: Some("claude".to_string()),
                     status: SessionStatus::Working,
                     restored: false,
@@ -16558,6 +17443,7 @@ mod tests {
             id: "s1".to_string(),
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp".to_string(),
+            scope_cwd: "/tmp".to_string(),
             command: command.map(|c| c.to_string()),
             status: SessionStatus::Idle,
             restored: false,
@@ -17289,6 +18175,7 @@ mod tests {
                     id: "leftover-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -17356,6 +18243,7 @@ mod tests {
                 id: id.to_string(),
                 workspace_path: "/tmp".to_string(),
                 cwd: cwd.to_string(),
+                scope_cwd: cwd.to_string(),
                 command: command.map(|c| c.to_string()),
                 status,
                 restored: false,
@@ -18093,8 +18981,26 @@ mod tests {
         assert_eq!(row.command.as_deref(), Some("/bin/sleep 30"));
         assert!(row.pid.is_some(), "a live session reports the pid it was verified at");
         assert!(row.process_count >= 1, "at least the process in the PTY");
-        assert!(row.rss_bytes > 0, "a live process occupies memory");
         assert!(row.sampled_at_us > 0, "a rate needs an instant to divide by");
+
+        // Memory once the process has had a moment to exist. A sample
+        // taken the instant `create_session` returns can catch the child
+        // just after exec, when its new address space holds almost
+        // nothing -- and on Linux 6.2+ `/proc/<pid>/stat`'s RSS is a
+        // per-CPU counter read without the per-CPU deltas, so a process
+        // that has faulted in only a few dozen pages still reads 0. On a
+        // loaded CI runner the child can sit in that window for a while.
+        // A live process that is never measured in seconds is the bug.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let rss = loop {
+            let sample = manager.session_processes().unwrap();
+            let rss = sample.iter().find(|p| p.session_id == id).map(|p| p.rss_bytes).unwrap_or(0);
+            if rss > 0 || Instant::now() >= deadline {
+                break rss;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(rss > 0, "a live process occupies memory");
 
         manager.kill_session(&id).unwrap();
     }
@@ -18381,6 +19287,32 @@ mod tests {
         assert!(
             poller.inner.lock().unwrap().last_checked.is_some(),
             "the check must still have actually run after the wait"
+        );
+    }
+
+    /// RepoPoller must not Recursive-watch a top-level directory symlink
+    /// (`notify-default-follow-symlinks:recursive-watch-descends-committed-dir-symlink`).
+    #[test]
+    fn repo_poller_skips_a_top_level_directory_symlink() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        std::fs::create_dir(repo_dir.path().join("src")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), repo_dir.path().join("x")).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(outside.path(), repo_dir.path().join("x")).is_err() {
+                return;
+            }
+        }
+        let entries: Vec<_> = std::fs::read_dir(repo_dir.path()).unwrap().flatten().collect();
+        let src = entries.iter().find(|e| e.file_name() == "src").unwrap();
+        let x = entries.iter().find(|e| e.file_name() == "x").unwrap();
+        assert!(crate::git_watch::is_recursive_top_level_entry(src));
+        assert!(
+            !crate::git_watch::is_recursive_top_level_entry(x),
+            "RepoPoller must not Recursive-watch a directory symlink"
         );
     }
 
@@ -18823,6 +19755,7 @@ mod tests {
                     id: "failed-spawn-1".to_string(),
                     workspace_path: repo_path.clone(),
                     cwd: repo_path.clone(),
+                    scope_cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -18954,6 +19887,7 @@ mod tests {
                     id: "failed-spawn-2".to_string(),
                     workspace_path: unenterable_path.clone(),
                     cwd: unenterable_path.clone(),
+                    scope_cwd: unenterable_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -18998,6 +19932,7 @@ mod tests {
                     id: "missing-workspace-1".to_string(),
                     workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
                     cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    scope_cwd: "/definitely/does/not/exist/anywhere".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Working,
                     restored: false,
@@ -19045,6 +19980,7 @@ mod tests {
                     id: "no-live-pty-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19115,6 +20051,7 @@ mod tests {
                     id: "restored-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: true,
@@ -19159,6 +20096,7 @@ mod tests {
                     id: "not-restored-1".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
+                    scope_cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19242,6 +20180,7 @@ mod tests {
                     id: "leftover-2".to_string(),
                     workspace_path: "/tmp".to_string(),
                     cwd: "/tmp/this-directory-does-not-exist-xyz".to_string(),
+                    scope_cwd: "/tmp/this-directory-does-not-exist-xyz".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
@@ -19281,6 +20220,7 @@ mod tests {
             id: id.to_string(),
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp/ws".to_string(),
+            scope_cwd: "/tmp/ws".to_string(),
             command: Some("claude".to_string()),
             status,
             restored: false,
@@ -20103,10 +21043,10 @@ mod forwarding_tests {
         // What is not input is nobody's to lock: a kill from the phone
         // must never wait on one.
         std::thread::scope(|scope| {
-            let resize = scope.spawn(|| manager.invoke_desktop(Some("ipad"), "resize_session", typed("s1")));
+            let kill = scope.spawn(|| manager.invoke_desktop(Some("ipad"), "kill_session", typed("s1")));
             desk.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            assert_eq!(answer_forward(&manager, &mut desk), "resize_session");
-            assert!(matches!(resize.join().unwrap(), Response::DesktopResult { error: None, .. }));
+            assert_eq!(answer_forward(&manager, &mut desk), "kill_session");
+            assert!(matches!(kill.join().unwrap(), Response::DesktopResult { error: None, .. }));
         });
     }
 
@@ -20146,6 +21086,122 @@ mod forwarding_tests {
         }
     }
 
+    /// The next `PtySizeBorrowed` an app connection was pushed: whose
+    /// screen the session is sized for, `None` the desk's.
+    fn next_borrow(app: &mut BufReader<Stream>) -> (String, Option<String>) {
+        loop {
+            match read_message::<_, Response>(app).unwrap() {
+                Some(Response::PtySizeBorrowed { session_id, device }) => {
+                    return (session_id, device.map(|d| d.device_id));
+                }
+                Some(_) => continue,
+                None => panic!("the app connection closed before a borrow was pushed"),
+            }
+        }
+    }
+
+    /// An app connection that speaks v74, as a desk's `Hello` registers it.
+    fn borrow_listener(manager: &SessionManager) -> BufReader<Stream> {
+        let (ours, theirs) = Stream::pair().unwrap();
+        theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        manager.register_app_connection(protocol::PTY_BORROW_MIN_VERSION, Arc::new(Mutex::new(ours)));
+        BufReader::new(theirs)
+    }
+
+    /// v74: a phone sizes the PTY for its screen while it looks, the desk's
+    /// refits wait meanwhile, and closing the terminal gives the desk the
+    /// size it last asked for -- before v74 the desk stayed phone-width.
+    #[test]
+    fn a_devices_resize_borrows_the_pty_and_closing_gives_the_desk_its_size_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
+        let mut app = borrow_listener(&manager);
+        let size = || manager.last_pty_size.lock().unwrap().get(&id).copied();
+        let ok = |r: Response| assert!(matches!(r, Response::DesktopResult { error: None, .. }), "{r:?}");
+
+        manager.desk_resize_session(&id, 160, 48).unwrap();
+        assert_eq!(size(), Some((160, 48)));
+
+        ok(manager.invoke_desktop(Some("iphone"), "resize_session", serde_json::json!({ "sessionId": id, "cols": 45, "rows": 30 })));
+        assert_eq!(size(), Some((45, 30)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), Some("iphone".to_string())));
+
+        // The desk window grew meanwhile: held back, remembered, and the
+        // borrow said again for a desk that may not have heard it.
+        manager.desk_resize_session(&id, 170, 50).unwrap();
+        assert_eq!(size(), Some((45, 30)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), Some("iphone".to_string())));
+
+        // Another Device closing its terminal is not this one's borrow.
+        ok(manager.invoke_desktop(Some("ipad"), "return_pty_size", serde_json::json!({ "sessionId": id })));
+        assert_eq!(size(), Some((45, 30)));
+
+        ok(manager.invoke_desktop(Some("iphone"), "return_pty_size", serde_json::json!({ "sessionId": id })));
+        assert_eq!(size(), Some((170, 50)));
+        assert_eq!(next_borrow(&mut app), (id.clone(), None));
+        manager.desk_resize_session(&id, 180, 52).unwrap();
+        assert_eq!(size(), Some((180, 52)), "the desk sizes freely again");
+        manager.kill_session(&id).unwrap();
+    }
+
+    /// The desk takes the size back itself ("Fit here"), from any Device;
+    /// and a Device whose last connection closes gives back what it had.
+    #[test]
+    fn the_desk_or_a_device_leaving_gives_the_size_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
+        let mut app = borrow_listener(&manager);
+        let size = || manager.last_pty_size.lock().unwrap().get(&id).copied();
+        let borrow = |device: &str| {
+            manager.invoke_desktop(Some(device), "resize_session", serde_json::json!({ "sessionId": id, "cols": 45, "rows": 30 }))
+        };
+        manager.desk_resize_session(&id, 160, 48).unwrap();
+
+        borrow("iphone");
+        assert_eq!(next_borrow(&mut app).1.as_deref(), Some("iphone"));
+        assert!(matches!(handle_request(&manager, Request::ReturnPtySize { id: id.clone() }), Response::Ok));
+        assert_eq!(size(), Some((160, 48)));
+        assert_eq!(next_borrow(&mut app).1, None);
+
+        let (ours, _theirs) = Stream::pair().unwrap();
+        let writer = Arc::new(Mutex::new(ours.try_clone().unwrap()));
+        let token = manager.next_device_connection.fetch_add(1, Ordering::SeqCst);
+        manager
+            .device_connections
+            .lock()
+            .unwrap()
+            .insert(token, DeviceConnection { device_id: "iphone".into(), stream: ours, writer });
+        borrow("iphone");
+        assert_eq!(next_borrow(&mut app).1.as_deref(), Some("iphone"));
+        // What the connection's thread does as it ends.
+        drop(DeviceConnectionSlot { manager: &manager, token });
+        assert_eq!(size(), Some((160, 48)));
+        assert_eq!(next_borrow(&mut app).1, None);
+        manager.kill_session(&id).unwrap();
+    }
+
+    /// A session this daemon does not host is one the desk reaches on
+    /// another host, which only the desk can route a resize to.
+    #[test]
+    fn a_devices_resize_of_a_session_hosted_elsewhere_still_goes_to_the_desk() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_budget(&dir, FORWARD_BUDGET);
+        let (_token, mut desk) = desk(&manager);
+        std::thread::scope(|scope| {
+            let resize = scope.spawn(|| {
+                manager.invoke_desktop(
+                    Some("iphone"),
+                    "resize_session",
+                    serde_json::json!({ "sessionId": "on-the-ssh-host", "cols": 45, "rows": 30 }),
+                )
+            });
+            assert_eq!(answer_forward(&manager, &mut desk), "resize_session");
+            assert!(matches!(resize.join().unwrap(), Response::DesktopResult { error: None, .. }));
+        });
+    }
+
     /// A phone typing into a session the desk is typing in is asked first.
     #[test]
     fn a_device_typing_where_the_desk_just_typed_is_asked_first() {
@@ -20180,7 +21236,7 @@ mod forwarding_tests {
         let manager = manager_with_budget(&dir, Duration::from_millis(200));
         let (_token, _desk) = desk(&manager);
         assert_eq!(reason_of(manager.get_attention(1)), Some(protocol::NotRunningReason::NotAnswering));
-        match manager.invoke_desktop(None, "resize_session", serde_json::json!({})) {
+        match manager.invoke_desktop(None, "kill_session", serde_json::json!({})) {
             Response::Error { message } => assert!(message.contains("did not answer in time"), "{message}"),
             other => panic!("expected an Error, got {other:?}"),
         }

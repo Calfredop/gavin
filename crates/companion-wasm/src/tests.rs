@@ -655,8 +655,9 @@ fn connect_names_the_relays_to_dial_for_a_connection() {
 }
 
 /// What pairing kept of a direct listener (ADR 0009) comes first, with
-/// the pin to trust it by and no admission token; a record kept before
-/// v69 has neither field and dials its Relays as it did.
+/// the pin to trust it by and the same admission token the Relays get,
+/// which the listener asks for too (amended 2026-10-15); a record kept
+/// before v69 has neither field and dials its Relays as it did.
 #[test]
 fn connect_names_the_direct_listener_first_with_its_pin() {
     let ws = Connected::new();
@@ -675,7 +676,7 @@ fn connect_names_the_direct_listener_first_with_its_pin() {
     assert_eq!(urls, vec![json!("wss://192.168.1.20:8445"), json!("wss://relay.example/gavin")]);
     assert_eq!(dials[0]["pin"], json!("ef".repeat(32)));
     let hello: Value = serde_json::from_str(dials[0]["hello"].as_str().unwrap()).unwrap();
-    assert_eq!(hello["token"], "", "the admission token is the Relay's");
+    assert_eq!(hello["token"], "let-me-in", "one token, for both ways in");
     assert_eq!(dials[1]["pin"], Value::Null);
 }
 
@@ -805,6 +806,24 @@ fn bundle_open_verifies_under_the_trusted_keys_and_unpacks() {
         "trustedKeys": ["abcd"],
     }));
     assert_eq!(answer["error"]["kind"], "request", "{answer}");
+
+    // bundle-check: the manifest alone, no archive — accepts a genuine
+    // signature and refuses a zero one under a trusted signer.
+    let answer = bundle_call(json!({
+        "op": "bundle-check",
+        "manifest": manifest,
+        "trustedKeys": [dev_key],
+    }));
+    assert!(answer.get("ok").is_some(), "{answer}");
+    let mut zero = manifest.clone();
+    zero.signature = "00".repeat(64);
+    let answer = bundle_call(json!({
+        "op": "bundle-check",
+        "manifest": zero,
+        "trustedKeys": [dev_key],
+    }));
+    assert_eq!(answer["error"]["kind"], "bundle", "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap().contains("signature"), "{answer}");
 
     // Opening a bundle is not an exchange: the instance still starts one.
     assert!(PAIRING.with(|p| p.borrow().is_none()) && CONNECTION.with(|c| c.borrow().is_none()));

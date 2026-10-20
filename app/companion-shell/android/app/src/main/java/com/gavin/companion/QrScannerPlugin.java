@@ -26,8 +26,9 @@ import java.nio.charset.StandardCharsets;
  * and never sees a frame. The scanner's module is fetched when the app is
  * installed (the {@code barcode_ui} dependency in the manifest).
  *
- * <p>A debug build launched with {@code --es gavinPairCode <base64>}
- * (scripts/pair.sh) answers {@link #scriptedCode} with that code instead.
+ * <p>A debug build with a {@code files/gavin-debug/pair-code} request
+ * (scripts/pair.sh via {@code run-as}) answers {@link #scriptedCode} with
+ * that code instead.
  */
 @CapacitorPlugin(name = "QrScanner")
 public class QrScannerPlugin extends Plugin {

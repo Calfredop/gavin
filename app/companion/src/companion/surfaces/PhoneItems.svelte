@@ -152,6 +152,8 @@
     padding: 16px 4px;
   }
   .problem {
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--danger-text);
   }
   .head {
@@ -235,5 +237,12 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  /* What the agent asked, and the last answer on record: words to read
+     and quote. The desk's row leaves them to its window's default. */
+  .items :global(.text),
+  .items :global(.latest) {
+    -webkit-user-select: text;
+    user-select: text;
   }
 </style>

@@ -266,6 +266,7 @@ import {
   agentProfilesStore,
   agentDefaultsStore,
   agentForCard,
+  agentForProfile,
   dropProfileRefsFromWorkspaces,
   dropWorkspaceProfileRefs,
   promptExtrasFor,
@@ -1110,7 +1111,7 @@ describe("splitPane", () => {
     expect(backend.createSession).not.toHaveBeenCalled();
   });
 
-  it("leaves the tree unchanged and surfaces an error when create_session fails", async () => {
+  it("leaves the tree unchanged and banners a request error when create_session fails", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
 
@@ -1118,7 +1119,8 @@ describe("splitPane", () => {
 
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
-    expect(state.status).toBe("error");
+    expect(state.status).not.toBe("error");
+    expect(get(daemonRequestError)).toBe("daemon unreachable");
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
@@ -2879,14 +2881,22 @@ describe("createSessionForCard", () => {
     expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 
-  it("returns null and surfaces an error when session creation fails", async () => {
+  it("returns null and banners a request error when session creation fails, without taking the window down", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
-    vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
+    vi.mocked(backend.createSession).mockRejectedValue(
+      new Error("gavin-daemon: too many open files — close some sessions before starting another")
+    );
 
     const sessionId = await createSessionForCard("ws-1", "", null);
 
     expect(sessionId).toBeNull();
-    expect(get(layoutState).status).toBe("error");
+    // A refused CreateSession is not a lost connection: the Restart-daemon
+    // overlay must stay off, and the dismissible request banner carries
+    // the daemon's own sentence.
+    expect(get(layoutState).status).not.toBe("error");
+    expect(get(daemonRequestError)).toBe(
+      "gavin-daemon: too many open files — close some sessions before starting another"
+    );
   });
 
   it("is a no-op for an unknown workspace id", async () => {
@@ -4287,6 +4297,35 @@ describe("per-agent settings in a workspace", () => {
 
   it("gives a routed card the launching agent's own arguments, not the workspace agent's", () => {
     expect(agentForCard("w1", { complexity: "intricate" }).launchCommand).toBe("codex --model gpt-5 --app-codex");
+  });
+
+  // Fallback used to call agentForProfile with only the profile id, so
+  // Cursor's complexity table (model: auto) never reached argv and the
+  // CLI fell through to its own default (sonnet). Same for every other
+  // agent on the chain — the launching profile's table has to win.
+  it("applies the fallback agent's complexity table when resolving that profile", () => {
+    agentProfilesStore.set([
+      profile("claude-code", "claude"),
+      profile("codex", "codex"),
+      { ...profile("cursor", "agent --trust"), modelFlag: "--model", models: [] },
+    ]);
+    agentDefaultsStore.set({
+      ...EMPTY_AGENT_DEFAULTS,
+      complexityTables: {
+        "claude-code": { moderate: { profile: "", model: "sonnet" } },
+        cursor: { moderate: { profile: "cursor", model: "auto" } },
+        codex: { moderate: { profile: "", model: "gpt-5", effort: "high" } },
+      },
+    });
+    const cursor = agentForProfile("w1", "cursor", { complexity: "moderate" });
+    expect(cursor.profileId).toBe("cursor");
+    expect(cursor.model).toBe("auto");
+    expect(cursor.launchCommand).toContain("--model auto");
+    expect(cursor.launchCommand).not.toContain("sonnet");
+
+    const codex = agentForProfile("w1", "codex", { complexity: "moderate" });
+    expect(codex.launchCommand).toContain("--model gpt-5");
+    expect(codex.effort).toBe("high");
   });
 
   it("answers prompt lines per agent, inheriting the app's until the workspace sets its own", () => {

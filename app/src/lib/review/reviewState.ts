@@ -26,8 +26,19 @@ import { get, writable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { changesProblem } from "$lib/cards/runChanges";
-import { isRailSubjectId, railReviewBaseline, railSubjectId } from "$lib/review/reviewBoard";
+import {
+  isRailSubjectId,
+  railReviewBaseline,
+  railSubjectId,
+  type TouchSource,
+} from "$lib/review/reviewBoard";
 import { attributeRun } from "$lib/cards/changeAttributionState";
+import { narrowToTranscript } from "$lib/cards/transcriptNarrow";
+
+// Review callers that imported `narrowToTranscript` from this module
+// keep working; the implementation lives in transcriptNarrow.ts so the
+// session Changes view can share it.
+export { narrowToTranscript };
 
 /// How many `git diff`s may be in flight at once. Four rather than one
 /// because the tab is unusable until they all land, and rather than
@@ -52,6 +63,12 @@ export interface TouchRequest {
   cwd: string;
   baseSha: string;
   peers: string[];
+  /// The run's conversation id, when its transcript may be read on this
+  /// machine -- see `narrowToTranscript`. Absent for a rail (many runs,
+  /// no one conversation) and for an ssh workspace, whose agent wrote its
+  /// transcript on the host. Not part of the cache key: it changes only
+  /// on a re-launch, which moves the baseline too.
+  conversationId?: string | null;
 }
 
 /// A rail's combined checkout diff as a `TouchRequest`, or null when
@@ -98,6 +115,12 @@ export interface TouchedRun {
   peers: string[];
   changes: RunChanges | null;
   files: string[] | null;
+  /// Where `files` came from. `transcript`: the checkout's changes the
+  /// run's own agent wrote, per its transcript and what its CLI's
+  /// shell-write hook recorded -- the run's work and no one else's. `checkout`: everything that moved in the checkout since
+  /// the baseline, which in a shared checkout is every co-tenant's work
+  /// too; the fallback whenever the transcript has no answer.
+  source: TouchSource;
   problem: string | null;
   error: string | null;
 }
@@ -164,14 +187,17 @@ function cached(view: ReviewView, request: TouchRequest): boolean {
 
 async function fetchOne(workspaceId: string, request: TouchRequest, token: number): Promise<void> {
   try {
-    const changes = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
-    const problem = changesProblem(changes);
+    const measured = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
+    const problem = changesProblem(measured);
+    const narrowed = problem ? null : await narrowToTranscript(workspaceId, request, measured);
+    const changes = narrowed ?? measured;
     store(workspaceId, request, token, {
       cwd: request.cwd,
       baseSha: request.baseSha,
       untilSha: changes.untilSha,
       peers: request.peers,
       changes,
+      source: narrowed ? "transcript" : "checkout",
       // A checkout that cannot be diffed against this baseline has NOT
       // been measured, so its files are null and not `[]`. Reporting it
       // as a card that touched nothing is the one misreading this whole
@@ -185,7 +211,9 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
     // only -- a rail is one checkout as a whole and has no co-tenant
     // question. Fire-and-forget into its own store; the grouper reads
     // it through `ownersOf`, and a failure there is today's grouping.
-    if (!problem && !isRailSubjectId(request.path)) {
+    // Not for a run its transcript already narrowed: those files are the
+    // agent's own, and a guess must not hand one of them to a neighbour.
+    if (!problem && !narrowed && !isRailSubjectId(request.path)) {
       void attributeRun({
         cardPath: request.path,
         cardTitle: request.title ?? request.path.slice(request.path.lastIndexOf("/") + 1),
@@ -202,6 +230,7 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
       peers: request.peers,
       changes: null,
       files: null,
+      source: "checkout",
       problem: null,
       error: `Couldn't read this ${whose} changes: ${errorText(e)}`,
     });

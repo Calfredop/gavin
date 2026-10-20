@@ -78,9 +78,7 @@ describe("composeLaunchCommand", () => {
     // what needs no quoting is noise. Every stable alias and every
     // `provider/model` opencode prints is inert as written.
     expect(composeLaunchCommand("claude", "--model", "opusplan")).toBe("claude --model opusplan");
-    expect(composeLaunchCommand("gemini", "--model", "flash-lite")).toBe(
-      "gemini --model flash-lite"
-    );
+    expect(composeLaunchCommand("agy", "--model", "flash-lite")).toBe("agy --model flash-lite");
     expect(composeLaunchCommand("opencode", "--model", "google/gemini-2.5-pro")).toBe(
       "opencode --model google/gemini-2.5-pro"
     );
@@ -90,6 +88,22 @@ describe("composeLaunchCommand", () => {
     // Nothing legitimate spells a model this way; a hand-typed Custom
     // model is a text box, and a text box eventually gets a quote in it.
     expect(composeLaunchCommand("claude", "--model", "a'b")).toBe("claude --model 'a'\\''b'");
+  });
+
+  it("drops a flag that is not inert rather than writing it into the command", () => {
+    // `[agent] model_flag` arrives in a cloned repo's config.toml, and a
+    // flag is appended unquoted -- so one carrying shell syntax is never
+    // composed at all. Same rule composeEffort already applies to
+    // effort_flag: without it, `sh -c` runs the injected command as the
+    // human on every agent launch, and workspace trust never asks because
+    // model_flag is not a gated execution key.
+    expect(composeLaunchCommand("claude", "--model x; touch y", "opus")).toBe("claude");
+    expect(composeLaunchCommand("claude", "$(touch x)", "opus")).toBe("claude");
+  });
+
+  it("still appends a stock inert flag", () => {
+    expect(composeLaunchCommand("claude", "--model", "opus")).toBe("claude --model opus");
+    expect(composeLaunchCommand("gemini", "-m", "flash")).toBe("gemini -m flash");
   });
 });
 

@@ -275,6 +275,26 @@ export function cardPasses(card: CardView, facets: BoardFacets, rails: RailIndex
   return true;
 }
 
+/// Whether a card the composer just filed is still on screen under the
+/// board's facets. Asked at FILING time rather than when the composer
+/// opens: opening it used to clear every facet up front, so a human who
+/// only glanced at the composer, or cancelled it, lost the filter they
+/// had built for nothing. `railId` is the rail the card was sent to --
+/// the orchestration store has not caught up with that write yet, so
+/// the rail index alone would still read it as on no rail.
+export function filedCardPasses(
+  card: CardView,
+  railId: string | null,
+  facets: BoardFacets,
+  rails: RailIndex
+): boolean {
+  if (!facetsActive(facets)) return true;
+  const byCard = new Map(rails.byCard);
+  if (railId !== null) byCard.set(card.id, railId);
+  else byCard.delete(card.id);
+  return cardPasses(card, facets, { ...rails, byCard });
+}
+
 /// A card that passes keeps every child; one that does not survives only
 /// as a home for the children that pass, narrowed to them. That is the
 /// narrowing both other lenses apply, and it is what makes a rail facet

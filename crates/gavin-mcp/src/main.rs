@@ -5,7 +5,9 @@ use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod cards;
 mod playwright;
+mod shell_writes;
 
 /// How long the version probe may sit in a read before the daemon is
 /// treated as unreachable. Matches the Windows named-pipe connect budget:
@@ -23,6 +25,169 @@ fn endpoint_label(path: &Path) -> String {
     } else {
         format!("{} (pipe {pipe})", path.display())
     }
+}
+
+// ---------- riding out a refused connect ----------
+
+/// How long a refused or missing socket is retried before the connect
+/// gives up. Covers the app's restart window -- the old daemon gone, the
+/// new one not bound yet -- which used to fail every call that landed in
+/// it, and leave the session believing the daemon was gone for good.
+const CONNECT_BUDGET: Duration = Duration::from_secs(5);
+
+/// The shell-write hook's connect budget: a daemon mid-restart costs one
+/// call's record rather than seconds of the agent's turn.
+const HOOK_CONNECT_BUDGET: Duration = Duration::from_millis(500);
+
+/// How long the hook waits for the daemon to answer its record.
+const HOOK_ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Connects, retrying only the two answers a restart window gives: the
+/// socket refused (the file is there, nobody is accepting) and the socket
+/// missing. Backs off from 100 ms to 1 s. Nothing has been written on a
+/// connection that never opened, so this is safe for every request,
+/// gated or not.
+fn connect_riding_out(path: &Path, budget: Duration) -> std::io::Result<Stream> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut pause = Duration::from_millis(100);
+    loop {
+        match Stream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) && std::time::Instant::now() + pause <= deadline =>
+            {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_secs(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Which of the three things a connect that still fails can mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectCause {
+    /// The socket file is there and whoever held the daemon lock has
+    /// exited, or nobody ever took it: debris from a daemon that died.
+    NoDaemon,
+    /// The socket file is there and the daemon that holds the lock is
+    /// still running: a full accept queue, or a hung daemon.
+    NotAccepting,
+    /// No socket file at all.
+    PathMissing,
+}
+
+impl ConnectCause {
+    fn label(self) -> &'static str {
+        match self {
+            ConnectCause::NoDaemon => "no daemon",
+            ConnectCause::NotAccepting => "daemon alive but not accepting",
+            ConnectCause::PathMissing => "socket path missing",
+        }
+    }
+}
+
+/// Picks the one cause. `path_present` is `None` where the endpoint is a
+/// Windows pipe and there is no file to look for; the lock decides alone.
+fn classify(path_present: Option<bool>, holder: protocol::daemon_lock::LockHolder) -> ConnectCause {
+    use protocol::daemon_lock::LockHolder;
+    if path_present == Some(false) {
+        return ConnectCause::PathMissing;
+    }
+    match holder {
+        LockHolder::Alive(_) => ConnectCause::NotAccepting,
+        LockHolder::Dead(_) | LockHolder::Nobody => ConnectCause::NoDaemon,
+    }
+}
+
+/// Everything a failed connect can find out without touching the daemon
+/// or its lock: the facts, then the cause they add up to, as one line.
+#[derive(Debug)]
+struct ConnectDiagnosis {
+    cause: ConnectCause,
+    socket: PathBuf,
+    socket_from_env: bool,
+    errno: Option<i32>,
+    path_present: Option<bool>,
+    lock: PathBuf,
+    holder: protocol::daemon_lock::LockHolder,
+}
+
+fn diagnose(socket: &Path, socket_from_env: bool, err: &std::io::Error) -> ConnectDiagnosis {
+    let path_present = if cfg!(windows) { None } else { Some(socket.exists()) };
+    let lock = protocol::daemon_lock::lock_path_beside(socket);
+    let holder = protocol::daemon_lock::lock_holder(&lock);
+    ConnectDiagnosis {
+        cause: classify(path_present, holder),
+        socket: socket.to_path_buf(),
+        socket_from_env,
+        errno: err.raw_os_error(),
+        path_present,
+        lock,
+        holder,
+    }
+}
+
+impl std::fmt::Display for ConnectDiagnosis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use protocol::daemon_lock::LockHolder;
+        let source = if self.socket_from_env { "GAVIN_SESSION_SOCKET" } else { "default" };
+        let errno = self.errno.map_or("none".to_string(), |n| n.to_string());
+        let present = match self.path_present {
+            Some(true) => "present",
+            Some(false) => "absent",
+            None => "a pipe",
+        };
+        let holder = match self.holder {
+            LockHolder::Nobody => "no pid".to_string(),
+            LockHolder::Alive(Some(pid)) => format!("pid {pid} alive"),
+            LockHolder::Alive(None) => "held, pid unreadable".to_string(),
+            LockHolder::Dead(pid) => format!("pid {pid} dead"),
+        };
+        write!(
+            f,
+            "cause: {} (socket {} from {source}, errno {errno}, path {present}; lock {}: {holder})",
+            self.cause.label(),
+            self.socket.display(),
+            self.lock.display(),
+        )
+    }
+}
+
+/// Appends one line to gavin-mcp's log, stamped with the time and the
+/// session it came from. Best effort: a log that cannot be written must
+/// not turn a connect failure into a different failure.
+fn append_log(path: &Path, message: &str) {
+    let session = std::env::var("GAVIN_SESSION_ID").unwrap_or_else(|_| "-".to_string());
+    let line = format!("{} session={session} {message}\n", utc_stamp(std::time::SystemTime::now()));
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, with no calendar crate: days since the epoch
+/// to a civil date is Howard Hinnant's `civil_from_days`.
+fn utc_stamp(at: std::time::SystemTime) -> String {
+    let secs = at.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
 }
 
 // ---------- daemon transport ----------
@@ -158,6 +323,19 @@ struct SocketTransport {
     /// once, at construction, rather than per connect: a process that has
     /// already replaced itself keeps the answer for its whole life.
     may_reexec: bool,
+    /// Whether `socket_path` came from `GAVIN_SESSION_SOCKET` rather than
+    /// this build's default -- one of the facts a failed connect names.
+    socket_from_env: bool,
+    /// How long a refused or missing socket is retried before the connect
+    /// gives up (`connect_riding_out`).
+    connect_budget: Duration,
+    /// Where a failed connect's diagnosis is appended, or nowhere.
+    log_path: Option<PathBuf>,
+    /// How long an answer is waited for once the probe has passed. `None`
+    /// for the MCP server, where a slow tool call is still a tool call;
+    /// a bound for the shell-write hook, which an agent's shell call
+    /// waits on.
+    answer_timeout: Option<Duration>,
 }
 
 /// The endpoint the daemon that opened this tab told us to use.
@@ -186,7 +364,9 @@ impl SocketTransport {
         // Read ONLY here, never by `protocol::resolve_app_support_dir`, so
         // an app launched from a tab still picks its own state by its own
         // profile and nothing has to be stripped on the way out.
-        let socket_path = match resolve_socket_path(std::env::var_os("GAVIN_SESSION_SOCKET")) {
+        let injected = resolve_socket_path(std::env::var_os("GAVIN_SESSION_SOCKET"));
+        let socket_from_env = injected.is_some();
+        let socket_path = match injected {
             Some(injected) => Ok(injected),
             None => protocol::socket_path().map_err(|e| e.to_string()),
         };
@@ -196,6 +376,30 @@ impl SocketTransport {
             hello_workspace_root: None,
             reexec: None,
             may_reexec: may_reexec(std::env::var(REEXEC_MARKER_VAR).ok().as_deref()),
+            socket_from_env,
+            connect_budget: CONNECT_BUDGET,
+            log_path: protocol::app_support_dir().ok().map(|dir| {
+                dir.join(protocol::profile_file_name(
+                    "gavin-mcp",
+                    "log",
+                    protocol::BuildProfile::current(),
+                ))
+            }),
+            answer_timeout: None,
+        }
+    }
+
+    /// The transport the shell-write hook records through: the same
+    /// endpoint and identity, but a daemon that is restarting or slow to
+    /// answer costs the record, never the agent's turn. No log either --
+    /// a hook that cannot reach the daemon is not a fault worth a line
+    /// per shell call.
+    fn for_hook() -> Self {
+        Self {
+            connect_budget: HOOK_CONNECT_BUDGET,
+            answer_timeout: Some(HOOK_ANSWER_TIMEOUT),
+            log_path: None,
+            ..Self::new()
         }
     }
 
@@ -216,7 +420,24 @@ impl SocketTransport {
             // setting `GAVIN_MCP_REEXEC` would decide the `DaemonNewer`
             // arm for every test running beside it.
             may_reexec: true,
+            socket_from_env: false,
+            connect_budget: CONNECT_BUDGET,
+            // Never the real app-support directory from a test.
+            log_path: None,
+            answer_timeout: None,
         }
+    }
+
+    /// A connect that failed even after riding out the budget: the
+    /// diagnosis, appended to the log, and the error the agent sees.
+    fn connect_failed(&self, socket_path: &Path, where_: &str, e: std::io::Error) -> anyhow::Error {
+        let diagnosis = diagnose(socket_path, self.socket_from_env, &e);
+        let message =
+            format!("gavin daemon isn't running — open the gavin app ({where_}: {e}) — {diagnosis}");
+        if let Some(log) = &self.log_path {
+            append_log(log, &message);
+        }
+        anyhow::anyhow!(message)
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
@@ -234,9 +455,8 @@ impl SocketTransport {
             Err(why) => anyhow::bail!("{why}"),
         };
         let where_ = endpoint_label(&socket_path);
-        let stream = Stream::connect(&socket_path).map_err(|e| {
-            anyhow::anyhow!("gavin daemon isn't running — open the gavin app ({where_}: {e})")
-        })?;
+        let stream = connect_riding_out(&socket_path, self.connect_budget)
+            .map_err(|e| self.connect_failed(&socket_path, &where_, e))?;
         // Cap the probe read: a connected pipe whose peer never answers
         // used to block the MCP stdio loop forever, which Cursor reports
         // as "unable to list tools" even though tools/list itself never
@@ -257,7 +477,7 @@ impl SocketTransport {
         };
         // Probe answered; drop the short timeout so a slow tool call is
         // not killed by the connect budget.
-        let _ = reader.get_ref().set_read_timeout(None);
+        let _ = reader.get_ref().set_read_timeout(self.answer_timeout);
         match protocol::version_band(version, PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION) {
             // Not a hard error any more (spec §3). Whatever moved the
             // daemon ahead -- a rebuild, an update -- replaced the binary
@@ -335,9 +555,9 @@ impl SocketTransport {
         }
     }
 
-    fn request_once(&mut self, req: &Request) -> anyhow::Result<Response> {
+    fn request_once(&mut self, req: &Request) -> Result<Response, Failure> {
         if self.conn.is_none() {
-            self.connect()?;
+            self.connect().map_err(Failure::Final)?;
         }
         let conn = self.conn.as_mut().unwrap();
         // Gated HERE -- after connect, which is what learns the version,
@@ -345,11 +565,33 @@ impl SocketTransport {
         // than once in `request` so the reconnect below re-gates against
         // the daemon it actually lands on, which need not be the one the
         // first attempt talked to.
-        protocol::gate_request(req, conn.daemon_version)?;
-        write_message(conn.reader.get_mut(), req)?;
-        match read_message::<_, Response>(&mut conn.reader)? {
-            Some(resp) => Ok(resp),
-            None => anyhow::bail!("daemon closed the connection"),
+        protocol::gate_request(req, conn.daemon_version).map_err(|e| Failure::Final(e.into()))?;
+        write_message(conn.reader.get_mut(), req).map_err(|e| Failure::Unsent(e.into()))?;
+        match read_message::<_, Response>(&mut conn.reader) {
+            Ok(Some(resp)) => Ok(resp),
+            Ok(None) => Err(Failure::Final(anyhow::anyhow!("daemon closed the connection"))),
+            Err(e) => Err(Failure::Final(e.into())),
+        }
+    }
+}
+
+/// Why `request_once` failed, sorted by whether trying again is safe.
+enum Failure {
+    /// The write failed, so the daemon never read a whole request: the
+    /// connection was one a restarted daemon had already closed. A
+    /// second attempt cannot run anything twice.
+    Unsent(anyhow::Error),
+    /// Anything else. A connect that failed has already ridden out its
+    /// budget; a gated request never left and a retry would only bury
+    /// the message naming the version it needs; and a request that went
+    /// out and got no answer may already have run.
+    Final(anyhow::Error),
+}
+
+impl Failure {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Failure::Unsent(e) | Failure::Final(e) => e,
         }
     }
 }
@@ -358,15 +600,19 @@ impl DaemonTransport for SocketTransport {
     fn request(&mut self, req: &Request) -> anyhow::Result<Response> {
         match self.request_once(req) {
             Ok(resp) => Ok(resp),
-            // A gated request never reached the socket, so there is
-            // nothing for a reconnect to fix -- and retrying would throw
-            // away the one message that says which version is missing, in
-            // favour of whatever the second attempt happened to fail on.
-            Err(e) if e.is::<protocol::GatedRequest>() => Err(e),
-            Err(_) => {
-                // One reconnect per call: the daemon may have restarted.
+            Err(Failure::Unsent(_)) => {
+                // Once, on a fresh connection: the daemon may have
+                // restarted under the one this process was holding.
                 self.conn = None;
-                self.request_once(req)
+                self.request_once(req).map_err(Failure::into_error)
+            }
+            Err(Failure::Final(e)) => {
+                // A gated request leaves a good connection behind; any
+                // other failure leaves one nobody should write to again.
+                if !e.is::<protocol::GatedRequest>() {
+                    self.conn = None;
+                }
+                Err(e)
             }
         }
     }
@@ -442,7 +688,16 @@ const NOT_IN_WORKSPACE: &str =
 
 fn tool_definitions() -> Value {
     json!([
-        { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and every card still on its board — the canonical parse (kind, status, parent, checklist counts, complexity, warnings), one card per line, with fields that say nothing left off. Cards a human archived (plans/archive/) are left out and counted per context as archivedCards; gavin_find_cards searches them. To look up a few cards rather than read the whole board, use gavin_find_cards.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_find_cards", "description": "Find cards anywhere in this workspace, archived ones included, without reading the whole board. A query is ranked by meaning (title and the opening of the body) and by its words together, titles containing all its words first, and only the cards close to the best match come back (close says how many); every other criterion you pass must also hold. Each card comes back on one line in gavin_get_tree's shape, plus archived: true on an archived card and, when ranked by meaning, score — its similarity to the query, which the order also weighs words against. gavin keeps the index up in the background while the workspace is open in the app; in one that is not, the first search embeds every card and can take a minute. Use it to check whether work overlaps a card that exists or was already done, to look a card up by name, or to read back what you just wrote (parent: <plan file> lists a plan's children). Without a query it lists the matching cards newest first.", "inputSchema": { "type": "object", "properties": {
+            "query": { "type": "string", "description": "What the card is about, in your own words" },
+            "status": { "type": "string", "description": "Board column name, matched ignoring case and spacing. A nested task (no status of its own) matches its parent's" },
+            "kind": { "type": "string", "enum": ["note", "task", "plan"] },
+            "parent": { "type": "string", "description": "A plan's file name: the cards whose parent: names it" },
+            "label": { "type": "string", "description": "A label the card carries" },
+            "archived": { "type": "string", "enum": ["include", "exclude", "only"], "description": "Default include" },
+            "limit": { "type": "integer", "description": "Most cards returned; default 20, at most 200" }
+        } } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_search_memories", "description": "Search this workspace's ADOPTED memories — the durable facts the human has adopted into the instructions file's `### Learned` section — by meaning, not by words. Ask in your own phrasing (\"can I kill the daemon?\" finds \"Never pkill gavin-daemon.\"); narrow by topic when you know one. Returns the closest facts best first, with their topics, their Why and a similarity score; an empty answer means nothing adopted is about that. Proposing a NEW memory is a `kind: note` card labelled `memory`, not this tool.", "inputSchema": { "type": "object", "properties": {
             "query": { "type": "string", "description": "What you want to know, in any words." },
@@ -457,13 +712,15 @@ fn tool_definitions() -> Value {
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
             "body": { "type": "string", "description": "For kind task this IS the agent prompt" },
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
+            "direct": { "type": "boolean", "description": "Kind task only: the body goes to the agent exactly as written, with no gavin framing around it — no card path, no status instructions, no attachment list. Default false" },
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" },
-            "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" }
+            "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" },
+            "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels the card carries, e.g. [\"bug\", \"ready-for-agent\"]; prefer the board's label names (gavin_get_board). A comma-separated string works too" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, labels, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `labels` is the card's WHOLE comma-separated list, so to add one keep the labels it already carries (gavin_find_cards shows them); an empty value removes them all. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
-            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "agent", "model", "effort"] },
+            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "labels", "agent", "model", "effort"] },
             "value": { "type": "string" }
         }, "required": ["path", "key", "value"] } },
         { "name": "gavin_create_context", "description": "Turn a folder into a gavin context (.gavin scaffold) for a feature/library.", "inputSchema": { "type": "object", "properties": {
@@ -522,6 +779,27 @@ fn str_arg(args: &Value, key: &str) -> Option<String> {
 
 fn require_arg(args: &Value, key: &str) -> anyhow::Result<String> {
     str_arg(args, key).ok_or_else(|| anyhow::anyhow!("missing required argument: {key}"))
+}
+
+/// A `labels:` line as the daemon stores it: entries trimmed, empty ones
+/// dropped and repeats -- ignoring case, the way `gavin_find_cards`
+/// matches a label -- kept once, joined with ", ". Takes an array or one
+/// comma-separated string, since both are what an agent sends; an entry
+/// is split on commas either way, because the line is and an entry
+/// holding one would read back as two.
+fn labels_line(value: Option<&Value>) -> String {
+    let raw: Vec<&str> = match value {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        Some(Value::String(list)) => vec![list.as_str()],
+        _ => vec![],
+    };
+    let mut kept: Vec<&str> = Vec::new();
+    for label in raw.iter().flat_map(|entry| entry.split(',')).map(str::trim) {
+        if !label.is_empty() && !kept.iter().any(|k| k.eq_ignore_ascii_case(label)) {
+            kept.push(label);
+        }
+    }
+    kept.join(", ")
 }
 
 /// Maps one tool call to a daemon request, shapes the result as text.
@@ -588,6 +866,11 @@ fn dispatch_tool(
         return start_rail(root, &require_arg(args, "rail")?, transport);
     }
 
+    // A scan and, with a query, a ranking -- the second allowed to fail.
+    if name == "gavin_find_cards" {
+        return find_cards(root, args, transport);
+    }
+
     // The tool library. `gavin_save_tool` is a read, a decision and a
     // write for the same reason; the other two are one request each and
     // sit here beside it so the three read as one endpoint.
@@ -617,14 +900,23 @@ fn dispatch_tool(
             parent: str_arg(args, "parent"),
             attachments: str_arg(args, "attachments"),
             complexity: str_arg(args, "complexity"),
+            direct: args.get("direct").and_then(Value::as_bool).unwrap_or(false),
         },
-        "gavin_set_plan_field" => Request::SetPlanFrontmatterField {
-            path: resolve_against_root(root, &require_arg(args, "path")?)
-                .to_string_lossy()
-                .to_string(),
-            key: require_arg(args, "key")?,
-            value: require_arg(args, "value")?,
-        },
+        "gavin_set_plan_field" => {
+            let key = require_arg(args, "key")?;
+            let value = if key == "labels" {
+                labels_line(Some(&Value::String(require_arg(args, "value")?)))
+            } else {
+                require_arg(args, "value")?
+            };
+            Request::SetPlanFrontmatterField {
+                path: resolve_against_root(root, &require_arg(args, "path")?)
+                    .to_string_lossy()
+                    .to_string(),
+                key,
+                value,
+            }
+        }
         "gavin_create_context" => Request::CreateGavinContext {
             parent_folder: resolve_against_root(root, &require_arg(args, "parent_folder")?)
                 .to_string_lossy()
@@ -716,15 +1008,51 @@ fn dispatch_tool(
         _ => "Decisions",
     };
     let resp = transport.request(&req)?;
+    // A new card's labels are a second write rather than a field of
+    // `CreatePlan`: every daemon already writes `labels:` through
+    // `SetPlanFrontmatterField`, where a widened `CreatePlan` would be
+    // dropped silently by a daemon older than the field (the compat gate
+    // is per request type, not per field). Written before the claim, so
+    // the card the board shows as taken already carries them.
+    let labels_failure = match (&req, &resp) {
+        (Request::CreatePlan { .. }, Response::PlanCreated { path }) => {
+            let labels = labels_line(args.get("labels"));
+            if labels.is_empty() {
+                None
+            } else {
+                let write = Request::SetPlanFrontmatterField {
+                    path: path.clone(),
+                    key: "labels".into(),
+                    value: labels,
+                };
+                match transport.request(&write) {
+                    Ok(Response::PlanFieldSet { .. }) => None,
+                    Ok(Response::Error { message }) => Some(message),
+                    Ok(other) => Some(format!("unexpected response: {other:?}")),
+                    Err(e) => Some(e.to_string()),
+                }
+            }
+        }
+        _ => None,
+    };
     // Before the reply is shaped, and its outcome deliberately dropped:
     // see `claim_card`.
     if let Some(card) = claim_target(&req, &resp) {
         claim_card(root, &card, current_session_id(), transport);
     }
     match resp {
-        Response::GavinTreeScanned { tree } => Ok(serde_json::to_string_pretty(&tree)?),
+        Response::GavinTreeScanned { tree } => Ok(cards::board(&tree)),
         Response::PrdContent { content } => Ok(content),
-        Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
+        // An error, so the agent sees it, but one that says the card
+        // exists: retrying the create would only be refused as an
+        // overwrite.
+        Response::PlanCreated { path } => match labels_failure {
+            None => Ok(format!("created plan: {path}")),
+            Some(why) => Err(anyhow::anyhow!(
+                "created plan: {path} — but its labels were not written ({why}); set them with \
+                 gavin_set_plan_field(path, \"labels\", ...) rather than creating it again"
+            )),
+        },
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
         Response::HumanItemFiled { rearmed } => Ok(if rearmed {
             format!(
@@ -957,7 +1285,10 @@ fn name_session(
 ) -> anyhow::Result<String> {
     let session_id = session_id.ok_or_else(|| anyhow::anyhow!(NOT_IN_A_SESSION))?;
     let name = clean_session_name(raw_name)?;
-    let agent_conversation_id = raw_agent_conversation_id.and_then(|raw| clean_agent_conversation_id(&raw));
+    let agent_conversation_id = match raw_agent_conversation_id.as_deref() {
+        Some(raw) => clean_agent_conversation_id(raw)?,
+        None => None,
+    };
     let resp = transport.request(&Request::NameSession {
         session_id,
         name: name.clone(),
@@ -971,18 +1302,27 @@ fn name_session(
 }
 
 /// A native CLI session/conversation id, not a display label: trimmed
-/// like `name`, but never whitespace-collapsed or length-capped -- a
-/// codex/gemini/opencode id is an opaque token, not prose a tab bar has
-/// to fit. Empty or whitespace-only is treated as absent rather than an
-/// error, so a caller that ran a discovery command and got nothing back
+/// like `name`. Empty or whitespace-only is treated as absent rather than
+/// an error, so a caller that ran a discovery command and got nothing back
 /// can still pass the empty string without the whole tool call failing.
-fn clean_agent_conversation_id(raw: &str) -> Option<String> {
+///
+/// Anything else must be an opaque token (`[A-Za-z0-9._:-]`, ≤128 bytes):
+/// the same grammar the daemon's NameSession enforces. Defence in depth
+/// for sec-fix-conversation-id-token-grammar — a value that would splice
+/// into a Resume `sh -c` line must never leave this process.
+fn clean_agent_conversation_id(raw: &str) -> anyhow::Result<Option<String>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+        return Ok(None);
     }
+    let ok = trimmed.len() <= 128
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'));
+    if !ok {
+        anyhow::bail!("agent_conversation_id must be your CLI's opaque session id");
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Whether this card is DRAWN INSIDE another's: `kind: task`, a
@@ -1002,6 +1342,33 @@ fn is_nested(plan: &protocol::PlanFileInfo, plans_in_context: &HashSet<&str>) ->
         Some(parent) => parent != plan.file_name && plans_in_context.contains(parent),
         None => false,
     }
+}
+
+/// `gavin_find_cards`. The scan is the answer; the daemon's card index
+/// only orders it. So a ranking the daemon cannot give -- it predates
+/// v71, the memory model was never downloaded, the index failed --
+/// falls back to matching words and says why, rather than failing a
+/// search the scan alone can answer.
+fn find_cards(root: &Path, args: &Value, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let criteria = cards::Criteria::from_args(args)?;
+    let root_str = root.to_string_lossy().to_string();
+    let tree = match transport.request(&Request::ScanGavinRoot { root_path: root_str.clone() })? {
+        Response::GavinTreeScanned { tree } => tree,
+        Response::Error { message } => return Err(anyhow::anyhow!(message)),
+        other => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    };
+    let ranking = criteria.query.clone().map(|query| {
+        match transport.request(&Request::SearchCards { root_path: root_str, query, limit: None }) {
+            // The hits' order is the ranking; the score is only the cosine.
+            Ok(Response::CardHits { hits }) => cards::Ranking::Meaning(
+                hits.into_iter().enumerate().map(|(i, h)| (h.path, (i, h.score))).collect(),
+            ),
+            Ok(Response::Error { message }) => cards::Ranking::Words { why: message },
+            Ok(other) => cards::Ranking::Words { why: format!("unexpected response: {other:?}") },
+            Err(e) => cards::Ranking::Words { why: gated_tool_error("ranking by meaning", &e) },
+        }
+    });
+    Ok(cards::find(&tree, &criteria, ranking))
 }
 
 fn kind_str(kind: &protocol::CardKind) -> &'static str {
@@ -1197,7 +1564,7 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
             ctx.plans.iter().filter(move |p| !is_nested(p, &plans_here))
         })
         .filter(|p| !matches!(p.kind, protocol::CardKind::Note))
-        .filter(|p| !p.path.contains("/plans/archive/"))
+        .filter(|p| !cards::is_archived(p))
         .filter(|p| !placed.contains(p.path.as_str()))
         .map(|p| {
             json!({
@@ -1887,6 +2254,22 @@ fn main() {
         }
     }
 
+    // `gavin-mcp shell-writes pre|post`: the hook a Claude Code or kimi
+    // launch runs around every shell call (`shell_writes.rs`). Exits 0
+    // whatever happened -- a hook's failure is shown to the human on
+    // every call, and this one only ever observes.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new(protocol::shell_writes::SUBCOMMAND)) {
+        let phase = args.next().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut transport = SocketTransport::for_hook();
+        if let Some(dir) = shell_writes::snapshot_dir() {
+            shell_writes::run(&phase, &mut std::io::stdin().lock(), &dir, &mut transport);
+        } else {
+            shell_writes::drain(&mut std::io::stdin().lock());
+        }
+        std::process::exit(0);
+    }
+
     let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
     match &root {
         Some(r) => eprintln!("gavin-mcp: workspace root {}", r.display()),
@@ -2429,6 +2812,147 @@ mod tests {
         assert_eq!(replies[1]["id"], 2);
     }
 
+    // ---------- riding out a refused connect ----------
+
+    /// Above every platform's pid ceiling, so it names nothing.
+    const NO_SUCH_PID: u32 = i32::MAX as u32;
+
+    #[test]
+    fn a_failed_connect_names_one_cause_from_the_socket_and_the_lock() {
+        use protocol::daemon_lock::LockHolder;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon-dev.sock");
+        let lock = dir.path().join("daemon-dev.lock");
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+
+        // Socket path missing: nothing at the path at all.
+        let d = diagnose(&socket, true, &refused);
+        assert_eq!(d.lock, lock, "the lock is read beside the socket");
+        if cfg!(unix) {
+            assert_eq!(d.cause, ConnectCause::PathMissing);
+            assert!(d.to_string().contains("socket path missing"), "{d}");
+            assert!(d.to_string().contains("from GAVIN_SESSION_SOCKET"), "{d}");
+        }
+
+        // No daemon: the file outlived it, and so did its pid -- or the
+        // lock was never there (a daemon from before it existed).
+        std::fs::write(&socket, "").unwrap();
+        assert_eq!(diagnose(&socket, false, &refused).cause, ConnectCause::NoDaemon);
+        std::fs::write(&lock, format!("{NO_SUCH_PID}\n")).unwrap();
+        let d = diagnose(&socket, false, &refused);
+        assert_eq!(d.cause, ConnectCause::NoDaemon);
+        assert_eq!(d.holder, LockHolder::Dead(NO_SUCH_PID));
+        assert!(d.to_string().contains(&format!("pid {NO_SUCH_PID} dead")), "{d}");
+        assert!(d.to_string().contains("from default"), "{d}");
+
+        // Alive but not accepting: the holder is a running process.
+        std::fs::write(&lock, format!("{}\n", std::process::id())).unwrap();
+        let d = diagnose(&socket, false, &refused);
+        assert_eq!(d.cause, ConnectCause::NotAccepting);
+        assert!(d.to_string().contains("daemon alive but not accepting"), "{d}");
+    }
+
+    #[test]
+    fn the_cause_is_the_lock_alone_where_there_is_no_file_to_look_for() {
+        use protocol::daemon_lock::LockHolder;
+        assert_eq!(classify(None, LockHolder::Alive(None)), ConnectCause::NotAccepting);
+        assert_eq!(classify(None, LockHolder::Nobody), ConnectCause::NoDaemon);
+        assert_eq!(classify(Some(false), LockHolder::Alive(Some(1))), ConnectCause::PathMissing);
+    }
+
+    #[test]
+    fn a_connect_rides_out_a_daemon_that_binds_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late.sock");
+        let bind_at = path.clone();
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let listener = protocol::transport::Listener::bind(&bind_at).unwrap();
+            let _held = listener.accept().unwrap();
+        });
+        connect_riding_out(&path, CONNECT_BUDGET).expect("the restart window is ridden out");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_connect_with_no_budget_left_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        assert!(connect_riding_out(&dir.path().join("none.sock"), Duration::ZERO).is_err());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_request_that_went_out_unanswered_is_not_sent_again() {
+        // The daemon read it and closed the connection without a reply:
+        // it may have run, so a second copy must not follow it.
+        let (path, seen, _dir) = fake_daemon(PROTOCOL_VERSION, vec![]);
+        let mut t = SocketTransport::at(path);
+        assert!(is_error("gavin_get_tree", &mut t));
+        let scans =
+            seen.lock().unwrap().iter().filter(|r| matches!(r, Request::ScanGavinRoot { .. })).count();
+        assert_eq!(scans, 1, "{:?}", seen.lock().unwrap());
+    }
+
+    #[test]
+    fn a_connection_a_restarted_daemon_closed_is_replaced_without_failing_the_call() {
+        // Each connection answers the probe, the Hello and ONE request,
+        // then closes -- what a daemon restart between two tool calls
+        // looks like from here. The second call's write fails on the dead
+        // connection, so nothing ran, and it goes again on a fresh one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("restarting.sock");
+        let listener = protocol::transport::Listener::bind(&path).unwrap();
+        let served = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&served);
+        std::thread::spawn(move || {
+            while let Ok(mut stream) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
+                    let (resp, last) = match req {
+                        Request::GetProtocolVersion => {
+                            (Response::ProtocolVersion { version: PROTOCOL_VERSION }, false)
+                        }
+                        Request::Hello { .. } => (
+                            Response::HelloAck {
+                                role: "local".into(),
+                                daemon_version: PROTOCOL_VERSION,
+                                session_id: None,
+                                server_proof: None,
+                                workspace_root: None,
+                            },
+                            false,
+                        ),
+                        _ => {
+                            *counter.lock().unwrap() += 1;
+                            (Response::GavinTreeScanned { tree: two_card_tree() }, true)
+                        }
+                    };
+                    write_message(&mut stream, &resp).unwrap();
+                    if last {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut t = SocketTransport::at(path);
+        assert!(!is_error("gavin_get_tree", &mut t));
+        // Long enough for the server's close to land before the write.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!is_error("gavin_get_tree", &mut t), "the restart cost this call");
+        assert_eq!(*served.lock().unwrap(), 2, "each call ran exactly once");
+    }
+
+    #[test]
+    fn the_log_stamp_is_utc_iso_8601() {
+        let at = std::time::UNIX_EPOCH + Duration::from_secs(1_791_763_200 + 3_723);
+        assert_eq!(utc_stamp(at), "2026-10-12T01:02:03Z");
+        assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        // A leap day, which is where a hand-rolled calendar goes wrong.
+        assert_eq!(utc_stamp(std::time::UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29T00:00:00Z");
+    }
+
     #[test]
     fn a_gated_request_is_not_retried_through_a_reconnect() {
         // The retry exists for a daemon that went away mid-call. A gate
@@ -2468,6 +2992,7 @@ mod tests {
             agent: None,
             model: None,
             effort: None,
+            direct: false,
             human_items: Some(vec![]),
         };
         protocol::GavinTree {
@@ -3604,6 +4129,7 @@ mod tests {
                     parent: None,
                     attachments: None,
                     complexity: None,
+                    direct: false,
                 },
                 &Response::PlanCreated { path: "/ws/plans/a.md".into() }
             )
@@ -3648,6 +4174,7 @@ mod tests {
                     parent: None,
                     attachments: None,
                     complexity: None,
+                    direct: false,
                 },
                 &Response::Error { message: "nope".into() }
             ),
@@ -3755,6 +4282,114 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_labels_line_is_trimmed_split_and_kept_once() {
+        assert_eq!(labels_line(Some(&json!(["bug", " ui ", "", "BUG"]))), "bug, ui");
+        // One string is a list too, and so is an array entry holding a
+        // comma: the line would read it back as two labels anyway.
+        assert_eq!(labels_line(Some(&json!("bug,  ui , "))), "bug, ui");
+        assert_eq!(labels_line(Some(&json!(["a, b", "c"]))), "a, b, c");
+        assert_eq!(labels_line(Some(&json!([]))), "");
+        assert_eq!(labels_line(None), "");
+        assert_eq!(labels_line(Some(&json!(7))), "");
+    }
+
+    /// Labels on a new card are the daemon's `labels` field write, sent
+    /// right after the create and before any claim: every daemon knows
+    /// that write, where a field added to `CreatePlan` would be dropped
+    /// by an older one without a word.
+    #[test]
+    fn create_plan_writes_its_labels_after_the_card() {
+        let mut t = mock(vec![
+            Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() },
+            Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() },
+        ]);
+        let text = call_with(
+            "gavin_create_plan",
+            json!({ "context_folder": ".", "file_name": "a.md", "title": "A", "labels": ["bug", "Bug", "ready-for-agent"] }),
+            &mut t,
+        );
+        assert_eq!(text, "created plan: /ws/.gavin-root/plans/a.md");
+        assert!(matches!(t.requests[0], Request::CreatePlan { .. }), "{:?}", t.requests[0]);
+        match &t.requests[1] {
+            Request::SetPlanFrontmatterField { path, key, value } => {
+                assert_eq!(path, "/ws/.gavin-root/plans/a.md");
+                assert_eq!(key, "labels");
+                assert_eq!(value, "bug, ready-for-agent");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_plan_without_labels_writes_nothing_more() {
+        for labels in [None, Some(json!([])), Some(json!(" , "))] {
+            let mut t = mock(vec![Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() }]);
+            let mut args = json!({ "context_folder": ".", "file_name": "a.md", "title": "A" });
+            if let Some(l) = labels {
+                args["labels"] = l;
+            }
+            call_with("gavin_create_plan", args, &mut t);
+            assert!(
+                !t.requests.iter().any(|r| matches!(r, Request::SetPlanFrontmatterField { .. })),
+                "{:?}",
+                t.requests
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_labels_write_says_the_card_was_still_created() {
+        let mut t = mock(vec![
+            Response::PlanCreated { path: "/ws/.gavin-root/plans/a.md".into() },
+            Response::Error { message: "labels must be a single line".into() },
+        ]);
+        let reply = handle_line(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "gavin_create_plan", "arguments": {
+                    "context_folder": ".", "file_name": "a.md", "title": "A", "labels": "bug"
+                } },
+            })
+            .to_string(),
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), true, "{reply}");
+        let text = v.pointer("/result/content/0/text").unwrap().as_str().unwrap();
+        assert!(text.contains("created plan: /ws/.gavin-root/plans/a.md"), "{text}");
+        assert!(text.contains("labels must be a single line"), "{text}");
+        assert!(text.contains("gavin_set_plan_field"), "{text}");
+    }
+
+    #[test]
+    fn set_plan_field_writes_labels_as_one_clean_line() {
+        let mut t = mock(vec![Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() }]);
+        let text = call_with(
+            "gavin_set_plan_field",
+            json!({ "path": ".gavin-root/plans/a.md", "key": "labels", "value": " bug,, ui ,BUG" }),
+            &mut t,
+        );
+        assert_eq!(text, "ok");
+        match &t.requests[0] {
+            Request::SetPlanFrontmatterField { key, value, .. } => {
+                assert_eq!(key, "labels");
+                assert_eq!(value, "bug, ui");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+        // Empty still clears the line, as for every other clearable key.
+        let mut t = mock(vec![Response::PlanFieldSet { path: "/ws/.gavin-root/plans/a.md".into() }]);
+        call_with(
+            "gavin_set_plan_field",
+            json!({ "path": ".gavin-root/plans/a.md", "key": "labels", "value": "" }),
+            &mut t,
+        );
+        assert!(matches!(&t.requests[0], Request::SetPlanFrontmatterField { value, .. } if value.is_empty()));
     }
 
     /// The search tool asks for this workspace's root, takes topics as
@@ -3897,6 +4532,88 @@ mod tests {
         assert!(missing.contains("text"), "{missing}");
     }
 
+    // ---------- gavin_get_tree / gavin_find_cards ----------
+
+    #[test]
+    fn get_tree_prints_the_board_without_the_archive() {
+        let mut t = mock(vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let text = call_with("gavin_get_tree", json!({}), &mut t);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["contexts"][0]["plans"].as_array().unwrap().len(), 2, "{text}");
+        assert_eq!(v["contexts"][0]["archivedCards"], 1);
+        assert!(!text.contains("filed.md"), "{text}");
+    }
+
+    fn found_titles(text: &str) -> Vec<String> {
+        let v: Value = serde_json::from_str(text).unwrap();
+        v["cards"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// The daemon's order is the ranking -- it fuses the query's words
+    /// in, so a hit can follow one with a lower cosine -- and a card far
+    /// below the best does not come back.
+    #[test]
+    fn find_cards_keeps_the_daemon_s_order_and_drops_what_is_far_below_the_best() {
+        let mut t = mock(vec![
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::CardHits {
+                hits: vec![
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/b.md".into(), score: 0.74 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/archive/filed.md".into(), score: 0.80 },
+                    protocol::CardHit { path: "/ws/.gavin-root/plans/a.md".into(), score: 0.60 },
+                ],
+            },
+        ]);
+        let text = call_with("gavin_find_cards", json!({ "query": "put away" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card B", "Filed away"], "{text}");
+        assert!(text.contains(r#""search": "meaning""#), "{text}");
+        match &t.requests[1] {
+            Request::SearchCards { root_path, query, limit } => {
+                assert_eq!(root_path, &Path::new("/ws").to_string_lossy().to_string());
+                assert_eq!(query, "put away");
+                assert_eq!(*limit, None, "every card, so the filters run over all of them");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_cards_matches_words_when_the_daemon_cannot_rank_and_says_why() {
+        let mut t = mock(vec![
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::Error { message: "gavin's memory model isn't on this machine yet.".into() },
+        ]);
+        let text = call_with("gavin_find_cards", json!({ "query": "card b" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card B"], "{text}");
+        assert!(text.contains(r#""search": "words""#), "{text}");
+        assert!(text.contains("memory model isn't on this machine"), "{text}");
+    }
+
+    /// Against a daemon from before v71 the ranking is never sent at all
+    /// -- an older daemon cannot parse it -- and the search still answers.
+    #[test]
+    fn find_cards_against_an_older_daemon_matches_words_and_names_the_restart() {
+        let needed =
+            protocol::min_version_for(&Request::SearchCards { root_path: "/ws".into(), query: "q".into(), limit: None });
+        let (path, seen, _dir) =
+            fake_daemon(needed - 1, vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let mut t = SocketTransport::at(path);
+        let text = call_with("gavin_find_cards", json!({ "query": "card a" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Card A"], "{text}");
+        assert!(text.contains(&format!("v{needed}")), "{text}");
+        assert!(text.contains("restart the daemon"), "{text}");
+        assert!(!seen.lock().unwrap().iter().any(|r| matches!(r, Request::SearchCards { .. })));
+    }
+
+    #[test]
+    fn find_cards_without_a_query_asks_for_no_ranking() {
+        let mut t = mock(vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        let text = call_with("gavin_find_cards", json!({ "archived": "only" }), &mut t);
+        assert_eq!(found_titles(&text), vec!["Filed away"], "{text}");
+        assert!(!text.contains("\"search\""), "{text}");
+        assert_eq!(t.requests.len(), 1, "{:?}", t.requests);
+    }
+
     #[test]
     fn request_human_is_listed_with_both_kinds_in_its_schema() {
         let tools = tool_definitions();
@@ -3967,6 +4684,37 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// Defence in depth for sec-fix-conversation-id-token-grammar: an
+    /// agent-supplied id that would splice into `sh -c` must never leave
+    /// this process. The daemon also rejects; this is the first gate.
+    #[test]
+    fn a_malicious_agent_conversation_id_is_refused_without_calling_the_daemon() {
+        let mut t = mock(vec![]);
+        let err = name_session(
+            "codex run",
+            Some("u1; touch /tmp/pwned".into()),
+            Some("s-1".into()),
+            &mut t,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("opaque session id") || err.to_string().contains("agent_conversation_id"));
+        assert!(t.requests.is_empty());
+    }
+
+    #[test]
+    fn an_oversized_agent_conversation_id_is_refused() {
+        let mut t = mock(vec![]);
+        let err = name_session(
+            "codex run",
+            Some("a".repeat(129)),
+            Some("s-1".into()),
+            &mut t,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("agent_conversation_id") || err.to_string().contains("opaque"));
+        assert!(t.requests.is_empty());
     }
 
     #[test]

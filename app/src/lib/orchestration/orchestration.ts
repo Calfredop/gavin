@@ -634,16 +634,34 @@ export type StartRailTarget =
 /// ambiguity to resolve the way `startRailVerdict` resolves a typed rail
 /// name -- only a workspace since removed, which is the one thing an ID
 /// cannot rule out on its own.
+///
+/// Cross-workspace arming is intentional between local workspaces. An
+/// ssh workspace's plan is host-writable, so a step there may only arm
+/// a rail in that same workspace or another ssh workspace on the same
+/// host -- never a local target, and never a different host. The
+/// caller's `ssh` (or its absence) is what draws that line.
 export function startRailTargetWorkspace(
-  workspaces: { id: string }[],
+  workspaces: { id: string; ssh?: { host: string } }[],
   ownWorkspaceId: string,
   wanted: string
 ): StartRailTarget {
   const id = wanted.trim();
   if (!id) return { kind: "ok", workspaceId: ownWorkspaceId };
-  return workspaces.some((w) => w.id === id)
-    ? { kind: "ok", workspaceId: id }
-    : { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+  if (!workspaces.some((w) => w.id === id)) {
+    return { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+  }
+  const caller = workspaces.find((w) => w.id === ownWorkspaceId);
+  const callerHost = caller?.ssh?.host;
+  if (callerHost) {
+    const target = workspaces.find((w) => w.id === id);
+    if (!target?.ssh || target.ssh.host !== callerHost) {
+      return {
+        kind: "refuse",
+        reason: "an ssh workspace can only arm a rail on the same host",
+      };
+    }
+  }
+  return { kind: "ok", workspaceId: id };
 }
 
 /// The conditions a rail can wait on, in the order the dialog offers
@@ -1605,18 +1623,39 @@ export function nextActions(
       // of this branch can tell "this pass corrected nothing about this
       // rail" from "this pass is repairing it".
       const before = actions.length;
-      // Reconciliation is about what the SESSIONS say, not about whether
-      // the rail is advancing (spec §4.4). A step left `running` on an
-      // idle or paused rail -- the app quit mid-run, or a stall paused
-      // the rail around it -- gets no tick that would ever correct it,
-      // and the daemon refuses every plan write that drops a `running`
-      // step: the stale row wedges the rail shut, uneditable and
-      // undeletable. So write the truth about dead sessions here. Only
-      // that: nothing is launched and no stage advances, because the
-      // rail is not running.
+      // Reconciliation is about what is TRUE, not about whether the rail
+      // is advancing (spec §4.4). Two truths land here:
+      //
+      // 1. A step left `running` on an idle or paused rail -- the app
+      //    quit mid-run, or a stall paused the rail around it -- gets no
+      //    tick that would ever correct it, and the daemon refuses every
+      //    plan write that drops a `running` step: the stale row wedges
+      //    the rail shut, uneditable and undeletable. Write the truth
+      //    about dead sessions.
+      // 2. A step that stalled because its session died a tick before
+      //    the board showed Done (Rule 5 paused the rail on that stall)
+      //    must be marked done once the card is Done -- Rule 1 would
+      //    clear it on a running rail, and without this pass the obsolete
+      //    stall sits until a human presses Play. A `skipped` step is
+      //    left alone: that was a human decision that the rail is past
+      //    the step, not a failure waiting on the card.
+      //
+      // Only those truth-writes: nothing is launched and no stage
+      // advances, because the rail is not running.
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
-          if (stepStateOf(orch, step.id) !== "running") continue;
+          const state = stepStateOf(orch, step.id);
+          // Stalled + card in Done: same Rule 1 truth a running rail
+          // would write. Tool steps have no card, so they stay stalled
+          // until Retry or Skip.
+          if (state === "stalled" && !isToolStep(step) && doneSlug) {
+            const cardStatus = statusOf(cards.get(step.cardPath));
+            if (cardStatus !== null && slugStatus(cardStatus) === doneSlug) {
+              actions.push({ kind: "markDone", stepId: step.id });
+              continue;
+            }
+          }
+          if (state !== "running") continue;
           // A `pr` step has NO session, so every rule below -- all of
           // which ask what a session did -- would speak for it wrongly,
           // and `deadSessionAction` would report a session that ended

@@ -12,4 +12,4 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (for example, "apply the AFK-ready triage label"), use the matching label string from this table.
 
-Labels live in the card's `labels:` header field as a comma-separated list. `gavin_set_plan_field` cannot write labels, so edit that header line directly, and keep a card's existing labels (such as `bug` or `memory`) when you add a triage label.
+Labels live in the card's `labels:` header field as a comma-separated list. `gavin_create_plan` takes `labels` when a card is filed, and `gavin_set_plan_field(path, "labels", ...)` sets them afterwards. That write replaces the whole list, so keep a card's existing labels (such as `bug` or `memory`) when you add a triage label.

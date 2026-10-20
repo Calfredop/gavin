@@ -112,6 +112,7 @@ export type IndicatorAxis =
   | "headroom"
   | "relay"
   | "direct"
+  | "deskRelay"
   | "device";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
@@ -130,6 +131,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   headroom: "Headroom",
   relay: "Relay",
   direct: "Direct connection",
+  deskRelay: "This Mac's Relay",
   device: "Device",
 };
 
@@ -765,6 +767,30 @@ export function directIndicator(state: DirectIndicatorState, why?: string | null
   const base = DIRECT[state];
   if (state !== "failed" || !why) return base;
   const tip = `${AXIS_LABEL.direct} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
+// ---- this Mac's own Relay ------------------------------------------------
+// Whether the Relay the desk runs is up (v73), under "Run a Relay on this
+// Mac" in Settings. The Relay's glyphs, as the direct listener's are:
+// `remoteAccess.ts` owns the words.
+
+const DESK_RELAY = {
+  not_wanted: make("deskRelay", "not_wanted", Cable, "neutral", "not running — it is off"),
+  other_build: make("deskRelay", "other_build", PlugZap, "neutral", "run by the installed gavin"),
+  running: make("deskRelay", "running", Plug, "success", "running"),
+  failed: make("deskRelay", "failed", Unplug, "danger", "could not run"),
+};
+
+export const DESK_RELAY_STATES = ["not_wanted", "other_build", "running", "failed"] as const;
+export type DeskRelayIndicatorState = (typeof DESK_RELAY_STATES)[number];
+
+/// The badge for one of the desk Relay's states. A `why` for a failure
+/// goes in the bubble, as the relay's does.
+export function deskRelayIndicator(state: DeskRelayIndicatorState, why?: string | null): Indicator {
+  const base = DESK_RELAY[state];
+  if (state !== "failed" || !why) return base;
+  const tip = `${AXIS_LABEL.deskRelay} · ${why}`;
   return { ...base, tip, label: tip };
 }
 

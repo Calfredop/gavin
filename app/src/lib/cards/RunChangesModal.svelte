@@ -8,9 +8,11 @@
   import {
     changesProblem,
     changesSummary,
+    checkoutSourceStrip,
     discardBlockedReason,
     discardOutcome,
     discardPrompt,
+    EMPTY_AFTER_NARROW,
   } from "$lib/cards/runChanges";
   import {
     closeRunChanges,
@@ -35,29 +37,49 @@
     /// Whether the run's agent is alive right now. A discard under a
     /// working agent is refused rather than confirmed.
     sessionIsLive: boolean;
+    /// Workspace + conversation for the transcript narrow. Absent when
+    /// the binding has no conversation id (or the transcript is out of
+    /// reach); the view then keeps the checkout list and the honest strip.
+    workspaceId?: string | null;
+    conversationId?: string | null;
     /// Draw as a pane rather than as a dialog -- see Modal's own prop.
     /// The tab chip splits this view off beside the agent it belongs to,
     /// which is the whole reason it is not a modal there.
     inline?: boolean;
     onClose: () => void;
   }
-  let { path, title, cwd, baseSha, sessionIsLive, inline = false, onClose }: Props = $props();
+  let {
+    path,
+    title,
+    cwd,
+    baseSha,
+    sessionIsLive,
+    workspaceId = null,
+    conversationId = null,
+    inline = false,
+    onClose,
+  }: Props = $props();
 
   // Re-runs when the card or the run changes, which is what re-points an
   // already-open modal (a re-launch mints a new baseline).
   $effect(() => {
-    void openRunChanges(path, cwd, baseSha, title);
+    void openRunChanges(path, cwd, baseSha, title, workspaceId, conversationId);
   });
 
   const view = $derived($runChangesStore[path] ?? null);
   const changes = $derived(view?.changes ?? null);
+  const source = $derived(view?.source ?? "checkout");
   // What TypeSafe change attribution says about this run's files, when
   // its switch is on and there was a question to ask. Keyed by the
   // unbounded window this view shows (`untilSha` null); the Review tab's
   // bounded answer for the same card is a different entry. A hint and
   // never a filter: it adds a chip, a count and a line to the prompt,
   // and the list, the diff and the discard read none of it.
-  const attribution = $derived($attributionStore[attributionKey(path, baseSha, null)] ?? null);
+  // Skipped when the transcript already narrowed the list: those files
+  // are this agent's, and a guess must not hand one to a neighbour.
+  const attribution = $derived(
+    source === "transcript" ? null : ($attributionStore[attributionKey(path, baseSha, null)] ?? null)
+  );
   const readings = $derived(attribution && attribution.state !== "skipped" ? attribution.attribution : null);
   const foreign = $derived(foreignFiles(readings, path));
   const foreignCount = $derived(foreign.reduce((n, g) => n + g.paths.length, 0));
@@ -67,6 +89,7 @@
   const summary = $derived(changesSummary(changes, foreignCount));
   const problem = $derived(changesProblem(changes));
   const blocked = $derived(discardBlockedReason(changes, sessionIsLive));
+  const sourceStrip = $derived(checkoutSourceStrip(source));
   const diff = $derived(view?.diff ?? null);
   const rows = $derived(diff ? toUnifiedRows(diff.hunks) : []);
   const noSelection = new Set<string>();
@@ -98,7 +121,7 @@
 
   async function handleDiscard(): Promise<void> {
     if (!changes || blocked) return;
-    const prompt = discardPrompt(changes, title, foreign.map(foreignLine));
+    const prompt = discardPrompt(changes, title, foreign.map(foreignLine), source === "transcript");
     const confirmed = await askConfirm({
       title: prompt.title,
       lines: prompt.lines,
@@ -141,6 +164,7 @@
     {#if view?.error}<p class="strip error">{view.error}</p>{/if}
     {#if outcome}<p class="strip error">{outcome}</p>{/if}
     {#if problem}<p class="strip quiet">{problem}</p>{/if}
+    {#if sourceStrip && changes && !problem}<p class="strip quiet">{sourceStrip}</p>{/if}
 
     <div class="body">
       <div class="files" role="listbox" aria-label="Files this run changed">
@@ -150,9 +174,11 @@
           <div class="none">—</div>
         {:else if changes.files.length === 0}
           <div class="none">
-            {changes.commits > 0
-              ? "Committed and left a clean tree — pick a commit in the Git tab to read it."
-              : "Nothing yet"}
+            {source === "transcript"
+              ? EMPTY_AFTER_NARROW
+              : changes.commits > 0
+                ? "Committed and left a clean tree — pick a commit in the Git tab to read it."
+                : "Nothing yet"}
           </div>
         {:else}
           {#each changes.files as entry (entry.path)}

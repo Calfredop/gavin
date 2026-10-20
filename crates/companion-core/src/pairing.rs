@@ -81,12 +81,16 @@ pub fn relay_dials(offer: &PairingQr) -> Result<Vec<RelayDial>, CoreError> {
 /// Where to dial the Workstation holding `workstation_key`, for
 /// `purpose`, in the order to try: the direct addresses, then the Relays.
 ///
-/// A direct address is dialled with the pin and an EMPTY admission
-/// token: the token is the Relay's, and a LAN address a Mac has since
-/// given up could be anyone's. One with no pin to trust it by, or that
-/// is not `wss://`, is left out -- a pin is a certificate to check, and
-/// there is nothing else to trust a direct listener by. A Relay is
-/// dialled with the token, as before.
+/// Every dial carries the admission token: the Relay asks for it, and so
+/// does the direct listener while the desk holds one (ADR 0009, amended
+/// 2026-10-15). A direct address is dialled with the pin as well, and
+/// the hello is sent only inside a TLS session whose certificate is that
+/// pin's -- so a LAN address the Mac has since given up, which could be
+/// anyone's, is never handed the token. A shell that cannot check a pin
+/// opens no direct dial at all (`webSocketOpener`). One with no pin to
+/// trust it by, or that is not `wss://`, is left out: a pin is a
+/// certificate to check, and there is nothing else to trust a direct
+/// listener by.
 pub(crate) fn dials(
     workstation_key: &[u8],
     direct: &[String],
@@ -99,6 +103,7 @@ pub(crate) fn dials(
     let pin = direct_pin.map(|pin| pin.trim().to_ascii_lowercase()).filter(|pin| {
         pin.len() == 64 && pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     });
+    let token = relay_admission.unwrap_or("");
     let direct = pin.iter().flat_map(|pin| {
         direct
             .iter()
@@ -106,11 +111,10 @@ pub(crate) fn dials(
             .filter(|url| url.secure)
             .map(|url| RelayDial {
                 url: url.url,
-                hello: RelayHello::device("", &rendezvous, purpose),
+                hello: RelayHello::device(token, &rendezvous, purpose),
                 pin: Some(pin.clone()),
             })
     });
-    let token = relay_admission.unwrap_or("");
     let relays = relays.iter().filter_map(|url| RelayUrl::parse(url).ok()).map(|url| RelayDial {
         url: url.url,
         hello: RelayHello::device(token, &rendezvous, purpose),
@@ -187,6 +191,9 @@ pub struct PairingClient {
     inbox: Inbox,
     workstation_key: Vec<u8>,
     hardware_key: Vec<u8>,
+    /// `None` when an older shell omitted the field: the proof then
+    /// omits it too, and the trust-store row holds NULL.
+    key_kind: Option<protocol::device_wire::KeyKind>,
     name: String,
     /// The six digits, known once the handshake is done and shown once
     /// the Workstation has taken the proof.
@@ -207,6 +214,26 @@ impl PairingClient {
         offer: &PairingQr,
         keys: &DeviceKeys,
         hardware_key: &[u8],
+        device_name: &str,
+        entropy: Entropy,
+    ) -> Result<(Self, Vec<u8>), CoreError> {
+        Self::start_with_kind(
+            offer,
+            keys,
+            hardware_key,
+            Some(protocol::device_wire::KeyKind::Hardware),
+            device_name,
+            entropy,
+        )
+    }
+
+    /// `start`, naming what backs the hardware key (06 §5.7). `None`
+    /// omits the field on the wire (an older shell).
+    pub fn start_with_kind(
+        offer: &PairingQr,
+        keys: &DeviceKeys,
+        hardware_key: &[u8],
+        key_kind: Option<protocol::device_wire::KeyKind>,
         device_name: &str,
         entropy: Entropy,
     ) -> Result<(Self, Vec<u8>), CoreError> {
@@ -245,6 +272,7 @@ impl PairingClient {
             inbox: Inbox::default(),
             workstation_key,
             hardware_key,
+            key_kind,
             name: bounded_name(device_name),
             sas: None,
         };
@@ -261,6 +289,7 @@ impl PairingClient {
         let proof = UnlockProof {
             signature: protocol::hex_encode(signature),
             hardware_key: Some(protocol::hex_encode(&self.hardware_key)),
+            key_kind: self.key_kind,
         };
         self.prove_with(&proof.to_bytes())
     }
@@ -619,6 +648,7 @@ mod tests {
             UnlockProof {
                 signature: protocol::hex_encode(SIGNATURE),
                 hardware_key: Some(protocol::hex_encode(&hardware_key())),
+                key_kind: Some(protocol::device_wire::KeyKind::Hardware),
             }
         );
     }
@@ -1011,6 +1041,12 @@ mod tests {
             dials[0].hello,
             RelayHello::device("", &relay::rendezvous_id(&workstation.keys.public), relay::PURPOSE_PAIR)
         );
+
+        // A desk that holds a token puts it in the QR, and the listener
+        // asks for it (ADR 0009, amended 2026-10-15).
+        offer.relay_admission = Some("let-me-in".into());
+        let dials = relay_dials(&offer).unwrap();
+        assert_eq!(dials[0].hello.admission().unwrap().1, "let-me-in");
     }
 
     #[test]

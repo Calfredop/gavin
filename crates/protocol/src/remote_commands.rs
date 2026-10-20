@@ -49,7 +49,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     // which Device is asking; see `RemoteAllowance::Daemon`.
     ("set_session_owner", RemoteAllowance::Daemon),
     ("list_session_owners", RemoteAllowance::Daemon),
-    ("resize_session", RemoteAllowance::Allowed),
+    // A Device's resize borrows the PTY's size for its screen, and the
+    // daemon alone knows which Device that is (v74); forwarded, the desk
+    // would apply it as the desk. `return_pty_size` gives it back.
+    ("resize_session", RemoteAllowance::Daemon),
+    ("return_pty_size", RemoteAllowance::Daemon),
     ("create_session", RemoteAllowance::Allowed),
     ("kill_session", RemoteAllowance::Allowed),
     ("adopt_session", RemoteAllowance::Allowed),
@@ -131,10 +135,13 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("list_devices", RemoteAllowance::Refused), // Trust
     ("get_relay_state", RemoteAllowance::Refused), // Trust: the desk's own dial
     ("get_direct_state", RemoteAllowance::Refused), // Trust: the desk's own listener
+    ("get_desk_relay_state", RemoteAllowance::Refused), // Trust: the desk's own Relay
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust
     ("set_direct_access", RemoteAllowance::Refused), // Trust
+    ("set_desk_relay", RemoteAllowance::Refused), // Trust
+    ("refresh_relay_admission", RemoteAllowance::Refused), // Trust: the token every Device holds
     ("set_push_gateway_url", RemoteAllowance::Refused), // Trust: where the desk posts
     ("push_companion_notify", RemoteAllowance::Refused), // the desk decides what to notify
     ("daemon_compat", RemoteAllowance::Allowed),
@@ -143,6 +150,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("get_board", RemoteAllowance::Allowed),
     ("card_session", RemoteAllowance::Allowed),
     ("card_runs", RemoteAllowance::Allowed),
+    ("shell_writes", RemoteAllowance::Allowed),
     ("set_board", RemoteAllowance::Allowed),
     ("get_orchestration", RemoteAllowance::Allowed),
     ("set_orchestration", RemoteAllowance::Allowed),
@@ -217,6 +225,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("get_playwright_pane_open", RemoteAllowance::Allowed),
     ("set_playwright_pane_open", RemoteAllowance::Allowed),
     ("setup_agent_integration", RemoteAllowance::Allowed),
+    ("scan_foreign_mcp_servers", RemoteAllowance::Allowed),
     ("agent_profiles", RemoteAllowance::Allowed),
     ("detect_agent_binaries", RemoteAllowance::Allowed),
     ("agent_model_catalog", RemoteAllowance::Allowed),
@@ -228,6 +237,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("pr_status", RemoteAllowance::Allowed),
     ("card_run_tokens", RemoteAllowance::Allowed),
     ("conversation_log", RemoteAllowance::Allowed),
+    ("card_run_touched_files", RemoteAllowance::Allowed),
     ("get_launch_config", RemoteAllowance::Allowed),
     ("set_launch_config", RemoteAllowance::Allowed),
     ("get_custom_resume_args", RemoteAllowance::Allowed),
@@ -349,6 +359,9 @@ mod tests {
             "set_remote_access",
             "set_direct_access",
             "get_direct_state",
+            "set_desk_relay",
+            "get_desk_relay_state",
+            "refresh_relay_admission",
             "set_push_gateway_url",
             "push_companion_notify",
             "set_workspaces_state",
@@ -382,6 +395,15 @@ mod tests {
     fn session_ownership_is_answered_by_the_daemon() {
         assert_eq!(allowance_for("set_session_owner"), Some(RemoteAllowance::Daemon));
         assert_eq!(allowance_for("list_session_owners"), Some(RemoteAllowance::Daemon));
+    }
+
+    /// Whose screen a PTY is sized for is the Device on the connection
+    /// (v74): forwarded, the desk would resize it as the desk, and nothing
+    /// would ever give the desk its size back.
+    #[test]
+    fn a_devices_resize_is_answered_by_the_daemon() {
+        assert_eq!(allowance_for("resize_session"), Some(RemoteAllowance::Daemon));
+        assert_eq!(allowance_for("return_pty_size"), Some(RemoteAllowance::Daemon));
     }
 
     #[test]

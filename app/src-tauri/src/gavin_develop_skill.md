@@ -23,7 +23,9 @@ order:
 2. **The PRD** (`gavin_read_prd`) — the card has to trace back to it. A
    card that does not is itself the first question.
 3. **The board** (`gavin_get_tree`) — the neighbouring cards. Work that
-   overlaps a card already on the board is a question, not a plan.
+   overlaps a card already on the board is a question, not a plan. Ask
+   `gavin_find_cards` with the card's intent as the `query` too: it reaches
+   the archive, where the same work may already have been done.
 4. **The code the card names.** A card that says "fix the login flow"
    has a login flow sitting in the repo. Read it.
 
@@ -52,6 +54,38 @@ changing the plan.
 If the human hands it back — "you decide" — stop asking and propose the
 draft with its assumptions named in it. An unanswered question becomes a
 stated assumption, never a silent one.
+
+### With Matt Pocock's skills: grill-with-docs
+
+Look at your own skill list before the first question. If this workspace
+has Matt Pocock's skills — `grilling` and `domain-modeling` among the
+skills you can load (Claude Code lists them under the `mattpocock-skills`
+plugin, other agents read them from wherever their skills live) — run
+this interview as **grill-with-docs**.
+
+That skill is one line: load `grilling` and `domain-modeling`. Load those
+two yourself rather than `grill-with-docs`, which is marked for the human
+to invoke and so is usually missing from your list; its two halves are
+the whole of it. What it changes here:
+
+- **The interview takes grilling's form**: rounds over the design tree,
+  each round the whole frontier, numbered, each with your recommended
+  answer — in place of one question at a time. The topics above are
+  still what the tree has to cover by the time the frontier is empty;
+  grilling decides their order.
+- **domain-modeling writes as things resolve**: a term into `CONTEXT.md`,
+  a decision that passes all three of its ADR gates into `docs/adr/` —
+  or where the repo's `CONTEXT-MAP.md` sends them. Those are the only
+  writes the interview makes before approval. They are the repo's
+  vocabulary, never the card: the card is still proposed whole and
+  written only after yes.
+- **An empty frontier ends this step, not the session.** Go on to choose
+  the shape and propose it. Do not follow grill-with-docs into `to-spec`,
+  `to-tickets` or `implement`, its usual next steps: here the developed
+  card is the spec, and running it is the human's call.
+
+If the two skills are not there, interview as above. Do not install
+them, and do not mention them.
 
 ## 3. Choose the shape, and say why
 
@@ -209,7 +243,8 @@ it is proposed too.
 
 **Nothing is written before you hear yes.** Not a scratch file, not the
 first card "to save a round trip", not "I'll start item one while you
-read". If the human changes something, re-propose the changed version
+read". The one exception is grill-with-docs' glossary and ADRs, written
+as they resolve; they never touch the card. If the human changes something, re-propose the changed version
 rather than patching it silently.
 
 ## 5. Write it
@@ -237,10 +272,13 @@ In this order, because the `kind:` decides what the rest of it means:
   instruction, not as a note. Rate it in the same call — a child filed
   unrated and rated afterwards can be run in between, at the wrong
   agent.
-- **Then read it back.** `gavin_get_tree` is the canonical parse: the
-  card must come back the kind you meant, carrying the level you meant,
-  and every child `kind: task` with this card's file name as its
-  `parent`, no status, and its own level. Nothing here fails loudly — a
+- **Then read it back** from the canonical parse: `gavin_find_cards` with
+  this card's file name as `parent` lists its children, and `gavin_get_tree`
+  shows the card itself. The card must come back the kind you meant,
+  carrying the level you meant, and every child `kind: task` with this
+  card's file name as its `parent`, no status, and its own level — a child
+  missing from that list is a `parent:` that does not say what you meant.
+  Nothing here fails loudly — a
   typo'd `parent:`, a stray `status:`, a level the daemon could not read
   and a parent left as `kind: task` all produce a plan that looks right
   in the file and comes apart on the board. Fix what the tree shows

@@ -200,7 +200,7 @@ fn conversation_log_under(log: TokenLog, root: Option<&Path>, conversation_id: &
 /// root, per profile layout. Shared by the existence check above and the
 /// token read below, so the two can never disagree about where a
 /// conversation lives.
-fn transcript_path(log: TokenLog, root: &Path, conversation_id: &str) -> Option<PathBuf> {
+pub(crate) fn transcript_path(log: TokenLog, root: &Path, conversation_id: &str) -> Option<PathBuf> {
     match log {
         TokenLog::ClaudeSessionJsonl => claude_transcript(root, conversation_id),
         TokenLog::CodexRollout => codex_rollout(root, conversation_id),
@@ -310,7 +310,7 @@ fn codex_sessions_dir() -> Option<PathBuf> {
 /// resolves but is not on disk is the caller's to read -- `Unknown` for
 /// the existence check, `Unavailable` for the token read -- so the one
 /// place that names each layout's directory stays here.
-fn log_root(log: TokenLog) -> Option<PathBuf> {
+pub(crate) fn log_root(log: TokenLog) -> Option<PathBuf> {
     match log {
         TokenLog::ClaudeSessionJsonl => claude_projects_dir(),
         TokenLog::CodexRollout => codex_sessions_dir(),
@@ -430,7 +430,7 @@ fn kimi_agent_wires(agents: &Path) -> Vec<PathBuf> {
 /// The session's wires, given ONE of them:
 /// `<session>/agents/<agent>/wire.jsonl`. A path that does not match that
 /// shape answers just itself.
-fn kimi_session_wires(wire: &Path) -> Vec<PathBuf> {
+pub(crate) fn kimi_session_wires(wire: &Path) -> Vec<PathBuf> {
     let Some(agents) = wire.parent().and_then(|p| p.parent()) else { return vec![wire.to_path_buf()] };
     let files = kimi_agent_wires(agents);
     if files.is_empty() { vec![wire.to_path_buf()] } else { files }

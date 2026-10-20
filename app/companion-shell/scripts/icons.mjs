@@ -1,67 +1,63 @@
 // Draws the shell's app icons and launch images from Gavin's own icon,
-// `app/src-tauri/icons/icon.svg`, so the store app carries the desktop's
-// mark rather than Capacitor's placeholder (which App Review and Play
-// both reject as template metadata).
+// `app/src/lib/ui/appIcon.ts` -- the definition the desktop's icon set
+// (`app/src-tauri/icons/render.mjs`) and the hub's live icon also draw
+// from -- so the store app carries the desktop's mark rather than
+// Capacitor's placeholder (which App Review and Play both reject as
+// template metadata).
 //
 //   node companion-shell/scripts/icons.mjs
 //
-// Needs `rsvg-convert` and `magick` (brew install librsvg imagemagick).
-// The PNGs it writes are committed; run it again when icon.svg changes.
+// Needs `rsvg-convert` and `magick` (brew install librsvg imagemagick),
+// and Menlo, the wall's font. The PNGs it writes are committed; run it
+// again when appIcon.ts changes.
 //
-// The desktop's icon is a macOS one: a rounded tile inset on a clear
-// canvas, with a drop shadow. A phone draws its own shape, so each
-// platform gets the tile's contents instead:
+// The icon is a wall with ">G" carved out of it, in its app-icon form,
+// a solid face with the letters cut through (appIcon's APP_ICON_STYLE): a
+// home screen draws it at under 200 pixels, where code glyphs would
+// average out to a dim wash. The desktop's is
+// a macOS one: a rounded tile inset on a clear canvas, with a drop shadow.
+// A phone draws its own shape, so each platform gets the tile's contents
+// instead:
 // - iOS: the tile full-bleed and opaque, 1024 square (App Store Connect
 //   refuses an icon with an alpha channel). The system rounds it.
 // - Android: an adaptive icon. The background layer is the tile's colour;
-//   the foreground is the ">G" glyphs alone, sized to the 66dp safe circle
-//   of the 108dp layer, since a launcher's mask may be a circle and would
-//   cut the title bar's lights off. The legacy PNGs (unused from API 26,
-//   below this app's minSdk, but still packaged) are the full-bleed tile.
-// - Launch images: the glyphs on the tile's darkest colour.
+//   the foreground is the wall, carved, over the whole 108dp layer, with
+//   the >G moved to its middle and small enough to sit inside the 66dp
+//   safe circle, since a launcher's mask may be a circle. The legacy PNGs
+//   (unused from API 26, below this app's minSdk, but still packaged) are
+//   the full-bleed tile.
+// - Launch images: the rounded tile, small, on the tile's darkest colour.
 // - store/play-icon-512.png: Play Console's hi-res icon, full-bleed.
+//
+// Loads appIcon.ts directly: it imports nothing and uses only erasable
+// TypeScript, which Node strips on its own.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { APP_ICON_STYLE, ICON_COLOURS, appIconSvg, centredArt, wallLayerSvg } from "../../src/lib/ui/appIcon.ts";
 
 const shell = join(dirname(fileURLToPath(import.meta.url)), "..");
-const source = readFileSync(join(shell, "..", "src-tauri", "icons", "icon.svg"), "utf8");
 const res = join(shell, "android", "app", "src", "main", "res");
 const ios = join(shell, "ios", "App", "App", "Assets.xcassets");
 
-/// The tile's background, halfway down its gradient (#32323a to #161619).
-const tileColour = "#24242a";
+/// The tile's background, halfway down its gradient.
+const tileColour = mix(ICON_COLOURS.tileTop, ICON_COLOURS.tileBottom);
 /// The launch images' background: the bottom of that gradient.
-const launchColour = "#161619";
+const launchColour = ICON_COLOURS.tileBottom;
 
-/// One replacement that must match, so a redrawn icon.svg that no longer
-/// has the shape this expects fails here rather than drawing a wrong icon.
-function replace(svg, from, to) {
-  if (!svg.includes(from)) throw new Error(`icon.svg no longer contains ${JSON.stringify(from)}`);
-  return svg.replace(from, to);
+function mix(a, b) {
+  const channel = (hex, i) => parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16);
+  const out = [0, 1, 2].map((i) => Math.round((channel(a, i) + channel(b, i)) / 2));
+  return "#" + out.map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
-/// The tile, square and full-bleed: the viewBox cropped to it, the shadow
-/// and the rounding gone, and the rounded edge highlight dropped.
-function fullBleed(svg) {
-  svg = replace(svg, 'viewBox="0 0 1024 1024"', 'viewBox="100 100 824 824"');
-  svg = replace(svg, ' filter="url(#dropShadow)"', "");
-  svg = svg.replaceAll('rx="184"', 'rx="0"');
-  return svg.replace(/\s*<rect x="102" y="102"[^>]*\/>/, "");
-}
-
-/// The ">G" glyphs alone on a clear canvas, `box` design units square,
-/// centred. The glyphs span x 224..832, y 384..768.
-function glyphs(svg, box) {
-  const start = svg.indexOf("<!-- pixel-art \">\" chevron");
-  const end = svg.lastIndexOf("<rect x=\"102\"");
-  if (start < 0 || end < start) throw new Error("icon.svg no longer has the glyphs where expected");
-  const [cx, cy] = [528, 576];
-  const view = `${cx - box / 2} ${cy - box / 2} ${box} ${box}`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${view}">${svg.slice(start, end)}</svg>`;
-}
+/// The adaptive foreground's wall. 42 rows puts the >G's diagonal at
+/// about 56% of the layer, inside the 66dp circle's 61% with a margin;
+/// 70 columns keeps the art's 0.6 aspect on a square layer.
+const ADAPTIVE_COLS = 70;
+const ADAPTIVE_ROWS = 42;
 
 const work = mkdtempSync(join(tmpdir(), "gavin-icons-"));
 function svgFile(name, svg) {
@@ -88,8 +84,8 @@ function render(svgPath, size, out, { opaque = false, background = null, circle 
   execFileSync("magick", args);
 }
 
-/// A launch image: the glyphs, `share` of the shorter side wide, centred
-/// on the launch colour.
+/// A launch image: the tile, `share` of the shorter side wide, centred on
+/// the launch colour.
 function launch(glyphSvg, width, height, share, out) {
   const mark = Math.round(Math.min(width, height) * share);
   const png = join(work, "mark.png");
@@ -101,13 +97,13 @@ function launch(glyphSvg, width, height, share, out) {
 }
 
 try {
-  const tile = svgFile("tile.svg", fullBleed(source));
-  // 608 design units of glyph across a 1296-unit layer puts the glyphs'
-  // diagonal (about 719 units) inside the 66dp circle of the 108dp layer,
-  // with a margin (1176 units would touch it).
-  const foreground = svgFile("foreground.svg", glyphs(source, 1296));
-  // Tight around the glyphs, for the launch images.
-  const mark = svgFile("mark.svg", glyphs(source, 640));
+  const tile = svgFile("tile.svg", appIconSvg("square", APP_ICON_STYLE));
+  const foreground = svgFile(
+    "foreground.svg",
+    wallLayerSvg(centredArt(ADAPTIVE_COLS, ADAPTIVE_ROWS), 1080, APP_ICON_STYLE),
+  );
+  // The rounded tile with its rim, for the launch images.
+  const mark = svgFile("mark.svg", appIconSvg("tile", APP_ICON_STYLE));
 
   render(tile, 1024, join(ios, "AppIcon.appiconset", "AppIcon-512@2x.png"), {
     opaque: true, background: tileColour,

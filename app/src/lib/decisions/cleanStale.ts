@@ -88,20 +88,31 @@ export function cleanTip(kind: CleanKind, entries: readonly CleanEntry[]): strin
 /// ConfirmOptions shape. Not `danger`: nothing is lost -- a closed item
 /// stays on its card, ticked, with the reason under it -- but the run
 /// does write to every card listed, which is worth one look first.
+///
+/// `withheld` are card titles the first-run review has not cleared: they
+/// never reach the agent, and the confirm names them so the human knows
+/// what was left out and why.
 export function cleanConfirm(
   kind: CleanKind,
-  entries: readonly CleanEntry[]
+  entries: readonly CleanEntry[],
+  withheld: readonly string[] = []
 ): { title: string; lines: string[]; confirmLabel: string; cancelLabel: string } {
   const items = cleanItemCount(entries);
   const noun = kind === "decisions" ? "decision" : "human test";
   const what = `${items} open ${noun}${items === 1 ? "" : "s"}`;
   const cards = entries.length === 1 ? "1 card" : `${entries.length} cards`;
+  const lines = [
+    `An agent reads the ${what} on ${cards} and closes the ones nothing is waiting on any more.`,
+    "A closed item is ticked on its card with a dated line saying why; the ones that still need you stay open.",
+  ];
+  if (withheld.length > 0) {
+    lines.push(
+      `Left out until you review them: ${withheld.join(", ")}. Their open items stay on the tab.`
+    );
+  }
   return {
     title: kind === "decisions" ? "Clean stale decisions?" : "Clean stale tests?",
-    lines: [
-      `An agent reads the ${what} on ${cards} and closes the ones nothing is waiting on any more.`,
-      "A closed item is ticked on its card with a dated line saying why; the ones that still need you stay open.",
-    ],
+    lines,
     confirmLabel: "Start the agent",
     cancelLabel: "Not now",
   };

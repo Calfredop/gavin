@@ -27,7 +27,16 @@ import {
   pairingRejected,
   pairingRequested,
   pairingTick,
+  pairingSheet,
   pairingUnavailable,
+  DESK_RELAY_FIREWALL_NOTE,
+  DESK_RELAY_NOTE,
+  deskFillsRelay,
+  deskRelayBlocked,
+  deskRelayStatus,
+  admissionHeldLine,
+  admissionRefreshable,
+  admissionRefreshBlocked,
   qrDraw,
   relayAdmissionBlocked,
   relayStateBlocked,
@@ -40,10 +49,12 @@ import {
   revokeAllCopy,
   revokeDeviceCopy,
   secondsLeft,
+  thisMachine,
   type DeviceInfo,
   type DeviceList,
   type PairingRequest,
   type PairingState,
+  type ThisMachine,
 } from "$lib/core/remoteAccess";
 import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 
@@ -196,6 +207,58 @@ describe("the QR", () => {
   });
 });
 
+// One QR carries both paths (decided 2026-10-15): the sheet under it says
+// which it carries, and what direct needs to keep working.
+describe("the sheet under the QR", () => {
+  const qr = (fields: Record<string, unknown>) =>
+    JSON.stringify({ daemonPublicKey: "a".repeat(64), secret: "b".repeat(64), protocolVersion: 69, ...fields });
+  const LAN = "wss://192.168.68.125:8445";
+  const TAILNET = "wss://100.79.93.51:8445";
+  const RELAY = "wss://relay.example/gavin";
+
+  it("names every way in, in the order the phone tries them", () => {
+    const sheet = pairingSheet(qr({ direct: [TAILNET, LAN], rendezvous: [RELAY], relayAdmission: "let-me-in" }));
+    expect(sheet.paths).toEqual([
+      { kind: "tailnet", label: "Tailnet", url: TAILNET },
+      { kind: "lan", label: "This network", url: LAN },
+      { kind: "relay", label: "Relay", url: RELAY },
+    ]);
+    expect(sheet.notes[0]).toBe("The phone tries this Mac directly first, then the Relay.");
+    expect(sheet.notes.join(" ")).toContain("anywhere the phone is online");
+  });
+
+  it("says a network address needs to stay put, and away from home a VPN", () => {
+    const notes = pairingSheet(qr({ direct: [LAN] })).notes.join(" ");
+    expect(notes).toContain("DHCP reservation or a static IP");
+    expect(notes).toContain("pairs again");
+    expect(notes).toContain("VPN such as Tailscale");
+    expect(notes).toContain("carries no Relay");
+  });
+
+  it("does not send a phone on the tailnet off for a VPN it already has", () => {
+    const notes = pairingSheet(qr({ direct: [TAILNET] })).notes.join(" ");
+    expect(notes).toContain("at home or away");
+    expect(notes).not.toContain("VPN such as");
+    expect(notes).not.toContain("DHCP");
+  });
+
+  it("says nothing of direct for a Relay-only code", () => {
+    const sheet = pairingSheet(qr({ rendezvous: [RELAY] }));
+    expect(sheet.paths).toEqual([{ kind: "relay", label: "Relay", url: RELAY }]);
+    expect(sheet.notes).toEqual(["Through the Relay: anywhere the phone is online, whatever this Mac's address is."]);
+  });
+
+  // The sheet is read from a pairing secret: the secret and the token are
+  // never what it shows, and a payload it cannot read draws no sheet.
+  it("shows only URLs, and nothing for a payload it cannot read", () => {
+    const shown = JSON.stringify(pairingSheet(qr({ direct: [LAN], rendezvous: [RELAY], relayAdmission: "let-me-in" })));
+    expect(shown).not.toContain("let-me-in");
+    expect(shown).not.toContain("b".repeat(64));
+    expect(pairingSheet("not json")).toEqual({ paths: [], notes: [] });
+    expect(pairingSheet(qr({ direct: "wss://x", rendezvous: [7] }))).toEqual({ paths: [], notes: [] });
+  });
+});
+
 describe("the device list", () => {
   const base: DeviceInfo = {
     deviceId: "dev-1",
@@ -328,12 +391,15 @@ describe("the prompts", () => {
   });
 
   // The whole reason "Revoke all" is not just "revoke each": it rotates
-  // the key, which is what survives a restored backup.
+  // the key. The key lives in the same file as the rows, so the copy
+  // also tells the owner to run it again after restoring that file.
   it("says Revoke all rotates the key and forces every phone to re-pair", () => {
     const copy = revokeAllCopy();
     const text = copy.lines.join(" ");
     expect(text).toContain("rotated");
     expect(text).toContain("pair again");
+    expect(text).toContain("restoring the gavin data folder");
+    expect(text).not.toContain("even if the trust store is later restored");
     expect(copy.confirmLabel).toContain("rotate the key");
   });
 });
@@ -381,6 +447,11 @@ describe("the section's copy", () => {
     // And that it goes when the Relay does, before they find the field
     // empty and take it for a fault.
     expect(ADMISSION_NOTE).toContain("Changing the Relay URL forgets it");
+    // And that it can go on its own, which the button beside the field
+    // does without touching the URL.
+    expect(ADMISSION_NOTE).toContain("Clear token forgets it and keeps the URL");
+    // The direct listener asks for it too (ADR 0009, amended 2026-10-15).
+    expect(ADMISSION_NOTE).toContain("the direct connection asks for it too");
   });
 
   // The note describes what the DAEMON does, so it has to be about the
@@ -493,6 +564,7 @@ describe("the relay URL", () => {
       url: string;
       dial?: { secure: boolean; host: string; port: number; local: boolean };
       refuse?: string;
+      thisMachine?: ThisMachine;
     }
     const raw = Object.values(
       import.meta.glob("../../../../test-fixtures/relay-urls/cases.json", {
@@ -512,21 +584,22 @@ describe("the relay URL", () => {
 
     it("is silent about every URL the daemon will dial", () => {
       for (const c of cases.filter((c) => c.dial !== undefined)) {
-        expect(relayUrlProblem(c.url), JSON.stringify(c.url)).toBeNull();
-        expect(relayUrlHint(c.url), JSON.stringify(c.url)).toBeNull();
+        expect(relayUrlProblem(c.url, c.thisMachine), JSON.stringify(c.url)).toBeNull();
+        expect(relayUrlHint(c.url, c.thisMachine), JSON.stringify(c.url)).toBeNull();
       }
     });
 
     it("names the daemon's own reason for every URL it refuses", () => {
       const seen = new Set<string>();
       for (const c of cases.filter((c) => c.refuse !== undefined)) {
-        const problem = relayUrlProblem(c.url);
+        const problem = relayUrlProblem(c.url, c.thisMachine);
         expect(problem?.kind, JSON.stringify(c.url)).toBe(c.refuse);
         seen.add(c.refuse as string);
       }
       // Every refusal there is has a case.
       expect([...seen].sort()).toEqual([
         "credentials",
+        "direct-listener",
         "host",
         "no-host",
         "no-scheme",
@@ -541,8 +614,59 @@ describe("the relay URL", () => {
     it("hints at every refusal but an empty field", () => {
       for (const c of cases.filter((c) => c.refuse !== undefined)) {
         if (c.url.trim() === "") expect(relayUrlHint(c.url)).toBeNull();
-        else expect(relayUrlHint(c.url), JSON.stringify(c.url)).toContain("will not dial");
+        else expect(relayUrlHint(c.url, c.thisMachine), JSON.stringify(c.url)).toContain("will not dial");
       }
+    });
+  });
+
+  // 2026-10-14: a Relay URL of ws://<this Mac>:8445 had the daemon dial
+  // its own direct listener, and the QR hand a phone the same port twice.
+  describe("a URL naming this Mac's own direct listener", () => {
+    const listening = {
+      state: "listening" as const,
+      port: 8445,
+      addresses: ["wss://100.79.93.51:8445", "wss://192.168.68.125:8445"],
+    };
+
+    it("knows loopback and both builds' ports before the listener says anything", () => {
+      expect(thisMachine(null)).toEqual({ hosts: [], directPorts: [8445, 8446] });
+      expect(thisMachine({ state: "not_wanted" })).toEqual({ hosts: [], directPorts: [8445, 8446] });
+      expect(relayUrlProblem("ws://localhost:8446", thisMachine(null))?.kind).toBe("direct-listener");
+      expect(relayUrlProblem("ws://192.168.68.125:8445", thisMachine(null))).toBeNull();
+    });
+
+    it("learns this Mac's addresses, and an overridden port, from the listener", () => {
+      expect(thisMachine(listening)).toEqual({
+        hosts: ["100.79.93.51", "192.168.68.125"],
+        directPorts: [8445, 8446],
+      });
+      expect(thisMachine({ ...listening, port: 9445, addresses: ["wss://[fd7a::5]:9445"] })).toEqual({
+        hosts: ["fd7a::5"],
+        directPorts: [8445, 8446, 9445],
+      });
+    });
+
+    it("says which port is which, and names the Relay's", () => {
+      const hint = relayUrlHint("ws://192.168.68.125:8445", thisMachine(listening));
+      expect(hint).toContain("Port 8445 on this Mac is its direct connection");
+      expect(hint).toContain("8443");
+      expect(hint).toContain("will not dial");
+      expect(relayUrlHint("ws://192.168.68.125:8443", thisMachine(listening))).toBeNull();
+    });
+
+    it("is a Relay the daemon will not dial, so pairing through it is not offered", () => {
+      const list: DeviceList = {
+        devices: [],
+        remoteAccessEnabled: true,
+        relayUrl: "ws://localhost:8446",
+        relayAdmissionSet: true,
+        directAccessEnabled: true,
+      };
+      // With the listener down the desk knows no address of this Mac's
+      // but loopback; the daemon's own check, which does, says the rest
+      // in the Relay's status line.
+      const failed = { state: "failed" as const, why: "could not listen on port 8445" };
+      expect(pairingUnavailable(list, null, null, failed)).toContain("will not dial");
     });
   });
 });
@@ -750,6 +874,93 @@ describe("whether the daemon reached its Relay", () => {
     expect(relayStateBlocked(knows)).toBeNull();
     const reason = relayStateBlocked({ daemonVersion: needed - 1, appVersion: needed, degraded: true });
     expect(reason).toContain(`v${needed}`);
+  });
+});
+
+describe("this Mac's own Relay (v73)", () => {
+  it("is gated at v73, and names the version against an older daemon", () => {
+    expect(FEATURE_MIN_VERSION.deskRelay).toBe(73);
+    expect(deskRelayBlocked(null)).toBeNull();
+    expect(deskRelayBlocked({ daemonVersion: 73, appVersion: 73, degraded: false })).toBeNull();
+    expect(deskRelayBlocked({ daemonVersion: 72, appVersion: 73, degraded: true })).toContain("73");
+  });
+
+  it("says where it stands, and what a phone paired now is given", () => {
+    expect(deskRelayStatus(null, true)).toEqual({ badge: null, text: "", detail: null });
+    expect(deskRelayStatus({ state: "not_wanted" }, false)).toEqual({ badge: "not_wanted", text: "Not running", detail: null });
+    expect(deskRelayStatus({ state: "not_wanted" }, true).detail).toContain("Turn remote access on");
+    const running = deskRelayStatus({ state: "running", port: 8443, url: "ws://192.168.1.20:8443" }, true);
+    expect(running).toMatchObject({ badge: "running", text: "Running on port 8443" });
+    expect(running.detail).toContain("ws://192.168.1.20:8443");
+    // A note is what the human must know, said instead.
+    const moved = deskRelayStatus(
+      { state: "running", port: 8443, url: "ws://192.168.1.30:8443", note: "The Relay's address changed … pair them again." },
+      true
+    );
+    expect(moved.detail).toContain("pair them again");
+    expect(deskRelayStatus({ state: "failed", why: "every port from 8443 to 8458 is taken" }, true)).toMatchObject({
+      badge: "failed",
+      detail: "every port from 8443 to 8458 is taken. Trying again.",
+    });
+    expect(deskRelayStatus({ state: "unknown" }, true).badge).toBeNull();
+  });
+
+  // The human's decision (2026-10-15): only the installed gavin runs it.
+  it("says a development build leaves it to the installed gavin", () => {
+    const line = deskRelayStatus({ state: "other_build" }, true);
+    expect(line.badge).toBe("other_build");
+    expect(line.text).toBe("Run by the installed gavin");
+    expect(line.detail).toContain("development build");
+  });
+
+  it("fills the URL and the token itself while it is on", () => {
+    const list: DeviceList = { devices: [], remoteAccessEnabled: true, relayUrl: null, relayAdmissionSet: false };
+    expect(deskFillsRelay(null)).toBe(false);
+    expect(deskFillsRelay(list)).toBe(false);
+    expect(deskFillsRelay({ ...list, deskRelayEnabled: false })).toBe(false);
+    expect(deskFillsRelay({ ...list, deskRelayEnabled: true })).toBe(true);
+    expect(DESK_RELAY_NOTE).toContain("mints its admission token");
+    expect(DESK_RELAY_NOTE).toContain("Only the installed gavin runs it");
+  });
+
+  // §1.3: until the prompt is answered both sides time out, saying nothing.
+  it("explains the macOS firewall prompt", () => {
+    expect(DESK_RELAY_FIREWALL_NOTE).toContain("gavin-relay");
+    expect(DESK_RELAY_FIREWALL_NOTE).toContain("Allow");
+    expect(DESK_RELAY_FIREWALL_NOTE).toContain("times out");
+  });
+});
+
+describe("refreshing the desk's token (v73)", () => {
+  const list: DeviceList = { devices: [], remoteAccessEnabled: true, relayUrl: "ws://192.168.1.20:8443", relayAdmissionSet: true };
+  const now = 1_800_000_000_000;
+
+  it("is gated at v73", () => {
+    expect(FEATURE_MIN_VERSION.admissionRefresh).toBe(73);
+    expect(admissionRefreshBlocked({ daemonVersion: 72, appVersion: 73, degraded: true })).toContain("73");
+    expect(admissionRefreshBlocked(null)).toBeNull();
+  });
+
+  // §3.4: whether one is held, when, and whose -- never the token.
+  it("says whether a token is held, since when and whose, never what it is", () => {
+    expect(admissionHeldLine(null, now)).toBeNull();
+    expect(admissionHeldLine({ ...list, relayAdmissionSet: false }, now)).toBeNull();
+    const desk = admissionHeldLine({ ...list, relayAdmissionSetAt: now / 1000 - 7200, relayAdmissionByDesk: true }, now)!;
+    expect(desk).toContain("set 2h ago");
+    expect(desk).toContain("This Mac made it");
+    expect(desk).toContain("handed the new one");
+    const given = admissionHeldLine({ ...list, relayAdmissionByDesk: false }, now)!;
+    expect(given).toContain("Whoever runs the Relay gave it to you");
+    expect(given).toContain("paste it into the field");
+    // An older daemon never kept the time: the line says only that one is held.
+    expect(admissionHeldLine(list, now)).toMatch(/^A token is held\. /);
+  });
+
+  it("offers Refresh only for a token the desk minted", () => {
+    expect(admissionRefreshable(null)).toBe(false);
+    expect(admissionRefreshable(list)).toBe(false);
+    expect(admissionRefreshable({ ...list, relayAdmissionByDesk: true })).toBe(true);
+    expect(admissionRefreshable({ ...list, relayAdmissionSet: false, relayAdmissionByDesk: true })).toBe(false);
   });
 });
 

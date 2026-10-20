@@ -568,15 +568,22 @@ fn as_percent(value: &serde_json::Value) -> Option<f64> {
     value.as_f64().filter(|v| v.is_finite() && *v >= 0.0)
 }
 
-/// `resets_at` arrives as epoch seconds from Anthropic and as an RFC 3339
-/// string from codex, so both are accepted and normalised to seconds.
+/// `resets_at` arrives as epoch seconds from Anthropic, as an RFC 3339
+/// string from codex, and as a millisecond epoch — number or digit
+/// string — from Cursor's DashboardService, so all are accepted and
+/// normalised to seconds.
 fn as_epoch_secs(value: &serde_json::Value) -> Option<i64> {
-    if let Some(n) = value.as_i64() {
+    if let Some(n) = value.as_i64().or_else(|| value.as_u64().map(|n| n as i64)) {
         // Milliseconds would put the reset ~50,000 years out; the only
         // way to tell them apart is the magnitude.
         return Some(if n > 100_000_000_000 { n / 1000 } else { n });
     }
-    parse_rfc3339(value.as_str()?)
+    let text = value.as_str()?.trim();
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        let n: i64 = text.parse().ok()?;
+        return Some(if n > 100_000_000_000 { n / 1000 } else { n });
+    }
+    parse_rfc3339(text)
 }
 
 /// Enough RFC 3339 to read a reset instant, without a date crate. Only
@@ -790,6 +797,10 @@ fn b64url_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Cookie helpers for the retired `usage-summary` path — kept under
+/// `cfg(test)` so the shape (`sub%3A%3Ajwt`) stays asserted; production
+/// probes use Bearer against DashboardService now.
+#[cfg(test)]
 fn b64url_decode(input: &str) -> Option<Vec<u8>> {
     let mut acc = 0u32;
     let mut bits = 0;
@@ -817,6 +828,7 @@ fn b64url_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+#[cfg(test)]
 fn jwt_sub(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let json = String::from_utf8(b64url_decode(payload)?).ok()?;
@@ -824,6 +836,7 @@ fn jwt_sub(token: &str) -> Option<String> {
     nonempty(parsed.get("sub")?.as_str()?)
 }
 
+#[cfg(test)]
 fn cursor_cookie(token: &str) -> Option<String> {
     let sub = jwt_sub(token)?;
     Some(format!("{sub}%3A%3A{token}"))
@@ -839,7 +852,12 @@ fn decode_vscdb_value(raw: &str) -> String {
 
 // ---- Cursor -----------------------------------------------------------------
 
-const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+/// DashboardService Connect RPC (Bearer JWT). Verified 2026-10-19 against
+/// a live session: the older cookie `GET /api/usage-summary` still
+/// answers 200 but returns all-zero percents while this endpoint matches
+/// the dashboard (OpenUsage / PaceBar / cursor-pulse docs).
+const CURSOR_USAGE_URL: &str =
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 
 /// Cursor Agent writes the same JWT the dashboard cookie is made from
 /// into the macOS Keychain under `cursor-access-token` (verified
@@ -949,20 +967,7 @@ fn cursor_usage(now: i64) -> (UsageReport, Option<i64>) {
             )
         }
     };
-    let cookie = match cursor_cookie(&token) {
-        Some(c) => c,
-        None => {
-            return (
-                UsageReport::Unavailable {
-                    reason: "Cursor's login is not a session gavin can read — run `agent` and sign in"
-                        .to_string(),
-                    retry_after: None,
-                },
-                None,
-            )
-        }
-    };
-    if cookie.contains('"') || cookie.contains('\n') {
+    if token.contains('"') || token.contains('\n') {
         return (
             UsageReport::Unavailable {
                 reason: "Cursor's login is not a session gavin can read — run `agent` and sign in"
@@ -974,8 +979,11 @@ fn cursor_usage(now: i64) -> (UsageReport, Option<i64>) {
     }
     let config = format!(
         "url = \"{CURSOR_USAGE_URL}\"\n\
-         header = \"Cookie: WorkosCursorSessionToken={cookie}\"\n\
-         header = \"Accept: application/json\"\n\
+         request = \"POST\"\n\
+         header = \"Authorization: Bearer {token}\"\n\
+         header = \"Content-Type: application/json\"\n\
+         header = \"Connect-Protocol-Version: 1\"\n\
+         data = \"{{}}\"\n\
          silent\n\
          show-error\n\
          max-time = \"{TIMEOUT_SECS}\"\n\
@@ -984,18 +992,22 @@ fn cursor_usage(now: i64) -> (UsageReport, Option<i64>) {
     http_probe_result(run_curl(&config), now, parse_cursor, "Cursor's login is not valid any more — run `agent` and sign in", "the Cursor usage endpoint")
 }
 
-/// `GET https://cursor.com/api/usage-summary` (verified 2026-09-11
-/// against a live Pro session). Auto / API / Total percents live on
-/// `individualUsage.plan`; a billing-cycle end is the shared reset;
-/// uncapped on-demand is not a window.
+/// `POST …/GetCurrentPeriodUsage` (verified 2026-10-19). Auto / API /
+/// Total percents live on `planUsage`; `billingCycleEnd` is a millisecond
+/// epoch (number or digit string). Capped on-demand comes from
+/// `spendLimitUsage` when an individual or pooled limit is set.
+///
+/// The older cookie `usage-summary` shape (`individualUsage.plan`) is
+/// still accepted so a fixture from before the switch keeps parsing.
 fn parse_cursor(body: &str, now: i64) -> Option<UsageReport> {
     let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
     let resets_at = parsed.get("billingCycleEnd").and_then(as_epoch_secs);
     if resets_at.is_some_and(|t| t <= now) {
         return None;
     }
+    let plan_usage = parsed.get("planUsage");
     let individual = parsed.get("individualUsage");
-    let plan = individual.and_then(|u| u.get("plan"));
+    let plan = plan_usage.or_else(|| individual.and_then(|u| u.get("plan")));
     let mut windows = Vec::new();
 
     let mut total = plan.and_then(|p| p.get("totalPercentUsed").and_then(as_percent));
@@ -1005,6 +1017,17 @@ fn parse_cursor(body: &str, now: i64) -> Option<UsageReport> {
                 (Some(used), Some(limit)) => percent_from_ratio(used, limit),
                 _ => None,
             };
+            if total.is_none() {
+                // DashboardService sometimes omits totalPercentUsed but
+                // still has spend cents — same ratio the dashboard uses.
+                total = match (number_field(p, "includedSpend"), number_field(p, "limit")) {
+                    (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                    _ => match (number_field(p, "totalSpend"), number_field(p, "limit")) {
+                        (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                        _ => None,
+                    },
+                };
+            }
         }
     }
     if total.is_none() {
@@ -1045,11 +1068,27 @@ fn parse_cursor(body: &str, now: i64) -> Option<UsageReport> {
             }
         }
     }
+    if let Some(spend) = parsed.get("spendLimitUsage") {
+        if windows.iter().all(|w| w.id != "on_demand") {
+            let capped = match (
+                number_field(spend, "individualUsed").or_else(|| number_field(spend, "pooledUsed")),
+                number_field(spend, "individualLimit")
+                    .or_else(|| number_field(spend, "pooledLimit")),
+            ) {
+                (Some(used), Some(limit)) if limit > 0.0 => percent_from_ratio(used, limit),
+                _ => None,
+            };
+            if let Some(pct) = capped {
+                windows.push(window("on_demand", "On-demand", pct, resets_at));
+            }
+        }
+    }
     if windows.is_empty() {
         return None;
     }
     let plan_name = parsed
         .get("membershipType")
+        .or_else(|| parsed.pointer("/planInfo/planName"))
         .and_then(|v| v.as_str())
         .and_then(nonempty);
     Some(UsageReport::Ready { windows, plan: plan_name, observed_at: now, cached: false })
@@ -2142,11 +2181,16 @@ mod tests {
     }
 
     /// Milliseconds and seconds are told apart by magnitude, because
-    /// both routes have been seen emitting a bare number.
+    /// both routes have been seen emitting a bare number — and Cursor's
+    /// DashboardService sends the same value as a digit string.
     #[test]
     fn epoch_numbers_normalise_to_seconds() {
         assert_eq!(as_epoch_secs(&serde_json::json!(1_738_425_600i64)), Some(1_738_425_600));
         assert_eq!(as_epoch_secs(&serde_json::json!(1_738_425_600_000i64)), Some(1_738_425_600));
+        assert_eq!(
+            as_epoch_secs(&serde_json::json!("1738425600000")),
+            Some(1_738_425_600)
+        );
     }
 
     #[test]
@@ -2186,13 +2230,40 @@ mod tests {
         assert_eq!(jwt_sub("a.%%%notbase64%%%.c"), None);
     }
 
-    /// Live shape, 2026-09-11: Auto/API/Total percents on
-    /// `individualUsage.plan`, billing cycle end as the shared reset,
-    /// membershipType as the plan name. Percents are already 0-100
-    /// (including values below 1.0, which mean 0.x percent, not
-    /// fractions).
+    /// Live shape, 2026-10-19: Auto/API/Total percents on `planUsage`,
+    /// billing cycle end as a millisecond epoch string. Percents are
+    /// already 0-100 (including values below 1.0, which mean 0.x
+    /// percent, not fractions).
     #[test]
-    fn cursor_windows_come_from_usage_summary_plan() {
+    fn cursor_windows_come_from_current_period_usage() {
+        let now = 1_000_000;
+        let body = r#"{
+            "billingCycleEnd": "1792779496788",
+            "planUsage": {
+                "autoPercentUsed": 23.5,
+                "apiPercentUsed": 0,
+                "totalPercentUsed": 41.2
+            },
+            "spendLimitUsage": { "limitType": "user" },
+            "displayMessage": "You've used 41% of your included usage"
+        }"#;
+        let report = parse_cursor(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].id, "total");
+        assert_eq!(w[0].label, "Total");
+        assert_eq!(w[0].used_percent, 41.2);
+        assert_eq!(w[1].id, "auto");
+        assert_eq!(w[1].used_percent, 23.5);
+        assert_eq!(w[2].id, "api");
+        assert_eq!(w[2].used_percent, 0.0);
+        assert_eq!(w[0].resets_at, Some(1_792_779_496));
+    }
+
+    /// Older cookie `usage-summary` fixtures still parse: the panel
+    /// must not go blank if Cursor briefly serves that shape again.
+    #[test]
+    fn cursor_windows_still_parse_usage_summary_plan() {
         let now = 1_000_000;
         let body = r#"{
             "billingCycleEnd": "2026-10-02T14:11:55.000Z",
@@ -2209,21 +2280,14 @@ mod tests {
         let report = parse_cursor(body, now).expect("parses");
         let w = windows(&report);
         assert_eq!(w.len(), 3);
-        assert_eq!(w[0].id, "total");
-        assert_eq!(w[0].label, "Total");
         assert_eq!(w[0].used_percent, 41.2);
-        assert_eq!(w[1].id, "auto");
-        assert_eq!(w[1].used_percent, 23.5);
-        assert_eq!(w[2].id, "api");
-        assert_eq!(w[2].used_percent, 0.0);
-        let end = parse_rfc3339("2026-10-02T14:11:55.000Z");
-        assert_eq!(w[0].resets_at, end);
         assert!(matches!(&report, UsageReport::Ready { plan, .. } if plan.as_deref() == Some("pro")));
     }
 
     /// On-demand with no cap is not a window: drawing 0% would claim
     /// unlimited spend is empty quota. A capped on-demand row is a
-    /// real limit and must show.
+    /// real limit and must show — from either the old onDemand object
+    /// or spendLimitUsage's individual/pooled cents.
     #[test]
     fn cursor_on_demand_is_a_window_only_when_capped() {
         let now = 1_000_000;
@@ -2238,6 +2302,19 @@ mod tests {
         let w = windows(&report);
         let od = w.iter().find(|x| x.id == "on_demand").expect("capped on-demand");
         assert_eq!(od.label, "On-demand");
+        assert_eq!(od.used_percent, 25.0);
+
+        let spend = r#"{
+            "billingCycleEnd": "1792779496788",
+            "planUsage": { "totalPercentUsed": 10.0 },
+            "spendLimitUsage": {
+                "limitType": "user",
+                "individualUsed": 2500,
+                "individualLimit": 10000
+            }
+        }"#;
+        let report = parse_cursor(spend, now).expect("parses");
+        let od = windows(&report).iter().find(|x| x.id == "on_demand").expect("spendLimit");
         assert_eq!(od.used_percent, 25.0);
     }
 

@@ -4,8 +4,11 @@
 cd app && npm run bundle
 ```
 
-That is `tauri build --config src-tauri/tauri.bundle.conf.json -- --locked`,
-and the extra config file is the whole point of this note.
+That is `node src-tauri/bundle.mjs`, which runs
+`tauri build --config src-tauri/tauri.bundle.conf.json -- --locked` with the
+build number stamped in (see "Version and build number" below), and the
+extra config file is the whole point of this note. Flags after
+`npm run bundle --` go to Tauri, and anything after a second `--` to cargo.
 
 This file is about how the bundle is *assembled*. Signing, notarization,
 key custody and the gate that stops an unsigned build reaching anyone are
@@ -37,6 +40,11 @@ CLAUDE.md documents. Packaging is the only thing that needs those files,
 so packaging is the only thing that pays for them: the base config stays
 clean and `npm run bundle` merges this file in (the CLI passes the merged
 config to the build script through `TAURI_CONFIG`).
+
+`gavin-relay` ships the same way, beside `gavin-daemon`: a release
+daemon runs it as this Mac's own Relay when Settings → Remote access →
+"Run a Relay on this Mac" is on (`crates/daemon/src/desk_relay.rs`). A
+dev daemon never runs one, so dev needs no copy of it.
 
 `tauri dev` needs nothing from this file. In dev the app resolves its
 siblings out of `target/debug/`, where cargo has already put them —
@@ -74,6 +82,27 @@ shell version of this script was therefore a Windows bundle that failed
 before it started. Node is already a hard requirement: the same command
 line runs `npm run build` after it.
 
+## Version and build number
+
+A bundle carries two numbers, and `bundle.mjs` is what keeps them apart:
+
+- The **version** is `version` in `tauri.conf.json`: the semver a human
+  bumps on purpose, the one a release tag must agree with and the one the
+  updater compares.
+- The **build number** is `git rev-list --count HEAD` of the tree being
+  built. The same commit always gets the same number on any machine, and the
+  number only grows along `main`, so two installs of one version still say
+  which is newer. `GAVIN_BUILD_NUMBER` overrides it (a positive whole
+  number); a shallow clone is refused, since its count is only the depth it
+  was fetched at.
+
+The build number becomes `CFBundleVersion` on macOS (Finder reads
+"0.1.0 (1234)"), and on every platform it is compiled into the app, where
+Settings > Updates prints it after the version. A dev build has none and
+prints the version alone. It does not reach the Windows file version: Tauri
+derives that from `version`, and the only way in is a `version` of
+`X.Y.Z+N` — which the updater and the tag check would then read too.
+
 ## Targets
 
 `bundle.targets` is `"all"`: `.app` + `.dmg` on macOS, and `.deb`,
@@ -94,6 +123,44 @@ A Windows build host needs Git for Windows (which the app requires at
 runtime anyway, see the windows-port card), the MSVC build tools, and
 WebView2 — present on Windows 11 and on any updated Windows 10.
 
+## Cross-compiling the Windows installer on a Mac
+
+The Preview build (`scripts/publish-preview.sh`, docs/RELEASING.md) cuts
+the Windows setup `.exe` on the same Mac as the `.dmg`, by Tauri's
+documented route:
+
+```
+LC_ALL=en_US.UTF-8 node src-tauri/bundle.mjs --runner cargo-xwin --target x86_64-pc-windows-msvc
+```
+
+It needs `cargo install --locked cargo-xwin` (which fetches the MSVC CRT
+and Windows SDK into `~/Library/Caches/cargo-xwin` on first use),
+`brew install llvm makensis`, and `rustup target add
+x86_64-pc-windows-msvc`. Output lands in
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/`, unsigned.
+
+**The sidecars follow the target, not the host.** The CLI hands
+`beforeBuildCommand` the triple it builds for as `TAURI_ENV_TARGET_TRIPLE`,
+and `externalBin` looks the sidecars up under that triple — so
+`stage-sidecars.mjs` stages them under it. When it differs from `rustc
+-vV`'s host it builds them with `--target` (cargo then leaves them in
+`target/<triple>/release/`) and through the same runner as the app:
+`bundle.mjs` passes Tauri's `--runner` on as `GAVIN_CARGO_RUNNER`, because
+the CLI does not, and a plain `cargo` cannot link for msvc on a Mac. A
+native bundle has target == host and builds exactly as before.
+
+**`LC_ALL`.** Homebrew's `makensis` (3.12 and 3.13) aborts with
+`std::bad_alloc` on the first `Exch` or `Pop` it compiles under the C
+locale, which is what a shell with no `LANG` runs in. Under a UTF-8 locale
+it builds the installer normally.
+
+**Checking the result.** `file` reports a *PE32* executable: every NSIS
+installer is a 32-bit stub, whatever it installs. The 64-bit check is on
+the payload — `7zz l` (`brew install sevenzip`) lists `Gavin.exe`,
+`gavin-daemon.exe` and `gavin-mcp.exe`, and each unpacks as PE32+ x86-64.
+`hooks.nsh` is compiled in exactly as on Windows; what it does on install
+is still only provable by installing it there.
+
 ## Windows: the install directory and the daemon
 
 `nsis/hooks.nsh` is merged into Tauri's generated `installer.nsi` through
@@ -111,7 +178,7 @@ leaves the folder behind without a word (its `RMDir` is not `/r`), its
 "Delete the application data" checkbox misses the databases, and the
 arrangement is one `/r` away from deleting the human's boards. The hooks
 move the default to `%LOCALAPPDATA%\Programs\Gavin` -- the per-user
-counterpart of Program Files, and where `scripts/start-stable-win.ps1`
+counterpart of Program Files, and where `scripts/start-release-win.ps1`
 already looks first -- make the directory page refuse the state
 directory outright, and redirect a silent install (`/S`, or `/D=`) that
 names it. An install that finds the previous one registered in the

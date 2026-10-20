@@ -16,6 +16,7 @@ import { EMPTY_AGENT_DEFAULTS, type AgentDefaults } from "$lib/cards/complexity"
 import {
   ownCycleSeed,
   ownListSeed,
+  primaryReportsUsage,
   primaryView,
   saveComplexityTable,
   saveList,
@@ -158,5 +159,22 @@ describe("what taking an own value starts from", () => {
     expect(ownListSeed(defaults, "promptExtras", "codex")).toEqual(["Be brief."]);
     expect(ownListSeed(defaults, "promptExtras", "codex")).not.toBe(defaults.promptExtras.codex);
     expect(ownListSeed(defaults, "extraCliArgs", "gemini")).toEqual([]);
+  });
+});
+
+describe("primaryReportsUsage", () => {
+  const profiles = [
+    { id: "claude-code", usageProbe: "claude" },
+    { id: "kimi-code", usageProbe: null },
+    { id: "my-custom" },
+  ];
+  it("is true only for an agent whose profile carries a usage probe", () => {
+    expect(primaryReportsUsage(profiles, "claude-code")).toBe(true);
+    expect(primaryReportsUsage(profiles, "kimi-code")).toBe(false);
+    expect(primaryReportsUsage(profiles, "my-custom")).toBe(false);
+  });
+  it("is false for an unknown or blank id", () => {
+    expect(primaryReportsUsage(profiles, "nope")).toBe(false);
+    expect(primaryReportsUsage(profiles, "")).toBe(false);
   });
 });

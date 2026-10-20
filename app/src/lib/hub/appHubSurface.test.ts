@@ -250,3 +250,21 @@ describe("the sessions recap", () => {
     expect(source(HUB)).toContain("sessions.more > 0");
   });
 });
+
+describe("the masthead's live icon", () => {
+  it("is fed the hub's own figures, so it cannot disagree with the rows beside it", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("<LiveAppIcon status={iconStatus}");
+    expect(hub).toContain("fleetIconStatus({");
+    expect(hub).toContain("inbox: inbox.length,");
+    expect(hub).toContain("paused: $pausedWorkspaces.length,");
+  });
+});
+
+describe("the Now feed", () => {
+  it("lists a session that is waiting once, as a wait, not again as a task", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("new Set(inbox.map((row) => row.sessionId))");
+    expect(hub).toContain("!waitingIds.has(task.sessionId)");
+  });
+});

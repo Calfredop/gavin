@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy, type Snippet } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import DOMPurify from "dompurify";
-  import { renderMarkdown } from "$lib/files/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { sanitizeMarkdown } from "$lib/files/sanitizeMarkdown";
+  import { markdownLinkClick } from "$lib/files/markdownLinks";
   import {
     canEdit,
     classifyExternalRead,
@@ -15,7 +16,10 @@
   import CodeMirrorView from "$lib/files/CodeMirrorView.svelte";
   import MarkdownToolbar from "$lib/files/MarkdownToolbar.svelte";
   import { isMarkdown } from "$lib/files/fileTypes";
+  import { canFormatDocument } from "$lib/files/documentFormat";
   import type { FormatAction } from "$lib/files/markdownFormatting";
+  import { formatChord } from "$lib/core/shortcuts";
+  import { isMacSync } from "$lib/core/platform";
   import * as backend from "$lib/core/backend";
 
   interface Props {
@@ -83,7 +87,10 @@
     setDoc: (t: string) => void;
     measure: () => void;
     format: (action: FormatAction) => void;
+    formatDocument: () => { ok: boolean; reason?: string; text?: string };
   } | null>(null);
+  let formatError = $state<string | null>(null);
+  const formatDocumentChord = formatChord({ key: "f", shift: true }, isMacSync());
   let unlisten: UnlistenFn | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   // Every read of `path` takes a ticket, and only the newest one's
@@ -102,12 +109,34 @@
   // The formatting bar belongs to markdown in Edit and nowhere else: a
   // .rs file has no bold, and Plain is read-only by definition.
   const showFormatBar = $derived(isMarkdown(path) && effectiveMode === "edit");
+  // Cheap document formatter (JSON today): same gate as the editor chord,
+  // so a .ts file never grows a Format button that cannot act.
+  const showFormatDocument = $derived(
+    canFormatDocument(path) && effectiveMode === "edit" && editable
+  );
+
+  function runFormatDocument(): void {
+    const result = editor?.formatDocument();
+    if (!result) return;
+    if (result.ok) {
+      formatError = null;
+      return;
+    }
+    formatError = result.reason ?? "Couldn't format.";
+  }
 
   const rendered = $derived.by(() => {
     if (error !== null || effectiveMode !== "formatted") return "";
     // Renders the BUFFER, so preview reflects unsaved edits.
-    return DOMPurify.sanitize(renderMarkdown(buffer));
+    return sanitizeMarkdown(buffer);
   });
+
+  // Repository markdown must not navigate the gavin window. Only http(s)
+  // leaves, through the system browser (ADR 0005).
+  function followMarkdownLink(event: MouseEvent): void {
+    const href = markdownLinkClick(event);
+    if (href) void openUrl(href).catch(() => {});
+  }
 
   export function measure(): void {
     editor?.measure();
@@ -355,6 +384,16 @@
       <MarkdownToolbar onFormat={(action) => editor?.format(action)} />
     {/if}
     <div class="segments">
+      {#if showFormatDocument}
+        <button
+          type="button"
+          class="format-doc"
+          title={`Format document (${formatDocumentChord})`}
+          onclick={runFormatDocument}
+        >
+          Format
+        </button>
+      {/if}
       {#each availableModes as m (m)}
         <button
           type="button"
@@ -392,6 +431,12 @@
   {#if saveError !== null}
     <div class="notice error">Couldn't save: {saveError}</div>
   {/if}
+  {#if formatError !== null}
+    <div class="notice error">
+      Couldn't format: {formatError}
+      <button onclick={() => (formatError = null)}>Dismiss</button>
+    </div>
+  {/if}
   {#if openError !== null}
     <div class="notice error">Couldn't open externally: {openError}</div>
   {/if}
@@ -418,7 +463,15 @@
       <div class="notice">This file doesn't exist yet — saving will create it.</div>
     {/if}
     {#if effectiveMode === "formatted"}
-      <div class="markdown"><div class="prose">{@html rendered}</div></div>
+      <div class="markdown">
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
+        <div
+          class="prose"
+          role="presentation"
+          onclick={followMarkdownLink}
+          onauxclick={followMarkdownLink}
+        >{@html rendered}</div>
+      </div>
     {:else if loaded}
       <div class="editor">
         <CodeMirrorView

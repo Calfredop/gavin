@@ -1,6 +1,6 @@
 ---
 complexity: complex
-order: 36864
+order: 15360
 kind: plan
 title: [feat] Playwright integration
 status: In Progress

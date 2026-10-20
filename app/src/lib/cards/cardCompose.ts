@@ -52,6 +52,12 @@ export interface ComposeSpec {
   // at the wrong agent. Empty or absent means the card gets no
   // `complexity:` line at all, which is what "unrated" is.
   complexity?: string;
+  // Whether the task is filed as a direct prompt (`direct: true`): its
+  // body sent as written, with none of gavin's framing. In the same
+  // CreatePlan for the auto-commit block's reason -- a card filed and
+  // then flagged could be run in between, wrapped. Optional -- absent
+  // means an ordinary card.
+  direct?: boolean;
 }
 
 export type ComposeArgs =
@@ -72,6 +78,11 @@ export type ComposeArgs =
       // one would fail the whole file creation over a field the human
       // may not even have touched.
       complexity: string | undefined;
+      // True, or undefined for a card that gets no `direct:` line -- the
+      // `attachments` shape. Only ever true on a task: the daemon refuses
+      // the flag on any other kind, and the composer's box is hidden
+      // there without being cleared.
+      direct: true | undefined;
     }
   | { error: string };
 
@@ -91,9 +102,13 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
   // the checkbox: the composer hides that control on the note chip, but
   // switching chips does not clear the flag underneath, and a note is a
   // card nothing will ever execute. Same posture as railToApply.
+  // A direct prompt is asked the same way, and wins over auto-commit:
+  // the block is gavin's sentence, and a prompt sent as written must not
+  // reach the agent carrying one the human never typed.
+  const direct = spec.direct === true && spec.kind === "task";
   const body = setAutoCommitInBody(
     spec.body.trim(),
-    spec.autoCommit === true && autoCommitAppliesTo(spec.kind)
+    spec.autoCommit === true && autoCommitAppliesTo(spec.kind) && !direct
   );
   const attachments = formatAttachments(spec.attachments ?? []);
   const complexity = parseComplexity(spec.complexity);
@@ -105,6 +120,7 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     kind: spec.kind,
     attachments: attachments === "" ? undefined : attachments,
     complexity: complexity ?? undefined,
+    direct: direct || undefined,
   };
 }
 

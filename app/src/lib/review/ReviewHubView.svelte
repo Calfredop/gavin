@@ -85,6 +85,7 @@
   } from "$lib/review/criticalReviewFindingsRailActions";
   import { criticalReviewRuns } from "$lib/review/criticalReviewState";
   import { runBaseline, type RunBaseline } from "$lib/cards/runChanges";
+  import { isSshWorkspace } from "$lib/workspace/sshWorkspace";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import { cardIndex, conflictCheckout, doneColumnOf } from "$lib/orchestration/orchestration";
   import { railIndex } from "$lib/board/planFilter";
@@ -245,6 +246,12 @@
     );
   }
 
+  // An ssh workspace's agents wrote their transcripts on the host, out
+  // of this machine's reach, so its cards keep the checkout's answer.
+  const transcriptsReadable = $derived(
+    !isSshWorkspace($layoutState.workspaces.find((w) => w.id === workspaceId))
+  );
+
   // Card requests carry peer baselines; rail requests do not — a rail
   // subject is the whole checkout since its baseline, and mixing its
   // sha into withBaselinePeers would bound every card in that cwd.
@@ -254,10 +261,21 @@
         .map((card) => {
           const baseline = baselineFor(card);
           return baseline.kind === "ready"
-            ? { path: card.id, title: card.title, cwd: baseline.cwd, baseSha: baseline.baseSha }
+            ? {
+                path: card.id,
+                title: card.title,
+                cwd: baseline.cwd,
+                baseSha: baseline.baseSha,
+                conversationId: transcriptsReadable
+                  ? (cardSessionFor(board, card.id)?.conversationId ?? null)
+                  : null,
+              }
             : null;
         })
-        .filter((r): r is { path: string; title: string; cwd: string; baseSha: string } => r !== null)
+        .filter(
+          (r): r is { path: string; title: string; cwd: string; baseSha: string; conversationId: string | null } =>
+            r !== null
+        )
     )
   );
   const railRequests = $derived<TouchRequest[]>(
@@ -323,6 +341,7 @@
       return {
         card,
         files: run?.files ?? null,
+        source: run?.source ?? "checkout",
         checkout: run ? (run.changes?.root ?? run.cwd) : null,
         baseSha: run?.baseSha ?? null,
         // Which card each file looks like, from TypeSafe change
@@ -684,7 +703,9 @@
             <div class="none">
               {selectedRail
                 ? "This rail changed nothing in the checkout."
-                : "This run changed nothing in the checkout."}
+                : run.source === "transcript"
+                  ? "Nothing this run's agent touched is changed in the checkout."
+                  : "This run changed nothing in the checkout."}
             </div>
           {:else if run.changes}
             {#each run.changes.files as entry (entry.path)}

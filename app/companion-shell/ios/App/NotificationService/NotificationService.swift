@@ -59,6 +59,23 @@ class NotificationService: UNNotificationServiceExtension {
         // Until a key opens it: the gateway's placeholder, landing on the hub.
         content.userInfo[DeliveredNotify.linkKey] = NotifyFormat.hubLink
 
+        // Proof of possession: the gateway's verification push carries `v`
+        // and no ciphertext. Leave it for the app to confirm; show nothing
+        // when filtering is allowed, otherwise the quiet placeholder.
+        if content.userInfo["v"] is String, content.userInfo["c"] == nil {
+            log("verification push; confirming is the app's job")
+            if Self.mayFilter {
+                deliver(UNNotificationContent())
+            } else {
+                content.title = "Gavin"
+                content.body = "Confirming this device."
+                content.sound = nil
+                content.interruptionLevel = .passive
+                deliver(content)
+            }
+            return
+        }
+
         guard let c = content.userInfo["c"] as? String,
               let sealed = Data(base64Encoded: c),
               let found = Self.open(sealed)

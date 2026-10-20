@@ -12,16 +12,28 @@
   import { DEVICES_LABEL, devicesBadgeTip } from "$lib/core/devicesPanel";
   import { deviceNameBySessionId, devicesBadgeText, watchDevices } from "$lib/core/devicesState";
   import { watchSessionOwners } from "$lib/core/sessionOwnershipState";
-  import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import { watchPtyBorrows } from "$lib/terminal/ptyBorrowState";
+  import {
+    nowStore,
+    profilesInUse,
+    usageProjections,
+    usageRefreshingStore,
+    worstUsageProjection,
+  } from "$lib/agents/agentPauseState";
   import {
     armRequest,
     completeArmRequest,
     declineArmRequest,
     dismissArmRequest,
   } from "$lib/agents/agentFallbackState";
-  import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
+  import { agentSessions } from "$lib/agents/memoryState";
   import { projectionTooltip } from "$lib/agents/usageProjection";
+  import {
+    profileIdForCommand,
+    runningAgentProfiles,
+    usageRowBadges,
+  } from "$lib/sidebar/usageRow";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
   // two panels and a flag inside Sidebar.svelte can only be flipped from
@@ -133,12 +145,20 @@
     getDragPayload,
     computeDropZone,
     computeReorderPosition,
+    tabRowDrop,
     type DropZone,
     type ReorderPosition,
   } from "$lib/panes/dragDrop";
-  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/core/layoutState";
+  import {
+    movePaneOrTab,
+    reorderTabWithinPane,
+    reorderWorkspaceAction,
+    movePageAction,
+    switchToSessionInPage,
+  } from "$lib/core/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
+    allSessionIdsInWorkspace,
     getActiveView,
     isPinned,
     sidebarPageOrder,
@@ -207,6 +227,9 @@
   // Who owns each session (v68): locks this window's terminals and input
   // surfaces while a Device works in one.
   onMount(() => watchSessionOwners());
+  // Which Device a session's PTY is sized for (v74): the bar a terminal
+  // drawn narrower than its pane shows while a phone has it open.
+  onMount(() => watchPtyBorrows());
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and
@@ -427,15 +450,10 @@
   /// spins per agent inside the panel.
   const usageUpdating = $derived(Object.values($usageRefreshingStore).some(Boolean));
 
-  /// The usage semaphore: whether the limits gavin can see will survive
-  /// to their own reset at the burn it has measured. Null until there is
-  /// something honest to draw, which is also what the pause badge beside
-  /// it reads to decide who owns the push to the end of the row.
-  ///
-  /// The agent's display name is looked up here rather than carried on
-  /// the projection (usageProjection.ts): naming the agents is the
-  /// surface's job, and keeping it out is what stops the pause module
-  /// importing the profile table into its whole dependency graph.
+  /// Fleet-worst hourglass: the row's first status icon, whether the
+  /// limits gavin can see will survive their reset. Per-agent letter
+  /// badges sit beside it; At limit is gone — those badges already say
+  /// who is tight.
   const usageSemaphore = $derived.by(() => {
     const projection = $worstUsageProjection;
     if (!projection) return null;
@@ -446,6 +464,35 @@
       projection.band,
       projectionTooltip(projection, label, $nowStore)
     );
+  });
+
+  /// One badge per linked agent: letter avatar (collision-grown so Claude
+  /// Code and Codex read Cl / Co), toned by that agent's own usage
+  /// semaphore, pulsing while any of its sessions is working. A session
+  /// is attributed by its launch argv0 (`profileIdForCommand`), never by
+  /// the workspace's default agent — that is what made Cl flash while
+  /// Cursor was the one actually running.
+  const usageBadges = $derived.by(() => {
+    const ids = profilesInUse();
+    const profiles = $agentProfilesStore;
+    const agents = ids.map((id) => ({
+      id,
+      label: profiles.find((p) => p.id === id)?.label ?? id,
+    }));
+    const state = $layoutState;
+    const samples = $agentSessions;
+    const sessions = state.workspaces.flatMap((ws) =>
+      allSessionIdsInWorkspace(ws).map((sessionId) => ({
+        profileId: profileIdForCommand(samples[sessionId]?.command, profiles),
+        status: state.sessionStatusById[sessionId],
+      }))
+    );
+    return usageRowBadges({
+      agents,
+      projections: $usageProjections,
+      runningProfileIds: runningAgentProfiles(sessions),
+      nowMs: $nowStore,
+    });
   });
 
   const searchOpen = $derived($sidebarSearchOpen && !showsRail);
@@ -971,6 +1018,49 @@
     }
   }
 
+  /// A page's tab rows are the same tab a pane's bar draws, so dragging
+  /// one carries the bar's own payload: every surface that takes a tab
+  /// from the bar -- another tab row, a page row, a workspace row, a
+  /// pane -- takes one from here too.
+  function handleTabRowDragStart(event: DragEvent, ws: Workspace, page: Page, row: PageTabRow): void {
+    setDragPayload(event, { kind: "tab", workspaceId: ws.id, pageId: page.id, sessionId: row.id });
+  }
+
+  function handleTabRowDragOver(event: DragEvent, row: PageTabRow): void {
+    if (getDragKind(event) !== "tab") return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    hoverState = { targetId: row.id, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
+  }
+
+  async function handleTabRowDrop(event: DragEvent, ws: Workspace, page: Page, row: PageTabRow): Promise<void> {
+    event.preventDefault();
+    const payload = getDragPayload(event);
+    clearHover();
+    if (!payload || payload.kind !== "tab") return;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const drop = tabRowDrop(page.layout, payload.sessionId, row.id, computeReorderPosition(rect, event.clientY));
+    if (!drop) return;
+    if (drop.kind === "reorder") {
+      await reorderTabWithinPane(payload.sessionId, drop.index);
+    } else {
+      // Aimed at the row's own pane: the page's remembered focus may be
+      // another pane entirely.
+      await movePaneOrTab(
+        { kind: "tab", workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+        {
+          kind: "page",
+          workspaceId: ws.id,
+          pageId: page.id,
+          mode: "center",
+          targetSessionId: row.id,
+          targetIndex: drop.index,
+        }
+      );
+    }
+  }
+
   // Auto-expands a workspace the first time it becomes active, without
   // fighting a later manual collapse. Gating on activeId actually
   // *changing* (via lastSyncedActiveId, a plain closure var -- it's
@@ -1304,6 +1394,18 @@
               <div
                 class="tab-row"
                 class:active={row.id === $layoutState.focusedSessionId}
+                class:drop-before={hoverState?.targetId === row.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "before"}
+                class:drop-after={hoverState?.targetId === row.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "after"}
+                draggable={editingSessionId !== row.id}
+                ondragstart={(e) => handleTabRowDragStart(e, ws, page, row)}
+                ondragover={(e) => handleTabRowDragOver(e, row)}
+                ondragleave={clearHover}
+                ondragend={clearHover}
+                ondrop={(e) => handleTabRowDrop(e, ws, page, row)}
                 use:tooltip={tabRowTip(row, gitStatus)}
                 onclick={() => {
                   switchWorkspaceView(ws.id, "terminal");
@@ -1773,27 +1875,30 @@
     >
       <Gauge size={12} />
       <span>Usage</span>
-      <!-- The semaphore, and the one thing on this row that is about the
-           FUTURE: whether the limits gavin can see will survive to their
-           own reset at the burn it has measured (usageProjection.ts).
-           Nothing is drawn until there is a rate, so an ordinary start-up
-           shows an unadorned row rather than a mark meaning "wait".
-
-           It sits before the pause badge because it is the earlier
-           warning of the two: amber here is the moment to throttle, and
-           "At limit" is what happens to somebody who did not. -->
+      <!-- Fleet-worst hourglass first (the row's leading status icon),
+           then one letter-avatar per linked agent. At limit used to sit
+           here too; the avatars already carry each agent's semaphore, so
+           a second "at limit" word added nothing. -->
       {#if usageSemaphore}
         <StatusBadge indicator={usageSemaphore} size={11} class="footer-semaphore" />
       {/if}
-      <!-- The pause state lives on the row that explains it. A workspace
-           holding for a limit or a scheduled window is the one thing here
-           worth seeing without opening anything. -->
-      {#if pauseLabel($activePause)}
+      {#if usageBadges.length > 0}
         <span
-          class="footer-badge"
+          class="usage-agent-badges"
           class:after-semaphore={usageSemaphore !== null}
-          use:tooltip={$activePause.why ?? ""}>{pauseLabel($activePause)}</span
+          role="group"
+          aria-label="Agent usage"
         >
+          {#each usageBadges as badge (badge.profileId)}
+            <span
+              class="usage-agent-badge tone-{badge.tone}"
+              class:running={badge.running}
+              role="img"
+              aria-label={badge.running ? `${badge.label}, running` : badge.tip}
+              use:tooltip={badge.tip}>{badge.avatar}</span
+            >
+          {/each}
+        </span>
       {/if}
     </button>
     <button class="footer-row" onclick={() => showAppPanel("devices")}>
@@ -2164,10 +2269,10 @@
   .sidebar.collapsed .footer-row span {
     display: none;
   }
-  /* Collapsed, this row is the Gauge alone -- the label and the
-     semaphore are spans, and those hide. Spin that glyph from the same
-     store Check again reads, so a probe in flight is visible without
-     opening the column. */
+  /* Collapsed, this row is the Gauge alone -- the label, the hourglass
+     and the agent badges are spans, and those hide. Spin that glyph from
+     the same store Check again reads, so a probe in flight is visible
+     without opening the column. */
   .sidebar.collapsed .footer-row.usage-updating :global(> svg) {
     animation: recap-spin 0.8s linear infinite;
   }
@@ -2509,11 +2614,13 @@
     gap: 2px;
   }
   .workspace-row.drop-before,
-  .page-row.drop-before {
+  .page-row.drop-before,
+  .tab-row.drop-before {
     box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .workspace-row.drop-after,
-  .page-row.drop-after {
+  .page-row.drop-after,
+  .tab-row.drop-after {
     box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .workspace-row.drop-append {
@@ -2685,12 +2792,71 @@
     opacity: 0.45;
     cursor: default;
   }
-  /* Pushed to the end of the row. Anchored to .footer-row rather than
-     left as a bare :global: the class rides on StatusBadge's own element,
-     so only :global can reach it, and only the anchor keeps the reach
-     inside this component. */
+  /* Hourglass owns the push to the end of the row; the avatar strip
+     follows it (or takes the push itself when there is no band yet). */
   .footer-row :global(.footer-semaphore) {
     margin-left: auto;
+  }
+  .usage-agent-badges {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .usage-agent-badges.after-semaphore {
+    margin-left: 4px;
+  }
+  .usage-agent-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.35em;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--surface-sunken);
+    color: var(--badge-fg, var(--text-muted));
+    font-size: 0.78em;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+    letter-spacing: 0.02em;
+  }
+  .usage-agent-badge.tone-neutral {
+    --badge-fg: var(--text-muted);
+  }
+  .usage-agent-badge.tone-accent {
+    --badge-fg: var(--accent-text);
+  }
+  .usage-agent-badge.tone-success {
+    --badge-fg: var(--success-text);
+  }
+  .usage-agent-badge.tone-warning {
+    --badge-fg: var(--warning-text);
+  }
+  .usage-agent-badge.tone-danger {
+    --badge-fg: var(--danger-text);
+  }
+  /* Slow fade out, fast fade in — a working agent on this profile. The
+     tone and the letters already say which agent; motion only claims
+     "happening now", and prefers-reduced-motion drops it. */
+  .usage-agent-badge.running {
+    animation: usage-agent-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes usage-agent-pulse {
+    0% {
+      opacity: 1;
+    }
+    70% {
+      opacity: 0.2;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .usage-agent-badge.running {
+      animation: none;
+    }
   }
   .footer-badge {
     margin-left: auto;
@@ -2699,15 +2865,6 @@
     background: var(--surface-sunken);
     color: var(--warning-text);
     font-size: 0.85em;
-  }
-  /* Two `margin-left: auto` in one flex row split the slack between them,
-     which would strand the semaphore in the middle of the row. With both
-     drawn it is the semaphore that owns the push and the badge follows
-     it -- said with a class rather than a sibling selector, because the
-     semaphore's class rides on StatusBadge's element and :global() may
-     not sit in the middle of a selector. */
-  .footer-badge.after-semaphore {
-    margin-left: 4px;
   }
   /* The fleet strip carries its own tone: quiet by default, and only
      coloured when the machine is actually saying something. Same three

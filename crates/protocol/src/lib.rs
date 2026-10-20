@@ -17,6 +17,17 @@ compile_error!(
 #[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod transport;
 
+// The daemon's singleton lock: where it is, who holds it, whether that
+// process is still running. Reads the filesystem and the process table.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
+pub mod daemon_lock;
+
+// Soft RLIMIT_NOFILE for Finder-launched daemons and the Tauri host.
+// Unix-only body; a no-op elsewhere. Behind `os` so the wasm Companion
+// core never sees it.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
+pub mod nofile;
+
 // The Device wire's two contracts. Neither has an operating-system part,
 // so both are here whether or not the `os` feature is: the Companion core
 // depends on them from `wasm32-unknown-unknown`.
@@ -40,6 +51,10 @@ pub mod playwright;
 // trait each caller implements.
 pub mod kimi_trust;
 
+// The shell-write hook's subcommand, the hook lines that run it, and the
+// read-only test both the hook and the transcript reader apply. Pure.
+pub mod shell_writes;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
     ATTENTION_API_VERSION,
@@ -48,7 +63,7 @@ pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 pub use session_owner::{
     LiveDevice, OwnerChange, OwnerRefusal, SessionOwner, SessionOwnership, DESK_INPUT_NOTICE_MIN_VERSION,
-    SESSION_OWNERS_MIN_VERSION,
+    PTY_BORROW_MIN_VERSION, SESSION_OWNERS_MIN_VERSION,
 };
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -56,6 +71,21 @@ pub use session_owner::{
 /// stdin reader (SC-10) can enforce the exact same cap instead of
 /// carrying its own copy of the number.
 pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
+
+/// A protocol line reached [`MAX_LINE_BYTES`] without a newline. The
+/// excess was drained to the terminator, so the stream is back in sync
+/// and the caller can skip this one line without dropping the connection.
+/// Returned through `anyhow` so callers match with `e.is::<LineTooLong>()`.
+#[derive(Debug)]
+pub struct LineTooLong;
+
+impl std::fmt::Display for LineTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "protocol line exceeded {MAX_LINE_BYTES} bytes without a newline")
+    }
+}
+
+impl std::error::Error for LineTooLong {}
 
 /// Most stdout bytes a `GitRun` reply can carry as a JSON number array
 /// under [`MAX_LINE_BYTES`]. Worst case every byte is 255 (`"255,"` is
@@ -76,6 +106,89 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v76 is the server challenge that proves the local daemon before the
+/// app discloses its token (`sec-fix-windows-pipe-server-identity.md`).
+/// `ServerChallenge` / `ServerProof` replace the Hello-era `server_proof`
+/// as the DP-06 control: the old HMAC was keyed by the token the app had
+/// just sent in that same Hello, so a Windows pipe squatter could echo it.
+/// The app refuses any local peer below this version (and any answering
+/// peer when the token file is missing). Windows also gains
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE` and a client-side owner check; those
+/// are not wire changes. `MIN_COMPATIBLE_VERSION` stands, but the app's
+/// local handshake no longer degrades through it.
+///
+/// v75 is the direct-prompt task (`feat-direct-prompt-task.md`): a
+/// `kind: task` card whose `direct: true` line says its body goes to the
+/// agent exactly as written, with none of gavin's framing around it.
+/// `PlanFileInfo` gains `direct`, `CreatePlan` gains `direct` and
+/// `SetPlanFrontmatterField` accepts the key. Not one new Request variant,
+/// so `min_version_for` is blind to all of it; the gate is the app's
+/// `FEATURE_MIN_VERSION.directPrompt`. A v74 daemon refuses the key loudly
+/// but drops `CreatePlan`'s field silently, and never parses the line --
+/// the card reads back as an ordinary task and runs wrapped in the usual
+/// prompt. `MIN_COMPATIBLE_VERSION` stands.
+///
+/// v74 lends a session's PTY size to the Device looking at it
+/// (`ui-companion-session-connect.md`). A PTY has one size, and a phone has
+/// to shrink it to be readable; until now nothing gave it back, so the
+/// desk's terminal stayed phone-width after the phone left. A Device's
+/// `resize_session` is now answered by the daemon as that Device
+/// (`RemoteAllowance::Daemon`) and records it as the session's borrower,
+/// while the desk's own `ResizeSession` is remembered and held back. The
+/// desk's size comes back when the Device closes the terminal
+/// (`return_pty_size`), when its last connection closes, or when the desk
+/// asks (`ReturnPtySize`, one new TYPE). Each change is pushed as
+/// `PtySizeBorrowed`, only to an app whose `Hello` speaks 74
+/// (`PTY_BORROW_MIN_VERSION`), which draws the overlay naming the Device.
+/// No request changed shape, so `MIN_COMPATIBLE_VERSION` stands. An older
+/// daemon forwards a Device's resize to the desk as before, and the
+/// overlay never appears, so no `FEATURE_MIN_VERSION` entry is owed.
+///
+/// v73 lets the desk run this Mac's own Relay
+/// (`desk-runs-the-local-relay-itself.md`). The "Run a Relay on this Mac"
+/// option in Settings is `SetDeskRelay`, and `GetDeskRelayState` answers
+/// where it stands. Every change after that is pushed as
+/// `DeskRelayStateChanged`, but only to an app whose `Hello` speaks 73
+/// (`DESK_RELAY_MIN_VERSION`). Only a release daemon runs the process. A
+/// dev daemon reports `other_build` and dials the URL and token the
+/// release one stored. `Response::Devices` gains `desk_relay_enabled`
+/// with a default, so an older daemon's reply reads as off. No request
+/// changed shape, so `MIN_COMPATIBLE_VERSION` stands. The Settings option
+/// still owes `FEATURE_MIN_VERSION.deskRelay` for its copy, because an
+/// older daemon answers the new types `Unsupported`.
+///
+/// The same version rotates a token the desk minted
+/// (`companion-relay-token-refresh.md`). `RefreshRelayAdmission` is a new
+/// TYPE. The old token is still accepted for a grace window, and the new
+/// one is pushed to every live Device connection as
+/// `RelayAdmissionChanged`. A Device sends no `Hello`, so the push cannot
+/// be held back by version. An older shell's push handlers match on type
+/// and pass over one they do not know. `Devices` gains
+/// `relay_admission_set_at` and `relay_admission_by_desk`, both defaulted.
+/// The Refresh button owes `FEATURE_MIN_VERSION.admissionRefresh`.
+///
+/// v72 records what each shell call of an agent wrote
+/// (`feat-touched-files-shell-hook.md`): `RecordShellWrites`, sent by the
+/// `gavin-mcp shell-writes` hook a Claude Code or kimi launch runs around
+/// every shell call, and `ShellWrites`, which the Review tab reads so a
+/// command the hook watched is judged by what it changed rather than by
+/// the paths its text names. Two new TYPES, so `min_version_for` is the
+/// whole wire gate: an older daemon is never sent either, the hook drops
+/// its record and the tab keeps today's reading.
+/// `FEATURE_MIN_VERSION.shellWrites` is the app's copy, read by the
+/// Review tab before it asks. The same version is also the daemon adding
+/// the hook to a Claude Code launch line, which no request carries.
+///
+/// v71 ranks a workspace's cards by meaning (`opts-gavin-get-tree-archived-
+/// cards.md`): `SearchCards`, gavin-mcp's `gavin_find_cards`, embeds every
+/// card's title and opening body into the same per-root index the adopted
+/// memories live in, and orders them for a query by that and by the
+/// query's words (`opts-find-cards-background-index-precision.md`). One
+/// new TYPE, so
+/// `min_version_for` is its whole wire gate; its only sender is gavin-mcp,
+/// which reads the gate's refusal as "match words instead", so no
+/// daemonCompat.ts entry is owed.
 ///
 /// v70 marks the input the desk host writes for a Device
 /// (`companion-owner-overlay-says-when-the-desk-injected-input`). A
@@ -880,7 +993,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 70;
+pub const PROTOCOL_VERSION: u32 = 76;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -974,6 +1087,40 @@ pub enum DirectState {
 /// `direct` and `directPin`. The daemon compares an app's `Hello` version
 /// with this before it writes the push.
 pub const DIRECT_ACCESS_MIN_VERSION: u32 = 69;
+
+/// Where the Relay the desk runs on this Mac stands (v73,
+/// `desk-runs-the-local-relay-itself.md`), as `GetDeskRelayState`
+/// answers and `DeskRelayStateChanged` pushes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DeskRelayState {
+    /// The option is off, or remote access is: nothing runs.
+    NotWanted,
+    /// Wanted, but this is a dev build's daemon, and only the release
+    /// build's runs the Relay. This one dials the URL and token that one
+    /// stored, as it would any Relay's.
+    OtherBuild,
+    /// `gavin-relay` is running on `port` and the stored Relay URL is
+    /// `url`. `note` names something the human should know, such as the
+    /// Mac's address having changed so that phones paired before must
+    /// pair again.
+    Running {
+        port: u16,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// It could not be started or it stopped, and another try is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The first version whose daemon can run this Mac's Relay:
+/// `SetDeskRelay`, `GetDeskRelayState`, the `DeskRelayStateChanged` push,
+/// and `Devices.desk_relay_enabled`.
+pub const DESK_RELAY_MIN_VERSION: u32 = 73;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -1116,6 +1263,15 @@ pub enum Request {
         id: String,
         cols: u16,
         rows: u16,
+    },
+    /// Gives session `id` its desk size back (v74): ends the Device's
+    /// borrow of the PTY's size and resizes it to the size the desk last
+    /// asked for. Sent by the desk's "Fit here"; a Device sends the same as
+    /// the `return_pty_size` desktop command when it closes the terminal,
+    /// which the daemon answers itself and honours only from the borrower.
+    /// Answered `Ok` whether or not anything was borrowed.
+    ReturnPtySize {
+        id: String,
     },
     KillSession {
         id: String,
@@ -1284,6 +1440,20 @@ pub enum Request {
         query: String,
         #[serde(default)]
         topics: Vec<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// The root's cards ranked for `query` (v71), gavin-mcp's
+    /// `gavin_find_cards`: every card of the tree `ScanGavinRoot` returns,
+    /// archived ones included, best first by meaning and words fused;
+    /// `limit` caps the answer, and without one it is every card. Embeds
+    /// whatever card is new or edited since the index last saw it first
+    /// -- a watched root is kept up in the background, so usually none;
+    /// like `SearchMemories`, it refuses rather than download a model the
+    /// human has not fetched.
+    SearchCards {
+        root_path: String,
+        query: String,
         #[serde(default)]
         limit: Option<u32>,
     },
@@ -1468,6 +1638,13 @@ pub enum Request {
         /// default agent while looking as though it had been placed.
         #[serde(default)]
         complexity: Option<String>,
+        /// Whether the card is filed carrying `direct: true` (v75) -- its
+        /// body sent to the agent verbatim. Refused on anything but a
+        /// task. Written in the same CreatePlan, like `complexity`, so a
+        /// card cannot be run in the window between filing and flagging
+        /// and go out wrapped in the prompt it was written without.
+        #[serde(default)]
+        direct: bool,
     },
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
@@ -1623,6 +1800,27 @@ pub enum Request {
     CardRuns {
         workspace_id: String,
         path: String,
+    },
+    /// What one shell call of an agent wrote (v72), sent by the
+    /// `gavin-mcp shell-writes` hook after the call: the files that
+    /// appeared among the checkout's changes, or changed on disk while
+    /// already among them, between the call's start and its end, relative
+    /// to `root`. Keyed by the CLI's own conversation id and its id for the
+    /// call, the two the transcript carries, so the Review tab can match a
+    /// record to the command it observed (`shell_writes`). Empty `paths`
+    /// is recorded too: the call was watched and wrote nothing, which is
+    /// an answer the transcript's guess must not overrule.
+    RecordShellWrites {
+        conversation_id: String,
+        tool_call_id: String,
+        root: String,
+        paths: Vec<String>,
+    },
+    /// Every shell call recorded for a conversation (v72), for the Review
+    /// tab. Empty for a conversation nothing was recorded for -- an older
+    /// run, a CLI with no hook -- which is not an error.
+    ShellWrites {
+        conversation_id: String,
     },
     /// Opens a run for a tool launched STANDALONE from the Tools tab
     /// (v30). The rail's own steps do not come through here: a step
@@ -1823,21 +2021,30 @@ pub enum Request {
         #[serde(default)]
         agent_conversation_id: Option<String>,
     },
-    /// The first request on a Unix-socket connection, establishing the
-    /// client's identity for the connection's whole life
+    /// Prove the peer holds this user's daemon token *before* the app
+    /// sends it (v76, DP-06). The app's nonce is answered as
+    /// `Response::ServerProof` = HMAC(token, `"gavin-server-challenge-v1" ||
+    /// nonce`); the domain separator keeps a Hello-era proof from being
+    /// replayed as one. Only then does the app send `Hello` with the
+    /// token. A peer that cannot answer is refused -- there is no
+    /// fail-open for an older version or a missing token file.
+    ServerChallenge {
+        nonce: String,
+    },
+
+    /// The first identity-establishing request on a local connection
     /// (`sec-fix-client-identity.md`, remote-access design §4). Optional
-    /// and, if sent, must be first; a second `Hello` on one connection is
-    /// refused. Sending anything else first leaves the connection `local`,
-    /// which is what keeps every pre-v35 client working unchanged.
+    /// and, if sent, must be the first *Hello*; a second `Hello` on one
+    /// connection is refused. The app now sends `ServerChallenge` before
+    /// this (v76); other clients may still lead with `Hello`.
     ///
     /// `auth` decides the role: the daemon token yields `app`, a session
     /// token yields `agent` scoped to that session, nothing yields
-    /// `local`. `nonce` is the client's random challenge; the daemon
-    /// answers `HelloAck.server_proof` = HMAC(daemon_token, nonce), which
-    /// lets the app tell the real daemon from a socket squatter (DP-06)
-    /// without the token ever crossing back in the clear. `client` is
-    /// advisory -- it names the binary for the Sessions manager; the role
-    /// never comes from it.
+    /// `local`. `nonce` is still answered as `HelloAck.server_proof` =
+    /// HMAC(daemon_token, nonce) for the already-authenticated channel;
+    /// the DP-06 squat check is `ServerChallenge`, not this field.
+    /// `client` is advisory -- it names the binary for the Sessions
+    /// manager; the role never comes from it.
     Hello {
         client: String,
         protocol_version: u32,
@@ -1894,9 +2101,12 @@ pub enum Request {
         device_id: String,
     },
     /// Revoke every device AND rotate the daemon's static key, which
-    /// invalidates every phone at once even if `devices.sqlite` is later
-    /// restored from a backup, because each phone pinned the old key
-    /// (§3). The one-button answer to a lost phone.
+    /// invalidates every phone that pinned the old key for as long as
+    /// the live `devices.sqlite` holds the new one (§3). The key lives
+    /// in that same file, so a restore of a pre-revocation copy undoes
+    /// both halves — run Revoke all again after restoring the gavin data
+    /// folder. The one-button answer to a lost phone while the store is
+    /// intact.
     RevokeAllDevices,
     /// Store whether remote access is on and which relay to reach this
     /// daemon through.
@@ -1942,6 +2152,24 @@ pub enum Request {
     /// `Response::DirectState`; every change after is pushed as
     /// `DirectStateChanged`.
     GetDirectState,
+    /// "Run a Relay on this Mac" (v73). While this and remote access are
+    /// both on, a release daemon runs `gavin-relay`, mints its admission
+    /// token, and fills in the Relay URL. A dev daemon never starts one.
+    /// It is a request of its own rather than a field on
+    /// `SetRemoteAccess`, for the reason `SetDirectAccess` is.
+    SetDeskRelay {
+        enabled: bool,
+    },
+    /// Where the desk's own Relay stands (v73). Answered with
+    /// `Response::DeskRelayState`. Every change after that is pushed as
+    /// `DeskRelayStateChanged`.
+    GetDeskRelayState,
+    /// Replaces the admission token the desk minted with a new one (v73).
+    /// The old one is still accepted for a grace window, while the new
+    /// one is pushed to each live Device as `RelayAdmissionChanged`.
+    /// Refused for a token someone else's Relay issued: that Relay would
+    /// not know the new one.
+    RefreshRelayAdmission,
 
     /// A Device removes itself from this Workstation (v53): its row is
     /// deleted and every connection it holds is dropped.
@@ -2506,6 +2734,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::GetMemoryIndex { .. }
         | Request::EnsureMemoryIndex { .. }
         | Request::SearchMemories { .. } => 60,
+        // Cards ranked by meaning (v71). A new TYPE, and gavin-mcp is
+        // its only sender: refused here, it matches words instead.
+        Request::SearchCards { .. } => 71,
+        // What a shell call wrote (v72). Two new TYPES, so this is their
+        // whole wire gate: the hook's record never reaches an older
+        // daemon, and the Review tab's read is refused here before it is
+        // sent -- the tab checks FEATURE_MIN_VERSION.shellWrites first and
+        // reads the transcript alone, exactly as before.
+        Request::RecordShellWrites { .. } | Request::ShellWrites { .. } => 72,
 
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
@@ -2642,6 +2879,20 @@ pub fn min_version_for(req: &Request) -> u32 {
         // arms are the wire gate; the Settings switch owes
         // FEATURE_MIN_VERSION.directAccess for its copy.
         Request::SetDirectAccess { .. } | Request::GetDirectState => 69,
+        // The desk-run Relay (v73). Two new TYPES; the Settings option
+        // owes FEATURE_MIN_VERSION.deskRelay for its copy.
+        Request::SetDeskRelay { .. } | Request::GetDeskRelayState => 73,
+        // Rotating the desk's token (v73). One new TYPE; the Refresh
+        // button owes FEATURE_MIN_VERSION.admissionRefresh for its copy.
+        Request::RefreshRelayAdmission => 73,
+        // The desk taking its PTY size back from a Device (v74). One new
+        // TYPE; its button only shows once a v74 daemon has pushed a
+        // borrow, so no FEATURE_MIN_VERSION entry is owed.
+        Request::ReturnPtySize { .. } => 74,
+
+        // Server challenge before Hello (v76). One new TYPE; the only
+        // sender is the Tauri host, so no FEATURE_MIN_VERSION entry.
+        Request::ServerChallenge { .. } => 76,
 
         Request::Shutdown => 12,
 
@@ -2930,8 +3181,15 @@ pub const PAIRING_NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 /// session token itself, so a copy of `registry.sqlite` yields no token
 /// that could be presented in a `Hello`.
 pub fn hash_token_hex(token: &str) -> String {
+    hash_bytes_hex(token.as_bytes())
+}
+
+/// SHA-256 of arbitrary bytes, hex-encoded. Used for digests that are
+/// not tokens — a launcher script's contents, for example — so a changed
+/// file cannot keep an approval that was for different bytes.
+pub fn hash_bytes_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
-    h.update(token.as_bytes());
+    h.update(bytes);
     hex_encode(&h.finalize())
 }
 
@@ -2966,11 +3224,26 @@ fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     hex_encode(&outer.finalize())
 }
 
-/// The daemon's answer to a `Hello` nonce: HMAC(daemon token, nonce). The
-/// app computes the same from the token file and compares, which proves
-/// the peer holds the token without the token itself crossing back (DP-06).
+/// The daemon's answer to a `Hello` nonce: HMAC(daemon token, nonce).
+/// Kept for the Hello round-trip after `challenge_proof` has already
+/// authenticated the peer; it is no longer the DP-06 squat check — a
+/// peer that just received the token in that Hello can compute this.
 pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
     hmac_sha256_hex(daemon_token.as_bytes(), nonce.as_bytes())
+}
+
+/// Domain separator for `challenge_proof`, so a Hello-era HMAC value can
+/// never be replayed as a `ServerProof` (or the other way around).
+const SERVER_CHALLENGE_CONTEXT: &[u8] = b"gavin-server-challenge-v1";
+
+/// The daemon's answer to `ServerChallenge`: HMAC(token,
+/// `"gavin-server-challenge-v1" || nonce`). The app verifies this against
+/// its token file *before* sending the token in `Hello` (DP-06, v76).
+pub fn challenge_proof(daemon_token: &str, nonce: &str) -> String {
+    let mut msg = Vec::with_capacity(SERVER_CHALLENGE_CONTEXT.len() + nonce.len());
+    msg.extend_from_slice(SERVER_CHALLENGE_CONTEXT);
+    msg.extend_from_slice(nonce.as_bytes());
+    hmac_sha256_hex(daemon_token.as_bytes(), &msg)
 }
 
 /// The domain separator for `pairing_sas`. A fixed ASCII prefix so this
@@ -3153,6 +3426,8 @@ pub enum Response {
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     CardSession { card_session: Option<CardSession> },
     CardRuns { runs: Vec<CardRun> },
+    /// The answer to `ShellWrites` (v72).
+    ShellWrites { writes: shell_writes::ShellWrites },
     ToolRuns { runs: Vec<ToolRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -3285,6 +3560,9 @@ pub enum Response {
         #[serde(default)]
         workspace_root: Option<String>,
     },
+    /// The answer to `Request::ServerChallenge` (v76): HMAC of the daemon
+    /// token over the domain-separated nonce. See `challenge_proof`.
+    ServerProof { proof: String },
     /// A request refused by `authorize` because the connection's role may
     /// not make it. Only ever sent to a connection that sent a `Hello` or
     /// completed a remote handshake -- a client that by construction knows
@@ -3339,11 +3617,27 @@ pub enum Response {
         /// listens for nobody.
         #[serde(default)]
         direct_access_enabled: bool,
+        /// Whether "Run a Relay on this Mac" is on (v73). Absent from an
+        /// older daemon's reply, which reads as off, and that daemon runs
+        /// no Relay.
+        #[serde(default)]
+        desk_relay_enabled: bool,
+        /// When the admission token held was set, in epoch seconds (v73).
+        /// `None` when none is held, and from an older daemon, which never
+        /// kept the time.
+        #[serde(default)]
+        relay_admission_set_at: Option<i64>,
+        /// Whether the token held is one the desk minted for its own Relay
+        /// (v73), and so one Refresh can replace.
+        #[serde(default)]
+        relay_admission_by_desk: bool,
     },
     /// The answer to `GetRelayState` (v61).
     RelayState { state: RelayState },
     /// The answer to `GetDirectState` (v69).
     DirectState { state: DirectState },
+    /// The answer to `GetDeskRelayState` (v73).
+    DeskRelayState { state: DeskRelayState },
     /// Push (v62): a paired Device was refused a connection, and this is
     /// its new last refusal. Not cleared by the Device connecting later:
     /// a copied key that failed its proof and then the real phone
@@ -3388,6 +3682,18 @@ pub enum Response {
     /// `DESK_INPUT_NOTICE_MIN_VERSION`; the desk offers it on to the
     /// Devices that listen (`session-desk-input`).
     SessionDeskInput { session_id: String, owner: String, at: i64 },
+    /// Push (v74): which Device a session's PTY is sized for, or `None`
+    /// once the desk has its size back. Sent only to an `app` connection
+    /// that reads pushes and whose `Hello` speaks `PTY_BORROW_MIN_VERSION`,
+    /// on every change and again whenever the desk's own resize of a
+    /// borrowed session is held back -- which is how a desk that reloaded
+    /// mid-borrow hears of it. The desk does not offer it on: the Device
+    /// that borrowed knows, and no other needs to.
+    PtySizeBorrowed {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<LiveDevice>,
+    },
     /// Push to every live `app` connection (v61): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -3397,6 +3703,17 @@ pub enum Response {
     /// speaks `DIRECT_ACCESS_MIN_VERSION` or more, for the reason
     /// `DeviceRefusalChanged` is.
     DirectStateChanged { state: DirectState },
+    /// Push (v73): the desk-run Relay's state changed. Sent only to an
+    /// `app` connection that reads pushes and whose `Hello` speaks
+    /// `DESK_RELAY_MIN_VERSION` or more.
+    DeskRelayStateChanged { state: DeskRelayState },
+    /// Push to every live Device connection (v73): the admission token the
+    /// desk minted was replaced, and this is the new one. The Device
+    /// keeps it, as it kept the one the QR carried, and presents it from
+    /// its next dial on. The old one is accepted for a while longer, so a
+    /// Device that hears this before then never fails to get in. Inside
+    /// the Noise channel, like everything else on a Device connection.
+    RelayAdmissionChanged { token: String },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -3513,6 +3830,8 @@ pub enum Response {
     /// The answer to `SearchMemories` (v60), best first. Empty for a
     /// workspace with nothing adopted -- not an error.
     MemoryHits { hits: Vec<MemoryHit> },
+    /// The answer to `SearchCards` (v71), best first.
+    CardHits { hits: Vec<CardHit> },
     /// The answer to `HeadroomSavings` (v49), oldest first.
     HeadroomSavings { runs: Vec<RunSavings> },
     /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
@@ -3669,6 +3988,19 @@ pub struct MemoryHit {
     /// The instructions file it was adopted into, root-relative.
     pub source: String,
     /// Cosine similarity to the query, -1..1.
+    pub score: f32,
+}
+
+/// One card a `SearchCards` returned (v71): the card's path exactly as
+/// the tree spells it, so the caller joins it back onto the scan. The
+/// hits' ORDER is the ranking.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardHit {
+    pub path: String,
+    /// Cosine similarity to the query, -1..1. Not the order: the daemon
+    /// fuses the query's words in, so a hit can follow one with a lower
+    /// score.
     pub score: f32,
 }
 
@@ -4310,6 +4642,16 @@ pub struct CardSession {
     /// bindings carries nothing for it at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Whether `command` holds a launch Re-launch can replay. The board
+    /// read leaves the command out (above), and a binding with none -- a
+    /// session that claimed the card over MCP, or was linked to it while
+    /// already running -- would otherwise re-launch as a bare login shell
+    /// bound to the card. Computed by the daemon from the stored column,
+    /// never written. None from a daemon that predates it, which a
+    /// surface reads as "can replay": Re-launch refuses on the command it
+    /// reads back either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayable: Option<bool>,
     /// The agent CLI's own conversation id for this run (see
     /// `Request::LinkCardSession::conversation_id`).
     #[serde(default)]
@@ -4946,6 +5288,19 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub effort: Option<String>,
+    /// The card's `direct:` line (v75): true when its body is the WHOLE
+    /// prompt -- no tab-naming line, no "you are executing the task card"
+    /// framing, no status instructions, no attachment list and no extras
+    /// -- so the agent receives exactly what the human wrote. Only a task
+    /// carries it: on any other kind the line is a `parse_warning` and
+    /// reads false, the way `parent:` does, because a plan's prompt is
+    /// "read this file" and a note runs nothing.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses; from one,
+    /// false means "this daemon never looked", and the app's
+    /// `FEATURE_MIN_VERSION.directPrompt` is what says so.
+    #[serde(default)]
+    pub direct: bool,
     /// The card's `Decision:` / `Human test:` checklist lines, parsed
     /// (v42) -- everything on this card that is waiting on a person.
     ///
@@ -5199,9 +5554,11 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
         // The rest of the line is still in the socket. Drain it so the
         // next read starts on a fresh line; dropping the connection over
         // one oversize reply is how a link used to lose every later
-        // request until the human reconnected.
+        // request until the human reconnected. Typed so a caller can
+        // skip this one line (`e.is::<LineTooLong>()`) without matching
+        // on the error text.
         drain_to_newline(reader)?;
-        anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
+        return Err(LineTooLong.into());
     }
     let msg = serde_json::from_str(line.trim_end())?;
     Ok(Some(msg))
@@ -6021,6 +6378,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_desk_relay_requests_are_gated_at_73_and_its_state_round_trips() {
+        assert_eq!(min_version_for(&Request::SetDeskRelay { enabled: true }), 73);
+        assert_eq!(min_version_for(&Request::GetDeskRelayState), 73);
+        assert_eq!(min_version_for(&Request::RefreshRelayAdmission), 73);
+        assert_eq!(
+            serde_json::to_value(Response::RelayAdmissionChanged { token: "t".into() }).unwrap(),
+            serde_json::json!({ "type": "RelayAdmissionChanged", "token": "t" })
+        );
+        assert_eq!(DESK_RELAY_MIN_VERSION, 73);
+        assert!(DESK_RELAY_MIN_VERSION <= PROTOCOL_VERSION);
+        assert_eq!(
+            serde_json::to_string(&Request::SetDeskRelay { enabled: false }).unwrap(),
+            r#"{"type":"SetDeskRelay","enabled":false}"#
+        );
+
+        let running =
+            DeskRelayState::Running { port: 8443, url: "ws://192.168.1.20:8443".into(), note: None };
+        let v = serde_json::to_value(&running).unwrap();
+        assert_eq!(v, serde_json::json!({ "state": "running", "port": 8443, "url": "ws://192.168.1.20:8443" }));
+        assert_eq!(serde_json::from_value::<DeskRelayState>(v).unwrap(), running);
+        assert_eq!(
+            serde_json::to_value(DeskRelayState::OtherBuild).unwrap(),
+            serde_json::json!({ "state": "other_build" })
+        );
+        let newer: DeskRelayState = serde_json::from_str(r#"{"state":"paused"}"#).unwrap();
+        assert_eq!(newer, DeskRelayState::Unknown);
+
+        // An older daemon's `Devices` has no option, and reads as off.
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices {
+                desk_relay_enabled, relay_admission_set_at, relay_admission_by_desk, ..
+            } => {
+                assert!(!desk_relay_enabled);
+                assert_eq!(relay_admission_set_at, None);
+                assert!(!relay_admission_by_desk);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     /// A Device deleting its own row: it names no Device, because the
     /// connection it arrives on already is one.
     #[test]
@@ -6515,6 +6914,7 @@ mod tests {
             session_id: "s-1".into(),
             cwd: "/p".into(),
             command: Some("claude 'x'".into()),
+            replayable: Some(true),
             conversation_id: None,
             launch_cwd: None,
             resume_attempts: None,
@@ -6606,6 +7006,15 @@ mod tests {
         assert_eq!(server_proof("tok", "n1"), server_proof("tok", "n1"));
         assert_ne!(server_proof("tok", "n1"), server_proof("tok", "n2"));
         assert_ne!(server_proof("tokA", "n1"), server_proof("tokB", "n1"));
+    }
+
+    /// The challenge proof is separated from the Hello-era proof so one
+    /// cannot be replayed as the other, and is deterministic in the nonce.
+    #[test]
+    fn challenge_proof_differs_from_hello_proof_and_binds_the_nonce() {
+        assert_eq!(challenge_proof("tok", "n1"), challenge_proof("tok", "n1"));
+        assert_ne!(challenge_proof("tok", "n1"), challenge_proof("tok", "n2"));
+        assert_ne!(challenge_proof("tok", "n1"), server_proof("tok", "n1"));
     }
 
     /// A hashed token is not the token, and equal tokens hash equal.
@@ -7126,9 +7535,10 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let oversize = read_message::<_, Response>(&mut cursor);
         assert!(oversize.is_err(), "the oversize line must be refused");
+        let err = oversize.unwrap_err();
         assert!(
-            oversize.unwrap_err().to_string().contains("protocol line exceeded"),
-            "wrong error"
+            err.is::<LineTooLong>(),
+            "oversize must be typed LineTooLong so callers can skip without matching text: {err}"
         );
         let next: Response = read_message(&mut cursor).unwrap().unwrap();
         assert!(matches!(next, Response::Ok));
@@ -7450,6 +7860,7 @@ mod tests {
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
                     effort: Some("xhigh".to_string()),
+                    direct: false,
                     human_items: Some(vec![HumanItem {
                         kind: HumanItemKind::Decision,
                         text: "Which serializer?".to_string(),
@@ -7506,6 +7917,7 @@ mod tests {
                         "agent": "codex",
                         "model": "gpt-5.1",
                         "effort": "xhigh",
+                        "direct": false,
                         "humanItems": [{
                             "kind": "decision",
                             "text": "Which serializer?",
@@ -7969,7 +8381,23 @@ mod tests {
         // v70: ForwardedInput and the SessionDeskInput push -- the desk
         // host marking a Device's input, so its owner hears of the
         // desk's. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 70);
+        // v71: SearchCards + CardHits -- a workspace's cards ranked by
+        // meaning, for gavin-mcp's gavin_find_cards. One new TYPE.
+        // v72: RecordShellWrites + ShellWrites -- what each shell call of
+        // an agent wrote, recorded by its CLI's hook. Two new TYPES.
+        // v73: SetDeskRelay + GetDeskRelayState and the
+        // DeskRelayStateChanged push -- the desk running this Mac's Relay.
+        // Two new TYPES; `Devices.desk_relay_enabled` widens a reply,
+        // behind FEATURE_MIN_VERSION.deskRelay.
+        // v74: ReturnPtySize and the PtySizeBorrowed push -- a Device
+        // borrowing a session's PTY size while it looks. One new TYPE.
+        // v75: PlanFileInfo.direct, CreatePlan.direct and a
+        // SetPlanFrontmatterField key -- the direct-prompt task. No new
+        // variant, so this match is blind to it; daemonCompat.ts's
+        // `directPrompt` is its only gate.
+        // v76: Request::ServerChallenge + Response::ServerProof -- prove
+        // the daemon before the app discloses its token (DP-06).
+        assert_eq!(PROTOCOL_VERSION, 76);
     }
 
     #[test]
@@ -8303,6 +8731,7 @@ mod tests {
             Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
             Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
             Request::ScanGavinRoot { root_path: "r".into() },
+            Request::SearchCards { root_path: "r".into(), query: "q".into(), limit: None },
             Request::ReadPrd { root_path: "r".into() },
             Request::ReadWorkspaceFile { root_path: "r".into(), path: "a.md".into() },
             Request::WriteWorkspaceFile { root_path: "r".into(), path: "a.md".into(), content: "c".into() },
@@ -8356,6 +8785,7 @@ mod tests {
                 parent: None,
                 attachments: None,
                 complexity: None,
+                direct: false,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::ClaimCardForSession {
@@ -8386,6 +8816,14 @@ mod tests {
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
+            // v72: what a shell call wrote.
+            Request::RecordShellWrites {
+                conversation_id: "c".into(),
+                tool_call_id: "t".into(),
+                root: "/r".into(),
+                paths: vec!["a.ts".into()],
+            },
+            Request::ShellWrites { conversation_id: "c".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
@@ -8476,6 +8914,8 @@ mod tests {
                 nonce: "n".into(),
                 connection: None,
             },
+            // v76: prove the daemon before disclosing the token.
+            Request::ServerChallenge { nonce: "n".into() },
             // v42's remote access: pairing, the device list, revocation.
             Request::BeginPairing,
             Request::ConfirmPairing { device_id: "d1".into() },
@@ -8491,6 +8931,8 @@ mod tests {
             // v68: session ownership.
             Request::SetSessionOwner { id: "s".into(), to: Some("d1".into()), expect: None, force: false },
             Request::ListSessionOwners,
+            // v74: the desk taking its PTY size back.
+            Request::ReturnPtySize { id: "s".into() },
             // v70: the desk host's write for a Device.
             Request::ForwardedInput {
                 request: Box::new(Request::WriteInput { id: "s".into(), data: "d".into() }),
@@ -8703,6 +9145,14 @@ mod tests {
         expected.insert(69, 2);
         // ForwardedInput -- the desk host marking a Device's input.
         expected.insert(70, 1);
+        // SearchCards -- a workspace's cards ranked by meaning.
+        expected.insert(71, 1);
+        // RecordShellWrites, ShellWrites -- what a shell call wrote.
+        expected.insert(72, 2);
+        // ReturnPtySize -- the desk taking its PTY size back.
+        expected.insert(74, 1);
+        // ServerChallenge -- prove the daemon before disclosing the token.
+        expected.insert(76, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -8892,6 +9342,7 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/p".to_string(),
             command: None,
+            replayable: Some(false),
             conversation_id: Some("conv-1".to_string()),
             launch_cwd: Some("/p/worktrees/a".to_string()),
             resume_attempts: Some(1),
@@ -8902,6 +9353,7 @@ mod tests {
             // No `command` key at all, not `null`: a board of bindings is
             // exactly where that field is left out (v43).
             serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p",
+                                "replayable": false,
                                 "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
                                 "resumeAttempts": 1,
                                 "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db" })
@@ -8983,13 +9435,15 @@ mod tests {
             parent: Some("auth-plan.md".to_string()),
             attachments: Some("docs/spec.md, /Users/x/shot.png".to_string()),
             complexity: Some("intricate".to_string()),
+            direct: true,
         };
         write_message(&mut buf, &req).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments, complexity } => {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments, complexity, direct } => {
                 assert_eq!(kind.as_deref(), Some("task"));
+                assert!(direct);
                 assert_eq!(parent.as_deref(), Some("auth-plan.md"));
                 assert_eq!(attachments.as_deref(), Some("docs/spec.md, /Users/x/shot.png"));
                 assert_eq!(complexity.as_deref(), Some("intricate"));

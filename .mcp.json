@@ -3,6 +3,12 @@
     "gavin": {
       "args": [],
       "command": "scripts/gavin-mcp"
+    },
+    "playwright": {
+      "args": [
+        "playwright"
+      ],
+      "command": "scripts/gavin-mcp"
     }
   }
 }

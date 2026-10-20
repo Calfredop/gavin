@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectWarnings,
   foundAgentsSummary,
   foundProfileIds,
   isAgentFound,
@@ -136,5 +137,29 @@ describe("foundAgentsSummary", () => {
     expect(foundAgentsSummary(SWEEP.map((d) => ({ ...d, found: false, path: null })))).toBe(
       "None of gavin's built-in agent CLIs were found on PATH."
     );
+  });
+});
+
+describe("detectWarnings", () => {
+  it("collects non-empty warnings from the sweep", () => {
+    expect(
+      detectWarnings([
+        row({ id: "claude-code", found: true }),
+        row({
+          id: "gemini",
+          found: true,
+          warning: "Gemini CLI is deprecated — install Antigravity CLI (`agy`).",
+        }),
+      ])
+    ).toEqual(["Gemini CLI is deprecated — install Antigravity CLI (`agy`)."]);
+  });
+
+  it("ignores missing or blank warnings", () => {
+    expect(
+      detectWarnings([
+        row({ id: "gemini", found: true, warning: null }),
+        row({ id: "cursor", found: false, warning: "  " }),
+      ])
+    ).toEqual([]);
   });
 });

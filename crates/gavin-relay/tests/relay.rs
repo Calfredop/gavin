@@ -716,3 +716,108 @@ fn a_relay_that_is_not_there_is_an_error_not_a_hang() {
     assert!(matches!(result, Err(DialError::Connect(_))), "{:?}", result.err().map(|e| e.to_string()));
     assert!(started.elapsed() < SOON);
 }
+
+#[test]
+fn a_relay_that_is_not_there_is_named_by_its_address() {
+    // What Settings shows under the Relay URL: the address nothing is
+    // listening on, not the OS's errno.
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let why = match dial(
+        &format!("ws://127.0.0.1:{port}"),
+        &RelayHello::workstation(TOKEN, &rendezvous(1)),
+        &options(),
+    ) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a port nothing listens on was dialled"),
+    };
+    assert_eq!(why, format!("could not reach the Relay: nothing is listening at 127.0.0.1:{port}"));
+}
+
+/// One admission-token holder must not fill the process-wide socket pool
+/// under rendezvous ids it picks, leaving every other principal closed
+/// unread. The per-token registration ceiling is what leaves room.
+#[test]
+fn one_token_cannot_starve_another_of_the_connection_pool() {
+    const OTHER: &str = "also-let-me-in";
+    let mut config = RelayConfig::local(TOKEN);
+    config.tokens.push(OTHER.into());
+    config.limits = Limits {
+        connections: 4,
+        registrations_per_token: 2,
+        connections_per_source: 4,
+        ..Limits::default()
+    };
+    let relay = RunningRelay::start(config).unwrap();
+
+    // First principal tries four distinct rendezvous ids. Only the
+    // per-token ceiling's worth stay registered; the rest are Busy and
+    // free their slots.
+    let mut held = Vec::new();
+    for tag in 1..=4u8 {
+        match dial(
+            &relay.url(),
+            &RelayHello::workstation(TOKEN, &rendezvous(tag)),
+            &options(),
+        ) {
+            Ok(connection) => held.push(connection),
+            Err(DialError::Refused(RefusalReason::Busy)) => {}
+            Err(other) => panic!("expected Ready or Busy, got {other}"),
+        }
+    }
+    assert_eq!(held.len(), 2, "the first token may hold only registrations_per_token slots");
+    eventually("Busy refusals freed their slots", || relay.stats().workstations == 2);
+
+    // A fifth, legitimate Workstation — another token — must be served.
+    let other = dial(
+        &relay.url(),
+        &RelayHello::workstation(OTHER, &rendezvous(9)),
+        &options(),
+    );
+    match other {
+        Ok(_) => {}
+        Err(e) => panic!("the other principal was closed unread: {e}"),
+    }
+    drop(held);
+}
+
+/// A stream that copies past its byte budget is ended, not left open
+/// while the Relay silently stops forwarding.
+#[test]
+fn a_stream_past_its_byte_budget_is_ended() {
+    let mut config = RelayConfig::local(TOKEN);
+    config.limits = Limits { bytes_per_stream: 1_000, ..Limits::default() };
+    let relay = RunningRelay::start(config).unwrap();
+    let (mut device, mut workstation, _registration) = joined(&relay, &rendezvous(1));
+
+    // Three frames: the first two fit under the budget; the third would
+    // take the stream past it and must end the copy instead of arriving.
+    for _ in 0..3 {
+        device.write_all(&[7u8; 400]).unwrap();
+        device.flush().unwrap();
+    }
+
+    let mut got = vec![0u8; 1_200];
+    let mut read = 0usize;
+    while read < got.len() {
+        match workstation.read(&mut got[read..]) {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                break
+            }
+            Err(e) => panic!("read failed: {e}"),
+        }
+    }
+    assert_eq!(read, 800, "only the frames that fit the budget should arrive");
+    eventually("the over-budget stream is no longer open", || relay.stats().streams_open == 0);
+    assert_eq!(relay.stats().bytes, 800);
+}

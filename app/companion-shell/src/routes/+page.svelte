@@ -11,7 +11,7 @@
   import { bundlesToKeep, nativeBundleStore, rememberBundle, type BundleMemory } from "$shell/bundle/store";
   import { trustedKeys } from "$shell/bundle/trust";
   import { combinedInbox, type InboxRow } from "$shell/hub/inbox";
-  import { pairedStore, type PairedWorkstation } from "$shell/hub/paired";
+  import { pairedStore, withAdmission, type PairedWorkstation } from "$shell/hub/paired";
   import { createUnlockedHub } from "$shell/hub/unlockedHub";
   import { hubWorkstations } from "$shell/hub/workstations";
   import { runKeysCheck } from "$shell/keys/keysCheck";
@@ -98,6 +98,10 @@
   /// A debug build launched with a pairing code (scripts/pair.sh), which
   /// reads the pairing's steps off the device log.
   let scripted = false;
+  /// A debug build launched with open-first (scripts/snapshot.sh): open
+  /// the first ready Workstation once after Unlock.
+  let openFirst = false;
+  let openFirstDone = false;
   /// A hub line of its own: an inbox item whose Workstation cannot be
   /// opened from this phone yet.
   let notice = $state<string | null>(null);
@@ -126,6 +130,14 @@
         core,
         open: webSocketOpener(WebSocket as unknown as WebSocketConstructor),
         random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+        // A refreshed token (v73) is kept natively, so the next dial --
+        // after a relaunch too -- presents it.
+        onAdmission: (record) => {
+          const kept = withAdmission(paired, record.id, record.relayAdmission ?? "");
+          if (!kept) return;
+          paired = kept.paired;
+          void store.save(kept.record).catch((e) => console.warn(`[gavin-hub] could not keep the new admission token: ${e}`));
+        },
         // A debug build says what the Unlock and each Workstation do.
         log: (line) => {
           if (debugBuild) console.log(line);
@@ -136,6 +148,15 @@
   const live = unlocked?.live;
   $effect(() => {
     unlocked?.setPaired($state.snapshot(paired) as PairedWorkstation[]);
+  });
+  // scripts/snapshot.sh: after Unlock, open the first ready Workstation
+  // so the OS task snapshot can be checked with Workstation content drawn.
+  $effect(() => {
+    if (!openFirst || openFirstDone || !$unlockState || !connectionsAllowed($unlockState)) return;
+    const ws = hubWorkstations(paired, $live ?? {}).find((w) => w.openable);
+    if (!ws) return;
+    openFirstDone = true;
+    void visits.open(ws);
   });
   // The Unlock gates the connection, not the screen: a paired
   // Workstation's bundle would stay in front with its last data after
@@ -259,6 +280,19 @@
     for (const clear of clears) void Push.clearDelivered(clear).catch(() => {});
   });
 
+  /// A long-pressed Workstation, forgotten on this phone: its record and
+  /// notification key go, and the live hub and the handover follow
+  /// `paired`. Its cached bundle is pruned with the next one installed.
+  async function removePaired(ws: { id: string; name: string }): Promise<void> {
+    try {
+      await store.remove(ws.id);
+    } catch (e) {
+      notice = `${ws.name} could not be removed: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
+    paired = paired.filter((p) => p.id !== ws.id);
+  }
+
   async function loadPaired(): Promise<void> {
     try {
       paired = await store.list();
@@ -305,6 +339,8 @@
             scripted = true;
             return pairing.startWith(text);
           }
+          const { open } = await BundleView.openFirstRequested().catch(() => ({ open: false }));
+          openFirst = open;
           unlocked?.setPaired($state.snapshot(paired) as PairedWorkstation[]);
           await unlocked?.start();
         })
@@ -325,6 +361,7 @@
   onOpen={(ws) => void visits.open(ws)}
   onTryNow={(ws) => unlocked?.tryNow(ws.id)}
   onDismiss={() => void visits.close()}
+  onRemove={native ? (ws) => void removePaired(ws) : null}
   onPair={native ? () => void pairing.start() : null}
   {inbox}
   onOpenItem={openItem}

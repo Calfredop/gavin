@@ -53,6 +53,31 @@ pub fn interactive_shell() -> PathBuf {
     PathBuf::from(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()))
 }
 
+/// The arguments `interactive_shell` is started with.
+///
+/// On macOS, `-l`: a login shell, which is what Terminal.app, iTerm2,
+/// Ghostty and VS Code all open, so it is what a mac user's dotfiles are
+/// written against. The login profile (`/etc/zprofile`'s `path_helper`,
+/// `~/.zprofile`'s `brew shellenv`) is where PATH gets Homebrew, and an
+/// rc file is free to assume it already has. A Finder-launched app hands
+/// the daemon launchd's bare `/usr/bin:/bin:/usr/sbin:/sbin`, so without
+/// `-l` the rc ran against that: `~/.zshrc`'s `source <(ng completion
+/// script)` printed "command not found: ng" into every new tab of the
+/// release app. A dev build hid it, because a daemon started from a
+/// terminal inherits a PATH that terminal's login shell already built.
+///
+/// Not on Linux: there the desktop session has already run the login
+/// profile and terminals open non-login shells by convention -- a login
+/// bash would read `~/.bash_profile` instead of `~/.bashrc`. `-l` is
+/// spelled the same in zsh, bash, fish, nushell, ksh and sh.
+pub fn interactive_shell_args() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["-l"]
+    } else {
+        &[]
+    }
+}
+
 /// Git for Windows' `sh.exe`, found from git's own idea of where it
 /// lives.
 ///
@@ -239,7 +264,11 @@ pub fn posix_tools_path(
 /// [`PtySession::spawn`]), or nothing on `path` answering to any `PATHEXT`
 /// candidate at all -- which is also what a multi-command line's leading
 /// shell keyword (`cd`, `if`, …) hits, since none of those are files.
-pub fn rewrite_for_windows_shim(command: &str, path: &std::ffi::OsStr) -> String {
+///
+/// `Err` when the only match is a `.cmd`/`.bat` shim and the rest of the
+/// line holds a character `cmd.exe` acts on — those shims forward args
+/// through `%*`, and POSIX quoting is not a control there.
+pub fn rewrite_for_windows_shim(command: &str, path: &std::ffi::OsStr) -> Result<String, String> {
     let pathext = std::env::var("PATHEXT").unwrap_or_default();
     command_with_windows_shim(command, path, &pathext, |p| p.is_file(), resolve_bundled_node_entry)
 }
@@ -308,11 +337,11 @@ pub fn command_with_windows_shim(
     pathext: &str,
     exists: impl Fn(&Path) -> bool,
     node_entry: impl Fn(&Path) -> Option<(PathBuf, PathBuf)>,
-) -> String {
+) -> Result<String, String> {
     let word_end = command.find(char::is_whitespace).unwrap_or(command.len());
     let word = &command[..word_end];
     if word.is_empty() || word.contains(['/', '\\', '.']) {
-        return command.to_string();
+        return Ok(command.to_string());
     }
     // Lower-cased once here rather than left to the real filesystem's own
     // case-insensitivity: `PATHEXT` is conventionally all-caps, but the
@@ -335,27 +364,44 @@ pub fn command_with_windows_shim(
         })
     });
     match found {
-        Some((_, ext)) if ext.is_empty() => command.to_string(),
+        Some((_, ext)) if ext.is_empty() => Ok(command.to_string()),
         Some((dir, ext)) if matches!(ext.as_str(), ".cmd" | ".bat") => {
             if let Some((node, script)) = node_entry(&dir) {
                 let node = node.to_string_lossy().replace('\\', "/");
                 let script = script.to_string_lossy().replace('\\', "/");
                 // CURSOR_INVOKED_AS is what agent.ps1 stamps before exec;
                 // without it some CLI paths treat the process as anonymous.
-                format!(
+                Ok(format!(
                     "CURSOR_INVOKED_AS={} {} {}{}",
                     posix_single_quote(&format!("{word}.ps1")),
                     posix_single_quote(&node),
                     posix_single_quote(&script),
                     &command[word_end..]
-                )
+                ))
+            } else if cmd_exe_specials_in(&command[word_end..]) {
+                Err(format!(
+                    "{word} is installed only as a .cmd shim, which passes its arguments through cmd.exe; \
+                     gavin will not hand it this launch line. Install it so that {word}.exe or an \
+                     extensionless {word} is on PATH."
+                ))
             } else {
-                format!("{word}{ext}{}", &command[word_end..])
+                Ok(format!("{word}{ext}{}", &command[word_end..]))
             }
         }
-        Some((_, ext)) => format!("{word}{ext}{}", &command[word_end..]),
-        None => command.to_string(),
+        Some((_, ext)) => Ok(format!("{word}{ext}{}", &command[word_end..])),
+        None => Ok(command.to_string()),
     }
+}
+
+/// Characters `cmd.exe` acts on when a `.cmd` shim forwards argv through `%*`.
+/// POSIX single quotes are not a control on that path.
+fn cmd_exe_specials_in(args: &str) -> bool {
+    args.bytes().any(|b| {
+        matches!(
+            b,
+            b'&' | b'|' | b'<' | b'>' | b'^' | b'%' | b'!' | b'"' | b'(' | b')' | b'\n' | b'\r'
+        )
+    })
 }
 
 /// `git --exec-path`, or `None` when git is not there to ask.
@@ -393,6 +439,22 @@ mod tests {
     }
 
     fn shim(command: &str, path: &str, pathext: &str, files: &[&str]) -> String {
+        command_with_windows_shim(
+            command,
+            &path_list(path),
+            pathext,
+            present(files),
+            no_node,
+        )
+        .unwrap_or_else(|e| panic!("unexpected shim refusal for {command:?}: {e}"))
+    }
+
+    fn shim_result(
+        command: &str,
+        path: &str,
+        pathext: &str,
+        files: &[&str],
+    ) -> Result<String, String> {
         command_with_windows_shim(
             command,
             &path_list(path),
@@ -662,7 +724,13 @@ mod tests {
     #[test]
     fn on_windows_a_real_cursor_agent_rewrites_to_bundled_node() {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let rewritten = rewrite_for_windows_shim("agent --trust 'line1\n\nline2'", &path);
+        let rewritten = match rewrite_for_windows_shim("agent --trust 'line1\n\nline2'", &path) {
+            Ok(r) => r,
+            // A multiline prompt through a bare .cmd shim is refused — that
+            // is the hardening path, and a real Cursor install rewrites to
+            // node instead, so a refusal here means no usable agent on PATH.
+            Err(_) => return,
+        };
         if rewritten.starts_with("agent ") || rewritten == "agent --trust 'line1\n\nline2'" {
             // No agent on PATH in this environment -- nothing to assert.
             return;
@@ -693,6 +761,49 @@ mod tests {
             shim("agent 'do the thing'", "/tools", ".COM;.EXE;.BAT;.CMD", &["/tools/agent.cmd"]),
             "agent.cmd 'do the thing'"
         );
+    }
+
+    /// Without a node pair, arguments that hold a character `cmd.exe` acts
+    /// on are refused rather than rewritten — POSIX quotes are inert there.
+    #[test]
+    fn a_cmd_shim_refuses_arguments_cmd_exe_acts_on() {
+        let files = &["/tools/agent.cmd"];
+        for command in [
+            "agent 'a & b'",
+            "agent 'line1\nline2'",
+            "agent '100%'",
+            "agent --model 'x\"y'",
+        ] {
+            let err = shim_result(command, "/tools", ".COM;.EXE;.BAT;.CMD", files).unwrap_err();
+            assert!(err.contains("agent"), "{err}");
+            assert!(err.contains("cmd.exe"), "{err}");
+        }
+        assert_eq!(
+            shim("agent 'do the thing'", "/tools", ".COM;.EXE;.BAT;.CMD", files),
+            "agent.cmd 'do the thing'"
+        );
+    }
+
+    /// A node pair still rewrites even when the args hold cmd.exe specials —
+    /// that path never reaches `%*`.
+    #[test]
+    fn a_cmd_shim_with_bundled_node_still_rewrites_cmd_specials() {
+        let path = path_list("/tools");
+        let rewritten = command_with_windows_shim(
+            "agent 'a & b'",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&["/tools/agent.cmd"]),
+            |_| {
+                Some((
+                    PathBuf::from("C:/tools/versions/2026.09.10-abc/node.exe"),
+                    PathBuf::from("C:/tools/versions/2026.09.10-abc/index.js"),
+                ))
+            },
+        )
+        .unwrap();
+        assert!(rewritten.contains("node.exe"), "{rewritten}");
+        assert!(rewritten.contains("'a & b'"), "{rewritten}");
     }
 
     /// npm's three-file layout puts an extensionless POSIX shim beside
@@ -744,7 +855,8 @@ mod tests {
                     PathBuf::from("C:/tools/versions/2026.09.10-abc/index.js"),
                 ))
             },
-        );
+        )
+        .unwrap();
         assert_eq!(
             rewritten,
             "CURSOR_INVOKED_AS='agent.ps1' 'C:/tools/versions/2026.09.10-abc/node.exe' 'C:/tools/versions/2026.09.10-abc/index.js' --approve-mcps --trust 'line1\n\nline2'"
@@ -767,7 +879,8 @@ mod tests {
                     PathBuf::from("C:/Ada's tools/index.js"),
                 ))
             },
-        );
+        )
+        .unwrap();
         assert_eq!(
             rewritten,
             "CURSOR_INVOKED_AS='agent.ps1' 'C:/Ada'\\''s tools/node.exe' 'C:/Ada'\\''s tools/index.js' 'go'"

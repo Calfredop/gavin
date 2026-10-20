@@ -82,6 +82,10 @@ enum Call {
         qr: String,
         noise_private_key: String,
         hardware_key: String,
+        /// What backs the hardware key (`hardware` or `software-debug`).
+        /// Absent from an older shell: the daemon then stores NULL.
+        #[serde(default)]
+        key_kind: Option<protocol::device_wire::KeyKind>,
         device_name: String,
         entropy: String,
     },
@@ -124,6 +128,13 @@ enum Call {
     /// trusts, and unpacks it.
     BundleOpen {
         archive: String,
+        manifest: protocol::BundleManifest,
+        trusted_keys: Vec<String>,
+    },
+    /// Checks a Companion bundle's manifest alone under the keys the
+    /// shell trusts: shape, trusted signer, and Ed25519 signature. The
+    /// shell runs this on every load, including a cache hit.
+    BundleCheck {
         manifest: protocol::BundleManifest,
         trusted_keys: Vec<String>,
     },
@@ -273,6 +284,7 @@ fn answer(call: Call) -> Result<Value, Failure> {
             qr,
             noise_private_key,
             hardware_key,
+            key_kind,
             device_name,
             entropy,
         } => {
@@ -283,8 +295,14 @@ fn answer(call: Call) -> Result<Value, Failure> {
             let hardware_key = bytes("hardwareKey", &hardware_key)?;
             let entropy = Entropy::from_bytes(bytes("entropy", &entropy)?);
             let dials = relay_dials(&offer)?;
-            let (client, first) =
-                PairingClient::start(&offer, &keys, &hardware_key, &device_name, entropy)?;
+            let (client, first) = PairingClient::start_with_kind(
+                &offer,
+                &keys,
+                &hardware_key,
+                key_kind,
+                &device_name,
+                entropy,
+            )?;
             let answer = json!({
                 "send": protocol::hex_encode(&first),
                 "workstationKey": offer.daemon_public_key,
@@ -362,14 +380,7 @@ fn answer(call: Call) -> Result<Value, Failure> {
         Call::BundleOpen { archive, manifest, trusted_keys } => {
             use protocol::companion_bundle::{encode_chunk, unpack, verify};
             let archive = bytes("archive", &archive)?;
-            let trusted = trusted_keys
-                .iter()
-                .map(|key| {
-                    let key = bytes("trustedKeys", key)?;
-                    <[u8; 32]>::try_from(key)
-                        .map_err(|_| Failure::request("a trusted key is 32 bytes"))
-                })
-                .collect::<Result<Vec<_>, Failure>>()?;
+            let trusted = parse_trusted_keys(&trusted_keys)?;
             verify(&archive, &manifest, &trusted).map_err(|e| Failure { kind: "bundle", message: e.to_string() })?;
             let files = unpack(&archive).map_err(|e| Failure {
                 kind: "bundle",
@@ -383,7 +394,24 @@ fn answer(call: Call) -> Result<Value, Failure> {
                     .collect::<Vec<_>>(),
             }))
         }
+        Call::BundleCheck { manifest, trusted_keys } => {
+            use protocol::companion_bundle::verify_manifest;
+            let trusted = parse_trusted_keys(&trusted_keys)?;
+            verify_manifest(&manifest, &trusted)
+                .map_err(|e| Failure { kind: "bundle", message: e.to_string() })?;
+            Ok(json!({}))
+        }
     }
+}
+
+fn parse_trusted_keys(trusted_keys: &[String]) -> Result<Vec<[u8; 32]>, Failure> {
+    trusted_keys
+        .iter()
+        .map(|key| {
+            let key = bytes("trustedKeys", key)?;
+            <[u8; 32]>::try_from(key).map_err(|_| Failure::request("a trusted key is 32 bytes"))
+        })
+        .collect()
 }
 
 /// An instance runs one exchange: a second, of either kind, is refused.

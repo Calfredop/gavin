@@ -168,6 +168,7 @@ public class BundleActivity extends AppCompatActivity {
         });
         setContentView(root);
         paint();
+        TaskSnapshotCover.install(this);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -303,6 +304,18 @@ public class BundleActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         send(message(BundleChannel.STARTED));
+    }
+
+    @Override
+    protected void onPause() {
+        TaskSnapshotCover.onPause(this);
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        TaskSnapshotCover.onResume(this);
     }
 
     @Override

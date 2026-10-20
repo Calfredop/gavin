@@ -15,6 +15,7 @@
   import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { resolveAgentConfig, prdPathFromPick } from "$lib/core/settings";
   import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "$lib/workspace/setupWizard";
+  import { resolveCheckoutMarkOffer } from "$lib/workspace/mcpServerTrust";
   import * as backend from "$lib/core/backend";
 
   interface Props {
@@ -99,7 +100,8 @@
       await setPrdPath(workspaceId, result.path);
       note = `Now leading this workspace: ${result.path}.`;
       if (integrationDone) {
-        await backend.setupAgentIntegration(root, agentCfg.file);
+        const written = await backend.setupAgentIntegration(root, agentCfg.file);
+        await resolveCheckoutMarkOffer(written, root, agentCfg.file);
         note = `${note} The integration files were rewritten to name it.`;
       }
     } catch (e) {

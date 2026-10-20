@@ -135,6 +135,9 @@ function workstations() {
     pairingStart: () => {
       throw new Error("no pairing here");
     },
+    bundleCheck: () => {
+      throw new Error("no bundle here");
+    },
     bundleOpen: () => {
       throw new Error("no bundle here");
     },

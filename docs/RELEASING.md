@@ -57,6 +57,16 @@ same guarantee.
 `bundle.version` in `tauri.conf.json`, so a downloaded artefact can always
 be traced back to a commit.
 
+### Version and build number
+
+The tag names the version; the build number is the commit count of the
+tagged commit, stamped in by `app/src-tauri/bundle.mjs`, which every build
+job runs instead of a bare `tauri build`
+([`BUNDLING.md`](../app/src-tauri/BUNDLING.md#version-and-build-number)).
+That is why those jobs check out with `fetch-depth: 0`: on a shallow clone
+the count is the fetch depth, and the script refuses it rather than ship
+build 1.
+
 ### The Companion bundle, staged before the app
 
 `beforeBuildCommand` also runs `stage-companion.mjs --release`: it builds
@@ -66,6 +76,34 @@ into a plain tar, signs it with the bundle key, and stages both under
 release desktop carries the UI a phone runs to work on it and serves it
 to paired phones (ADR 0005). A bare `cargo build` embeds nothing and
 says so to a phone; `tauri build` and `tauri dev` always stage first.
+
+## Preview builds
+
+A **Preview build** (`CONTEXT.md`) is what a person installs before gavin
+has a signed version: an unsigned macOS arm64 `.dmg` and an unsigned
+Windows x64 setup `.exe`, built from `origin/main`'s committed tip and
+published on one rolling GitHub pre-release, tag `preview`, that every run
+replaces. The asset names never change, so the download addresses in the
+README do not either.
+
+`scripts/publish-preview.sh` makes it, on the developer's Mac, started by
+hand — from the **Publish Preview build** tool in gavin, or a terminal.
+It builds in its own worktree (`~/Library/Caches/gavin-preview`), the
+`.dmg` natively and ad-hoc signed (checked with
+`verify-macos-bundle.sh --allow-adhoc`), the `.exe` cross-compiled through
+cargo-xwin and Homebrew's NSIS ([`BUNDLING.md`](../app/src-tauri/BUNDLING.md)).
+It refuses to publish a commit that is not on `origin/main`, one `ci.yml`
+did not pass on (`--force` skips that gate), and a second run while one
+is going. `--dry-run` builds and stages both files with their notes and
+uploads nothing.
+
+It is everything a release above is not, and on purpose: built on a
+laptop rather than an ephemeral runner, unsigned, with no attestation and
+no `latest.json` — the pre-release is never marked Latest, so the updater,
+which reads `releases/latest`, never offers it. It needs no secret, and
+the Companion bundle inside is signed with the build Mac's dev key, so
+only a debug Companion runs it. **`release.yml` is unchanged**: the signed,
+tag-triggered path above is still the only thing that makes a release.
 
 ## Key custody
 

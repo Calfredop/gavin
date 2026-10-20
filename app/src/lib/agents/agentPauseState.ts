@@ -547,9 +547,14 @@ export function launchDecision(
     ...(workspaceProfile ? [workspaceProfile] : []),
     ...(workspace?.armedAgents ?? []),
   ]);
-  // No cycle at all means limits are off — the same early return
-  // `pauseFor` takes. Inventing DEFAULT_CYCLE.limitEnabled here would
-  // start pausing installs that never configured a pause.
+  // No cycle at all means limits are off for an install that configured
+  // nothing — the same early return `pauseFor` takes, so inventing
+  // DEFAULT_CYCLE.limitEnabled for everyone would start pausing installs
+  // that never asked for a pause. A configured fallback chain is asking:
+  // Settings draws the shipped default (limits on) for a primary nobody
+  // ever saved a cycle for, and a chain that never walks because that
+  // cycle was never persisted left Claude spawning over the threshold.
+  const limitEnabled = cycle ? cycle.limitEnabled : chain.length > 0;
   return decideLaunch({
     resolvedProfileId: resolvedProfileId ?? "",
     workspaceProfileId: workspaceProfile,
@@ -557,7 +562,7 @@ export function launchDecision(
     usageByProfile: get(agentUsageStore),
     armed,
     declined: new Set(workspace?.declinedAgents ?? []),
-    limitEnabled: cycle?.limitEnabled ?? false,
+    limitEnabled,
     limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
     fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,
     cyclePaused,

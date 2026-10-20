@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { get } from "svelte/store";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState } from "$lib/board/kanbanState";
+import { relaunchNote, withRelaunchNote } from "$lib/cards/cardRun";
 import { parseChecklist } from "$lib/cards/planChecklist";
 import { answerDialog, dialogRequest } from "$lib/core/dialog";
 import type { HumanItem } from "$lib/core/gavin";
@@ -426,7 +427,7 @@ describe("running a card", () => {
     expect(get(view)).toMatchObject({ workspaceId: DEMO.atlas, sessionId: "s-atlas-store" });
   });
 
-  it("runs again what it ran before, once its session is gone", async () => {
+  it("runs again what it ran before, told the card was under way, once its session is gone", async () => {
     const demo = await visit();
     await asked(launch(DEMO.atlas, card("flaky-expiry-test.md"), "run"), true);
     const first = demo.received().flatMap((m) => (m.type === "invoke" && m.cmd === "create_session" ? [m.args] : []))[0];
@@ -440,9 +441,34 @@ describe("running a card", () => {
     await settle();
     const sent = sentSince(demo, at);
     expect(sent.find((s) => s.cmd === "card_session")?.args).toEqual({ workspaceId: DEMO.atlas, path: bound.path });
-    expect(sent.find((s) => s.cmd === "create_session")?.args.command).toBe(first.command);
+    // The same prompt, with the re-launch note naming where the card's
+    // status is recorded (cardRun.ts's withRelaunchNote).
+    expect(sent.find((s) => s.cmd === "create_session")?.args.command).toBe(
+      withRelaunchNote(first.command as string, bound.path),
+    );
     const rebound = get(kanbanState)[DEMO.atlas].cardSessions.find((cs) => cs.path === bound.path)!;
     expect(rebound.sessionId).not.toBe(bound.sessionId);
+  });
+
+  it("starts the card afresh in a new session, from the card rather than the stored launch", async () => {
+    const demo = await visit();
+    await asked(launch(DEMO.atlas, card("flaky-expiry-test.md"), "run"), true);
+    const bound = get(kanbanState)[DEMO.atlas].cardSessions.find((cs) => cs.path.endsWith("/flaky-expiry-test.md"))!;
+    await endSession(bound.sessionId);
+    await settle();
+
+    const at = demo.received().length;
+    expect(await launch(DEMO.atlas, card("flaky-expiry-test.md"), "new-session")).toBeNull();
+    await settle();
+    const sent = sentSince(demo, at);
+    // Composed again from the card: the stored launch is never read.
+    expect(sent.map((s) => s.cmd)).not.toContain("card_session");
+    expect(sent.find((s) => s.cmd === "create_session")?.args.command).toContain(
+      relaunchNote(bound.path).trim().split("\n")[0],
+    );
+    const rebound = get(kanbanState)[DEMO.atlas].cardSessions.find((cs) => cs.path === bound.path)!;
+    expect(rebound.sessionId).not.toBe(bound.sessionId);
+    expect(get(startedHere)).toHaveProperty(rebound.sessionId, DEMO.atlas);
   });
 });
 

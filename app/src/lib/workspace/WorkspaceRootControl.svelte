@@ -13,7 +13,13 @@
   import { agentDefaultsStore, agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
-  import { foreignMcpServersHash, integrationNote, runIntegration } from "$lib/workspace/mcpServerTrust";
+  import {
+    foreignMcpServersHash,
+    integrationNote,
+    rememberForeignMcpServers,
+    resolveCheckoutMarkOffer,
+    runIntegration,
+  } from "$lib/workspace/mcpServerTrust";
   import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/core/workspace";
   import Modal from "$lib/core/Modal.svelte";
   import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
@@ -133,8 +139,10 @@
     try {
       const result = await runIntegration(workspace.rootPath, agent.file, workspace.mcpForeignServersChoice);
       if (result.mcpForeign) {
+        rememberForeignMcpServers(workspace.rootPath, result.mcpForeign.servers);
         pendingForeign = result.mcpForeign;
       } else {
+        rememberForeignMcpServers(workspace.rootPath, []);
         setupNote = noteFrom(result);
       }
     } catch (e) {
@@ -150,7 +158,8 @@
         hash: foreignMcpServersHash(pendingForeign.servers),
         action,
       });
-      const result = await backend.setupAgentIntegration(workspace.rootPath, agent.file, action);
+      const written = await backend.setupAgentIntegration(workspace.rootPath, agent.file, action);
+      const result = await resolveCheckoutMarkOffer(written, workspace.rootPath, agent.file, action);
       setupNote = noteFrom(result);
       pendingForeign = null;
     } catch (e) {

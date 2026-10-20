@@ -32,6 +32,14 @@ import {
 import { errorCode } from "$shell/keys/deviceKeys";
 import type { DeviceKeysPlugin, UnlockPlugin } from "$shell/native/deviceKeys";
 import { RelayLegError, dialTimeout, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
+import {
+  DIRECT_ADMISSION_REFUSED,
+  Missed,
+  RELAY_ADMISSION_REFUSED,
+  directPortAsRelay,
+  refreshedAdmission,
+  relayIsDirectPort,
+} from "./paths";
 
 export type ConnectionKeys = Pick<DeviceKeysPlugin, "noiseKey"> & Pick<UnlockPlugin, "signUnlocked">;
 
@@ -89,6 +97,11 @@ export interface Connection {
   /// listening. With nobody listening such a message is kept for the
   /// next request to pass over, as before.
   onPush(handler: (message: unknown) => void): () => void;
+  /// Hears the new admission token the Workstation hands this phone when
+  /// the desk refreshes it (v73), and nothing else: such a message is not
+  /// a push for `onPush` and is never kept for a request. Returns how to
+  /// stop. Optional so a stand-in connection need not have it.
+  onAdmission?(handler: (token: string) => void): () => void;
   /// Hangs up. `closed` then settles.
   close(why?: string): void;
   /// Settles, with why, once the stream has ended for any reason.
@@ -202,7 +215,8 @@ export async function connect(target: ConnectTarget, deps: ConnectDeps): Promise
 
 /// The Relays in order, until one says the Workstation is there. When
 /// none does, a Relay that answered `offline` makes the Workstation
-/// asleep; otherwise it is unreachable, for the last reason heard.
+/// asleep; otherwise it is unreachable, for every reason heard -- which
+/// way in failed, and how, one after the other.
 async function dialFirst(
   dials: RelayDial[],
   exchange: CoreExchange,
@@ -211,12 +225,19 @@ async function dialFirst(
   track: (socket: RelaySocket) => void
 ): Promise<RelaySocket> {
   let asleep = false;
-  let problem = "";
+  const missed = new Missed();
+  const directUrls = dials.filter((d) => d.pin).map((d) => d.url);
   for (const dial of dials) {
     checkAborted(deps.signal);
     // A direct address (ADR 0009) is the Workstation itself, and gets a
     // short wait: the Relay is still to come after it.
     const direct = Boolean(dial.pin);
+    // A Relay URL that is one of its direct addresses is the listener
+    // under the wrong name: not dialled, and said so.
+    if (!direct && relayIsDirectPort(dial.url, directUrls)) {
+      missed.say(directPortAsRelay(dial.url));
+      continue;
+    }
     const within = dialTimeout(dial.pin, timeoutMs);
     const answering = direct ? `The Workstation at ${dial.url}` : `Its Relay at ${dial.url}`;
     let socket: RelaySocket;
@@ -227,9 +248,8 @@ async function dialFirst(
       checkAborted(deps.signal);
     } catch (e) {
       if (e instanceof Ended) throw e;
-      problem = direct
-        ? `Could not reach it at ${dial.url}. Is this phone on the same network or tailnet as the Workstation?`
-        : `Could not reach its Relay at ${dial.url}. Check that this phone is online.`;
+      if (direct) missed.directUnreachable(dial.url);
+      else missed.say(`Could not reach its Relay at ${dial.url}. Check that this phone is online.`);
       continue;
     }
     try {
@@ -239,20 +259,23 @@ async function dialFirst(
         const read = coreStep(() => exchange.relayReply(reply.text));
         if (read.reply === "ready") return socket;
         if (read.reply === "refused" && read.reason === "offline") asleep = true;
-        else if (read.reply === "refused") problem = `${direct ? "It" : "Its Relay"} turned the connection away: ${read.message}.`;
-        else problem = `${answering} answered in a way this Companion does not understand.`;
+        else if (read.reply === "refused" && read.reason === "admission")
+          missed.say(direct ? DIRECT_ADMISSION_REFUSED : RELAY_ADMISSION_REFUSED);
+        else if (read.reply === "refused")
+          missed.say(`${direct ? "It turned the direct connection" : "Its Relay turned the connection"} away: ${read.message}.`);
+        else missed.say(`${answering} answered in a way this Companion does not understand.`);
       } else {
-        problem = `${answering} did not answer as it should.`;
+        missed.say(`${answering} did not answer as it should.`);
       }
     } catch (e) {
       if (e instanceof Ended) throw e;
       checkAborted(deps.signal);
-      problem = `${answering} did not answer: ${messageOf(e)}.`;
+      missed.say(`${answering} did not answer: ${messageOf(e)}.`);
     }
     socket.close();
   }
   if (asleep) throw new Ended({ outcome: "asleep" });
-  throw unreachable(problem);
+  throw unreachable(missed.line());
 }
 
 async function signUnlocked(keys: ConnectionKeys, handshakeHash: string): Promise<string> {
@@ -279,6 +302,7 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
   /// The request waiting for its answer, if one is.
   let waiter: { answers(reply: unknown): boolean; resolve(reply: unknown): void } | null = null;
   const pushHandlers = new Set<(message: unknown) => void>();
+  const admissionHandlers = new Set<(token: string) => void>();
   let isClosed = false;
   let settle!: (why: string) => void;
   const closed = new Promise<string>((resolve) => (settle = resolve));
@@ -302,6 +326,11 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
     try {
       reply = JSON.parse(text);
     } catch {
+      return;
+    }
+    const token = refreshedAdmission(reply);
+    if (token !== null) {
+      for (const handler of [...admissionHandlers]) handler(token);
       return;
     }
     if (waiter?.answers(reply)) {
@@ -407,6 +436,12 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
       pushHandlers.add(handler);
       return () => {
         pushHandlers.delete(handler);
+      };
+    },
+    onAdmission(handler) {
+      admissionHandlers.add(handler);
+      return () => {
+        admissionHandlers.delete(handler);
       };
     },
     close: (why = "The connection was closed.") => end(why),

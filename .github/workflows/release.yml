@@ -215,6 +215,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history: bundle.mjs counts it for the build number.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -249,10 +252,8 @@ jobs:
       # APPLE_API_* present means the bundler notarizes and staples in the
       # same run; absent, it signs and silently skips notarization, which
       # is what preflight exists to prevent.
-      # Not `npm run bundle`: the updater overlay has to sit before the
-      # `--` that starts cargo's own arguments, and npm appends whatever
-      # follows `--` to the END of the script. Same reason the Windows
-      # job spells its build out.
+      # bundle.mjs is `npm run bundle`: the bundle overlay, the build
+      # number and `--locked`, with this job's own overlays merged after.
       - name: Build, sign, notarize
         working-directory: app
         env:
@@ -267,10 +268,8 @@ jobs:
           GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
-          npx tauri build
-          --config src-tauri/tauri.bundle.conf.json
+          node src-tauri/bundle.mjs
           --config src-tauri/tauri.updater.conf.json
-          -- --locked
 
       - name: Delete the notarization key
         if: always()
@@ -330,6 +329,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history: bundle.mjs counts it for the build number.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -360,10 +362,8 @@ jobs:
           GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
-          npx tauri build
-          --config src-tauri/tauri.bundle.conf.json
+          node src-tauri/bundle.mjs
           --config src-tauri/tauri.updater.conf.json
-          -- --locked
 
       # Linux has no OS-level code signature to attach, so the artefacts
       # get a detached OpenPGP signature over each file and a signed
@@ -409,7 +409,7 @@ jobs:
           deb=$(find target/release/bundle -name '*.deb' | head -1)
           listing=$(dpkg-deb -c "$deb")
           missing=0
-          for bin in gavin-daemon gavin-mcp; do
+          for bin in gavin-daemon gavin-mcp gavin-relay; do
             if printf '%s' "$listing" | grep -qE "/$bin\$"; then
               echo "ok    $bin is in the package"
             else
@@ -437,6 +437,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history: bundle.mjs counts it for the build number.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -480,9 +483,8 @@ jobs:
             Set-Content -Path 'app/src-tauri/tauri.signing.conf.json' -Encoding utf8
           "thumbprint length: $($cert.Thumbprint.Length)"
 
-      # Not `npm run bundle`: the extra --config has to sit before the
-      # `--` that starts cargo's own arguments, and npm appends whatever
-      # follows `--` to the END of the script.
+      # bundle.mjs is `npm run bundle`, as on the other platforms; the
+      # signing overlay merges after its own.
       - name: Build and sign
         working-directory: app
         env:
@@ -491,11 +493,9 @@ jobs:
           GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
-          npx tauri build
-          --config src-tauri/tauri.bundle.conf.json
+          node src-tauri/bundle.mjs
           --config src-tauri/tauri.signing.conf.json
           --config src-tauri/tauri.updater.conf.json
-          -- --locked
 
       - name: Remove the generated overlay
         if: always()

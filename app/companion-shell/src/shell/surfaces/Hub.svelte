@@ -12,6 +12,7 @@
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import type { InboxRow } from "$shell/hub/inbox";
   import { inboxPreview, totalsLine } from "$shell/hub/inboxView";
+  import { longPress } from "$shell/hub/longPress";
   import type { HubWorkstation } from "$shell/hub/workstations";
   import InboxItem from "$shell/surfaces/InboxItem.svelte";
   import InboxList from "$shell/surfaces/InboxList.svelte";
@@ -28,6 +29,9 @@
     /// A Workstation that offers `Try now` was tapped.
     onTryNow?: (workstation: HubWorkstation) => void;
     onDismiss: () => void;
+    /// A paired Workstation was long-pressed and the removal confirmed:
+    /// forget it on this phone. Absent in a browser, which pairs nothing.
+    onRemove?: ((workstation: HubWorkstation) => void) | null;
     /// "Pair a Workstation". Absent in a browser, which has no keys and no
     /// camera to pair with.
     onPair?: (() => void) | null;
@@ -64,6 +68,7 @@
     onOpen,
     onTryNow = () => {},
     onDismiss,
+    onRemove = null,
     onPair = null,
     inbox = null,
     onOpenItem = () => {},
@@ -84,6 +89,8 @@
   /// What the visit is doing meanwhile: fetching the Workstation's UI.
   const openingDetail = $derived(visit.status === "opening" ? visit.detail : null);
   const preview = $derived(inboxPreview(inbox ?? []));
+  /// The Workstation a long press asked to remove, until it is answered.
+  let removing = $state<string | null>(null);
 </script>
 
 <!-- The hub's own lines, over the hub and over the full list alike: a
@@ -130,7 +137,10 @@
       <section class="section" aria-label="Workstations">
         <ul class="cards">
           {#each workstations as ws (ws.id)}
-            <li>
+            <!-- The press is on the item, not the button: a card that
+                 cannot be tapped is a disabled button, and still has to
+                 be removable. -->
+            <li use:longPress={onRemove && !ws.demo ? () => (removing = ws.id) : null}>
               <button
                 type="button"
                 class="card state-{ws.state}"
@@ -159,6 +169,22 @@
                   <span class="try">Try now</span>
                 {/if}
               </button>
+              {#if removing === ws.id}
+                <div class="remove" role="alertdialog" aria-label="Remove {ws.name}">
+                  <p>Remove {ws.name} from this phone? Pairing it again starts at its desk.</p>
+                  <div class="remove-actions">
+                    <button type="button" class="action" onclick={() => (removing = null)}>Keep</button>
+                    <button
+                      type="button"
+                      class="action danger"
+                      onclick={() => {
+                        removing = null;
+                        onRemove?.(ws);
+                      }}>Remove</button
+                    >
+                  </div>
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -270,6 +296,13 @@
     background: var(--surface-raised);
     color: var(--text);
     text-align: left;
+  }
+  /* A card is pressed and held, never read: no selection to start and no
+     callout to raise under the finger. */
+  .cards > li {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
   .card:active:not(:disabled) {
     background: var(--surface-hover);
@@ -453,6 +486,32 @@
     background: var(--surface-accent);
     color: var(--accent-text);
     font-weight: 600;
+  }
+  .danger {
+    border-color: var(--border-danger);
+    color: var(--danger-text);
+    font-weight: 600;
+  }
+  .remove {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-top: var(--space-half);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+  }
+  .remove p {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+  .remove-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-1);
   }
   .action:active:not(:disabled) {
     background: var(--surface-hover);

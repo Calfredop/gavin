@@ -77,6 +77,34 @@ pub fn rendezvous_id(workstation_public_key: &[u8]) -> String {
     crate::hex_encode(&h.finalize())
 }
 
+/// Whether `presented` is the admission token `held`, compared as their
+/// SHA-256 digests and every byte of them, so the time it takes says
+/// nothing of how much of a guess was right or how long the token is.
+/// Both are trimmed, as the trust store trims what it keeps.
+pub fn admission_matches(held: &str, presented: &str) -> bool {
+    let digest = |token: &str| Sha256::digest(token.trim().as_bytes());
+    let (held, presented) = (digest(held), digest(presented));
+    let mut difference = 0u8;
+    for (a, b) in held.iter().zip(presented.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+/// The port a release build's daemon takes for its direct listener
+/// (ADR 0009).
+pub const DIRECT_PORT_RELEASE: u16 = 8445;
+
+/// The port a dev build's daemon takes for its direct listener. A port of
+/// its own, because the two daemons share one trust store and so one
+/// switch: with it on, both listen.
+pub const DIRECT_PORT_DEV: u16 = 8446;
+
+/// The port `gavin-relay` binds when `GAVIN_RELAY_LISTEN` does not say:
+/// what a Relay URL pointed at this machine should name, and what a
+/// direct port must never be.
+pub const RELAY_DEFAULT_PORT: u16 = 8443;
+
 /// The pin a pairing QR carries for the direct listener's certificate
 /// (ADR 0009, `PairingQr::direct_pin`):
 ///
@@ -281,6 +309,9 @@ pub enum RelayUrlError {
     /// A dev (debug) build asked to use a Relay that is not on this
     /// machine or this network. See `RelayUrl::parse_for`.
     PublicHostInDevBuild,
+    /// A port on this machine that one of its daemons' direct listeners
+    /// takes, which is not a Relay. See `RelayUrl::refuse_direct_listener`.
+    DirectListener(u16),
 }
 
 impl std::fmt::Display for RelayUrlError {
@@ -309,6 +340,10 @@ impl std::fmt::Display for RelayUrlError {
             RelayUrlError::PublicHostInDevBuild => write!(
                 f,
                 "a development build only talks to a Relay on this machine or this network — point it at the local dev stack (docs/dev-setup.md), or use a release build for a public Relay"
+            ),
+            RelayUrlError::DirectListener(port) => write!(
+                f,
+                "port {port} on this machine is gavin's direct connection, not a Relay — a Relay run on this machine listens on a port of its own ({RELAY_DEFAULT_PORT} unless GAVIN_RELAY_LISTEN says otherwise)"
             ),
         }
     }
@@ -394,6 +429,66 @@ impl RelayUrl {
         }
         Ok(Self { url: url.to_string(), secure, host: host.to_string(), port, local })
     }
+
+    /// The URL, unless it names a direct listener on this machine.
+    ///
+    /// A direct listener (ADR 0009) speaks TLS and answers only a Device's
+    /// hello, so a daemon given one as its Relay dials ITSELF: the dial
+    /// fails as a protocol error, the listener logs a corrupt TLS record,
+    /// and a pairing QR hands the phone the same port twice, under two
+    /// meanings. That is what a Relay URL of `ws://<this Mac>:8445` did on
+    /// 2026-10-14. Refused here by name, so the human is told which port
+    /// is which instead of reading two protocol errors.
+    ///
+    /// `this_machine` is the hosts this machine answers to, as text
+    /// (addresses or names); loopback, `localhost` and the unspecified
+    /// address count whatever it says. `direct_ports` is the ports the
+    /// direct listeners take. Nothing is resolved: what this machine is,
+    /// the caller found out.
+    pub fn refuse_direct_listener(
+        self,
+        this_machine: &[String],
+        direct_ports: &[u16],
+    ) -> Result<Self, RelayUrlError> {
+        if direct_ports.contains(&self.port) && host_is_this_machine(&self.host, this_machine) {
+            return Err(RelayUrlError::DirectListener(self.port));
+        }
+        Ok(self)
+    }
+}
+
+/// A host, as a thing to compare: an address with an IPv4-mapped IPv6
+/// address read as the IPv4 address it maps, or a name with its case and
+/// one trailing dot set aside. `None` for neither.
+#[derive(PartialEq, Eq)]
+enum Machine {
+    Address(std::net::IpAddr),
+    Name(String),
+}
+
+fn machine_of(host: &str) -> Option<Machine> {
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        return Some(Machine::Address(address.to_canonical()));
+    }
+    match name_or_ipv4(host) {
+        Ok(None) => {
+            Some(Machine::Name(host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `host` is this machine: a loopback address or name, the
+/// unspecified address (which a dial delivers to this machine), or one of
+/// `this_machine`.
+pub fn host_is_this_machine(host: &str, this_machine: &[String]) -> bool {
+    let Some(machine) = machine_of(host) else { return false };
+    let always = match &machine {
+        Machine::Address(address) => address.is_loopback() || address.is_unspecified(),
+        Machine::Name(name) => name == "localhost" || name.ends_with(".localhost"),
+    };
+    always || this_machine.iter().filter_map(|h| machine_of(h)).any(|h| h == machine)
 }
 
 /// A port as it is written: decimal digits and nothing else, from 1 to
@@ -485,6 +580,15 @@ mod tests {
     /// Pinned, so the Companion's implementer has a vector to check
     /// theirs against and a change to the derivation fails here rather
     /// than stranding every paired Device.
+    #[test]
+    fn an_admission_token_matches_only_itself() {
+        assert!(admission_matches("let-me-in", "let-me-in"));
+        assert!(admission_matches("let-me-in", " let-me-in\n"), "trimmed, as the store keeps it");
+        assert!(!admission_matches("let-me-in", "let-me-i"));
+        assert!(!admission_matches("let-me-in", "let-me-in-too"));
+        assert!(!admission_matches("let-me-in", ""));
+    }
+
     #[test]
     fn the_rendezvous_id_is_pinned() {
         let id = rendezvous_id(&[1u8; 32]);
@@ -682,6 +786,9 @@ mod tests {
             RelayUrlError::PlainToPublicHost => "plain-to-public-host",
             // `parse_for`'s, never `parse`'s, so the shared table has no case for it.
             RelayUrlError::PublicHostInDevBuild => "public-host-in-dev-build",
+            // `refuse_direct_listener`'s, judged for a case that says
+            // what this machine is.
+            RelayUrlError::DirectListener(_) => "direct-listener",
         }
     }
 
@@ -700,7 +807,24 @@ mod tests {
         let mut refusals = std::collections::BTreeSet::new();
         for case in &cases {
             let url = case["url"].as_str().unwrap();
-            let judged = RelayUrl::parse(url);
+            let judged = match case.get("thisMachine") {
+                None => RelayUrl::parse(url),
+                Some(here) => {
+                    let hosts: Vec<String> = here["hosts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|h| h.as_str().unwrap().to_string())
+                        .collect();
+                    let ports: Vec<u16> = here["directPorts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|p| p.as_u64().unwrap() as u16)
+                        .collect();
+                    RelayUrl::parse(url).and_then(|p| p.refuse_direct_listener(&hosts, &ports))
+                }
+            };
             match (case.get("dial"), case.get("refuse")) {
                 (Some(dial), None) => {
                     let parsed = judged.unwrap_or_else(|e| panic!("{url:?} was refused: {e}"));
@@ -724,7 +848,14 @@ mod tests {
         // Every refusal there is has a case, so one that was added
         // without being put in the table fails here.
         let every: Vec<&str> = vec![
-            "credentials", "host", "no-host", "no-scheme", "plain-to-public-host", "port", "scheme",
+            "credentials",
+            "direct-listener",
+            "host",
+            "no-host",
+            "no-scheme",
+            "plain-to-public-host",
+            "port",
+            "scheme",
         ];
         assert_eq!(refusals.iter().map(String::as_str).collect::<Vec<_>>(), every);
     }

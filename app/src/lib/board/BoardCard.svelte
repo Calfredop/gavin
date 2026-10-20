@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { Label } from "$lib/board/kanban";
+  import { canReplay, type Label } from "$lib/board/kanban";
   import { slugStatus, type CardView } from "$lib/core/planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Send, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/cards/complexity";
   import { cardOverrideNote } from "$lib/cards/cardAgent";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -27,7 +27,7 @@
   import { tooltip } from "$lib/core/tooltip";
   import { layoutState, resolvedAgents } from "$lib/core/layoutState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
-  import { agentPromptBlocker } from "$lib/cards/cardRun";
+  import { agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { sshRunBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
   import { jumpToBoundSession, revealDevelopingCard } from "$lib/cards/cardRunActions";
@@ -124,7 +124,11 @@
         action: "open the card to resume it",
       };
     if (state === "exited")
-      return { indicator: agentExitedIndicator(), action: "open the card for Re-launch" };
+      return {
+        indicator: agentExitedIndicator(),
+        // A binding with no recorded launch has no Re-launch to offer.
+        action: canReplay(binding) ? "open the card for Re-launch" : "open the card to launch a new session",
+      };
     // The acknowledged, verdict-aware view, like the tab badge and the
     // sidebar dot: one session, one answer, wherever it is drawn -- and
     // a question asked in prose is a wait on all three of them.
@@ -292,15 +296,17 @@
       class="glyph"
       use:tooltip={card.kind === "note"
         ? "Note — a reminder"
-        : card.kind === "task"
-          ? "Task — the body is an agent prompt"
-          : card.checklistTotal > 0
+        : isDirectPrompt(card)
+          ? "Direct task — the body is sent to the agent exactly as written"
+          : card.kind === "task"
+            ? "Task — the body is an agent prompt"
+            : card.checklistTotal > 0
             ? "Plan — multi-step work with a checklist"
             : "Plan — multi-step work (no checklist yet)"}
     >
-      {#if card.kind === "note"}<StickyNote size={11} />{:else if card.kind === "task"}<Play
+      {#if card.kind === "note"}<StickyNote size={11} />{:else if isDirectPrompt(card)}<Send
           size={11}
-        />{:else}<FileText size={11} />{/if}
+        />{:else if card.kind === "task"}<Play size={11} />{:else}<FileText size={11} />{/if}
     </span>
     {#if railBadge}
       <span
@@ -533,18 +539,18 @@
   }
   .card.kind-task {
     background: var(--surface-accent);
-    border: 1px dashed var(--border-accent);
+    border: 1px solid var(--border-accent);
   }
   .card.kind-plan {
     background: var(--surface-success);
-    border: 1px dashed var(--border-success);
+    border: 1px solid var(--border-success);
   }
   .card:hover {
     border-color: var(--border-strong);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
-  /* A ring rather than a border swap: the kind borders (dashed task,
-     dashed plan) still have to read through the selection. */
+  /* A ring rather than a border swap: the kind borders (accent task,
+     success plan) still have to read through the selection. */
   .card.selected {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent);

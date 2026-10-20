@@ -64,7 +64,14 @@ describe("the per-run Changes view", () => {
   it("counts them in the summary and names them in the discard prompt", () => {
     const modal = source(MODAL);
     expect(modal).toContain("changesSummary(changes, foreignCount)");
-    expect(modal).toContain("discardPrompt(changes, title, foreign.map(foreignLine))");
+    expect(modal).toContain(
+      'discardPrompt(changes, title, foreign.map(foreignLine), source === "transcript")'
+    );
+  });
+
+  it("skips attribution when the transcript already named the files", () => {
+    expect(source("runChangesState.ts")).toContain("if (!narrowed)");
+    expect(source(MODAL)).toContain('source === "transcript" ? null');
   });
 });
 

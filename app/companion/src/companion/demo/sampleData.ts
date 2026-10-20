@@ -29,6 +29,8 @@ import type { DemoTerminal } from "$companion/demo/sessions";
 import { sampleOwners } from "$companion/demo/owners";
 import type { SessionOwner } from "$lib/core/sessionOwnership";
 import { sampleTerminals } from "$companion/demo/transcripts";
+import { sampleToolRuns, sampleTools, type DemoToolRun } from "$companion/demo/toolCommands";
+import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
 
 export const DEMO = {
   workstation: { id: "demo", name: "Demo Workstation", demo: true },
@@ -91,6 +93,11 @@ export interface DemoState {
   /// Which Device each session takes input from, by session: only the
   /// sessions a Device owns (owners.ts).
   owners: Record<string, SessionOwner>;
+  /// The tool library's stored rows, every workspace's and the global
+  /// ones (toolCommands.ts); the built-ins are the app's, not stored.
+  tools: ToolRecord[];
+  /// Every standalone run of a tool, oldest first.
+  toolRuns: DemoToolRun[];
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
@@ -444,6 +451,8 @@ export function sampleState(): DemoState {
     terminals: sampleTerminals(DEMO.home),
     browsers: sampleBrowsers(),
     owners: sampleOwners(),
+    tools: sampleTools(),
+    toolRuns: sampleToolRuns(Math.floor(Date.now() / 1000)),
     launched: 0,
     settings: sampleSettings(),
   };

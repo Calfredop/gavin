@@ -173,6 +173,8 @@ pub struct PairingHandshake {
     /// holds by signing this handshake with it. What every later
     /// connection's signature is verified against.
     pub hardware_key: Vec<u8>,
+    /// What backs that key (06 §5.7). `None` when the Device omitted it.
+    pub key_kind: Option<protocol::device_wire::KeyKind>,
     /// The six digits BOTH screens show (`protocol::pairing_sas`).
     pub sas: String,
     /// The encrypted channel the handshake left behind.
@@ -233,6 +235,7 @@ pub struct HandshakeOutcome {
     pub name: String,
     pub public_key: Vec<u8>,
     pub hardware_key: Vec<u8>,
+    pub key_kind: Option<protocol::device_wire::KeyKind>,
     pub sas: String,
     pub transport: snow::TransportState,
 }
@@ -262,14 +265,27 @@ pub fn run_responder<S: Read + Write>(
     offer: &PairingOffer,
     now_us: i64,
 ) -> anyhow::Result<PairingHandshake> {
+    run_responder_as(stream, store, offer, now_us, protocol::BuildProfile::current())
+}
+
+/// `run_responder` with an explicit build profile, so a debug build can
+/// exercise the release refusal of `software-debug` (06 §5.7).
+pub fn run_responder_as<S: Read + Write>(
+    stream: &mut S,
+    store: &TrustStore,
+    offer: &PairingOffer,
+    now_us: i64,
+    profile: protocol::BuildProfile,
+) -> anyhow::Result<PairingHandshake> {
     let keys = ResponderKeys::from_store(store)?;
-    let outcome = run_responder_with_keys(stream, &keys, offer, now_us)?;
+    let outcome = run_responder_with_keys(stream, &keys, offer, now_us, profile)?;
     let device_id = device_id_for(store, &outcome.public_key)?;
     Ok(PairingHandshake {
         device_id,
         name: outcome.name,
         public_key: outcome.public_key,
         hardware_key: outcome.hardware_key,
+        key_kind: outcome.key_kind,
         sas: outcome.sas,
         transport: outcome.transport,
     })
@@ -294,6 +310,7 @@ pub fn run_responder_with_keys<S: Read + Write>(
     keys: &ResponderKeys,
     offer: &PairingOffer,
     now_us: i64,
+    profile: protocol::BuildProfile,
 ) -> anyhow::Result<HandshakeOutcome> {
     // Before a single byte is read. An expired secret is not a handshake
     // that fails late: it is a ceremony that is over, and the phone
@@ -372,9 +389,16 @@ pub fn run_responder_with_keys<S: Read + Write>(
     let proof = read_sealed(stream, &mut transport).map_err(|e| {
         anyhow::anyhow!("gavin-daemon: the device sent no proof of its hardware key ({e})")
     })?;
-    let hardware_key = crate::unlock::registering(&proof, &hash)?;
+    let registered = crate::unlock::registering(&proof, &hash, profile)?;
 
-    Ok(HandshakeOutcome { name, public_key, hardware_key, sas, transport })
+    Ok(HandshakeOutcome {
+        name,
+        public_key,
+        hardware_key: registered.key,
+        key_kind: registered.kind,
+        sas,
+        transport,
+    })
 }
 
 /// Tells the Device its proof was taken: this handshake holds the offer,
@@ -684,6 +708,7 @@ mod tests {
             name: handshake.name.clone(),
             role: crate::trust::DeviceRole::Remote,
             hardware_key: handshake.hardware_key.clone(),
+            key_kind: handshake.key_kind,
             notification_key: vec![0x5c; 32],
         }
     }
@@ -784,6 +809,7 @@ mod tests {
                 protocol::device_wire::UnlockProof {
                     signature: protocol::hex_encode(&another.sign(hash)),
                     hardware_key: Some(protocol::hex_encode(&registered.public())),
+                    key_kind: Some(protocol::device_wire::KeyKind::Hardware),
                 }
                 .to_bytes(),
             )

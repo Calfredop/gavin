@@ -564,6 +564,67 @@ describe("startRailTargetWorkspace", () => {
       reason: expect.stringContaining("no longer exists"),
     });
   });
+
+  // An ssh workspace's plan is host-writable. Arming a LOCAL workspace
+  // from it would let the host start rails on the desk without a click
+  // on that local workspace -- the trust boundary the ssh link draws
+  // for trees and sessions.
+  it("refuses an ssh caller arming a local workspace", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-ssh", ssh: { host: "h" } },
+          { id: "ws-local" },
+        ],
+        "ws-ssh",
+        "ws-local"
+      )
+    ).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("same host"),
+    });
+  });
+
+  it("refuses an ssh caller arming a workspace on a different host", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-a", ssh: { host: "a" } },
+          { id: "ws-b", ssh: { host: "b" } },
+        ],
+        "ws-a",
+        "ws-b"
+      )
+    ).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("same host"),
+    });
+  });
+
+  it("allows an ssh caller to arm another workspace on the same host", () => {
+    expect(
+      startRailTargetWorkspace(
+        [
+          { id: "ws-a", ssh: { host: "h" } },
+          { id: "ws-b", ssh: { host: "h" } },
+        ],
+        "ws-a",
+        "ws-b"
+      )
+    ).toEqual({ kind: "ok", workspaceId: "ws-b" });
+  });
+
+  // Local-to-local (and local-to-ssh) cross-workspace start-rail stays
+  // as the StepParamsDialog picker already offers it.
+  it("still allows a local caller to arm any known workspace", () => {
+    expect(
+      startRailTargetWorkspace(
+        [{ id: "ws-1" }, { id: "ws-2", ssh: { host: "h" } }],
+        "ws-1",
+        "ws-2"
+      )
+    ).toEqual({ kind: "ok", workspaceId: "ws-2" });
+  });
 });
 
 // The question the daemon's push handler asks before it decides whether
@@ -753,6 +814,63 @@ describe("nextActions", () => {
       stepRuns: [{ stepId: "t1", state: "stalled", sessionId: null, reason: "boom" }],
     };
     expect(nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set())).toEqual([]);
+  });
+
+  // The race Rule 5 creates: the session dies a tick before the board
+  // shows Done, the step stalls and the rail pauses, then the card
+  // lands in Done. Without this, the obsolete stall sits forever on a
+  // paused rail because Rule 1 only walks running rails.
+  it("marks a stalled step done on a paused rail when its card has since reached Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [
+        {
+          stepId: "t1",
+          state: "stalled",
+          sessionId: null,
+          reason: "agent exited before the card reached Done",
+        },
+      ],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([
+      { kind: "markDone", stepId: "t1" },
+    ]);
+  });
+
+  it("marks a stalled step done on an idle rail when its card has since reached Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "idle", currentStageId: null }],
+      stepRuns: [
+        {
+          stepId: "t1",
+          state: "stalled",
+          sessionId: null,
+          reason: "agent exited before the card reached Done",
+        },
+      ],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([
+      { kind: "markDone", stepId: "t1" },
+    ]);
+  });
+
+  // Skip is a human decision that the rail is past this step. A card
+  // that later reaches Done must not quietly rewrite that as delivered.
+  it("leaves a skipped step alone on a paused rail even when its card reaches Done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set())).toEqual([]);
   });
 
   it("launches every step of a parallel stage at once", () => {

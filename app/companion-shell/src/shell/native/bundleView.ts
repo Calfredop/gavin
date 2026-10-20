@@ -61,6 +61,9 @@ export interface BundleViewPlugin {
   /// Whether this debug build was launched to run the bundle probe.
   /// Always false in a release build.
   probeRequested(): Promise<{ probe: boolean }>;
+  /// Whether this debug build should open the first ready Workstation
+  /// after Unlock (`scripts/snapshot.sh`). Always false in a release build.
+  openFirstRequested(): Promise<{ open: boolean }>;
   addListener(event: "message", listener: (e: BundleMessageEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "dropped", listener: (e: BundleDroppedEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "closed", listener: (e: BundleClosedEvent) => void): Promise<PluginListenerHandle>;

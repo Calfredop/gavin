@@ -51,6 +51,46 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* A press held a moment too long on a phone starts a text selection, and
+   on iOS the callout, instead of the control's own gesture. So nothing
+   selects unless it is there to read: the desktop window's own default
+   (`src/routes/+page.svelte`), here for the phone's two webviews and never
+   the desk's, which does not load this file. The desktop components the
+   bundle draws were written against that default and opt their own text
+   back in (a file's markdown, CodeMirror, xterm); the phone's own
+   surfaces opt in theirs, by class. WKWebView honours only the prefixed
+   property. The callout stays off everywhere, readable text included: it
+   is a link's preview and Open, and Open would take the sealed webview
+   off the bundle -- the Copy of a selection is the edit menu, not it. */
+html {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* What is there to read whatever surface draws it: a field, a block of
+   code, and an error line a person might paste somewhere. */
+input,
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+pre,
+code,
+[role="alert"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* And what is pressed never selects, though it sits inside text that
+   does: a Dismiss inside an error line, a link row inside a card's body. */
+button,
+summary,
+label,
+[role="button"],
+[role="tab"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* A button no component sizes takes the browser's own control size,
    13.333px in Chrome, fixed, which no text size reaches: a workspace
    row's counts and the Git tab's Commit stayed that size at the largest

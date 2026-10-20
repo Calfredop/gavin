@@ -264,6 +264,8 @@
     line-height: 1.5;
   }
   .note.problem {
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--danger-text);
   }
   /* The card an inbox item landed on: outlined, so the eye finds it in

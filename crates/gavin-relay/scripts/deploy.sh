@@ -22,6 +22,9 @@ Usage:
   $(basename "$0") token
   $(basename "$0") print-unit
 
+  run defaults --publish to 8443:8443, or to 127.0.0.1:8443:8443 when the
+  env file sets GAVIN_RELAY_TLS_TERMINATED=1 (plain WebSocket behind a proxy).
+
 Environment:
   GAVIN_RELAY_IMAGE   image tag (default: gavin-relay)
 EOF
@@ -40,12 +43,13 @@ case "$cmd" in
   run)
     env_file=""
     name="gavin-relay"
-    publish="8443:8443"
+    publish=""
+    publish_set=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --env-file) env_file="$2"; shift 2 ;;
         --name) name="$2"; shift 2 ;;
-        --publish) publish="$2"; shift 2 ;;
+        --publish) publish="$2"; publish_set=1; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -57,12 +61,19 @@ case "$cmd" in
       echo "gavin-relay: env file not found: $env_file" >&2
       exit 1
     fi
+    if [[ "$publish_set" -eq 0 ]]; then
+      if grep -Eq '^[[:space:]]*GAVIN_RELAY_TLS_TERMINATED=1([[:space:]]|#|$)' "$env_file"; then
+        publish="127.0.0.1:8443:8443"
+      else
+        publish="8443:8443"
+      fi
+    fi
     # shellcheck disable=SC2086
     docker run -d --name "$name" --restart unless-stopped \
       -p "$publish" \
       --env-file "$env_file" \
       "$image"
-    printf 'running %s (image %s)\n' "$name" "$image"
+    printf 'running %s (image %s, publish %s)\n' "$name" "$image" "$publish"
     docker logs --tail 5 "$name"
     ;;
 

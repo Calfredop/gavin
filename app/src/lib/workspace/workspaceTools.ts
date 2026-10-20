@@ -250,6 +250,22 @@ export function toolCwdLabel(tool: Pick<Tool, "cwd">): string | null {
   return own && own !== "." ? own : null;
 }
 
+/// What an `agent` tool run's session says about how the run went, or
+/// null while it says nothing yet. The rule is the rail's, deliberately
+/// (orchestration.ts `agentTurnEnded`): an agent tool's session never
+/// exits, so its turn ending IS its completion, and a broken agent --
+/// which failure detection tells apart from a quiet one by reading the
+/// rendered screen -- is its failure. Idle at the first prompt is not a
+/// finished turn, so `passed` waits for the session to have worked.
+///
+/// One rule for every watcher that files a verdict: the desk's, and a
+/// Device's for the runs it started.
+export function agentToolVerdict(status: string | undefined, seenWorking: boolean): "passed" | "failed" | null {
+  if (status === "failed") return "failed";
+  if (status === "idle" && seenWorking) return "passed";
+  return null;
+}
+
 /// Why a kind never runs on its own, in its own words. One sentence per
 /// kind rather than one sentence with the kind interpolated: "an until
 /// step's verdict sends the rail backwards" and "a pr step is nothing

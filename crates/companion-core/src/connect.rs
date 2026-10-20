@@ -273,7 +273,11 @@ impl ConnectClient {
     /// the hardware returned it (ASN.1 DER).
     pub fn prove(&mut self, signature: &[u8]) -> Result<Vec<ConnectEvent>, CoreError> {
         let proof =
-            UnlockProof { signature: protocol::hex_encode(signature), hardware_key: None };
+            UnlockProof {
+                signature: protocol::hex_encode(signature),
+                hardware_key: None,
+                key_kind: None,
+            };
         self.prove_with(&proof.to_bytes())
     }
 
@@ -592,7 +596,11 @@ mod tests {
         let [ConnectEvent::Send(proof)] = events.as_slice() else { panic!("{events:?}") };
         assert_eq!(
             workstation.read_proof(proof),
-            UnlockProof { signature: protocol::hex_encode(SIGNATURE), hardware_key: None }
+            UnlockProof {
+                signature: protocol::hex_encode(SIGNATURE),
+                hardware_key: None,
+                key_kind: None,
+            }
         );
     }
 
@@ -968,8 +976,9 @@ mod tests {
     }
 
     /// A Workstation that offered its direct listener (ADR 0009) is
-    /// dialled there first, with the pin and with no admission token --
-    /// the token is the Relay's -- and through its Relays after.
+    /// dialled there first, with the pin, and through its Relays after --
+    /// every dial with the one token the QR carried, which the listener
+    /// asks for as the Relay does (amended 2026-10-15).
     #[test]
     fn a_workstation_with_a_direct_listener_is_dialled_there_first() {
         let mut offer = offer();
@@ -992,7 +1001,7 @@ mod tests {
         let rendezvous = relay::rendezvous_id(&workstation.workstation_key);
         for direct in &dials[..2] {
             assert_eq!(direct.pin.as_deref(), Some("ab".repeat(32).as_str()));
-            assert_eq!(direct.hello, RelayHello::device("", &rendezvous, relay::PURPOSE_CONNECT));
+            assert_eq!(direct.hello, RelayHello::device("let-me-in", &rendezvous, relay::PURPOSE_CONNECT));
         }
         for relay in &dials[2..] {
             assert_eq!(relay.pin, None);

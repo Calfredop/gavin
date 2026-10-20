@@ -84,4 +84,19 @@ describe("usage cache surfaces", () => {
     expect(sidebar).toContain("class:usage-updating=");
     expect(sidebar).toContain(".sidebar.collapsed .footer-row.usage-updating");
   });
+
+  // Fleet hourglass stays as the row's first status icon; per-agent
+  // letter avatars sit beside it. At limit is gone — the avatars already
+  // carry each agent's semaphore. Running is attributed by launch argv0.
+  it("draws the hourglass then one avatar badge per linked agent", () => {
+    const sidebar = source("Sidebar.svelte");
+    expect(sidebar).toContain("worstUsageProjection");
+    expect(sidebar).toContain("footer-semaphore");
+    expect(sidebar).toContain("usageRowBadges");
+    expect(sidebar).toContain("usage-agent-badge");
+    expect(sidebar).toContain("profileIdForCommand");
+    expect(sidebar).toContain("class:running={badge.running}");
+    expect(sidebar).not.toContain("pauseLabel");
+    expect(sidebar).not.toContain("activePause");
+  });
 });

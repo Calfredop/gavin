@@ -64,9 +64,25 @@ pub enum Delivery {
     Unavailable(String),
 }
 
+/// What a push carries: Workstation ciphertext, or a proof-of-possession
+/// nonce the Device must echo back before its claim becomes deliverable.
+#[derive(Clone, Copy, Debug)]
+pub enum PushBody<'a> {
+    Ciphertext(&'a [u8]),
+    /// Cleartext nonce field `v` — the phone proves it holds the token by
+    /// posting it back. Never a Workstation payload.
+    Verification(&'a str),
+}
+
 pub trait Sender: Send + Sync {
     fn supports(&self, platform: Platform) -> bool;
-    fn send<'a>(&'a self, target: Target<'a>, ciphertext: &'a [u8]) -> BoxFuture<'a, Delivery>;
+    fn send<'a>(&'a self, target: Target<'a>, body: PushBody<'a>) -> BoxFuture<'a, Delivery>;
+    /// Dry-run exposes the verification nonce in the HTTP answer so a
+    /// local stack can confirm without a real phone. Live delivery never
+    /// does: the nonce reaches only the token holder, via the push.
+    fn reveals_verification_nonce(&self) -> bool {
+        false
+    }
 }
 
 /// The real thing: APNs for iOS, FCM for Android, each only when its
@@ -84,15 +100,15 @@ impl Sender for Live {
         }
     }
 
-    fn send<'a>(&'a self, target: Target<'a>, ciphertext: &'a [u8]) -> BoxFuture<'a, Delivery> {
+    fn send<'a>(&'a self, target: Target<'a>, body: PushBody<'a>) -> BoxFuture<'a, Delivery> {
         Box::pin(async move {
             match target {
                 Target::Apns { token, environment } => match &self.apns {
-                    Some(apns) => apns.send(token, environment, ciphertext).await,
+                    Some(apns) => apns.send(token, environment, body).await,
                     None => Delivery::Rejected("apns-not-configured".into()),
                 },
                 Target::Fcm { token } => match &self.fcm {
-                    Some(fcm) => fcm.send(token, ciphertext).await,
+                    Some(fcm) => fcm.send(token, body).await,
                     None => Delivery::Rejected("fcm-not-configured".into()),
                 },
             }
@@ -111,15 +127,19 @@ impl Sender for DryRun {
         true
     }
 
-    fn send<'a>(&'a self, target: Target<'a>, ciphertext: &'a [u8]) -> BoxFuture<'a, Delivery> {
+    fn send<'a>(&'a self, target: Target<'a>, body: PushBody<'a>) -> BoxFuture<'a, Delivery> {
         Box::pin(async move {
-            self.log.info(format!(
-                "dry run: would send {} bytes to {}",
-                ciphertext.len(),
-                target.platform().as_str()
-            ));
+            let what = match body {
+                PushBody::Ciphertext(c) => format!("{} ciphertext bytes", c.len()),
+                PushBody::Verification(_) => "a verification nonce".into(),
+            };
+            self.log.info(format!("dry run: would send {what} to {}", target.platform().as_str()));
             Delivery::Delivered
         })
+    }
+
+    fn reveals_verification_nonce(&self) -> bool {
+        true
     }
 }
 

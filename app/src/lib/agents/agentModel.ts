@@ -61,10 +61,18 @@ function quoteModel(model: string): string {
 /// A command that already names a model WINS: it is the more specific
 /// statement of intent, and two `--model` flags is an argv error rather
 /// than a preference the agent could resolve.
+///
+/// The flag itself must be inert (`flagIsInert`): `[agent] model_flag`
+/// arrives from a cloned repo's config.toml and is appended unquoted,
+/// same as `effort_flag`. A flag carrying shell syntax is dropped rather
+/// than composed into the `sh -c` line.
 export function composeLaunchCommand(command: string, flag: string, model: string): string {
   const chosen = model.trim();
-  if (!chosen || !flag || commandSpecifiesModel(command, flag)) return command;
-  return `${command} ${flag} ${quoteModel(chosen)}`;
+  const usable = flag.trim();
+  if (!chosen || !usable || !flagIsInert(usable) || commandSpecifiesModel(command, usable)) {
+    return command;
+  }
+  return `${command} ${usable} ${quoteModel(chosen)}`;
 }
 
 /// Whether a flag is safe to write into a shell command as it stands.

@@ -17,6 +17,7 @@ import {
   type CardSituation,
 } from "$lib/cards/cardDetail";
 import type { SessionStatus } from "$lib/core/notifications";
+import { NOTHING_TO_REPLAY } from "$lib/board/kanban";
 
 const ids = (situation: CardSituation): string[] =>
   (cardSessionBar(situation)?.actions ?? []).map((a) => a.id);
@@ -63,13 +64,59 @@ describe("cardSessionBar", () => {
     expect(ids({ kind: "bound", phase: "live", status: "working", orphan: false })).toEqual([
       "jump",
       "relaunch",
+      "new-session",
     ]);
     expect(enabled({ kind: "bound", phase: "live", status: "working", orphan: false })).toEqual([
       "jump",
     ]);
     expect(enabled({ kind: "bound", phase: "exited", status: null, orphan: false })).toEqual([
       "relaunch",
+      "new-session",
     ]);
+  });
+
+  // A binding linked to a session that was already running recorded no
+  // launch, and replaying nothing started a bare shell. Re-launch stays
+  // drawn -- greyed, with the reason -- and the new session leads.
+  it("greys Re-launch with its reason when there is no launch to replay", () => {
+    const bar = cardSessionBar({
+      kind: "bound",
+      phase: "exited",
+      status: null,
+      orphan: false,
+      replayable: false,
+    })!;
+    expect(bar.actions.map((a) => a.id)).toEqual(["jump", "relaunch", "new-session"]);
+    expect(bar.actions.find((a) => a.id === "relaunch")).toMatchObject({
+      enabled: false,
+      reason: NOTHING_TO_REPLAY,
+    });
+    expect(primaryAction(bar)).toBe("new-session");
+    // While the agent is live, the live agent is the reason, and the bar
+    // already says so.
+    const live = cardSessionBar({
+      kind: "bound",
+      phase: "live",
+      status: "working",
+      orphan: false,
+      replayable: false,
+    })!;
+    expect(live.actions.find((a) => a.id === "relaunch")?.reason).toBeUndefined();
+    expect(enabled({ kind: "bound", phase: "live", status: "working", orphan: false, replayable: false })).toEqual([
+      "jump",
+    ]);
+  });
+
+  it("carries the binding's replayable through the situation", () => {
+    const situation = cardSituation({
+      cardKind: "task",
+      bestOfN: null,
+      binding: { phase: "exited", status: null, orphan: false, replayable: false },
+      developing: false,
+      canDevelop: false,
+      runBlocked: false,
+    });
+    expect(situation).toMatchObject({ kind: "bound", replayable: false });
   });
 
   it("adds Resume to an interrupted or failed run, ahead of the pair", () => {
@@ -78,6 +125,7 @@ describe("cardSessionBar", () => {
         "resume",
         "jump",
         "relaunch",
+        "new-session",
       ]);
     }
     const interrupted = cardSessionBar({
@@ -100,7 +148,7 @@ describe("cardSessionBar", () => {
       orphan: true,
     })!;
     expect(bar.actions[0]).toMatchObject({ id: "end-orphan", danger: true });
-    expect(bar.actions.map((a) => a.id)).toEqual(["end-orphan", "resume", "jump", "relaunch"]);
+    expect(bar.actions.map((a) => a.id)).toEqual(["end-orphan", "resume", "jump", "relaunch", "new-session"]);
     expect(bar.tone).toBe("danger");
     expect(bar.wantsHuman).toBe(true);
     expect(bar.headline).toContain("its process is still running");
@@ -142,9 +190,9 @@ describe("cardSessionBar", () => {
     ).toEqual([]);
   });
 
-  it("replaces every launch with one jump while the card is being developed", () => {
+  it("replaces every launch with a jump and a way out while the card is being developed", () => {
     const bar = cardSessionBar({ kind: "developing" })!;
-    expect(bar.actions.map((a) => a.id)).toEqual(["develop-jump"]);
+    expect(bar.actions.map((a) => a.id)).toEqual(["develop-jump", "develop-finish"]);
     expect(bar.wantsHuman).toBe(false);
   });
 
@@ -174,6 +222,12 @@ describe("settingsSummary", () => {
   it("says nothing about committing on a kind that cannot carry it", () => {
     expect(settingsSummary({ ...base, autoCommitApplies: false })).toBe(
       "no labels · no attachments"
+    );
+  });
+
+  it("says a task is a direct prompt even folded: it changes what the agent is sent", () => {
+    expect(settingsSummary({ ...base, autoCommitApplies: false, direct: true })).toBe(
+      "no labels · no attachments · direct prompt"
     );
   });
 

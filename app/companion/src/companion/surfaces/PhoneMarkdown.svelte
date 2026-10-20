@@ -1,34 +1,38 @@
 <script lang="ts">
   // A card's body or a PRD, rendered: the desk's one markdown pass
-  // (`renderMarkdown`, frontmatter left out), sanitized as the desk's card
-  // detail sanitizes it, and set for reading on a phone.
-  import DOMPurify from "dompurify";
+  // (`sanitizeMarkdown`, frontmatter left out and style forbidden), and
+  // set for reading on a phone. Links leave through the shell into the
+  // system browser — the bundle's own webview navigates nowhere (ADR 0005).
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { renderMarkdown } from "$lib/files/markdown";
+  import { sanitizeMarkdown } from "$lib/files/sanitizeMarkdown";
+  import { markdownLinkClick } from "$lib/files/markdownLinks";
 
   interface Props {
     content: string;
   }
   let { content }: Props = $props();
 
-  const html = $derived(DOMPurify.sanitize(renderMarkdown(content)));
+  const html = $derived(sanitizeMarkdown(content));
 
-  // A link leaves the bundle through the shell, into the system browser:
-  // the bundle's own webview navigates nowhere (ADR 0005).
   function follow(event: MouseEvent): void {
-    const link = (event.target as Element | null)?.closest?.("a[href]");
-    if (!link) return;
-    event.preventDefault();
-    const href = link.getAttribute("href") ?? "";
-    if (/^https?:\/\//i.test(href)) void openUrl(href).catch(() => {});
+    const href = markdownLinkClick(event);
+    if (href) void openUrl(href).catch(() => {});
   }
 </script>
 
 <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
-<div class="markdown" role="presentation" onclick={follow}>{@html html}</div>
+<div
+  class="markdown"
+  role="presentation"
+  onclick={follow}
+  onauxclick={follow}
+>{@html html}</div>
 
 <style>
   .markdown {
+    /* Prose is read, so it selects where the page does not (phone.css). */
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--text);
     font-size: 0.9375rem;
     line-height: 1.55;

@@ -205,7 +205,8 @@ export function patchPlanField(
     | "complexity"
     | "agent"
     | "model"
-    | "effort",
+    | "effort"
+    | "direct",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -237,6 +238,9 @@ export function patchPlanField(
         if (key === "agent") return { ...p, agent: value.trim() || null };
         if (key === "model") return { ...p, model: value.trim() || null };
         if (key === "effort") return { ...p, effort: value.trim() || null };
+        // Empty clears the line, which reads as false -- the daemon's
+        // own default for a card that says nothing.
+        if (key === "direct") return { ...p, direct: value.trim().toLowerCase() === "true" };
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

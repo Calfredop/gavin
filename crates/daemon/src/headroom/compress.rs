@@ -719,7 +719,7 @@ fn is_tagged_for(url: &str, session_id: &str) -> bool {
 }
 
 /// A POSIX single-quoted word: exactly `text`, whatever it holds.
-fn single_quoted(text: &str) -> String {
+pub(crate) fn single_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
@@ -756,7 +756,7 @@ fn with_codex_base_url(line: &str, url: &str) -> Option<String> {
 /// Whether a command word runs the binary called `name`, by path or
 /// bare, with or without an extension -- the reading `Agent::from_command`
 /// gives a first token.
-fn names_binary(word: &str, name: &str) -> bool {
+pub(crate) fn names_binary(word: &str, name: &str) -> bool {
     Path::new(word).file_stem().and_then(|stem| stem.to_str()) == Some(name)
 }
 
@@ -779,7 +779,7 @@ fn names_binary(word: &str, name: &str) -> bool {
 /// command word that hands the real command to the word after it (`time`,
 /// `env`, `nohup`, `exec`, `then`, `{`, `!` and the like). A line
 /// without a Codex to route is left alone either way.
-fn command_words(line: &str) -> Option<Vec<(usize, String)>> {
+pub(crate) fn command_words(line: &str) -> Option<Vec<(usize, String)>> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut starts_command = true;

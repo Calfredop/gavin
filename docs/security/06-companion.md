@@ -257,14 +257,21 @@ opens no door.
   notification ciphertext *if* they can also capture it, which only Apple, Google, the
   gateway or the Relay path can. It cannot be used to connect.
 
-**Residual: iOS attestation.** On Android the daemon verifies the hardware key's
-attestation chain at pairing, and a release daemon refuses anything that is not TEE or
-StrongBox. iOS has no equivalent for an arbitrary Secure Enclave key (App Attest
-attests its own key, not ours), so there the daemon relies on the shell's claim. A
-software P-256 key posing as hardware is therefore undetectable to the daemon on iOS.
-It matters only if the human pairs a modified Companion at the desk, which is the human
-acting against themself (`00`, out of scope), because pairing needs the desk's
-confirmation.
+**Residual: Android attestation (not built).** On Android the shell can collect the
+hardware key's attestation chain, and a release daemon is meant to refuse anything that
+is not TEE or StrongBox under Google's hardware roots. No daemon verifies that chain
+yet. Until it does, a release daemon trusts the shell's `key_kind` claim for any key
+that is not `software-debug`. A modified or rooted client that misreports its backing
+as hardware is not detected. iOS has no equivalent for an arbitrary Secure Enclave key
+(App Attest attests its own key, not ours), so there the daemon relies on the shell's
+claim in any case. Pairing still needs the desk's confirmation.
+
+**Residual: NULL `key_kind`.** Rows paired before the column existed, and Devices whose
+shell omits the field, store NULL. Every daemon accepts those rows so already-paired
+phones are not stranded. A Device paired from a debug shell on a Simulator or emulator
+*after* the mark landed holds `software-debug` and is refused by a release daemon; revoke
+Simulator and emulator Devices from Settings before relying on a release install if any
+were paired under an older build that left the kind NULL.
 
 ### CT-3 — A malicious Relay
 
@@ -309,7 +316,10 @@ of these.
   security decision or reassure.
 - **The caps.** 05 §8's 64 KiB channel line, per-connection request rate and per-Device
   connection ceiling stand (DP-05, SC-10). They now apply on the daemon's side of the
-  Relay, and the Relay carries its own per-Workstation bandwidth limit.
+  Relay. gavin-relay itself enforces a process-wide and per-source socket ceiling, a
+  registration ceiling per admission token and per rendezvous id, waiting caps, and an
+  optional per-stream byte budget (over-budget streams are ended). Connection-rate and
+  proxy-level bandwidth shaping for a shared instance stay on the front proxy.
 
 **Residual.** Denial, delay, selective censorship, and the metadata above.
 
@@ -479,11 +489,12 @@ unseen then re-pair, and Revoke dropping live connections.
    store gains a column for it: an `ALTER TABLE … ADD COLUMN` beside the `CREATE TABLE`,
    its duplicate-column error swallowed, proven against a database built by hand with
    the phase-2 schema (the `pre_v*` pattern in `CLAUDE.md`).
-2. **On Android the payload carries the attestation chain.** A release daemon checks it
-   against Google's hardware roots and requires TEE or StrongBox, the authorisation
-   list (user auth, the window, unlocked-device-required) and the challenge. Do not
-   read `FEATURE_HARDWARE_KEYSTORE`; it is `true` on the emulator, whose keys are
-   software (spike §2). iOS has none (CT-2).
+2. **On Android the payload is meant to carry the attestation chain.** A release daemon
+   is meant to check it against Google's hardware roots and require TEE or StrongBox,
+   the authorisation list (user auth, the window, unlocked-device-required) and the
+   challenge. **That check is not built yet** (CT-2 residual); do not read
+   `FEATURE_HARDWARE_KEYSTORE` when it is — it is `true` on the emulator, whose keys
+   are software (spike §2). iOS has none (CT-2).
 3. **The device cap rises from three to five.** The ninety-day expiry stays.
 4. **The QR carries the Relay URL and the admission token.** This relaxes 05 §3's "must
    not carry the relay's own credentials", for the reason in CT-3: the token is a
@@ -666,8 +677,12 @@ pairing QR pins, admitting only peers on this network or tailnet.
 - **The Relay is untrusted** for confidentiality and integrity, and trusted for
   availability only. Its operator sees the metadata in CT-3, including the
   cross-Workstation correlation.
-- **The public Relay** is run by the publisher, free, with per-Workstation bandwidth
-  limits. **Self-hosters** run a signed image pinned by digest (`RELEASING.md`).
+- **The public Relay** (when the publisher runs one; none ships as a default URL
+  today — Settings has no default, and the desk can run a local Relay) uses
+  gavin-relay's in-process per-source, per-token and per-stream limits, with
+  connection-rate and any further bandwidth shaping on its front proxy.
+  **Self-hosters** run a signed image pinned by digest (`RELEASING.md`) and set
+  the same knobs (or rely on their proxy) as needed.
 - **In release builds the Relay URL must be `wss://`.** A plain `ws://` is allowed only
   where §5.7 allows a dev Relay.
 - **Reconnect** resumes the *connection*, never a command (CT-3).
@@ -822,14 +837,17 @@ may be the way a dev build reaches a real Device.
 
 **The `software-debug` key kind.** Simulators and emulators cannot hold a presence-gated
 hardware key (spike §2), so debug builds use a software key marked as such. The mark is
-**self-declared**, so it guards against accident, not against an adversary. **06 adds:**
+**self-declared**, so it guards against accident, not against an adversary that lies
+about its backing (Android attestation would catch that; see CT-2 residual). Built:
 
-- the trust-store row records the kind (§5.1);
-- a **release daemon refuses a `software-debug` row on every connection**, and may purge
-  it, because `devices.sqlite` is shared between a dev daemon and a release daemon on
-  one machine (05 §3: one trust store per machine, so one daemon key, one set of Device
-  rows, one remote-access switch);
-- a debug daemon accepts them, and only a debug daemon.
+- the pairing proof and the trust-store row record the kind (§5.1);
+- a **release daemon refuses a `software-debug` row at pairing and on every
+  connection**, because `devices.sqlite` is shared between a dev daemon and a release
+  daemon on one machine (05 §3: one trust store per machine, so one daemon key, one set
+  of Device rows, one remote-access switch);
+- a debug daemon accepts them, and only a debug daemon;
+- a NULL kind (paired before the column, or a shell that omitted the field) is accepted
+  on both profiles so already-paired phones are not stranded.
 
 **The dev-Relay guard.** A dev desktop build may enable remote access only against a
 Relay on loopback or the LAN.
@@ -890,7 +908,7 @@ questions (with device tests outstanding, §5.2).
 | **1. The Relay, the daemon transport, the test Device** | the Relay crate and its admission token; `remote.rs` dialing; `XXpsk3` pairing through the Relay; `IK` and the hardware signature; the trust-store column and migration; five Devices; revocation dropping live connections | seam 1: a store row only after the desk confirms; a missing or wrong signature answers nothing; a signature from another handshake is refused; `IK` fails after "Revoke all" (**the proof 05 still owes**); a missing admission token is refused; a Relay that replays or tampers gets a failed handshake or dropped frame; a daemon token over the remote path is ignored; nothing dials with remote access off; a sixth Device is refused; unsigned connections do not consume slots | give the Remote role any reach beyond refusing every request; point a store build at a public Relay before the signed image and the self-hosting docs exist |
 | **Gate before step 2** | **card 31: `confirm_pairing` behind the confirmation gate** | CT-7 closed as far as a page-drawn confirmation can close it | — |
 | **2. Forwarding, the command table, the desk's dispatcher** | the table in the protocol crate; the forwarding connection; the dispatcher; the event table; the attention request's route | table keys equal the host's registered commands, both directions; an unknown name, a Trust command and a layout command are refused before forwarding; a plugin name is refused; events reach only subscribed Devices; "desktop app not running" when the seat is empty; a second seat claimant is refused; the rail scheduler never starts | forward anything the table has not decided; let a Device reach a Trust command |
-| **3. The shell: pairing, the Unlock, the hub, the Demo Workstation** | Device keys (spike parameters); pairing through the Relay; the Unlock lifecycle; the hub and the attention inbox | keys created with the spike's parameters; pairing refused with no hardware keystore or no passcode; the iOS first-launch wipe; the Unlock ends on background and lock and not on Control Center; the hub renders Workstation text as plain, capped text; Android attestation verified by the daemon | run any served bundle |
+| **3. The shell: pairing, the Unlock, the hub, the Demo Workstation** | Device keys (spike parameters); pairing through the Relay; the Unlock lifecycle; the hub and the attention inbox | keys created with the spike's parameters; pairing refused with no hardware keystore or no passcode; the iOS first-launch wipe; the Unlock ends on background and lock and not on Control Center; the hub renders Workstation text as plain, capped text; `software-debug` refused by a release daemon (Android attestation verification still a residual) | run any served bundle |
 | **4. The served-bundle channel** | signing; the bundle webview; the channel; the cache | a bad signature refused; a store build refuses a dev-key bundle; a bundle below the serial floor refused; a plugin call from the bundle webview fails (probe); a message from another origin is dropped (probe); navigation outside the app-local origin blocked; the bundle's own process on Android; native chrome present | ship the dev trust path in a store configuration |
 | **5. The first end-to-end build, submitted for full store review, manual release** | — | a check on the release artifact: no dev key, no `software-debug` acceptance, no `ws://` | release without a human |
 | **6. Notifications and the Push gateway** | encryption, the gateway registration and permissions, the extension | round trip; an undecryptable push shows only the generic string; a replay is dropped; the label follows the decrypting key; cancelling one Workstation's permission leaves the others working; no plaintext in any log | send a plaintext payload, ever |

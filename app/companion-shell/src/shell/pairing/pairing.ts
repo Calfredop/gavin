@@ -27,8 +27,9 @@ import {
   type PairingStart,
 } from "$shell/core/core";
 import { errorCode, readiness, refusalText, type Refusal } from "$shell/keys/deviceKeys";
-import type { DeviceKeysPlugin } from "$shell/native/deviceKeys";
+import type { DeviceKeysPlugin, KeyBacking } from "$shell/native/deviceKeys";
 import { RelayLegError, dialTimeout, type OpenRelaySocket, type RelaySocket } from "$shell/pairing/relaySocket";
+import { DIRECT_ADMISSION_REFUSED_PAIRING, directPortAsRelay, relayIsDirectPort } from "$shell/connection/paths";
 
 export type PairingKeys = Pick<DeviceKeysPlugin, "status" | "createKeys" | "publicKeys" | "noiseKey" | "sign">;
 
@@ -102,6 +103,7 @@ export async function pair(qr: string, deps: PairingDeps): Promise<PairingOutcom
           qr,
           noisePrivateKey: keys.noisePrivateKey,
           hardwareKey: keys.hardwareKey,
+          keyKind: keys.keyKind,
           deviceName: deps.deviceName,
           entropy,
         })
@@ -178,7 +180,14 @@ function checkAborted(signal: AbortSignal | undefined): void {
 
 interface ReadKeys {
   hardwareKey: string;
+  keyKind: "hardware" | "software-debug";
   noisePrivateKey: string;
+}
+
+/// Collapses the shell's backing to the two kinds the daemon stores
+/// (`hardware` | `software-debug`, 06 §5.7).
+export function keyKindFor(backing: KeyBacking): "hardware" | "software-debug" {
+  return backing === "software-debug" ? "software-debug" : "hardware";
 }
 
 /// The Device's keys: made on the first pairing, and the same for every
@@ -190,7 +199,11 @@ async function deviceKeys(keys: PairingKeys): Promise<ReadKeys> {
     if (!ready.ready) throw failed(refusalText(ready.refusal));
     const made = status.keys ? await keys.publicKeys() : await keys.createKeys();
     const { privateKey } = await keys.noiseKey();
-    return { hardwareKey: made.hardwareKey, noisePrivateKey: privateKey };
+    return {
+      hardwareKey: made.hardwareKey,
+      keyKind: keyKindFor(made.backing),
+      noisePrivateKey: privateKey,
+    };
   } catch (e) {
     if (e instanceof Stop) throw e;
     const code = errorCode(e);
@@ -221,8 +234,16 @@ async function dialFirst(
   track: (socket: RelaySocket) => void
 ): Promise<RelaySocket> {
   let problem = "";
+  const directUrls = dials.filter((d) => d.pin).map((d) => d.url);
   for (const dial of dials) {
     checkAborted(deps.signal);
+    // A Relay URL that is one of the direct addresses is the listener
+    // under the wrong name, from a desk that offered its own direct port
+    // as its Relay: not dialled, and said so.
+    if (!dial.pin && relayIsDirectPort(dial.url, directUrls)) {
+      problem = directPortAsRelay(dial.url);
+      continue;
+    }
     // A direct address (ADR 0009) gets a short wait: the Relay, if the QR
     // named one, is still to come after it.
     const within = dialTimeout(dial.pin, timeoutMs);
@@ -247,7 +268,9 @@ async function dialFirst(
         const read = coreStep(() => readReply(reply.text));
         if (read.reply === "ready") return socket;
         problem =
-          read.reply === "refused"
+          read.reply === "refused" && dial.pin && read.reason === "admission"
+            ? DIRECT_ADMISSION_REFUSED_PAIRING
+            : read.reply === "refused"
             ? `The Relay turned the pairing away: ${read.message}.${read.reason === "offline" ? " Is remote access still on at the desk?" : ""}`
             : `The Relay at ${dial.url} answered in a way this Companion does not understand.`;
       } else {

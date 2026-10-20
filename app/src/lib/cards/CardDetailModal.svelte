@@ -1,11 +1,12 @@
 <script lang="ts">
   import Modal from "$lib/core/Modal.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import DOMPurify from "dompurify";
-  import { renderMarkdown } from "$lib/files/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { sanitizeMarkdown } from "$lib/files/sanitizeMarkdown";
+  import { markdownLinkClick } from "$lib/files/markdownLinks";
   import { pickPath } from "$lib/workspace/picker";
   import type { CardView } from "$lib/core/planBoard";
-  import type { Column, Label, Priority } from "$lib/board/kanban";
+  import { canReplay, type Column, type Label, type Priority } from "$lib/board/kanban";
   import { isArchivedCard, slugStatus } from "$lib/core/planBoard";
   import { childCards, parentCard } from "$lib/cards/cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/cards/planChecklist";
@@ -23,6 +24,8 @@
     agentDefaultsStore,
     agentProfilesStore,
     requireReviewDefault,
+    cardReviewed,
+    stampCardReview,
   } from "$lib/core/layoutState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import {
@@ -35,6 +38,7 @@
   import { cardAgentSummary } from "$lib/cards/cardAgent";
   import {
     addAttachment,
+    attachmentChipLabel,
     attachmentFromPick,
     attachmentName,
     formatAttachments,
@@ -43,6 +47,7 @@
     withheldAttachmentPaths,
     type AttachmentStatus,
   } from "$lib/cards/attachments";
+  import { askConfirm } from "$lib/core/dialog";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/git/autoCommit";
   import { isViewableInApp } from "$lib/files/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
@@ -64,16 +69,18 @@
     runCard,
     resumeCard,
     relaunchCard,
+    launchCardAsNewSession,
     developCard,
     revealSession,
     revealDevelopingCard,
   } from "$lib/cards/cardRunActions";
   import { developingRunIn } from "$lib/cards/developingCards";
+  import { finishDeveloping } from "$lib/cards/developingCardsState";
   import { isViewTab } from "$lib/panes/tabIdentity";
   import { cardSessionState } from "$lib/board/columnRunAction";
-  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
+  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { mustPromptBody } from "$lib/agents/actionPromptsState";
-  import { cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
+  import { cardContentOf, cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
   import { resumeNoteFor } from "$lib/agents/autoResume";
   import { runBaseline } from "$lib/cards/runChanges";
@@ -82,7 +89,13 @@
   import RunHistoryModal from "$lib/cards/RunHistoryModal.svelte";
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
-  import { adoptBlockedReason, adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
+  import {
+    adoptBlockedReason,
+    adoptMemory,
+    isMemoryCard,
+    memoryBullet,
+    parseMemoryCard,
+  } from "$lib/cards/memoryCard";
   import { syncAfterAdopt } from "$lib/cards/memoryIndexState";
   import {
     orchestrations,
@@ -214,9 +227,14 @@
       void backend.unwatchFileForViewer(path).catch(() => {});
     };
   });
-  const bodyHtml = $derived(
-    content !== null ? DOMPurify.sanitize(renderMarkdown(content)) : null
-  );
+  const bodyHtml = $derived(content !== null ? sanitizeMarkdown(content) : null);
+
+  // Repository markdown must not navigate the gavin window. Only http(s)
+  // leaves, through the system browser (ADR 0005).
+  function followMarkdownLink(event: MouseEvent): void {
+    const href = markdownLinkClick(event);
+    if (href) void openUrl(href).catch(() => {});
+  }
   const checklist = $derived<ChecklistItem[]>(
     card.kind === "plan" && content !== null ? parseChecklist(content) : []
   );
@@ -305,14 +323,34 @@
       | "complexity"
       | "agent"
       | "model"
-      | "effort",
+      | "effort"
+      | "direct",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
+    // A human picking agent/model/effort on a card they already reviewed
+    // is their own edit — re-stamp so the next launch does not ask again.
+    const restampLaunch =
+      (key === "agent" || key === "model" || key === "effort") &&
+      cardReviewed(workspaceId, card.id, reviewContent);
     try {
       const moved = await backend.setPlanFrontmatterField(card.id, key, value);
       patchPlanField(workspaceId, card.id, key, value);
       followMove(moved);
+      if (restampLaunch) {
+        void stampCardReview(
+          workspaceId,
+          card.id,
+          cardContentOf({
+            title: card.title,
+            body: stripFrontmatter(content ?? "").trim(),
+            attachments,
+            agent: key === "agent" ? value : card.agent,
+            model: key === "model" ? value : card.model,
+            effort: key === "effort" ? value : card.effort,
+          })
+        );
+      }
       return true;
     } catch (e) {
       errorMessage = String(e);
@@ -454,8 +492,14 @@
   //
   // Task and plan only: nothing ever executes a note, so the instruction
   // would be text no agent reads, on a card with nothing to finish.
-  const autoCommitApplies = $derived(autoCommitAppliesTo(card.kind));
   const autoCommitOn = $derived(hasAutoCommit(content));
+  // Not offered on a direct prompt, whose body is sent as written: the
+  // block is gavin's sentence, and ticking it would put words in a prompt
+  // the human chose to write alone. Still shown while the block is there,
+  // so a card made direct after it was ticked can have it taken out.
+  const autoCommitApplies = $derived(
+    autoCommitAppliesTo(card.kind) && (!isDirectPrompt(card) || autoCommitOn)
+  );
   let autoCommitBusy = $state(false);
   let autoCommitError = $state<string | null>(null);
 
@@ -501,6 +545,23 @@
       await reloadContent();
     } finally {
       autoCommitBusy = false;
+    }
+  }
+
+  // --- direct prompt (is the body the whole prompt?) ----------------------
+  // A task only, and a frontmatter line rather than auto-commit's body
+  // block: it changes what gavin SENDS, so the board and every launcher
+  // have to know it without reading the body. Clearing removes the line
+  // rather than writing `false`, so an ordinary task stays byte-for-byte
+  // the card it was.
+  const directBlocked = $derived(featureBlockedReason($daemonCompat, "directPrompt"));
+  let directBusy = $state(false);
+  async function toggleDirect(on: boolean): Promise<void> {
+    directBusy = true;
+    try {
+      await writeField("direct", on ? "true" : "");
+    } finally {
+      directBusy = false;
     }
   }
 
@@ -622,7 +683,25 @@
       }
       await backend.openPathExternally(path);
     } catch (e) {
-      attachmentsError = `Couldn't open ${attachmentName(path)}: ${e instanceof Error ? e.message : e}`;
+      const message = String(e instanceof Error ? e.message : e);
+      attachmentsError = `Couldn't open ${attachmentName(path)}: ${message}`;
+      // Launchables are refused in open_path_externally; Reveal is the
+      // safe next step so the human can inspect the target without
+      // handing it to /usr/bin/open.
+      if (message.includes("would run as a program")) {
+        const reveal = await askConfirm({
+          title: "Reveal in Finder instead?",
+          lines: [message],
+          confirmLabel: "Reveal in Finder",
+        });
+        if (reveal) {
+          await backend.revealPathExternally(path).catch((revealErr) => {
+            attachmentsError = `Couldn't reveal ${attachmentName(path)}: ${
+              revealErr instanceof Error ? revealErr.message : revealErr
+            }`;
+          });
+        }
+      }
     }
   }
 
@@ -810,6 +889,16 @@
     else onClose();
   }
 
+  // The card as it is now, in a new session that replaces the binding --
+  // what to press when Re-launch has nothing to replay, or replays a
+  // prompt the card has outgrown.
+  async function handleNewSession(): Promise<void> {
+    errorMessage = null;
+    const err = await launchCardAsNewSession(workspaceId, card);
+    if (err) errorMessage = err;
+    else onClose();
+  }
+
   async function handleUnlink(): Promise<void> {
     errorMessage = null;
     await unlinkCardSessionAction(workspaceId, card.id);
@@ -905,10 +994,28 @@
 
   async function handleAdopt(): Promise<void> {
     errorMessage = null;
-    if (adoptRoot === null || done === null) return;
+    if (adoptRoot === null || done === null || content === null) return;
+    // Bind the click to the bytes on screen: confirm the exact bullet,
+    // then hand that same snapshot to adoptMemory so a re-read that
+    // differs refuses rather than writing unseen text.
+    const shown = content;
+    const memory = parseMemoryCard(shown);
+    if ("refuse" in memory) {
+      errorMessage = memory.error;
+      return;
+    }
+    const ok = await askConfirm({
+      title: `Adopt into ${instructionsFile}?`,
+      lines: ["Every future agent in this workspace will read exactly this text:"],
+      block: { label: "Appended under ### Learned:", text: memoryBullet(memory) },
+      confirmLabel: `Adopt into ${instructionsFile}`,
+      cancelLabel: "Keep as a card",
+      danger: true,
+    });
+    if (!ok) return;
     adopting = true;
     try {
-      const result = await adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name);
+      const result = await adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name, shown);
       if ("error" in result) {
         errorMessage = result.error;
         return;
@@ -963,6 +1070,7 @@
             phase: bindingPhase,
             status: $verdictAttentionStatusById[binding.sessionId] ?? null,
             orphan: bindingOrphan !== null,
+            replayable: canReplay(binding),
           }
         : null,
       developing: developing !== null,
@@ -971,6 +1079,11 @@
     })
   );
   const bar = $derived(cardSessionBar(situation));
+  /// Why a greyed action cannot be pressed, said under the bar: a
+  /// disabled button gets no hover, so it cannot explain itself.
+  const barReasons = $derived(
+    (bar?.actions ?? []).flatMap((a) => (!a.enabled && a.reason ? [a.reason] : []))
+  );
 
   /// The bar's glyph, from the app's one badge vocabulary. Null where
   /// there is no agent to describe: an unbound card has no state, and a
@@ -1018,6 +1131,8 @@
         return handleRun();
       case "relaunch":
         return handleRelaunch();
+      case "new-session":
+        return handleNewSession();
       case "develop":
         return handleDevelop();
       case "best-of-n":
@@ -1025,6 +1140,8 @@
         return;
       case "develop-jump":
         return handleJumpToDevelop();
+      case "develop-finish":
+        return finishDeveloping(workspaceId, card.id);
     }
   }
 
@@ -1049,11 +1166,16 @@
   const requireReview = $derived(
     resolveRequireReview(reviewWorkspace?.requireReview, $requireReviewDefault)
   );
-  const reviewContent = $derived({
-    title: card.title,
-    body: stripFrontmatter(content ?? "").trim(),
-    attachments: [...attachments],
-  });
+  const reviewContent = $derived(
+    cardContentOf({
+      title: card.title,
+      body: stripFrontmatter(content ?? "").trim(),
+      attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    })
+  );
   // Never for a note -- nothing executes one -- never before the file has
   // been read, since "not loaded yet" must not draw as "not reviewed", and
   // never when the gate itself is off for this workspace.
@@ -1082,8 +1204,9 @@
         path: card.id,
         content: reviewContent,
         statuses: attachmentStatuses,
-        prompt:
-          card.kind === "task"
+        prompt: isDirectPrompt(card)
+          ? reviewContent.body
+          : card.kind === "task"
             ? composeTaskPrompt(
                 card.id,
                 card.title,
@@ -1132,6 +1255,7 @@
       brokenAttachments,
       autoCommit: autoCommitOn,
       autoCommitApplies,
+      direct: isDirectPrompt(card),
     })
   );
   const railLine = $derived(
@@ -1178,7 +1302,7 @@
   <div class="card-detail" class:inline>
     <div class="head">
       <div class="ident">
-        <span class="kind-badge kind-{card.kind}">{card.kind}</span>
+        <span class="kind-badge kind-{card.kind}">{isDirectPrompt(card) ? "direct task" : card.kind}</span>
         <!-- The absolute path used to have a line of its own under the
              title. It is a thing you copy, not a thing you read, so it
              rides the bubble here and gives the bar its row back. -->
@@ -1378,8 +1502,11 @@
             </div>
           </div>
         {:else if binding}
-          {#if bindingFailed || resumeNote || bindingInterrupted || bindingOrphan}
+          {#if bindingFailed || resumeNote || bindingInterrupted || bindingOrphan || barReasons.length > 0}
             <div class="situation">
+              {#each barReasons as reason (reason)}
+                <p class="session-note">{reason}</p>
+              {/each}
               {#if bindingFailed}
                 <p class="session-note">
                   This agent stopped because something broke, not because it finished{failureReason
@@ -1413,7 +1540,9 @@
               An agent is developing this card — rewriting its body, and possibly its
               kind and its nested tasks. Until it finishes, nothing else may run this
               card: a second agent would be executing a prompt that is about to be
-              replaced, and writing its status into a file being rewritten.
+              replaced, and writing its status into a file being rewritten. The card
+              frees itself once the agent has written it and gone quiet; Finish
+              developing frees it now.
             </p>
           </div>
         {:else if runBlocked}
@@ -1501,16 +1630,21 @@
         </div>
       {/if}
 
-      {#if card.kind === "task" && bodyHtml !== null}
+      <!-- One rendering for every kind: a task's body is its prompt, but
+           it is markdown the human wrote, so it reads the way a plan's
+           and a note's do rather than as raw source. -->
+      {#if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
         <div class="section">
-          <div class="section-title">Prompt</div>
-          <pre class="prompt">{stripFrontmatter(content ?? "").trim()}</pre>
-        </div>
-      {:else if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
-        <div class="section">
-          <div class="section-title">Body</div>
+          <div class="section-title">
+            {isDirectPrompt(card) ? "Prompt · sent as written" : card.kind === "task" ? "Prompt" : "Body"}
+          </div>
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
-          <div class="body-preview">{@html bodyHtml}</div>
+          <div
+            class="body-preview"
+            role="presentation"
+            onclick={followMarkdownLink}
+            onauxclick={followMarkdownLink}
+          >{@html bodyHtml}</div>
         </div>
       {/if}
 
@@ -1620,6 +1754,24 @@
                 <p class="error">{autoCommitError}</p>
               {/if}
             {/if}
+            {#if card.kind === "task"}
+              <!-- The reason rides the row, not the box: a disabled input never
+                   fires the mouseenter the tooltip binds. -->
+              <label class="row auto-commit" title={directBlocked ?? undefined}>
+                <span class="label">Direct prompt</span>
+                <input
+                  type="checkbox"
+                  checked={isDirectPrompt(card)}
+                  disabled={directBusy || directBlocked !== null}
+                  onchange={(e) => void toggleDirect(e.currentTarget.checked)}
+                />
+                <span class="auto-commit-hint">
+                  {isDirectPrompt(card)
+                    ? "The prompt is sent exactly as written — no card path, no status instructions, no attachments. The agent will not move this card."
+                    : "gavin wraps the prompt with the card's path, its attachments and the status instructions."}
+                </span>
+              </label>
+            {/if}
             <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
                  binds mouseenter, which a disabled element never fires, so a
                  reason hung on the disabled control alone can never be read. -->
@@ -1638,6 +1790,11 @@
                   {@const broken = status !== null && !status.exists}
                   {@const refused = status !== null && status.location === "refused"}
                   {@const withheld = status !== null && !broken && status.location === "outside"}
+                  {@const chipLabel = attachmentChipLabel(path, status?.absolutePath ?? null)}
+                  {@const resolvedTitle =
+                    status?.absolutePath && attachmentName(status.absolutePath) !== attachmentName(path)
+                      ? status.absolutePath
+                      : path}
                   <span class="attachment" class:broken class:withheld>
                     <button
                       type="button"
@@ -1649,15 +1806,15 @@
                           ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
                           : withheld
                             ? `${path} — outside the workspace. Gavin does not read this automatically; a launched agent is told the card named it, but not what it contains.`
-                            : path}
+                            : resolvedTitle}
                       onclick={() => status && void openAttachment(status)}
                     >
-                      {broken ? "⚠ " : withheld ? "↗ " : ""}{attachmentName(path)}
+                      {broken ? "⚠ " : withheld ? "↗ " : ""}{chipLabel}
                     </button>
                     <button
                       type="button"
                       class="attachment-remove"
-                      aria-label={`Remove ${attachmentName(path)}`}
+                      aria-label={`Remove ${chipLabel}`}
                       disabled={attachmentsBusy || attachmentsBlocked !== null}
                       title={attachmentsBlocked ?? "Take this file off the card"}
                       onclick={() => void writeAttachments(removeAttachment(attachments, path))}
@@ -1801,6 +1958,8 @@
     cwd={baseline.cwd}
     baseSha={baseline.baseSha}
     sessionIsLive={bindingLive}
+    {workspaceId}
+    conversationId={binding?.conversationId ?? null}
     onClose={() => (showingChanges = false)}
   />
 {/if}
@@ -2364,19 +2523,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* No max-height on either: the panel scrolls once now, so a long
-     prompt costs a flick of the wheel instead of a scrollbar inside a
-     scrollbar. */
-  .prompt {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px;
-    font-size: 0.8em;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
-  }
+  /* No max-height: the panel scrolls once now, so a long prompt costs
+     a flick of the wheel instead of a scrollbar inside a scrollbar. */
   .body-preview {
     -webkit-user-select: text;
     user-select: text;

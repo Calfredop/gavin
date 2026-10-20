@@ -46,7 +46,7 @@
 //! deadline of its own behind it (`Worker::settle`).
 
 use protocol::transport::Stream;
-use protocol::{drain_to_newline, write_message, Request, Response, MAX_LINE_BYTES};
+use protocol::{drain_to_newline, write_message, LineTooLong, Request, Response, MAX_LINE_BYTES};
 use std::future::Future;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
@@ -175,10 +175,12 @@ fn is_unsolicited(resp: &Response) -> bool {
             | Response::DeviceDisconnected { .. }
             | Response::RelayStateChanged { .. }
             | Response::DirectStateChanged { .. }
+            | Response::DeskRelayStateChanged { .. }
             | Response::DeviceRefusalChanged { .. }
             | Response::DevicePresenceChanged { .. }
             | Response::SessionOwnerChanged { .. }
             | Response::SessionDeskInput { .. }
+            | Response::PtySizeBorrowed { .. }
     )
 }
 
@@ -719,15 +721,28 @@ impl Worker {
                 self.version
             );
         }
-        if version >= crate::session::HELLO_MIN_VERSION {
-            if let Some(token) = (redial.token)() {
-                let nonce = protocol::random_hex(16)?;
-                let hello = crate::session::app_hello(&token, &nonce, protocol::ConnectionKind::Command);
-                write_message(conn.reader.get_mut(), &hello)?;
-                let ack = read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &hello)?;
-                crate::session::verify_app_ack(ack, &token, &nonce)?;
-            }
+        if version < crate::session::SERVER_CHALLENGE_MIN_VERSION {
+            anyhow::bail!(
+                "{peer} is too old to talk to this app (v{version}) — restart the daemon \
+                 (quit gavin, then relaunch)"
+            );
         }
+        let token = (redial.token)().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{peer} answered but no daemon token file was found — restart the daemon \
+                 (quit gavin, then relaunch)"
+            )
+        })?;
+        let challenge_nonce = protocol::random_hex(16)?;
+        let challenge = Request::ServerChallenge { nonce: challenge_nonce.clone() };
+        write_message(conn.reader.get_mut(), &challenge)?;
+        let proof = read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &challenge)?;
+        crate::session::verify_challenge_proof(proof, &token, &challenge_nonce)?;
+        let nonce = protocol::random_hex(16)?;
+        let hello = crate::session::app_hello(&token, &nonce, protocol::ConnectionKind::Command);
+        write_message(conn.reader.get_mut(), &hello)?;
+        let ack = read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &hello)?;
+        crate::session::verify_app_ack(ack, &token, &nonce)?;
         self.shared.server_pid.store(server_pid, Ordering::SeqCst);
         self.conn = Some(conn);
         self.owed = 0;
@@ -746,20 +761,6 @@ impl std::fmt::Display for TimedOut {
 }
 
 impl std::error::Error for TimedOut {}
-
-/// A reply whose line exceeded [`MAX_LINE_BYTES`]. The excess was drained
-/// to the newline, so the connection is still usable — unlike a parse
-/// error mid-stream, which leaves the lane one message out of step.
-#[derive(Debug)]
-struct LineTooLong;
-
-impl std::fmt::Display for LineTooLong {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "protocol line exceeded {MAX_LINE_BYTES} bytes without a newline")
-    }
-}
-
-impl std::error::Error for LineTooLong {}
 
 /// Reads the reply to `req`, skipping unsolicited pushes, for at most
 /// `deadline` per read.
@@ -1173,8 +1174,8 @@ mod tests {
     }
 
     /// The fake daemon's side of a redial: accept, answer the version
-    /// probe with `version`, then take a `Hello` if one comes and answer
-    /// it with a proof for `token`. Returns the connection and the Hello.
+    /// probe with `version`, then the challenge and Hello if a token is
+    /// given. Returns the connection and the Hello.
     fn accept_redial(
         listener: &Listener,
         version: u32,
@@ -1186,7 +1187,23 @@ mod tests {
         assert!(matches!(probe, Request::GetProtocolVersion), "{probe:?}");
         write_message(&mut &conn, &Response::ProtocolVersion { version }).unwrap();
         let Some(token) = token else { return (conn, reader, None) };
-        let hello = next(&mut reader).unwrap();
+        let Some(challenge) = next(&mut reader) else {
+            return (conn, reader, None);
+        };
+        let Request::ServerChallenge { nonce: challenge_nonce } = &challenge else {
+            panic!("expected ServerChallenge, got {challenge:?}")
+        };
+        write_message(
+            &mut &conn,
+            &Response::ServerProof {
+                proof: protocol::challenge_proof(token, challenge_nonce),
+            },
+        )
+        .unwrap();
+        // A wrong challenge proof makes the app hang up before Hello.
+        let Some(hello) = next(&mut reader) else {
+            return (conn, reader, None);
+        };
         let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
         write_message(
             &mut &conn,
@@ -1232,16 +1249,23 @@ mod tests {
         let listener = Listener::bind(&sock).unwrap();
         let first = Stream::connect(&sock).unwrap();
         let wedged = never_answer(listener.accept().unwrap());
+        let version = protocol::PROTOCOL_VERSION;
 
         let daemon = std::thread::spawn(move || {
-            let (conn, mut reader, _) = accept_redial(&listener, 12, None);
+            let (conn, mut reader, _) = accept_redial(&listener, version, Some("t0k3n"));
             let req = next(&mut reader).unwrap();
             write_message(&mut &conn, &Response::Error { message: id_of(&req) }).unwrap();
         });
 
-        let lane = CommandLane::spawn_with("the test daemon", first, 12, redial_to(&sock, || None), short);
-        assert!(lane.ask(&compat(12), kill(1)).is_err());
-        assert_eq!(message(lane.ask(&compat(12), kill(2)).unwrap()), "s-2");
+        let lane = CommandLane::spawn_with(
+            "the test daemon",
+            first,
+            version,
+            redial_to(&sock, || Some("t0k3n".to_string())),
+            short,
+        );
+        assert!(lane.ask(&compat(version), kill(1)).is_err());
+        assert_eq!(message(lane.ask(&compat(version), kill(2)).unwrap()), "s-2");
         daemon.join().unwrap();
         drop(lane);
         assert_eq!(wedged.join().unwrap(), 1);
@@ -1326,14 +1350,26 @@ mod tests {
         let listener = Listener::bind(&sock).unwrap();
         let first = Stream::connect(&sock).unwrap();
         drop(listener.accept().unwrap());
+        let version = protocol::PROTOCOL_VERSION;
 
         let daemon = std::thread::spawn(move || {
-            let (_conn, mut reader, _) = accept_redial(&listener, 11, None);
+            // Token None: the redial bails on the version mismatch before
+            // any challenge, so nothing past the probe is expected.
+            let (_conn, mut reader, _) = accept_redial(&listener, version - 1, None);
             next(&mut reader)
         });
-        let lane = CommandLane::spawn_with("the test daemon", first, 12, redial_to(&sock, || None), short);
-        let err = lane.ask(&compat(12), kill(1)).unwrap_err().to_string();
-        assert!(err.contains("v11") && err.contains("v12"), "{err}");
+        let lane = CommandLane::spawn_with(
+            "the test daemon",
+            first,
+            version,
+            redial_to(&sock, || Some("t0k3n".to_string())),
+            short,
+        );
+        let err = lane.ask(&compat(version), kill(1)).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("v{}", version - 1)) && err.contains(&format!("v{version}")),
+            "{err}"
+        );
         drop(lane);
         assert!(daemon.join().unwrap().is_none(), "a request reached the other daemon");
     }
@@ -1347,6 +1383,7 @@ mod tests {
         let sock = dir.path().join("once.sock");
         let listener = Listener::bind(&sock).unwrap();
         let first = Stream::connect(&sock).unwrap();
+        let version = protocol::PROTOCOL_VERSION;
 
         let daemon = std::thread::spawn(move || {
             // Reads the request, then dies before answering.
@@ -1356,15 +1393,21 @@ mod tests {
             drop(reader);
             drop(conn);
             // Whatever comes next is a new connection; count its requests.
-            let (conn, mut reader, _) = accept_redial(&listener, 12, None);
+            let (conn, mut reader, _) = accept_redial(&listener, version, Some("t0k3n"));
             let after = next(&mut reader).unwrap();
             write_message(&mut &conn, &Response::Error { message: id_of(&after) }).unwrap();
             (got, after)
         });
-        let lane = CommandLane::spawn_with("the test daemon", first, 12, redial_to(&sock, || None), short);
-        let err = lane.ask(&compat(12), kill(1)).unwrap_err().to_string();
+        let lane = CommandLane::spawn_with(
+            "the test daemon",
+            first,
+            version,
+            redial_to(&sock, || Some("t0k3n".to_string())),
+            short,
+        );
+        let err = lane.ask(&compat(version), kill(1)).unwrap_err().to_string();
         assert!(err.contains("closed the command connection"), "{err}");
-        assert_eq!(message(lane.ask(&compat(12), kill(2)).unwrap()), "s-2");
+        assert_eq!(message(lane.ask(&compat(version), kill(2)).unwrap()), "s-2");
         let (got, after) = daemon.join().unwrap();
         assert_eq!(id_of(&got), "s-1");
         assert_eq!(id_of(&after), "s-2", "the first request was sent again");
@@ -1462,10 +1505,12 @@ mod tests {
                     | "DeviceDisconnected"
                     | "RelayStateChanged"
                     | "DirectStateChanged"
+                    | "DeskRelayStateChanged"
                     | "DeviceRefusalChanged"
                     | "DevicePresenceChanged"
                     | "SessionOwnerChanged"
                     | "SessionDeskInput"
+                    | "PtySizeBorrowed"
             );
             assert!(skipped, "the daemon pushes {name} to app connections; is_unsolicited must skip it");
             pushed += 1;
@@ -1510,11 +1555,12 @@ mod tests {
     }
 
     /// A daemon on `listener` that serves every connection on a thread of
-    /// its own, as `server::serve` does: it answers a version probe, holds
-    /// an EndOrphan for `hold` -- an orphan refusing SIGTERM, waited out --
-    /// and answers anything else at once. Counts the connections dialled
-    /// for a request -- the ones that open with the probe -- which leaves
-    /// out the lane's own, handed over already probed.
+    /// its own, as `server::serve` does: it answers a version probe, the
+    /// challenge+Hello when presented, holds an EndOrphan for `hold` -- an
+    /// orphan refusing SIGTERM, waited out -- and answers anything else at
+    /// once. Counts the connections dialled for a request -- the ones that
+    /// open with the probe -- which leaves out the lane's own, handed over
+    /// already probed.
     fn holding_daemon(listener: Listener, hold: Duration) -> Arc<AtomicU32> {
         let dialled = Arc::new(AtomicU32::new(0));
         let counted = Arc::clone(&dialled);
@@ -1530,6 +1576,16 @@ mod tests {
                                 counted.fetch_add(1, Ordering::SeqCst);
                                 Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION }
                             }
+                            Request::ServerChallenge { nonce } => Response::ServerProof {
+                                proof: protocol::challenge_proof("t0k3n", &nonce),
+                            },
+                            Request::Hello { nonce, .. } => Response::HelloAck {
+                                role: "app".to_string(),
+                                daemon_version: protocol::PROTOCOL_VERSION,
+                                session_id: None,
+                                server_proof: Some(protocol::server_proof("t0k3n", &nonce)),
+                                workspace_root: None,
+                            },
                             Request::EndOrphan { id } => {
                                 std::thread::sleep(hold);
                                 Response::OrphanEnded { id, ended: false, still_running: true }
@@ -1564,7 +1620,7 @@ mod tests {
             "the test daemon",
             first,
             protocol::PROTOCOL_VERSION,
-            redial_to(&sock, || None),
+            redial_to(&sock, || Some("t0k3n".to_string())),
             roomy,
         );
         let lanes = DaemonLanes::new(lane.clone(), lane, parity());
@@ -1600,7 +1656,7 @@ mod tests {
             "the test daemon",
             first,
             protocol::PROTOCOL_VERSION,
-            redial_to(&sock, || None),
+            redial_to(&sock, || Some("t0k3n".to_string())),
             roomy,
         );
         lane.begin_swap();

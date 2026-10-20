@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { buildRunCommand } from "$lib/cards/cardRun";
+import { agentCommitBlocker } from "$lib/git/gitState";
+import type { ForeignMcpServer } from "$lib/core/backend";
+import { foreignMcpServersHash } from "$lib/workspace/mcpServerTrust";
 import {
   DEFAULT_ACCENT,
   PALETTE,
@@ -26,7 +29,30 @@ import {
 const BUILT_INS: AgentProfileInfo[] = [
   { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], effortFlag: "--effort", efforts: ["low", "medium", "high", "xhigh", "max"], advisorFlag: "--advisor", failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
   { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], effortFlag: "-c model_reasoning_effort=", efforts: ["minimal", "low", "medium", "high", "xhigh"], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  // Static row after the AG-07 Cursor fix: --approve-mcps / --force are
+  // composed at resolve time from the foreign-server disclosure, not
+  // baked into the profile.
+  {
+    id: "cursor",
+    label: "Cursor",
+    instructionsFile: "AGENTS.md",
+    command: "agent --trust",
+    mcpSupported: true,
+    mcpConfigFile: ".cursor/mcp.json",
+    promptArgs: "",
+    headlessArgs: "-p --trust --",
+    modelFlag: "--model",
+    models: [],
+    failurePatterns: [],
+    failureCauses: [],
+    sessionIdArgs: "",
+    sessionIdDiscovery: "",
+    resumeArgs: "",
+    usageProbe: "cursor-session",
+  },
 ];
+
+const FOREIGN: ForeignMcpServer = { name: "probe", command: "/bin/sh", args: ["-c", "touch /tmp/x"] };
 
 const CUSTOM_AGENT: CustomProfile = {
   id: "custom-agent",
@@ -289,6 +315,25 @@ describe("resolveAgentConfig", () => {
     });
   });
 
+  it("ignores another built-in's command left behind by a profile switch", () => {
+    // arcadiaRN: `profile = "claude-code"` beside codex's bare binary
+    // launched codex under a Claude Code label, card override or not.
+    const r = resolveAgentConfig({ profile: "claude-code", file: null, command: "codex" }, PROFILES, {});
+    expect(r.command).toBe("claude");
+    expect(r.launchCommand).toBe("claude");
+  });
+
+  it("keeps a deliberate command that only resembles another built-in's", () => {
+    for (const command of ["codex --x", "/opt/bin/codex-wrapper", "claude --verbose"]) {
+      expect(resolveAgentConfig({ profile: "claude-code", file: null, command }, PROFILES, {}).command).toBe(command);
+    }
+  });
+
+  it("keeps a custom's command even when it names a built-in's binary", () => {
+    const r = resolveAgentConfig({ profile: "custom-agent", file: null, command: "claude" }, PROFILES, {});
+    expect(r.command).toBe("claude");
+  });
+
   it("falls back to the profile's defaults for absent keys", () => {
     const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
     expect(r.file).toBe("AGENTS.md");
@@ -429,7 +474,7 @@ describe("resolveAgentConfig", () => {
       [{ id: "a", label: "A", command: "a", modelFlag: "" }],
       [{ id: "local:b", label: "B", command: "b", modelFlag: "" }]
     ).map((p) => p.id);
-    expect(order).toEqual(["claude-code", "codex", "a", "local:b"]);
+    expect(order).toEqual(["claude-code", "codex", "cursor", "a", "local:b"]);
   });
 
   it("leaves a stock profile's verified resume argv alone", () => {
@@ -553,6 +598,27 @@ describe("resolveAgentConfig", () => {
       {}
     );
     expect(r.launchCommand).toBe("claude --pick opus");
+  });
+
+  it("drops a repo-supplied modelFlag that carries shell syntax", () => {
+    // composeLaunchCommand is the last trusted decision point: a hostile
+    // config.toml can set model_flag without triggering workspace trust,
+    // and resolveAgentConfig prefers that flag over the profile's. The
+    // inertness gate must keep ';' out of launchCommand.
+    const r = resolveAgentConfig(
+      {
+        profile: "claude-code",
+        file: null,
+        command: null,
+        modelFlag: "--model x; echo injected; :",
+        model: "opus",
+      },
+      PROFILES,
+      {}
+    );
+    expect(r.modelFlag).toBe("--model x; echo injected; :");
+    expect(r.launchCommand).toBe("claude");
+    expect(r.launchCommand).not.toContain(";");
   });
 
   it("keeps a named custom usable through its profile entry", () => {
@@ -715,6 +781,56 @@ describe("resolveAgentConfig", () => {
       {}
     );
     expect(r.mcpConfigFile).toBe(".codex/config.toml");
+  });
+
+  // Cursor's --approve-mcps is consent for every server in .cursor/mcp.json.
+  // Composed here from the foreign-server disclosure — never unconditional
+  // on the profile row (AG-07 / sec-fix-cursor-mcp-approval-follows-disclosure).
+  it("withholds Cursor --approve-mcps when a foreign server is undisclosed", () => {
+    const r = resolveAgentConfig(
+      { profile: "cursor", file: null, command: null },
+      PROFILES,
+      {},
+      undefined,
+      undefined,
+      {},
+      "",
+      { servers: [FOREIGN], choice: null }
+    );
+    expect(r.command).not.toContain("--approve-mcps");
+    expect(r.launchCommand).not.toContain("--approve-mcps");
+    expect(r.headlessArgs).not.toContain("--approve-mcps");
+    expect(r.headlessArgs.split(/\s+/)).not.toContain("--force");
+    expect(agentCommitBlocker(
+      { status: { unstaged: ["a"], staged: [] }, busy: null, op: null } as never,
+      r.headlessArgs,
+      r.profileId,
+      "withhold"
+    )).toBe("Answer the MCP server disclosure for this workspace before a hidden Cursor run");
+  });
+
+  it("composes Cursor --approve-mcps only after Keep for that set", () => {
+    const choice = { hash: foreignMcpServersHash([FOREIGN]), action: "keep" as const };
+    const r = resolveAgentConfig(
+      { profile: "cursor", file: null, command: null },
+      PROFILES,
+      {},
+      undefined,
+      undefined,
+      {},
+      "",
+      { servers: [FOREIGN], choice }
+    );
+    expect(r.command).toContain("--approve-mcps");
+    expect(r.launchCommand).toContain("--approve-mcps");
+    expect(r.headlessArgs).toContain("--approve-mcps");
+    expect(r.headlessArgs.split(/\s+/)).toContain("--force");
+    expect(agentCommitBlocker(
+      { status: { unstaged: ["a"], staged: [] }, busy: null, op: null } as never,
+      r.headlessArgs,
+      r.profileId,
+      "approve"
+    )).toBeNull();
   });
 
   it("is empty-string safe — a cleared field is not an override", () => {

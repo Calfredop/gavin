@@ -117,9 +117,26 @@ export interface PairedStore {
   /// Every usable record, oldest pairing first.
   list(): Promise<PairedWorkstation[]>;
   save(record: PairedWorkstation): Promise<void>;
+  /// Forgets one: its record, and with it the notification key.
+  remove(id: string): Promise<void>;
 }
 
-export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save">): PairedStore {
+/// The records with `id`'s admission token replaced by `token`, and that
+/// record, to keep: what a refreshed token (v73) changes and nothing else,
+/// so a rename since the hub read the record is not undone. Null when no
+/// record has that id.
+export function withAdmission(
+  paired: PairedWorkstation[],
+  id: string,
+  token: string
+): { paired: PairedWorkstation[]; record: PairedWorkstation } | null {
+  const before = paired.find((ws) => ws.id === id);
+  if (!before) return null;
+  const record = { ...before, relayAdmission: token };
+  return { paired: paired.map((ws) => (ws.id === id ? record : ws)), record };
+}
+
+export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save" | "remove">): PairedStore {
   return {
     async list() {
       const { records } = await plugin.list();
@@ -129,5 +146,6 @@ export function pairedStore(plugin: Pick<WorkstationsPlugin, "list" | "save">): 
         .sort((a, b) => a.pairedAt - b.pairedAt);
     },
     save: (record) => plugin.save({ id: record.id, record: JSON.stringify(record) }),
+    remove: (id) => plugin.remove({ id }),
   };
 }

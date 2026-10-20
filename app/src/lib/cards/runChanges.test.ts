@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   changesProblem,
   changesSummary,
+  checkoutSourceStrip,
   chipTooltip,
   discardBlockedReason,
   discardOutcome,
   discardPrompt,
+  EMPTY_AFTER_NARROW,
   runBaseline,
   trackedFiles,
   untrackedPaths,
@@ -168,6 +170,13 @@ describe("discardPrompt", () => {
     expect(text).toContain("not this card's files");
   });
 
+  it("says the narrowed list is not the discard's scope", () => {
+    const text = discardPrompt(full, "Mine", [], true).lines.join("\n");
+    expect(text).toContain("only this agent's files");
+    expect(text).toContain("whole worktree");
+    expect(text).not.toContain("not this card's files");
+  });
+
   it("hands back exactly the untracked paths it listed", () => {
     expect(discardPrompt(full, "x").untracked).toEqual(["src/new.ts"]);
   });
@@ -177,6 +186,14 @@ describe("discardPrompt", () => {
     expect(text).not.toContain("Trash");
     expect(text).not.toContain("reverted");
     expect(text).toContain("1 commit");
+  });
+});
+
+describe("checkoutSourceStrip", () => {
+  it("names the checkout fallback and is silent when narrowed", () => {
+    expect(checkoutSourceStrip("checkout")).toContain("not only this agent's files");
+    expect(checkoutSourceStrip("transcript")).toBeNull();
+    expect(EMPTY_AFTER_NARROW).toContain("Nothing this run's agent touched");
   });
 });
 

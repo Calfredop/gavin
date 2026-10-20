@@ -11,6 +11,7 @@ import {
   setGitViewPrefs,
   createSessionForCard,
   profileIdForLaunch,
+  prepareCursorAgentLaunch,
   resolvedAgentFor,
   sessionExits,
   handleAgentSessionSpawned,
@@ -33,6 +34,8 @@ import {
 } from "$lib/agents/autoResume";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { deviceLaunchRefusal, holdOrQueue, type CommitIntent } from "$lib/agents/launchQueue";
+import { CURSOR_MCP_HEADLESS_BLOCKER } from "$lib/workspace/mcpServerTrust";
+import type { ResolvedAgent } from "$lib/core/settings";
 import type {
   ApplyMode,
   Area,
@@ -708,9 +711,21 @@ export function agentCommitElapsed(view: GitViewState | null, now: number): stri
 /// Why the action is unavailable, or null when it can run. Separate from
 /// the phase so the button can SAY why it is disabled rather than just
 /// looking broken.
-export function agentCommitBlocker(view: GitViewState | null, headlessArgs: string): string | null {
+///
+/// `profileId` / `cursorMcpApproval` are the AG-07 Cursor gate: a withheld
+/// disclosure must refuse a hidden run rather than launch without
+/// `--force` (stalls) or with `--force` alone (skips MCP approval).
+export function agentCommitBlocker(
+  view: GitViewState | null,
+  headlessArgs: string,
+  profileId?: string,
+  cursorMcp?: "approve" | "withhold" | null
+): string | null {
   if (!view) return "No repository";
   if (!headlessArgs.trim()) return "This workspace's agent has no verified headless mode";
+  if (profileId === "cursor" && cursorMcp === "withhold") {
+    return CURSOR_MCP_HEADLESS_BLOCKER;
+  }
   if (view.busy || view.op) return OTHER_GIT_OP;
   const dirty = (view.status?.unstaged.length ?? 0) + (view.status?.staged.length ?? 0);
   if (dirty === 0) return "Nothing to commit";
@@ -823,7 +838,17 @@ async function launchAgentCommit(
     const why = deviceLaunchRefusal();
     if (why) return { refused: why };
   }
-  const agent = resolvedAgentFor(workspaceId);
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    s.cwd,
+    resolvedAgentFor(workspaceId, s.cwd),
+    "headless"
+  );
+  if (typeof prepared === "string") {
+    noteError(workspaceId, prepared);
+    return { refused: prepared };
+  }
+  const agent: ResolvedAgent = prepared;
   const prompt = mustPromptBody("builtin:commit", workspaceId);
   const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, prompt);
   if (!command) {
@@ -1220,7 +1245,13 @@ export async function commitViaAgentForDevice(workspaceId: string, cwd: string):
   // Read first: the blocker judges the tree, and this view may not have
   // been read since the phone's was.
   await refresh(workspaceId);
-  const blocker = agentCommitBlocker(current(workspaceId), resolvedAgentFor(workspaceId).headlessArgs);
+  const agent = resolvedAgentFor(workspaceId);
+  const blocker = agentCommitBlocker(
+    current(workspaceId),
+    agent.headlessArgs,
+    agent.profileId,
+    agent.cursorMcpApproval
+  );
   if (blocker) return { refused: blocker };
   const launched = await launchAgentCommit(workspaceId, 0, "refuse");
   if ("refused" in launched) return { refused: launched.refused ?? "Commit via agent did not start" };

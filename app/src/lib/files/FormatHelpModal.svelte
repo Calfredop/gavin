@@ -35,7 +35,10 @@ order: 1024         # manual board position
 - [x] ticked items count as board progress</pre>
     <ul>
       <li><b>note</b> — a reminder; title plus optional body.</li>
-      <li><b>task</b> — one unit of agent work; <b>the body is the prompt</b> an agent runs.</li>
+      <li>
+        <b>task</b> — one unit of agent work; <b>the body is the prompt</b> an agent runs. With
+        <code>direct: true</code> the body is sent exactly as written, with no gavin framing around it.
+      </li>
       <li><b>plan</b> — multi-step work; the body holds checklists.</li>
     </ul>
 

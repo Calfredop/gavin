@@ -41,12 +41,14 @@ import { isSshWorkspace, readyHosts } from "$lib/workspace/sshWorkspace";
 import { followMovedCardPath, followRenamedContext } from "$lib/files/planExplorer";
 import { retargetPath } from "$lib/files/fileTree";
 import {
+  applyCursorMcpApproval,
   normalizeColor,
   resolveAgentConfig,
   mergeAgentProfiles,
   withExtraCliArgs,
   type AgentProfileInfo,
   type McpFormatInfo,
+  type ResolvedAgent,
 } from "$lib/core/settings";
 import { mergeDiscoveredModels } from "$lib/agents/agentModel";
 import { noteSessionCompression, seedSessionCompression } from "$lib/agents/headroomMarkState";
@@ -72,6 +74,7 @@ import { indexQueued, type QueuedInput } from "$lib/agents/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
+  complexityAttributionForProfile,
   effectiveComplexityTable,
   withComplexityTableForPrimary,
   EMPTY_AGENT_DEFAULTS,
@@ -95,7 +98,16 @@ import {
   resolveRequireReview,
   type CardContent,
 } from "$lib/cards/cardReview";
-import type { McpForeignChoice } from "$lib/workspace/mcpServerTrust";
+import {
+  CURSOR_MCP_DIALOG_NOTICE,
+  CURSOR_MCP_HEADLESS_BLOCKER,
+  CURSOR_MCP_UNATTENDED_BLOCKER,
+  cursorMcpInputFor,
+  foreignMcpScanStore,
+  foreignMcpServersHash,
+  refreshForeignMcpServers,
+  type McpForeignChoice,
+} from "$lib/workspace/mcpServerTrust";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -443,6 +455,15 @@ function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
 
+/// A refused request on a connection that is still up. Same channel as
+/// the `daemon-request-error` listener: a dismissible banner over a
+/// working app (`DaemonRequestErrorBanner`), never the whole-window
+/// "Couldn't connect / Restart daemon" overlay `setError` draws. Create
+/// Session's EMFILE and session-ceiling refusals land here.
+function reportRequestError(err: unknown): void {
+  daemonRequestError.set(err instanceof Error ? err.message : String(err));
+}
+
 // Shared by every action below that ends in "mutate the active page's
 // tree, then persist the whole workspaces array" -- extracted so that
 // pattern exists exactly once instead of once per action.
@@ -657,8 +678,8 @@ export function runningSessionCount(state: LayoutState): number {
 
 // Shared by every action that creates exactly one fresh session before
 // mutating a tree (splitPane, addTab). Returns null -- having already
-// called setError -- on failure, so callers just check for null rather
-// than duplicating their own try/catch.
+// called reportRequestError -- on failure, so callers just check for
+// null rather than duplicating their own try/catch.
 async function createFreshSession(workspaceId: string): Promise<string | null> {
   try {
     return await backend.createSession(
@@ -667,7 +688,7 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
       workspaceRootPath(workspaceId) ?? undefined
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
 }
@@ -2439,9 +2460,62 @@ function profilesForWorkspace(workspaceId: string): AgentProfileInfo[] {
   );
 }
 
+function cursorMcpForWorkspace(workspaceId: string, projectRoot?: string | null) {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return cursorMcpInputFor(projectRoot ?? ws?.rootPath, ws?.mcpForeignServersChoice);
+}
+
+/// Hashes we already told the human about, so Cursor's dialog notice
+/// is once per distinct foreign set rather than every Run.
+const cursorMcpNoticesShown = new Set<string>();
+
+/// Refresh the foreign-server scan for a Cursor launch's project root
+/// and recompose `--approve-mcps` onto `agent`. Every launcher that
+/// starts a Cursor session goes through this so the AG-07 answer is
+/// decided at the last trusted point, not from a stale cache.
+///
+/// Returns the (possibly recomposed) agent, or a refusal string for
+/// headless / unattended launches that cannot answer Cursor's dialog.
+export async function prepareCursorAgentLaunch(
+  workspaceId: string,
+  projectRoot: string,
+  agent: ResolvedAgent,
+  kind: "interactive" | "unattended" | "headless"
+): Promise<ResolvedAgent | string> {
+  if (agent.profileId !== "cursor") return agent;
+  let servers;
+  try {
+    servers = await refreshForeignMcpServers(projectRoot, agent.profileId);
+  } catch (e) {
+    return `Couldn't read this workspace's MCP servers: ${e instanceof Error ? e.message : e}`;
+  }
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  const next = applyCursorMcpApproval(agent, {
+    servers,
+    choice: ws?.mcpForeignServersChoice,
+  });
+  if (next.cursorMcpApproval === "withhold") {
+    if (kind === "headless") return CURSOR_MCP_HEADLESS_BLOCKER;
+    if (kind === "unattended") return CURSOR_MCP_UNATTENDED_BLOCKER;
+    const hash = foreignMcpServersHash(servers);
+    if (hash && !cursorMcpNoticesShown.has(hash)) {
+      cursorMcpNoticesShown.add(hash);
+      await showAlert({
+        title: "Cursor will ask about MCP servers",
+        lines: [CURSOR_MCP_DIALOG_NOTICE],
+      });
+    }
+  }
+  return next;
+}
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the (merged) profile table.
-export function resolvedAgentFor(workspaceId: string) {
+///
+/// `projectRoot` is the cwd Cursor will use (rail worktree, Git checkout);
+/// omitted, the workspace root. The AG-07 Cursor `--approve-mcps`
+/// composition reads the cached foreign-server scan for that root.
+export function resolvedAgentFor(workspaceId: string, projectRoot?: string | null) {
   const agent = resolveAgentConfig(
     trustedAgentConfigFor(workspaceId),
     profilesForWorkspace(workspaceId),
@@ -2449,7 +2523,8 @@ export function resolvedAgentFor(workspaceId: string) {
     undefined,
     undefined,
     get(agentDefaultsStore).agentEfforts,
-    get(agentDefaultsStore).defaultAgent
+    get(agentDefaultsStore).defaultAgent,
+    cursorMcpForWorkspace(workspaceId, projectRoot)
   );
   return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
@@ -2531,7 +2606,8 @@ export function agentForCard(
     undefined,
     undefined,
     get(agentDefaultsStore).agentEfforts,
-    get(agentDefaultsStore).defaultAgent
+    get(agentDefaultsStore).defaultAgent,
+    cursorMcpForWorkspace(workspaceId)
   );
   return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
@@ -2539,19 +2615,33 @@ export function agentForCard(
 /// Resolve a specific profile in this workspace without changing the
 /// stored agent. Fallback launches use this so the chain can run Codex
 /// while `[agent] profile` still names Claude.
-export function agentForProfile(workspaceId: string, profileId: string) {
+///
+/// When `card` carries a `complexity:` level, that level is read from
+/// THIS profile's complexity table (not the workspace primary's): the
+/// model / effort the human mapped onto the fallback agent have to
+/// reach its argv. Without that, Cursor as fallback launched bare and
+/// the CLI picked its own default (`sonnet`) while the table said `auto`.
+export function agentForProfile(
+  workspaceId: string,
+  profileId: string,
+  card?: CardAgentFields | null
+) {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  const table = effectiveComplexityTable(
+    ws?.complexityTables,
+    get(agentDefaultsStore).complexityTables,
+    profileId
+  );
+  const attribution = complexityAttributionForProfile(profileId, card?.complexity, table);
   const agent = resolveAgentConfig(
-    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
-      profile: profileId,
-      model: "",
-      effort: "",
-    }),
+    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), attribution),
     profilesForWorkspace(workspaceId),
     get(agentModelDefaultsStore),
     undefined,
     undefined,
     get(agentDefaultsStore).agentEfforts,
-    get(agentDefaultsStore).defaultAgent
+    get(agentDefaultsStore).defaultAgent,
+    cursorMcpForWorkspace(workspaceId)
   );
   return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
@@ -2583,7 +2673,8 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
     undefined,
     undefined,
     get(agentDefaultsStore).agentEfforts,
-    get(agentDefaultsStore).defaultAgent
+    get(agentDefaultsStore).defaultAgent,
+    cursorMcpForWorkspace(workspaceId)
   );
   return withExtraCliArgs(agent, extraCliArgsFor(workspaceId, agent.profileId));
 }
@@ -2602,8 +2693,15 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$configs, $layout, $profiles, $models, $defaults]) =>
+  [
+    trustedAgentConfigs,
+    layoutState,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    agentDefaultsStore,
+    foreignMcpScanStore,
+  ],
+  ([$configs, $layout, $profiles, $models, $defaults, $scans]) =>
     (workspaceId: string) => {
       const ws = $layout.workspaces.find((w) => w.id === workspaceId);
       const agent = resolveAgentConfig(
@@ -2613,7 +2711,8 @@ export const resolvedAgents = derived(
         undefined,
         undefined,
         $defaults.agentEfforts,
-        $defaults.defaultAgent
+        $defaults.defaultAgent,
+        cursorMcpInputFor(ws?.rootPath, ws?.mcpForeignServersChoice, $scans)
       );
       return withExtraCliArgs(
         agent,
@@ -2633,12 +2732,20 @@ export const resolvedAgents = derived(
 /// model flag for a card the human pointed at codex, and would go on
 /// showing it for the life of the modal.
 export const cardAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$configs, $layout, $profiles, $models, $defaults]) =>
+  [
+    trustedAgentConfigs,
+    layoutState,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    agentDefaultsStore,
+    foreignMcpScanStore,
+  ],
+  ([$configs, $layout, $profiles, $models, $defaults, $scans]) =>
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
       const base = $configs(workspaceId);
       const ws = $layout.workspaces.find((w) => w.id === workspaceId);
       const merged = mergeAgentProfiles($profiles, $defaults.customProfiles ?? [], ws?.customProfiles ?? []);
+      const cursorMcp = cursorMcpInputFor(ws?.rootPath, ws?.mcpForeignServersChoice, $scans);
       // Which table answers is keyed by the agent the workspace resolves
       // to, so resolve the bare config first.
       const baseAgent = resolveAgentConfig(
@@ -2648,7 +2755,8 @@ export const cardAgents = derived(
         undefined,
         undefined,
         $defaults.agentEfforts,
-        $defaults.defaultAgent
+        $defaults.defaultAgent,
+        cursorMcp
       );
       const table = effectiveComplexityTable(
         ws?.complexityTables,
@@ -2663,7 +2771,8 @@ export const cardAgents = derived(
         undefined,
         undefined,
         $defaults.agentEfforts,
-        $defaults.defaultAgent
+        $defaults.defaultAgent,
+        cursorMcp
       );
       return withExtraCliArgs(
         agent,
@@ -2679,7 +2788,17 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
-  const agent = resolvedAgentFor(workspaceId);
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    ws.rootPath,
+    resolvedAgentFor(workspaceId, ws.rootPath),
+    "interactive"
+  );
+  if (typeof prepared === "string") {
+    setError(prepared);
+    return;
+  }
+  const agent = prepared;
   let sessionId: string;
   try {
     sessionId = await createDaemonSession(
@@ -3970,7 +4089,13 @@ export function handleSessionExited(
 // focus (createPage activates the new page, so the previous active page
 // is restored). If the workspace no longer exists, the session is
 // killed: an agent the human can't see is never allowed to keep running.
-export function handleAgentSessionSpawned(workspaceId: string, sessionId: string): void {
+// `pageName` sends it to another page by the same rules -- a tool run
+// started on its own lands on Tools.
+export function handleAgentSessionSpawned(
+  workspaceId: string,
+  sessionId: string,
+  pageName: string = workspace.AGENTS_PAGE_NAME
+): void {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) {
@@ -3978,7 +4103,7 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
     return;
   }
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
-  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID());
+  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID(), pageName);
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
@@ -4799,7 +4924,7 @@ export async function createPage(
       )
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
   if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns, agent.untrustedOsc133);
@@ -4874,7 +4999,7 @@ export async function createTiledPage(
 
     }
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     for (const id of sessionIds) void backend.killSession(id).catch(() => {});
     return null;
   }
@@ -4970,7 +5095,7 @@ export async function createSessionOnPage(
       profileId
     );
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
   const anchor = layout.allSessionIds(page.layout)[0];
@@ -5004,7 +5129,7 @@ export async function createSessionForCard(
     );
 
   } catch (e) {
-    setError(String(e));
+    reportRequestError(e);
     return null;
   }
 
@@ -5203,12 +5328,13 @@ export async function movePaneOrTab(
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
-// Reorders a tab within its own pane's tab bar -- always scoped to the
-// active page, since dragging to reorder only ever happens on something
-// currently rendered on screen.
+// Reorders a tab within its own pane's tab bar. Scoped to the tab's own
+// page, not the active one -- see pageLocationForSession: the sidebar
+// lists every page's tabs, so a row dragged there may belong to a page
+// that is not on screen.
 export async function reorderTabWithinPane(sessionId: string, targetIndex: number): Promise<void> {
   const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = pageLocationForSession(state, sessionId);
   if (!location) return;
   const newTree = layout.moveTabWithinLeaf(location.tree, sessionId, targetIndex);
   const data = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);

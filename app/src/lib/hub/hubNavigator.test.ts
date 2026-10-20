@@ -67,6 +67,15 @@ describe("hub navigator surface", () => {
     expect(page).toContain("border-bottom-color: var(--ws-accent, #d9a648)");
   });
 
+  it("keeps the lower tab bar of a column split clear of the bar, on either side", () => {
+    expect(page).toContain(
+      ":global(.tree .split.column > .child:not(:first-child) .pane-wrapper > .tab-bar:not(.split.row > .child:not(:first-child) *))"
+    );
+    expect(page).toContain(
+      ":global(.tree .split.column > .child:not(:first-child) .pane-wrapper > .tab-bar:not(.split.row > .child:not(:last-child) *))"
+    );
+  });
+
   it("is mounted beside the terminal view only", () => {
     expect(page).toMatch(/<HubNavigator[\s\S]*?<TerminalView/);
     expect(page.match(/<HubNavigator/g)).toHaveLength(1);

@@ -47,7 +47,7 @@
 
 ; `$LOCALAPPDATA\Programs\<App>` is where per-user installs go on
 ; Windows (VS Code, Discord, ...): the per-user counterpart of Program
-; Files, and the folder `scripts/start-stable-win.ps1` already looks in
+; Files, and the folder `scripts/start-release-win.ps1` already looks in
 ; first.
 ;
 ; Set from MUI's .onGUIInit rather than from .onInit: the template owns

@@ -154,6 +154,27 @@ export function composeTaskPrompt(
   });
 }
 
+// A direct-prompt task (`direct: true`, v75) is the one card whose body
+// goes to the agent exactly as the human wrote it: no tab-naming line, no
+// "you are executing the task card" framing, no status instructions, no
+// attachment block, no decoy note, and none of the per-agent extras,
+// relaunch note or rail retry prefix that wrap every other prompt. The
+// agent is not told which card it is working or asked to move it, so
+// the card stays where the launch put it until a human files it.
+//
+// Only a task: a plan's prompt is "read this file and work its
+// checklist", and the daemon reads the line on any other kind as a
+// warning and false. Checked again here so a hand-built card view that
+// says otherwise cannot send a plan's body as a prompt.
+export function isDirectPrompt(card: { kind: string; direct?: boolean }): boolean {
+  return card.kind === "task" && card.direct === true;
+}
+
+/// The refusal for a direct prompt with nothing in it. Every other card
+/// has gavin's framing to send even when its body is empty; this one
+/// would launch an agent with an empty prompt.
+export const EMPTY_DIRECT_PROMPT = "This direct prompt has no body to send";
+
 export function composePlanPrompt(
   path: string,
   attachments: string[] = [],
@@ -310,6 +331,190 @@ export function withFreshConversationId(
   return { command: command.slice(0, start) + conversationId + tail, conversationId };
 }
 
+// Free of single quotes, so its shell-quoted form opens with exactly
+// `'\n\n` + this text -- which is how withRelaunchNote finds a note an
+// earlier re-launch already appended.
+const RELAUNCH_NOTE_LEAD = "This card was already being worked on before this re-launch";
+
+/// The note a re-launch appends to the replayed prompt.
+///
+/// A re-launch replays the ORIGINAL prompt, which was written for a card
+/// nobody had touched -- so on its own it sends a fresh conversation to
+/// start from scratch on work an earlier agent may have half done. The
+/// card file is the record of where that work stands, so the note names
+/// it: the path the card lives at NOW, which after a move is not the one
+/// baked into the replayed prompt.
+export function relaunchNote(path: string): string {
+  return (
+    `\n\n${RELAUNCH_NOTE_LEAD}: an earlier agent started it and stopped. Its current ` +
+    `status -- the column, and any checklist items already ticked -- is recorded in the ` +
+    `card file at ${path}. Read that file first, and check what is already done before ` +
+    `you redo any of it.`
+  );
+}
+
+/// Strip a `relaunchNote` an earlier re-launch appended, leaving the
+/// command buildRunCommand wrote. Shared by withRelaunchNote (so a second
+/// re-launch replaces rather than stacks) and isGavinBuiltCommand (so a
+/// stored command that already carries the note still counts as one
+/// gavin built).
+function baseWithoutRelaunchNote(command: string): string {
+  if (!command.endsWith("'")) return command;
+  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
+  return earlier === -1 ? command : command.slice(0, earlier);
+}
+
+/// A remembered launch command with `relaunchNote` appended to its
+/// prompt.
+///
+/// The prompt is always the command's last word, shell-quoted (see
+/// buildRunCommand), so the note goes on as a second quoted word right
+/// against it: adjacent quoted words are one argument to the shell. A
+/// command that does not end in a quote carries no prompt to extend -- an
+/// injection launch's bare launch line, or an older binding -- and comes
+/// back untouched.
+///
+/// The command is stored again for the NEXT re-launch, so a note an
+/// earlier re-launch appended is replaced rather than stacked -- and
+/// replaced, not kept, because the card may have moved since.
+export function withRelaunchNote(command: string | null, path: string): string | null {
+  if (!command?.endsWith("'")) return command;
+  return baseWithoutRelaunchNote(command) + shellQuote(relaunchNote(path));
+}
+
+/// Whether `s` is exactly one shell-quoted token as shellQuote writes it:
+/// a leading `'`, a trailing `'`, and interior apostrophes only as `'\''`.
+/// Anything after the closing quote, or a bare `'` in the middle, fails.
+function isShellQuotedToken(s: string): boolean {
+  if (s.length < 2 || s[0] !== "'" || s[s.length - 1] !== "'") return false;
+  let i = 1;
+  while (i < s.length - 1) {
+    if (s[i] === "'") {
+      if (s.slice(i, i + 4) !== "'\\''") return false;
+      i += 4;
+    } else {
+      i += 1;
+    }
+  }
+  return true;
+}
+
+/// The sentence Re-launch answers with when the binding's command is not
+/// one buildRunCommand could have written for the card's agent. Link and
+/// Claim can store an arbitrary string; replaying it would run that
+/// string as the user. Launch as new session composes a fresh command
+/// from the card instead.
+export const FOREIGN_RELAUNCH_COMMAND =
+  "the remembered command was not one gavin built — use Launch as new session instead";
+
+/// Whether `command` is one buildRunCommand could have written for this
+/// agent: the card's launchCommand, optionally the profile's session-id
+/// argv and an id, then promptArgs and a single shell-quoted prompt. A
+/// prior re-launch's note is stripped first, so a stored command that
+/// already carries it still matches. Anything else — `sh -c '…'`, a
+/// different binary, trailing junk after the prompt — is refused.
+export function isGavinBuiltCommand(
+  command: string,
+  agent: { launchCommand: string; promptArgs: string | null; sessionIdArgs: string }
+): boolean {
+  if (agent.promptArgs === null) return false;
+  const cmd = baseWithoutRelaunchNote(command);
+  if (!cmd.startsWith(agent.launchCommand)) return false;
+  let rest = cmd.slice(agent.launchCommand.length);
+  const args = agent.sessionIdArgs.trim();
+  if (args) {
+    const marker = ` ${args} `;
+    if (rest.startsWith(marker)) {
+      const after = rest.slice(marker.length);
+      const sp = after.indexOf(" ");
+      if (sp <= 0) return false;
+      rest = after.slice(sp);
+    }
+  }
+  const prefix = ` ${agent.promptArgs}`;
+  if (!rest.startsWith(prefix)) return false;
+  return isShellQuotedToken(rest.slice(prefix.length));
+}
+
+/// Drop a relaunch note an earlier re-launch appended, leaving the original
+/// quoted prompt closed. Used when rebinding a stored command onto a
+/// different agent so the note is not baked into the extracted prompt twice.
+export function commandWithoutRelaunchNote(command: string): string {
+  const earlier = command.lastIndexOf(`'\n\n${RELAUNCH_NOTE_LEAD}`);
+  return earlier === -1 ? command : command.slice(0, earlier);
+}
+
+/// Undo one `shellQuote` suffix. Null when `s` is not a complete quoted
+/// string (unclosed, or leftover bytes after the closing quote).
+function tryUnquoteShell(s: string): { value: string; quotedLength: number } | null {
+  if (!s.startsWith("'")) return null;
+  let i = 1;
+  let value = "";
+  while (i < s.length) {
+    if (s.startsWith("'\\''", i)) {
+      value += "'";
+      i += 4;
+      continue;
+    }
+    if (s[i] === "'") {
+      return { value, quotedLength: i + 1 };
+    }
+    value += s[i];
+    i += 1;
+  }
+  return null;
+}
+
+/// The prompt text inside a stored `buildRunCommand` line, or null when
+/// the command carries no trailing shell-quoted prompt (an injection
+/// launch's bare line, or something gavin did not build).
+export function promptFromRunCommand(command: string): string | null {
+  if (!command.endsWith("'")) return null;
+  // Leftmost opening quote that unquotes through to the end — the outer
+  // shellQuote around the prompt. A later match would be an embedded
+  // `'\''` fragment (e.g. reading "s fine" out of "it's fine").
+  for (let start = 0; start < command.length; start++) {
+    if (command[start] !== "'") continue;
+    const parsed = tryUnquoteShell(command.slice(start));
+    if (parsed && start + parsed.quotedLength === command.length) {
+      return parsed.value;
+    }
+  }
+  return null;
+}
+
+/// Whether `command` was built for this agent's launch binary (exact match
+/// or the binary as a whole first token sequence).
+export function commandUsesLaunchAgent(command: string, launchCommand: string): boolean {
+  const cmd = launchCommand.trim();
+  if (!cmd) return false;
+  const line = command.trimStart();
+  return line === cmd || line.startsWith(`${cmd} `);
+}
+
+/// Rebuild a stored run's prompt onto a different agent's binary — what
+/// Re-launch does when the remembered command is a stale fallback walk.
+/// Null when there is no quoted prompt to carry, or the next agent takes
+/// no prompt at all.
+export function rebindRunCommand(
+  command: string,
+  next: { launchCommand: string; promptArgs: string | null; sessionIdArgs: string }
+): { command: string; conversationId: string | null } | null {
+  if (next.promptArgs === null) return null;
+  const prompt = promptFromRunCommand(commandWithoutRelaunchNote(command));
+  if (prompt == null) return null;
+  const conversationId = mintConversationId(next.sessionIdArgs);
+  const built = buildRunCommand(
+    next.launchCommand,
+    next.promptArgs,
+    prompt,
+    next.sessionIdArgs,
+    conversationId
+  );
+  if (built == null) return null;
+  return { command: built, conversationId };
+}
+
 /// `<command> <resume_args> <uuid>` -- the agent reopening the
 /// conversation it was having, rather than a new agent reading an
 /// account of it.
@@ -344,6 +549,12 @@ export function withFreshConversationId(
 /// everywhere else -- a profile with no `TokenLog`, a CLI pointed at
 /// another config dir, the check itself failing -- the CLI is the one
 /// that answers, which is what it always did.
+/// Opaque conversation-id token an agent may self-report, and that a
+/// Resume line may splice in. Matches the daemon/MCP NameSession grammar
+/// (sec-fix-conversation-id-token-grammar): only these characters, at
+/// most 128 bytes, so a stored value cannot change a `sh -c` line's shape.
+const CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
 export function buildResumeCommand(
   agentCommand: string,
   resumeArgs: string,
@@ -351,9 +562,11 @@ export function buildResumeCommand(
   log: ConversationLog = "unknown"
 ): string | null {
   const args = resumeArgs.trim();
-  if (!args || !conversationId?.trim()) return null;
+  const id = conversationId?.trim() ?? "";
+  if (!args || !id) return null;
+  if (!CONVERSATION_ID.test(id)) return null;
   if (log === "missing") return null;
-  return `${agentCommand} ${args} ${conversationId.trim()}`;
+  return `${agentCommand} ${args} ${shellQuote(id)}`;
 }
 
 /// Whether the conversation a binding recorded is still on this machine

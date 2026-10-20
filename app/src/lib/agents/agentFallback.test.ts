@@ -138,6 +138,18 @@ describe("sanitizeFallbackThreshold", () => {
 });
 
 describe("decideLaunch", () => {
+  // A chain edited down to Cursor must never resolve to the agent that
+  // was removed from it, whatever the removed agent's own usage says.
+  it("claude-code -> cursor: walks to cursor and never to a removed gemini", () => {
+    expect(
+      decide({
+        chain: ["cursor"],
+        usageByProfile: { "claude-code": atLimit(99), gemini: atLimit(0) },
+        armed: new Set(["cursor"]),
+      })
+    ).toEqual({ kind: "use", profileId: "cursor", viaFallback: true });
+  });
+
   it("holds every start during a cycle pause, even with a ready fallback", () => {
     expect(
       decide({

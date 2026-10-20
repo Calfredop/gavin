@@ -202,7 +202,9 @@ describe("every surface that launches an agent asks the gate", () => {
     expect(rail).toContain("profileIdForLaunch(launchAgent)");
     // The card launches resolve the fallback into `agent` itself.
     const cards = source("cardRunActions.ts");
-    expect(cards).toContain("return { decision, agent: agentForProfile(workspaceId, decision.profileId) };");
+    expect(cards).toContain(
+      "return { decision, agent: agentForProfile(workspaceId, decision.profileId, card) };"
+    );
   });
 
   it("names none for a tool that is not an agent's", () => {

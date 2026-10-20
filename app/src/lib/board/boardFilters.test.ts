@@ -16,6 +16,7 @@ import {
   facetsEqual,
   filterBoardByFacets,
   filterCards,
+  filedCardPasses,
   labelFacets,
   pruneFacets,
   railFacets,
@@ -261,6 +262,30 @@ describe("cardPasses", () => {
     const selected = facets({ exclude: excluded({ kind: ["plan"] }) });
     expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(true);
     expect(facetsActive(selected)).toBe(false);
+  });
+});
+
+describe("filedCardPasses", () => {
+  const rails = railIndex(orch([rail("r1", "Rail one", [])]));
+
+  it("keeps an unfiltered board's card in view", () => {
+    expect(filedCardPasses(card("a"), null, NO_FACETS, rails)).toBe(true);
+  });
+
+  it("keeps the filter when the new card matches it", () => {
+    expect(filedCardPasses(card("a", { kind: "plan" }), null, facets({ kind: ["plan"] }), rails)).toBe(true);
+  });
+
+  it("reports a card the facets would hide — a card is born with no labels", () => {
+    expect(filedCardPasses(card("a"), null, facets({ label: ["windows"] }), rails)).toBe(false);
+    expect(filedCardPasses(card("a", { kind: "task" }), null, facets({ kind: ["plan"] }), rails)).toBe(false);
+  });
+
+  it("reads the rail the card was just sent to, before the orchestration has caught up", () => {
+    expect(filedCardPasses(card("a"), "r1", facets({ rail: ["r1"] }), rails)).toBe(true);
+    expect(filedCardPasses(card("a"), null, facets({ rail: ["r1"] }), rails)).toBe(false);
+    expect(filedCardPasses(card("a"), "r1", facets({ rail: [NO_RAIL] }), rails)).toBe(false);
+    expect(filedCardPasses(card("a"), null, facets({ rail: [NO_RAIL] }), rails)).toBe(true);
   });
 });
 

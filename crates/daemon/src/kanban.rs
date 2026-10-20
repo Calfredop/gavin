@@ -1,3 +1,4 @@
+use protocol::shell_writes::{RootFiles, ShellWrites};
 use protocol::{Board, CardRun, CardSession, Column, Label, RunSavings};
 use rusqlite::{params, Connection};
 
@@ -16,6 +17,13 @@ fn now_secs() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+/// How long a shell call's record is kept (`shell_writes`). Long past the
+/// point it can still be read: it only means anything beside the run's
+/// transcript, and Claude Code deletes those after 30 days unless told
+/// otherwise. Without a bound the table would grow by a row per shell
+/// call for as long as gavin is installed.
+const SHELL_WRITES_KEPT_SECS: i64 = 90 * 24 * 60 * 60;
 
 /// Mirrors the frontend's slugStatus: lowercase, every run of
 /// non-alphanumerics collapsed to one "-", trimmed.
@@ -129,6 +137,23 @@ impl KanbanStore {
                 ON card_runs (workspace_id, path, id);
             CREATE INDEX IF NOT EXISTS card_runs_by_session
                 ON card_runs (session_id);
+            -- v72: what each shell call of an agent wrote, as its CLI's
+            -- hook saw it (`gavin-mcp shell-writes`). Keyed by the CLI's
+            -- OWN ids -- the conversation and the call -- rather than by
+            -- a session or a card: those are the two the transcript
+            -- carries, and the Review tab matches each record to the
+            -- command it watched. `paths` is a JSON array relative to
+            -- `root`; an empty one is a call watched that wrote nothing.
+            CREATE TABLE IF NOT EXISTS shell_writes (
+                conversation_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                root TEXT NOT NULL,
+                paths TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (conversation_id, tool_call_id)
+            );
+            CREATE INDEX IF NOT EXISTS shell_writes_by_age
+                ON shell_writes (recorded_at);
             DROP TABLE IF EXISTS kanban_card_labels;
             DROP TABLE IF EXISTS kanban_cards;",
         )?;
@@ -161,6 +186,10 @@ impl KanbanStore {
         conn.execute(
             "UPDATE card_runs SET outcome = 'abandoned' WHERE ended_at IS NULL AND outcome = 'running'",
             [],
+        )?;
+        conn.execute(
+            "DELETE FROM shell_writes WHERE recorded_at < ?1",
+            params![now_secs() - SHELL_WRITES_KEPT_SECS],
         )?;
         Ok(Self { conn })
     }
@@ -243,7 +272,8 @@ impl KanbanStore {
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, conversation_id, launch_cwd, resume_attempts, base_sha \
+                "SELECT path, session_id, cwd, conversation_id, launch_cwd, resume_attempts, base_sha, \
+                        command IS NOT NULL AND trim(command) <> '' \
                  FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
@@ -252,6 +282,10 @@ impl KanbanStore {
                     session_id: row.get(1)?,
                     cwd: row.get(2)?,
                     command: None,
+                    // Whether it HAS one, which is a bit rather than a
+                    // prompt: what the board needs to offer Re-launch
+                    // only where there is a launch to replay.
+                    replayable: Some(row.get(7)?),
                     conversation_id: row.get(3)?,
                     launch_cwd: row.get(4)?,
                     resume_attempts: row.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u32),
@@ -318,11 +352,13 @@ impl KanbanStore {
              FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query_map(params![workspace_id, path], |row| {
+            let command: Option<String> = row.get(3)?;
             Ok(CardSession {
                 path: row.get(0)?,
                 session_id: row.get(1)?,
                 cwd: row.get(2)?,
-                command: row.get(3)?,
+                replayable: Some(command.as_deref().is_some_and(|c| !c.trim().is_empty())),
+                command,
                 conversation_id: row.get(4)?,
                 launch_cwd: row.get(5)?,
                 resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
@@ -492,6 +528,61 @@ impl KanbanStore {
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Keeps what one shell call wrote. A second record for the same call
+    /// replaces the first: one call has one before and one after.
+    pub fn record_shell_writes(
+        &self,
+        conversation_id: &str,
+        tool_call_id: &str,
+        root: &str,
+        paths: &[String],
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO shell_writes (conversation_id, tool_call_id, root, paths, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![conversation_id, tool_call_id, root, serde_json::to_string(paths)?, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// Every shell call recorded for a conversation, folded into the
+    /// calls and the files under each root (`ShellWrites`'s note says
+    /// why). Calls and roots in the order they were recorded; a row whose
+    /// paths do not parse counts as watched and writing nothing rather
+    /// than failing the whole read.
+    pub fn shell_writes(&self, conversation_id: &str) -> anyhow::Result<ShellWrites> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tool_call_id, root, paths FROM shell_writes
+             WHERE conversation_id = ?1 ORDER BY recorded_at, rowid",
+        )?;
+        let rows = stmt.query_map(params![conversation_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut out = ShellWrites::default();
+        for row in rows {
+            let (call, root, paths) = row?;
+            out.calls.push(call);
+            let paths: Vec<String> = serde_json::from_str(&paths).unwrap_or_default();
+            if paths.is_empty() {
+                continue;
+            }
+            let at = match out.files.iter().position(|f| f.root == root) {
+                Some(at) => at,
+                None => {
+                    out.files.push(RootFiles { root, paths: Vec::new() });
+                    out.files.len() - 1
+                }
+            };
+            let known = &mut out.files[at].paths;
+            for path in paths {
+                if !known.contains(&path) {
+                    known.push(path);
+                }
+            }
         }
         Ok(out)
     }
@@ -916,6 +1007,102 @@ mod tests {
         assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 1);
     }
 
+    // --- shell writes (v72) -------------------------------------------
+
+    fn paths(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_conversations_shell_writes_fold_into_its_calls_and_each_file_once() {
+        let (_dir, store) = store();
+        store.record_shell_writes("c-1", "t-1", "/r", &paths(&["a.ts", "b.ts"])).unwrap();
+        // Watched, wrote nothing: still a call.
+        store.record_shell_writes("c-1", "t-2", "/r", &[]).unwrap();
+        store.record_shell_writes("c-1", "t-3", "/r", &paths(&["b.ts", "c.ts"])).unwrap();
+        store.record_shell_writes("c-1", "t-4", "/wt", &paths(&["a.ts"])).unwrap();
+        // Another conversation's call is not this one's.
+        store.record_shell_writes("c-2", "t-9", "/r", &paths(&["z.ts"])).unwrap();
+
+        let writes = store.shell_writes("c-1").unwrap();
+        assert_eq!(writes.calls, paths(&["t-1", "t-2", "t-3", "t-4"]));
+        assert_eq!(
+            writes.files,
+            vec![
+                RootFiles { root: "/r".into(), paths: paths(&["a.ts", "b.ts", "c.ts"]) },
+                RootFiles { root: "/wt".into(), paths: paths(&["a.ts"]) },
+            ]
+        );
+        assert_eq!(store.shell_writes("nobody").unwrap(), ShellWrites::default());
+    }
+
+    #[test]
+    fn recording_a_call_twice_keeps_the_second_record() {
+        let (_dir, store) = store();
+        store.record_shell_writes("c-1", "t-1", "/r", &paths(&["a.ts"])).unwrap();
+        store.record_shell_writes("c-1", "t-1", "/r", &paths(&["b.ts"])).unwrap();
+        let writes = store.shell_writes("c-1").unwrap();
+        assert_eq!(writes.calls, paths(&["t-1"]));
+        assert_eq!(writes.files, vec![RootFiles { root: "/r".into(), paths: paths(&["b.ts"]) }]);
+    }
+
+    /// Every install already has a kanban.sqlite, built by a daemon that
+    /// never heard of this table, and every test above opens a fresh one.
+    /// A TABLE does reach an old file through `CREATE TABLE IF NOT
+    /// EXISTS` (a column would not); this proves it against the v71
+    /// schema, rows and all, and that the age bound prunes on open.
+    #[test]
+    fn opening_a_pre_v72_database_adds_the_shell_writes_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 CREATE TABLE card_runs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     command TEXT,
+                     conversation_id TEXT,
+                     launch_cwd TEXT,
+                     base_sha TEXT,
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER,
+                     exit_code INTEGER,
+                     outcome TEXT NOT NULL,
+                     resume_attempts INTEGER,
+                     headroom_tokens_saved INTEGER,
+                     headroom_requests INTEGER
+                 );
+                 INSERT INTO card_runs (workspace_id, path, session_id, conversation_id, started_at,
+                     ended_at, exit_code, outcome)
+                 VALUES ('ws-1', '/p/t.md', 's-old', 'c-old', 10, 20, 0, 'exited');",
+            )
+            .unwrap();
+        }
+
+        let store = KanbanStore::open(&path).unwrap();
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 1, "the old rows survive");
+        assert_eq!(store.shell_writes("c-old").unwrap(), ShellWrites::default(), "an older run has no record");
+        store.record_shell_writes("c-new", "t-1", "/r", &paths(&["a.ts"])).unwrap();
+        // A record older than the bound, as one written months ago.
+        store
+            .conn
+            .execute(
+                "INSERT INTO shell_writes (conversation_id, tool_call_id, root, paths, recorded_at)
+                 VALUES ('c-new', 't-0', '/r', '[\"old.ts\"]', ?1)",
+                params![now_secs() - SHELL_WRITES_KEPT_SECS - 60],
+            )
+            .unwrap();
+        assert_eq!(store.shell_writes("c-new").unwrap().calls, paths(&["t-0", "t-1"]));
+
+        drop(store);
+        let reopened = KanbanStore::open(&path).unwrap();
+        assert_eq!(reopened.shell_writes("c-new").unwrap().calls, paths(&["t-1"]), "pruned on open");
+    }
+
     // --- savings (v49) -------------------------------------------------
 
     /// Moves a run's end to a known second, so a window can be drawn
@@ -1224,8 +1411,10 @@ mod tests {
             line.len()
         };
 
+        // Against a short command rather than none: whether a binding HAS
+        // one is on the board (`replayable`), how long it is must not be.
         let with_prompts = board_line(Some(&prompt));
-        assert_eq!(with_prompts, board_line(None), "the board's size depends on its commands");
+        assert_eq!(with_prompts, board_line(Some("claude 'x'")), "the board's size depends on its commands");
         // ~330 bytes a binding with realistic paths and ids: 400 of them is
         // an eighth of the cap, where the commands alone were 1.6 MiB.
         assert!(with_prompts < 400 * BINDINGS, "{with_prompts} bytes for {BINDINGS} bindings");
@@ -1245,6 +1434,31 @@ mod tests {
         assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
         assert_eq!(store.card_session("ws-1", "/p/unbound.md").unwrap(), None);
         assert_eq!(store.card_session("ws-2", "/p/t.md").unwrap(), None);
+    }
+
+    /// A binding with no launch -- a session that claimed the card over
+    /// MCP, or was linked while already running -- re-launched as a bare
+    /// login shell bound to the card. The board says which bindings have
+    /// something to replay, without carrying what it is.
+    #[test]
+    fn the_board_says_which_bindings_have_a_launch_to_replay() {
+        let (_dir, mut store) = store();
+        store.link_card_session("ws-1", "/p/a.md", "s-1", "/p", Some("claude 'x'"), None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/b.md", "s-2", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/c.md", "s-3", "/p", Some("  "), None, None, None, None).unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+        let replayable = |path: &str| {
+            let binding = board.card_sessions.iter().find(|cs| cs.path == path).unwrap();
+            assert_eq!(binding.command, None, "the board read carries no command");
+            binding.replayable
+        };
+        assert_eq!(replayable("/p/a.md"), Some(true));
+        assert_eq!(replayable("/p/b.md"), Some(false));
+        assert_eq!(replayable("/p/c.md"), Some(false));
+        // The single read agrees with the board.
+        assert_eq!(store.card_session("ws-1", "/p/a.md").unwrap().unwrap().replayable, Some(true));
+        assert_eq!(store.card_session("ws-1", "/p/b.md").unwrap().unwrap().replayable, Some(false));
     }
 
     #[test]

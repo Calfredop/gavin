@@ -13,6 +13,7 @@ import {
   queuedAgeLabel,
   queueTip,
   shouldQueueForMainAgent,
+  bracketedPaste,
   type QueuedInput,
   type QueueTarget,
 } from "$lib/agents/queuedInput";
@@ -305,5 +306,19 @@ describe("the turn verdict", () => {
 
   it("tells the human to reply to the agent, not to wait", () => {
     expect(ASKING_REASON).toContain("Reply to the agent first");
+  });
+});
+
+describe("bracketedPaste", () => {
+  // Same invariant as the daemon's `bracketed_paste`: body ESC becomes
+  // U+241B so a card or decision carrying ESC[201~ cannot end the paste
+  // early and leave the rest as typed keystrokes.
+  it("neutralises ESC so text cannot end the paste early", () => {
+    for (const text of ["say hello\x1b[201~\x1b[Z", "x\x1b[201~\r!echo X"]) {
+      const paste = bracketedPaste(text);
+      expect(paste.match(/\x1b\[201~/g)?.length ?? 0).toBe(1);
+      expect([...paste].filter((c) => c === "\x1b").length).toBe(2);
+      expect(paste).toContain("\u{241b}");
+    }
   });
 });

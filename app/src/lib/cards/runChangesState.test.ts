@@ -5,9 +5,22 @@ vi.mock("$lib/core/backend", () => ({
   gitRunChanges: vi.fn(),
   gitDiffSince: vi.fn(),
   gitDiscardRun: vi.fn(),
+  cardRunTouchedFiles: vi.fn(),
+  shellWrites: vi.fn(),
+}));
+
+vi.mock("$lib/core/layoutState", async () => {
+  const { writable } = await import("svelte/store");
+  return { daemonCompat: writable(null) };
+});
+
+vi.mock("$lib/cards/changeAttributionState", () => ({
+  attributeRun: vi.fn(),
 }));
 
 import * as backend from "$lib/core/backend";
+import { daemonCompat } from "$lib/core/layoutState";
+import { attributeRun } from "$lib/cards/changeAttributionState";
 import {
   closeRunChanges,
   discardRun,
@@ -20,6 +33,8 @@ import type { FileDiff, RunChanges } from "$lib/git/git";
 
 const PATH = "/ws/.gavin-root/plans/t.md";
 const BASE = "1111111111111111111111111111111111111111";
+const WS = "ws1";
+const NO_RECORDS: backend.ShellWrites = { calls: [], files: [] };
 
 function changes(over: Partial<RunChanges> = {}): RunChanges {
   return {
@@ -37,11 +52,21 @@ function changes(over: Partial<RunChanges> = {}): RunChanges {
   };
 }
 
+const shared = changes({
+  files: [
+    { path: "a.ts", status: "M" },
+    { path: "b.ts", status: "M" },
+    { path: "c.ts", status: "?" },
+  ],
+});
+
 const emptyDiff: FileDiff = { path: "a.ts", binary: false, tooLarge: false, hunks: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
   runChangesStore.set({});
+  vi.mocked(backend.shellWrites).mockResolvedValue(NO_RECORDS);
+  daemonCompat.set({ daemonVersion: 72, appVersion: 72, degraded: false });
 });
 
 describe("openRunChanges", () => {
@@ -55,6 +80,7 @@ describe("openRunChanges", () => {
     expect(view.changes?.files).toHaveLength(1);
     expect(view.loading).toBe(false);
     expect(view.error).toBeNull();
+    expect(view.source).toBe("checkout");
   });
 
   /// A re-launch mints a new baseline. Keeping the previous run's file
@@ -95,6 +121,53 @@ describe("openRunChanges", () => {
     expect(view.error).toContain("git exploded");
     expect(view.loading).toBe(false);
     expect(view.changes).toBeNull();
+  });
+});
+
+describe("transcript narrow", () => {
+  it("keeps only the files the run's own agent edited", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(shared);
+    vi.mocked(backend.cardRunTouchedFiles).mockResolvedValue({ kind: "ready", paths: ["a.ts"] });
+
+    await openRunChanges(PATH, "/repo/wt", BASE, "Card", WS, "conv-1");
+
+    const view = get(runChangesStore)[PATH];
+    expect(view.changes?.files.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(view.source).toBe("transcript");
+    expect(attributeRun).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the checkout list and records source when the transcript is silent", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(shared);
+    vi.mocked(backend.cardRunTouchedFiles).mockResolvedValue({ kind: "unavailable", reason: "gone" });
+
+    await openRunChanges(PATH, "/repo/wt", BASE, "Card", WS, "conv-1");
+
+    const view = get(runChangesStore)[PATH];
+    expect(view.changes?.files.map((f) => f.path)).toEqual(["a.ts", "b.ts", "c.ts"]);
+    expect(view.source).toBe("checkout");
+    expect(attributeRun).toHaveBeenCalled();
+  });
+
+  it("falls back without asking when there is no conversation id", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(shared);
+
+    await openRunChanges(PATH, "/repo/wt", BASE, "Card", WS, null);
+
+    expect(backend.cardRunTouchedFiles).not.toHaveBeenCalled();
+    expect(get(runChangesStore)[PATH].source).toBe("checkout");
+    expect(attributeRun).toHaveBeenCalled();
+  });
+
+  it("records an empty list when the agent touched none of the dirty files", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(shared);
+    vi.mocked(backend.cardRunTouchedFiles).mockResolvedValue({ kind: "ready", paths: [] });
+
+    await openRunChanges(PATH, "/repo/wt", BASE, "Card", WS, "conv-1");
+
+    const view = get(runChangesStore)[PATH];
+    expect(view.changes?.files).toEqual([]);
+    expect(view.source).toBe("transcript");
   });
 });
 

@@ -37,6 +37,10 @@ import { earliestStepBaseSha } from "$lib/review/criticalReview";
 export interface ReviewCandidate {
   card: CardView;
   files: string[] | null;
+  /// Where `files` came from (`TouchedRun.source` in reviewState.ts).
+  /// Absent reads as `checkout`, the measurement every card had before
+  /// transcripts were read.
+  source?: TouchSource;
   /// The checkout the files were measured in -- the repository root, so
   /// two cards launched at different depths of one tree still meet.
   ///
@@ -59,6 +63,11 @@ export interface ReviewCandidate {
   /// what a card touched -- `files` stays the whole measured list.
   owners?: ReadonlyMap<string, string>;
 }
+
+/// `transcript`: the files the run's own agent edited, cut from the
+/// checkout's changes. `checkout`: everything that moved in the checkout
+/// since the run's baseline -- every co-tenant's work as well.
+export type TouchSource = "transcript" | "checkout";
 
 /// One cluster in the left list.
 export interface ReviewGroup {
@@ -578,9 +587,12 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
 ///
 /// One card is never this: a lone card's files are its own, however they
 /// were measured, and there is nothing for it to be indistinguishable
-/// from.
+/// from. Nor is a card whose files its transcript narrowed: those are
+/// its agent's own edits, so a group it shares is a real collision even
+/// when every card in it started from the same commit.
 function sharesOneBaseline(cards: ReviewCandidate[]): boolean {
   if (cards.length < 2) return false;
+  if (cards.some((c) => c.source === "transcript")) return false;
   const { checkout, baseSha } = cards[0];
   if (baseSha === null) return false;
   return cards.every((c) => c.baseSha === baseSha && c.checkout === checkout);

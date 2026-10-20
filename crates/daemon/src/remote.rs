@@ -372,6 +372,16 @@ struct Dial {
     rendezvous: String,
 }
 
+impl Dial {
+    /// Whether a stream this dial picked up should go on being carried
+    /// under `now`: the same Relay and the same rendezvous. Not the token,
+    /// because a token is presented once, at the hello, and a Refresh (v73)
+    /// must not drop the Devices it is handing the new one to.
+    fn carries_on_under(&self, now: Option<&Dial>) -> bool {
+        now.is_some_and(|now| now.url == self.url && now.rendezvous == self.rendezvous)
+    }
+}
+
 /// What the daemon should be dialling, or `None` for nothing at all.
 ///
 /// Nothing when the switch is off, when there is no Relay URL, and when
@@ -550,6 +560,13 @@ fn wait_while_wanted(manager: &SessionManager, dial: &Dial, at_most: Option<Dura
 /// Dials the Relay, registers this Workstation, and holds the connection
 /// until it ends or stops being wanted.
 fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut Said) -> Ended {
+    // One of this machine's direct listeners is not a Relay. Dialled as
+    // one it is this daemon dialling itself, a protocol error at each end
+    // every backoff; the store is shared, so the other build may have
+    // saved it. Said once, by name, until the URL changes.
+    if let Some(refused) = crate::direct::names_a_direct_listener_here(manager, &dial.url) {
+        return Ended::Undiallable(refused.to_string());
+    }
     // A retry after a failure keeps saying it failed: "dialling" again
     // every backoff would flap the desk between the two, and the reason
     // is what the human needs until a dial holds.
@@ -723,7 +740,7 @@ fn connect_through(
         Err(DialError::Refused(RefusalReason::Gone)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    serve_device(manager, stream, serving, || desired(manager).as_ref() == Some(dial))
+    serve_device(manager, stream, serving, || dial.carries_on_under(desired(manager).as_ref()))
 }
 
 /// Serves a paired Device's connection: the handshake, the proof, and
@@ -748,8 +765,9 @@ pub(crate) fn serve_device(
         let trust = no_store(manager.trust())?;
         pairing::ResponderKeys::from_store(&trust)?
     };
+    let profile = manager.build_profile();
     let accepted = connect::run_responder(&mut Within::new(&mut stream, HANDSHAKE), &keys, |key| {
-        no_store(manager.trust())?.admit(key)
+        no_store(manager.trust())?.admit(key, profile)
     });
     let mut accepted = match accepted {
         Ok(Ok(accepted)) => accepted,
@@ -1037,7 +1055,7 @@ fn carry(
 fn pair_through(manager: &Arc<SessionManager>, dial: &Dial, stream: &str) -> anyhow::Result<()> {
     let hello = RelayHello::stream(&dial.token, &dial.rendezvous, stream);
     let stream = client::dial(&dial.url, &hello, &DialOptions::default())?.into_stream();
-    serve_pairing(manager, stream, || desired(manager).as_ref() == Some(dial))
+    serve_pairing(manager, stream, || dial.carries_on_under(desired(manager).as_ref()))
 }
 
 /// Serves a pairing stream, a Relay's or the direct listener's: phase
@@ -1230,6 +1248,28 @@ mod tests {
                 rendezvous: relay::rendezvous_id(&key),
             })
         );
+    }
+
+    /// 2026-10-14: a Relay URL of `ws://<this Mac>:8445` had the daemon
+    /// dial its own direct listener, its log filled with a protocol error
+    /// at each end, and nothing said why. It is not dialled, and the
+    /// reason is the Relay's state, which the desk draws.
+    #[test]
+    fn a_relay_url_naming_this_machines_direct_listener_is_not_dialled() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(manager(&dir));
+        for url in ["ws://127.0.0.1:8445", "ws://localhost:8446"] {
+            tell(&manager, true, Some(url), Some("let-me-in"));
+            let dial = desired(&manager).unwrap();
+            let mut seen = manager.remote_wake().generation();
+            match hold(&manager, &dial, &mut seen, &mut Said::default()) {
+                Ended::Undiallable(why) => {
+                    assert!(why.contains("direct connection, not a Relay"), "{why}");
+                    assert!(why.contains("8443"), "the Relay's own port is named: {why}");
+                }
+                _ => panic!("{url} was dialled"),
+            }
+        }
     }
 
     #[test]

@@ -15,10 +15,13 @@ function recording(answers: GatewayAnswer[]) {
 
 describe("gatewayClient", () => {
   it("registers a Device and reads its id and secret", async () => {
-    const { sent, client } = recording([{ status: 201, body: '{"device_id":"d1","device_secret":"s1"}' }]);
+    const { sent, client } = recording([
+      { status: 201, body: '{"device_id":"d1","device_secret":"s1","token_pending":true,"verification_nonce":"n1"}' },
+    ]);
     await expect(client.registerDevice({ platform: "ios", token: "ab", environment: "development" })).resolves.toEqual({
       deviceId: "d1",
       deviceSecret: "s1",
+      verificationNonce: "n1",
     });
     expect(sent).toEqual([
       { method: "POST", path: "/v1/devices", body: '{"platform":"ios","token":"ab","environment":"development"}' },
@@ -26,9 +29,23 @@ describe("gatewayClient", () => {
   });
 
   it("sends a newer token with the Device's secret", async () => {
-    const { sent, client } = recording([{ status: 204, body: "" }]);
-    await client.putToken("d/1", "s1", { token: "cd" });
+    const { sent, client } = recording([{ status: 200, body: '{"token_pending":true,"verification_nonce":"n2"}' }]);
+    await expect(client.putToken("d/1", "s1", { token: "cd" })).resolves.toEqual({ verificationNonce: "n2" });
     expect(sent).toEqual([{ method: "PUT", path: "/v1/devices/d%2F1/token", bearer: "s1", body: '{"token":"cd"}' }]);
+  });
+
+  it("confirms a pending token with the nonce", async () => {
+    const { sent, client } = recording([{ status: 204, body: "" }]);
+    await client.confirmToken("d1", "s1", "nonce");
+    expect(sent).toEqual([
+      { method: "POST", path: "/v1/devices/d1/token/confirm", bearer: "s1", body: '{"nonce":"nonce"}' },
+    ]);
+  });
+
+  it("asks whether a token claim is still pending", async () => {
+    const { sent, client } = recording([{ status: 200, body: '{"token_pending":true}' }]);
+    await expect(client.tokenPending("d1", "s1")).resolves.toBe(true);
+    expect(sent).toEqual([{ method: "GET", path: "/v1/devices/d1/token", bearer: "s1" }]);
   });
 
   it("mints a permission and reads it", async () => {

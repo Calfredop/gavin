@@ -35,12 +35,16 @@ every piece of work should trace back to it.
 ## 2. Cards: note, task, plan
 
 Create cards with `gavin_create_plan` (`context_folder`, kebab-case
-`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`) or
+`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`/`labels`) or
 author the file directly. `kind` picks what the card IS:
 
 - **note** — a reminder; title (+ optional body).
 - **task** — one unit of agent work; **the body is the prompt**. A human may
   run your card with the workspace agent at any time.
+  Add `direct: true` (or pass `direct` to `gavin_create_plan`) and the body
+  is sent to the agent **exactly as written** — no card path, no status
+  instructions, no attachment list around it. That agent is never told
+  which card it is working, so nothing moves the card when it finishes.
 - **plan** (the default) — multi-step work; the body holds ordinary markdown
   checklists (`- [ ] step`).
 
@@ -83,8 +87,10 @@ The board's COLUMN NAMES are the status vocabulary — check them with
 case/spacing-insensitive; an empty value removes the line — that is how a
 task returns to nesting). Do this when you start, finish, or get blocked. If
 a human ran your card, the app already set it In Progress — you set the done
-column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
-ui")` referencing the board's label names.
+column when finished. Labels: pass `labels` to `gavin_create_plan` when you
+file a card, and `gavin_set_plan_field(path, "labels", "bug, ui")` while you
+work, using the board's label names. That write replaces the whole list, so
+keep the labels the card already carries (`gavin_find_cards` shows them).
 
 **In Progress claims the card for your tab.** A card in that column belongs
 to the session that put it there: the board shows your session instead of a
@@ -194,8 +200,14 @@ you could not check in a browser rather than implying you did.
 
 ## Notes
 
-- `gavin_get_tree` is the canonical parse of every context and card (kinds,
-  statuses, parents, checklist counts, warnings) — trust it over your own
-  frontmatter parsing.
+- `gavin_get_tree` is the canonical parse of every context and every card on
+  the board (kinds, statuses, parents, checklist counts, warnings), one card
+  per line — trust it over your own frontmatter parsing. Archived cards are
+  left out of it and only counted.
+- `gavin_find_cards` searches the whole tree, archived cards included, by
+  what a card is about (`query`) and by `status`, `kind`, `parent` or
+  `label`. Reach for it when you want a few cards rather than the board:
+  whether work was already done or is already on a card, a card by name, or
+  the children of a plan (`parent: <plan file>`).
 - After `gavin_init_root` in a fresh repo, reconnect MCP so the tools pick up
   the new root.

@@ -42,6 +42,9 @@ import {
   reclaimable,
   restoreWorkspaceId,
   REMOVED_WORKSPACES_LIMIT,
+  addToAgentsPage,
+  AGENTS_PAGE_NAME,
+  TOOLS_PAGE_NAME,
 } from "$lib/core/workspace";
 
 function leaf(tabs: string[]): LayoutNode {
@@ -213,6 +216,33 @@ describe("createPage", () => {
       { id: "page-1", name: "Page 1", layout: leaf(["s1"]), focusedSessionId: null },
     ]);
     expect(withPage.workspaces[0].activePageId).toBe("page-1");
+  });
+});
+
+describe("addToAgentsPage", () => {
+  it("lands on the Agents page by default, creating it without stealing focus", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Main", leaf(["s1"]));
+    const next = addToAgentsPage(state, "ws-1", "agent-1", "new-page");
+    expect(next.workspaces[0].pages.map((p) => [p.name, p.layout])).toEqual([
+      ["Main", leaf(["s1"])],
+      [AGENTS_PAGE_NAME, leaf(["agent-1"])],
+    ]);
+    expect(next.workspaces[0].activePageId).toBe("page-1");
+  });
+
+  // A tool run started on its own goes to Tools, and leaves an existing
+  // Agents page alone.
+  it("lands on the named page instead, adding a tab when it exists", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", AGENTS_PAGE_NAME, leaf(["agent-1"]));
+    state = addToAgentsPage(state, "ws-1", "tool-1", "tools-page", TOOLS_PAGE_NAME);
+    state = addToAgentsPage(state, "ws-1", "tool-2", "unused", TOOLS_PAGE_NAME);
+    expect(state.workspaces[0].pages.map((p) => [p.id, p.name, p.layout])).toEqual([
+      ["page-1", AGENTS_PAGE_NAME, leaf(["agent-1"])],
+      ["tools-page", TOOLS_PAGE_NAME, { type: "leaf", tabs: ["tool-1", "tool-2"], activeTabIndex: 1 }],
+    ]);
+    expect(state.workspaces[0].activePageId).toBe("page-1");
   });
 });
 

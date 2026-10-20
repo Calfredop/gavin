@@ -19,14 +19,32 @@
 //! produce (`docs/research/2026-09-28-companion-device-keys.md`). `ring`
 //! does the arithmetic, and is in the daemon already under the TLS that
 //! carries the dial to the Relay.
+//!
+//! **Key kind.** At pairing the proof may name what backs the key
+//! (`hardware` or `software-debug`, 06 §5.7). A release daemon refuses
+//! `software-debug` here, before the desk is asked, and again on every
+//! later connection through `trust::judge`. Android attestation against
+//! Google's hardware roots is not built yet; until it is, a release
+//! daemon trusts the shell's claim for any non-`software-debug` kind.
 
-use protocol::device_wire::{self, UnlockProof, HARDWARE_KEY_BYTES};
+use protocol::device_wire::{self, KeyKind, UnlockProof, HARDWARE_KEY_BYTES};
+use protocol::BuildProfile;
 use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
 
 /// The longest signature read. A DER signature over P-256 is at most 72
 /// bytes; anything longer is not one, and is not handed to the verifier
 /// to find that out.
 const MAX_SIGNATURE_BYTES: usize = 80;
+
+/// The key a pairing registered, and what the Device said backs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredKey {
+    pub key: Vec<u8>,
+    /// `None` when the Device omitted the field (an older shell): the
+    /// trust-store row then holds NULL, which every daemon still accepts
+    /// so already-paired phones are not stranded.
+    pub kind: Option<KeyKind>,
+}
 
 /// Whether `key` has the shape of a hardware public key. Whether it is a
 /// point on the curve is the verifier's to say, and it says so by
@@ -40,6 +58,18 @@ fn checked_key(key: &[u8]) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether this build may admit a row (or a pairing proof) of `kind`.
+///
+/// `None` is a row from before the column, or a Device that omitted the
+/// field: accepted on every profile so already-paired phones keep
+/// working. `software-debug` is accepted only by a debug daemon.
+pub fn admits_key_kind(kind: Option<KeyKind>, profile: BuildProfile) -> bool {
+    match kind {
+        Some(KeyKind::SoftwareDebug) => matches!(profile, BuildProfile::Dev),
+        Some(KeyKind::Hardware) | Some(KeyKind::Other) | None => true,
+    }
 }
 
 /// Whether `signature` is `hardware_key`'s, over the handshake whose hash
@@ -75,7 +105,15 @@ fn read(payload: &[u8]) -> anyhow::Result<(UnlockProof, Vec<u8>)> {
 /// everything about whether the key can be used: a key that does not
 /// parse, or that the Device cannot sign with, is refused here, before
 /// the desk is asked about a Device that could never connect.
-pub fn registering(payload: &[u8], handshake_hash: &[u8]) -> anyhow::Result<Vec<u8>> {
+///
+/// A release daemon also refuses a proof that declares `software-debug`
+/// (06 §5.7), so a Simulator or emulator key never reaches the desk of
+/// a release install.
+pub fn registering(
+    payload: &[u8],
+    handshake_hash: &[u8],
+    profile: BuildProfile,
+) -> anyhow::Result<RegisteredKey> {
     let (proof, signature) = read(payload)?;
     let key = proof
         .hardware_key
@@ -84,7 +122,13 @@ pub fn registering(payload: &[u8], handshake_hash: &[u8]) -> anyhow::Result<Vec<
     let key = protocol::hex_decode(key)
         .map_err(|_| anyhow::anyhow!("gavin-daemon: the device's hardware key is not hex"))?;
     verify(&key, handshake_hash, &signature)?;
-    Ok(key)
+    if !admits_key_kind(proof.key_kind, profile) {
+        anyhow::bail!(
+            "gavin-daemon: this Device holds a software debug key — only a development \
+             Workstation accepts it"
+        );
+    }
+    Ok(RegisteredKey { key, kind: proof.key_kind })
 }
 
 /// A connection's proof, against the key the Device registered when it
@@ -103,6 +147,7 @@ pub fn connecting(payload: &[u8], handshake_hash: &[u8], registered: &[u8]) -> a
 /// for a Device.
 #[cfg(test)]
 pub(crate) mod testing {
+    use protocol::device_wire::KeyKind;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
     pub(crate) struct HardwareKey {
@@ -138,9 +183,14 @@ pub(crate) mod testing {
 
         /// The proof a Device sends when it pairs.
         pub(crate) fn registering(&self, hash: &[u8]) -> Vec<u8> {
+            self.registering_as(hash, Some(KeyKind::Hardware))
+        }
+
+        pub(crate) fn registering_as(&self, hash: &[u8], kind: Option<KeyKind>) -> Vec<u8> {
             protocol::device_wire::UnlockProof {
                 signature: protocol::hex_encode(&self.sign(hash)),
                 hardware_key: Some(protocol::hex_encode(&self.public())),
+                key_kind: kind,
             }
             .to_bytes()
         }
@@ -150,6 +200,7 @@ pub(crate) mod testing {
             protocol::device_wire::UnlockProof {
                 signature: protocol::hex_encode(&self.sign(hash)),
                 hardware_key: None,
+                key_kind: None,
             }
             .to_bytes()
         }
@@ -160,6 +211,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::HardwareKey;
     use super::*;
+    use protocol::device_wire::KeyKind;
 
     const HASH: [u8; 32] = [0x5a; 32];
 
@@ -243,7 +295,27 @@ mod tests {
     #[test]
     fn a_pairing_registers_the_key_it_proves() {
         let key = HardwareKey::generate();
-        assert_eq!(registering(&key.registering(&HASH), &HASH).unwrap(), key.public());
+        let registered =
+            registering(&key.registering(&HASH), &HASH, BuildProfile::Dev).unwrap();
+        assert_eq!(registered.key, key.public());
+        assert_eq!(registered.kind, Some(KeyKind::Hardware));
+    }
+
+    #[test]
+    fn a_release_daemon_refuses_a_software_debug_key_at_pairing() {
+        let key = HardwareKey::generate();
+        let proof = key.registering_as(&HASH, Some(KeyKind::SoftwareDebug));
+        registering(&proof, &HASH, BuildProfile::Dev).unwrap();
+        let err = registering(&proof, &HASH, BuildProfile::Release).unwrap_err();
+        assert!(err.to_string().contains("software debug"), "{err}");
+    }
+
+    #[test]
+    fn a_pairing_that_omits_the_kind_is_still_taken() {
+        let key = HardwareKey::generate();
+        let registered =
+            registering(&key.registering_as(&HASH, None), &HASH, BuildProfile::Release).unwrap();
+        assert_eq!(registered.kind, None);
     }
 
     #[test]
@@ -251,7 +323,7 @@ mod tests {
         let key = HardwareKey::generate();
         let another = HardwareKey::generate();
 
-        let err = registering(&key.connecting(&HASH), &HASH).unwrap_err();
+        let err = registering(&key.connecting(&HASH), &HASH, BuildProfile::Dev).unwrap_err();
         assert!(err.to_string().contains("registered no hardware key"), "{err}");
 
         // A key the Device does not hold: someone else's public key,
@@ -259,14 +331,16 @@ mod tests {
         let claimed = UnlockProof {
             signature: protocol::hex_encode(&key.sign(&HASH)),
             hardware_key: Some(protocol::hex_encode(&another.public())),
+            key_kind: Some(KeyKind::Hardware),
         };
-        assert!(registering(&claimed.to_bytes(), &HASH).is_err());
+        assert!(registering(&claimed.to_bytes(), &HASH, BuildProfile::Dev).is_err());
 
         let unreadable = UnlockProof {
             signature: protocol::hex_encode(&key.sign(&HASH)),
             hardware_key: Some("not hex".into()),
+            key_kind: None,
         };
-        assert!(registering(&unreadable.to_bytes(), &HASH).is_err());
+        assert!(registering(&unreadable.to_bytes(), &HASH, BuildProfile::Dev).is_err());
     }
 
     /// A Device that skipped the proof and sent its first request in the
@@ -276,7 +350,7 @@ mod tests {
         let key = HardwareKey::generate();
         for payload in [&b""[..], b"not json", br#"{"type":"ListSessions"}"#] {
             for err in [
-                registering(payload, &HASH).unwrap_err(),
+                registering(payload, &HASH, BuildProfile::Dev).unwrap_err(),
                 connecting(payload, &HASH, &key.public()).unwrap_err(),
             ] {
                 assert!(err.to_string().contains("sent no proof"), "{err}");
@@ -297,5 +371,13 @@ mod tests {
         assert!(connecting(&another.registering(&HASH), &HASH, &registered.public()).is_err());
         // Naming one does no harm to a proof that is otherwise good.
         connecting(&registered.registering(&HASH), &HASH, &registered.public()).unwrap();
+    }
+
+    #[test]
+    fn admits_key_kind_matches_the_profile() {
+        assert!(admits_key_kind(None, BuildProfile::Release));
+        assert!(admits_key_kind(Some(KeyKind::Hardware), BuildProfile::Release));
+        assert!(admits_key_kind(Some(KeyKind::SoftwareDebug), BuildProfile::Dev));
+        assert!(!admits_key_kind(Some(KeyKind::SoftwareDebug), BuildProfile::Release));
     }
 }

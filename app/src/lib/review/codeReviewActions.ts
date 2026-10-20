@@ -30,7 +30,10 @@ import {
 } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-import { revealSession } from "$lib/cards/cardRunActions";
+import { revealSession, resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
+import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
+import { cardContentOf } from "$lib/cards/cardReview";
+import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { buildRunCommand, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
@@ -184,8 +187,39 @@ export function requestBranchReview(workspaceId: string, cwd: string): Promise<s
 /// there, and reviewing the context folder would review somebody else's
 /// branch. `cwd` on the binding is not used -- it follows the session's
 /// OSC 7 reports and drifts wherever the agent last cd'd.
-export function requestCardReview(workspaceId: string, card: CardView): Promise<string | null> {
-  if (card.kind === "note") return Promise.resolve("Notes have no work to review");
+///
+/// First-run review, as developCard: composeReviewPrompt tells the agent
+/// to read this card, so an unreviewed body must raise the sheet before
+/// the base dialog opens and before any session is created.
+export async function requestCardReview(
+  workspaceId: string,
+  card: CardView
+): Promise<string | null> {
+  if (card.kind === "note") return "Notes have no work to review";
+  const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
+  if ("error" in resolved) return resolved.error;
+  const file = await backend.readFileForViewer(card.id);
+  if (!file.exists) return `Card file not found: ${card.id}`;
+  const body = stripFrontmatter(file.content).trim();
+  if (
+    !(await ensureCardReviewed({
+      workspaceId,
+      path: card.id,
+      content: cardContentOf({
+        title: card.title,
+        body,
+        attachments: card.attachments,
+        agent: card.agent,
+        model: card.model,
+        effort: card.effort,
+      }),
+      statuses: resolved.statuses,
+      prompt: body,
+      blockLabel: "The card body the review agent will read:",
+    }))
+  ) {
+    return null;
+  }
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   return open(workspaceId, {
     cwd: binding?.launchCwd ?? card.contextFolder,

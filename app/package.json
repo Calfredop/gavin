@@ -10,7 +10,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "bundle": "tauri build --config src-tauri/tauri.bundle.conf.json -- --locked",
+    "bundle": "node src-tauri/bundle.mjs",
     "test": "vitest run",
     "companion:dev": "node companion/check-install.mjs && svelte-kit sync && cd companion && vite dev",
     "companion:build": "node companion/check-install.mjs && svelte-kit sync && cd companion && vite build",
@@ -25,6 +25,7 @@
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
+    "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "^6.11.0",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.12",

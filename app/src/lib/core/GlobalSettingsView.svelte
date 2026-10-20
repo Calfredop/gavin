@@ -82,6 +82,7 @@
     dimInactiveWorkspaces,
     setDimInactiveWorkspaces,
   } from "$lib/sidebar/sidebarPrefs";
+  import { middleClickEnabled, setMiddleClickEnabled } from "$lib/ui/middleClick";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
@@ -130,7 +131,10 @@
     KEEP_RUNNING_NOTE,
     RELAY_NOTE,
     admissionAfterSave,
+    admissionHeldLine,
     admissionPlaceholder,
+    admissionRefreshable,
+    admissionRefreshBlocked,
     admissionToSave,
     relayAdmissionBlocked,
     relayStateBlocked,
@@ -139,7 +143,14 @@
     directAccessBlocked,
     directStatus,
     type DirectState,
+    DESK_RELAY_FIREWALL_NOTE,
+    DESK_RELAY_NOTE,
+    deskFillsRelay,
+    deskRelayBlocked,
+    deskRelayStatus,
+    type DeskRelayState,
     relayUrlHint,
+    thisMachine,
     relayUrlToSave,
     remoteAccessBlocked,
     transportNote,
@@ -148,8 +159,7 @@
   } from "$lib/core/remoteAccess";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { DEVICES_LABEL } from "$lib/core/devicesPanel";
-  import { directIndicator, relayIndicator } from "$lib/ui/indicators";
-  import { profilesInUse } from "$lib/agents/agentPauseState";
+  import { deskRelayIndicator, directIndicator, relayIndicator } from "$lib/ui/indicators";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
@@ -173,13 +183,6 @@
     mergeAgentProfiles($agentProfilesStore, $agentDefaultsStore.customProfiles ?? [])
   );
   const profiles = $derived(allProfiles.filter((p) => p.modelFlag || isCustomProfileId(p.id)));
-
-  /// Whether any agent in use can actually be asked about its limits. The
-  /// limit gate is offered either way -- a workspace may switch agents --
-  /// but saying so beats a control that silently never fires.
-  const probed = $derived(
-    $agentProfilesStore.some((p) => p.usageProbe && profilesInUse().includes(p.id))
-  );
 
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
@@ -482,7 +485,6 @@
   /// and for good against a daemon too old to be asked.
   let relayState = $state<RelayState | null>(null);
 
-  const relayHint = $derived(relayUrlHint(relayDraft));
   const relayGate = $derived(relayStateBlocked($daemonCompat));
   const relayLine = $derived(relayStatus(relayState, nowMs));
   const relayBadge = $derived(
@@ -501,6 +503,9 @@
   const directGate = $derived(directAccessBlocked($daemonCompat));
   let directState = $state<DirectState | null>(null);
   const directLine = $derived(directStatus(directState));
+  // Given what the direct listener knows of this Mac, so a URL naming its
+  // own direct port is called out while it is typed.
+  const relayHint = $derived(relayUrlHint(relayDraft, thisMachine(directState)));
   const directBadge = $derived(
     directLine.badge === null
       ? null
@@ -524,6 +529,46 @@
     if (devices) devices = { ...devices, directAccessEnabled: enabled };
     try {
       await backend.setDirectAccess(enabled);
+    } catch (e) {
+      devices = before;
+      devicesError = String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  /// This Mac's own Relay (v73): its option rides in the device list, and
+  /// where it stands is read once and then followed by the daemon's
+  /// `desk-relay-state-changed` push, as the listener's is. While the
+  /// option is on, the URL and token fields are the daemon's to fill.
+  const deskRelayGate = $derived(deskRelayBlocked($daemonCompat));
+  let deskRelayState = $state<DeskRelayState | null>(null);
+  const deskFills = $derived(deskFillsRelay(devices));
+  const deskRelayLine = $derived(deskRelayStatus(deskRelayState, devices?.deskRelayEnabled ?? false));
+  const deskRelayBadge = $derived(
+    deskRelayLine.badge === null
+      ? null
+      : deskRelayIndicator(
+          deskRelayLine.badge,
+          deskRelayState?.state === "failed" ? deskRelayState.why : null
+        )
+  );
+
+  async function refreshDeskRelayState(): Promise<void> {
+    if (remoteAccessGate !== null || deskRelayGate !== null) return;
+    try {
+      deskRelayState = await backend.getDeskRelayState();
+    } catch {
+      deskRelayState = null;
+    }
+  }
+
+  /// "Run a Relay on this Mac". Optimistic like the other switches, and
+  /// rolled back the same way when the write fails.
+  async function saveDeskRelay(enabled: boolean): Promise<void> {
+    const before = devices;
+    devicesError = null;
+    if (devices) devices = { ...devices, deskRelayEnabled: enabled };
+    try {
+      await backend.setDeskRelay(enabled);
     } catch (e) {
       devices = before;
       devicesError = String(e instanceof Error ? e.message : e);
@@ -574,6 +619,10 @@
     if (remoteAccessGate !== null || directGate !== null || directState !== null) return;
     void refreshDirectState();
   });
+  $effect(() => {
+    if (remoteAccessGate !== null || deskRelayGate !== null || deskRelayState !== null) return;
+    void refreshDeskRelayState();
+  });
 
   // The Relay's state is the one push this section still hears: pairing
   // and the connect pushes moved to the Devices panel with the list.
@@ -585,9 +634,17 @@
     const stopDirect = listen<DirectState>("direct-state-changed", (event) => {
       directState = event.payload;
     });
+    // The desk writes the Relay URL and token when its Relay starts, and
+    // clears the URL when it stops: the list is read again so the fields
+    // show what the daemon now holds.
+    const stopDeskRelay = listen<DeskRelayState>("desk-relay-state-changed", (event) => {
+      deskRelayState = event.payload;
+      void refreshDevices();
+    });
     return () => {
       void stop.then((off) => off());
       void stopDirect.then((off) => off());
+      void stopDeskRelay.then((off) => off());
     };
   });
 
@@ -651,6 +708,21 @@
     await saveRemoteAccess(devices?.remoteAccessEnabled ?? false, relayDraft, token);
   }
 
+  const refreshGate = $derived(admissionRefreshBlocked($daemonCompat));
+  const admissionLine = $derived(admissionHeldLine(devices, nowMs));
+
+  /// Refresh token: the desk mints a new one, and the list is read again
+  /// so the line says when.
+  async function refreshAdmission(): Promise<void> {
+    devicesError = null;
+    try {
+      await backend.refreshRelayAdmission();
+    } catch (e) {
+      devicesError = String(e instanceof Error ? e.message : e);
+    }
+    await refreshDevices();
+  }
+
   async function clearAdmission(): Promise<void> {
     admissionDraft = "";
     await saveRemoteAccess(devices?.remoteAccessEnabled ?? false, relayDraft, ADMISSION_CLEAR);
@@ -677,6 +749,10 @@
     { id: "sidebar", keywords: ["Sidebar", "Scratchpad", "Hover to expand", "hover", "peek"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
+    {
+      id: "mouse",
+      keywords: ["Mouse", "Middle click", "middle-click", "middle button", "open link", "close tab"],
+    },
     {
       id: "browser",
       keywords: [
@@ -790,6 +866,8 @@
         "relay",
         "Admission token",
         "Direct connection",
+        "Run a Relay on this Mac",
+        "firewall",
         "Tailscale",
         "Push gateway",
         "notifications",
@@ -1034,6 +1112,25 @@
       </p>
     </section>
 
+    <section hidden={!settingsFilter.visible("mouse") || selectedSection !== "mouse"}>
+      <h3>Mouse</h3>
+      <div class="row">
+        <span>Middle click</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$middleClickEnabled}
+            onchange={(e) => setMiddleClickEnabled(e.currentTarget.checked)}
+          />
+          <span>Open links and close tabs</span>
+        </label>
+      </div>
+      <p class="hint">
+        A middle press on a URL or file path in a terminal opens it, as ⌘-click does; on a tab it
+        closes the tab, as its close box does. Pinned tabs stay put. ⌘-click works either way.
+      </p>
+    </section>
+
     <section hidden={!settingsFilter.visible("browser") || selectedSection !== "browser"}>
       <h3>Agent browser</h3>
       <div class="row">
@@ -1151,7 +1248,6 @@
           primaryId={defaultAgentId}
           label={defaultAgentLabel}
           profiles={allProfiles}
-          limitsProbed={probed}
         />
       {:else if activeAgentProfile}
         {#if activeCustom}
@@ -1281,7 +1377,6 @@
           primaryId={activeAgentProfile.id}
           label={activeAgentProfile.label}
           profiles={allProfiles}
-          limitsProbed={probed}
         />
       {:else if agentsTab === ADD_TAB}
         <div class="row">
@@ -1620,9 +1715,10 @@
       </span>
       <p class="hint">
         Off by default, so nothing changes today. On, a same-user program that connects without
-        the app's token can still read the board and your sessions, but cannot start a shell,
-        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
-        tools you do not trust as your own user.
+        the app's token can still read the board, list sessions, and read daemon status, but
+        cannot start a shell or agent, type into or read a session, read or list files, store or
+        start a launch, tool or rail, stop the daemon, or change remote access. Turn it on only
+        if you run tools you do not trust as your own user.
         {#if clientIdentityBlocked}
           <span class="warn">{clientIdentityBlocked}</span>
         {/if}
@@ -1658,7 +1754,7 @@
           <input
             type="text"
             placeholder="wss://relay.example/gavin"
-            disabled={remoteAccessGate !== null || devices === null}
+            disabled={remoteAccessGate !== null || devices === null || deskFills}
             bind:value={relayDraft}
             onfocus={() => (relayFocused = true)}
             onblur={() => {
@@ -1683,6 +1779,37 @@
         {/if}
       </p>
 
+      <!-- This Mac's own Relay (v73). Its own gate on top of the
+           section's: a daemon older than v73 has no option to set. -->
+      <span use:tooltip={remoteAccessGate ?? deskRelayGate ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={remoteAccessGate !== null || deskRelayGate !== null || devices === null}
+            checked={devices?.deskRelayEnabled ?? false}
+            onchange={(e) => void saveDeskRelay(e.currentTarget.checked)}
+          />
+          Run a Relay on this Mac
+        </label>
+      </span>
+      {#if deskRelayBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={deskRelayBadge} text={deskRelayLine.text} />
+          {#if deskRelayLine.detail}
+            <span class="detail">{deskRelayLine.detail}</span>
+          {/if}
+        </p>
+      {/if}
+      <p class="hint">
+        {DESK_RELAY_NOTE}
+        {#if deskRelayGate && remoteAccessGate === null}
+          <span class="warn">{deskRelayGate}</span>
+        {/if}
+      </p>
+      {#if devices?.deskRelayEnabled}
+        <p class="hint">{DESK_RELAY_FIREWALL_NOTE}</p>
+      {/if}
+
       <!-- Write-only. The field starts empty whether or not a token is
            stored, and says which in its placeholder; what is typed is
            saved on leaving the field and the field is emptied. -->
@@ -1693,7 +1820,7 @@
             type="password"
             autocomplete="off"
             placeholder={admissionPlaceholder(devices?.relayAdmissionSet ?? false)}
-            disabled={remoteAccessGate !== null || admissionGate !== null || devices === null}
+            disabled={remoteAccessGate !== null || admissionGate !== null || devices === null || deskFills}
             bind:value={admissionDraft}
             onblur={() => void saveAdmission()}
           />
@@ -1702,13 +1829,29 @@
           <button
             type="button"
             class="manage"
-            disabled={remoteAccessGate !== null || admissionGate !== null || !devices?.relayAdmissionSet}
+            disabled={remoteAccessGate !== null ||
+              admissionGate !== null ||
+              !devices?.relayAdmissionSet ||
+              deskFills}
             onclick={() => void clearAdmission()}
           >
             Clear token
           </button>
         </span>
+        <span use:tooltip={remoteAccessGate ?? refreshGate ?? ""}>
+          <button
+            type="button"
+            class="manage"
+            disabled={remoteAccessGate !== null || refreshGate !== null || !admissionRefreshable(devices)}
+            onclick={() => void refreshAdmission()}
+          >
+            Refresh token
+          </button>
+        </span>
       </div>
+      {#if admissionLine}
+        <p class="hint">{admissionLine}</p>
+      {/if}
       <p class="hint">
         {ADMISSION_NOTE}
         {#if admissionGate && remoteAccessGate === null}

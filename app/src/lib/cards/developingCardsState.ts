@@ -10,8 +10,15 @@
 
 import { get } from "svelte/store";
 import { layoutState, setDevelopingCards } from "$lib/core/layoutState";
+import { gavinTrees } from "$lib/core/gavinState";
 import { sessionLiveness, type DevelopingCardRecord } from "$lib/core/workspace";
-import { developRunOver, developingRunFor, DEVELOPING_BLOCK } from "$lib/cards/developingCards";
+import {
+  developBaseline,
+  developRunOver,
+  developWriteSeen,
+  developingRunFor,
+  DEVELOPING_BLOCK,
+} from "$lib/cards/developingCards";
 
 /// Every develop run this workspace is holding. Empty for a workspace
 /// that has never developed a card, and for one whose runs have all been
@@ -38,15 +45,32 @@ export function developingBlocker(workspaceId: string, path: string): string | n
 /// Records a run against its card. Written BEFORE the jump that follows
 /// it, like the orchestration agent's: an unrecorded run is one the next
 /// window cannot tell apart from any other agent on the Agents page.
+///
+/// Stamps the card's current mtime onto the record, which is what lets
+/// the sweep tell the interview (quiet, nothing written) from the finish
+/// (quiet, card rewritten) -- see developWriteSeen.
 export async function recordDevelopingCard(
   workspaceId: string,
-  record: DevelopingCardRecord
+  record: Pick<DevelopingCardRecord, "path" | "sessionId">
 ): Promise<void> {
+  const baselineModifiedAt = developBaseline(get(gavinTrees)[workspaceId], record.path);
   // Re-read here rather than trusting a captured list: the sweep and
   // another launch both write this field, and a stale copy would put a
   // freed run back or drop a live one.
   const records = developingCardsIn(workspaceId).filter((r) => r.path !== record.path);
-  await setDevelopingCards(workspaceId, [...records, record]);
+  await setDevelopingCards(workspaceId, [...records, { ...record, baselineModifiedAt }]);
+}
+
+/// Frees the card by hand: Finish developing in the card's menu and its
+/// detail bar. Drops the record and nothing else -- the agent's tab stays
+/// where it is, because ending a session is the human's own act and they
+/// may still want to read what it said. A card nothing is developing is
+/// a no-op, so a second press (or a sweep that got there first) is
+/// harmless.
+export async function finishDeveloping(workspaceId: string, path: string): Promise<void> {
+  const records = developingCardsIn(workspaceId);
+  const rest = records.filter((r) => r.path !== path);
+  if (rest.length !== records.length) await setDevelopingCards(workspaceId, rest);
 }
 
 let sweeping = false;
@@ -54,6 +78,11 @@ let sweepAgain = false;
 let stopWatch: (() => void) | null = null;
 
 /// Frees every card whose develop run is over (developRunOver).
+///
+/// Subscribed to the gavin trees as well as the layout: the card's
+/// rewrite reaches the app as a tree push, and the agent may already be
+/// idle by the time it lands -- a pass that only woke on layout changes
+/// would leave the card locked until something unrelated moved.
 ///
 /// A module-level subscription, not a component's `$effect`: a card whose
 /// develop agent finished while the human was on another tab still has to
@@ -70,9 +99,11 @@ let stopWatch: (() => void) | null = null;
 /// one-shot at startup.
 export function startDevelopingCardsWatch(): () => void {
   stopWatch?.();
-  const unsubscribe = layoutState.subscribe(() => void sweepDevelopingCards());
+  const unsubscribeLayout = layoutState.subscribe(() => void sweepDevelopingCards());
+  const unsubscribeTrees = gavinTrees.subscribe(() => void sweepDevelopingCards());
   const stop = () => {
-    unsubscribe();
+    unsubscribeLayout();
+    unsubscribeTrees();
     // Guarded: a later start owns the field, and this teardown arriving
     // afterwards must not clear the live watch out of it.
     if (stopWatch === stop) stopWatch = null;
@@ -101,9 +132,14 @@ async function sweepDevelopingCards(): Promise<void> {
         // Re-read per workspace: the write before this one persisted, and
         // liveness has to be judged against the state that came back.
         const state = get(layoutState);
+        const tree = get(gavinTrees)[ws.id];
         const alive = records.filter(
           (r) =>
-            !developRunOver(sessionLiveness(state, r.sessionId), state.sessionStatusById[r.sessionId])
+            !developRunOver(
+              sessionLiveness(state, r.sessionId),
+              state.sessionStatusById[r.sessionId],
+              developWriteSeen(r, tree)
+            )
         );
         if (alive.length !== records.length) await setDevelopingCards(ws.id, alive);
       }

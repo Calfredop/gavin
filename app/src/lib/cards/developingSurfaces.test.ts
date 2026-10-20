@@ -66,6 +66,8 @@ describe("the card menu", () => {
     const text = source(MENU);
     expect(text).toContain("if (developingRunOn(workspaceId, card.id)) {");
     expect(text).toContain("label: DEVELOPING_MENU_LABEL");
+    expect(text).toContain("label: FINISH_DEVELOPING_LABEL");
+    expect(text).toContain("onPick: () => void finishDeveloping(workspaceId, card.id)");
     // Ahead of the best-of-N branch, which is the other "a run is in
     // flight" case: both replace the run block rather than adding to it.
     expect(text.indexOf("developingRunOn(workspaceId, card.id)")).toBeLessThan(
@@ -92,12 +94,15 @@ describe("the card detail modal", () => {
     expect(text).toContain("An agent is developing this card");
   });
 
-  it("gives a developing card exactly one action, and it is the jump", () => {
+  it("gives a developing card the jump and a way out, and no launch", () => {
     // The bar's own rule, where every other surface's refusal ends up:
-    // nothing may run a card whose file is being rewritten.
+    // nothing may run a card whose file is being rewritten. Finish is the
+    // escape from a run that never writes the card, and it is wired to
+    // the state module rather than re-deciding anything in the template.
     const bar = cardSessionBar({ kind: "developing" });
-    expect(bar?.actions.map((a) => a.id)).toEqual(["develop-jump"]);
+    expect(bar?.actions.map((a) => a.id)).toEqual(["develop-jump", "develop-finish"]);
     expect(bar?.actions[0].label).toBe("Jump to the develop session");
+    expect(source(DETAIL)).toContain("return finishDeveloping(workspaceId, card.id);");
   });
 });
 

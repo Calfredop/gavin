@@ -12,13 +12,14 @@ import { requestedExplorerFile } from "$lib/files/planExplorer";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import {
   jumpToBoundSession,
+  launchCardAsNewSession,
   relaunchCard,
   developCard,
   resumeCard,
   revealDevelopingCard,
 } from "$lib/cards/cardRunActions";
-import { developingRunOn } from "$lib/cards/developingCardsState";
-import { DEVELOPING_MENU_LABEL } from "$lib/cards/developingCards";
+import { developingRunOn, finishDeveloping } from "$lib/cards/developingCardsState";
+import { DEVELOPING_MENU_LABEL, FINISH_DEVELOPING_LABEL } from "$lib/cards/developingCards";
 import { requestCardReview } from "$lib/review/codeReviewActions";
 import { requestCardCriticalReview } from "$lib/review/criticalReviewActions";
 import { developAvailable } from "$lib/cards/cardRun";
@@ -34,8 +35,12 @@ import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/agents/launchQueue";
 import { isArchivedCard, slugStatus, type CardView } from "$lib/core/planBoard";
-import type { Column } from "$lib/board/kanban";
+import { canReplay, type Column } from "$lib/board/kanban";
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
+
+/// A fresh agent on the card as it is now, replacing an exited binding
+/// (`launchCardAsNewSession`).
+export const NEW_SESSION_MENU_LABEL = "Launch as new session";
 
 export interface CardMenuHooks {
   workspaceId: string;
@@ -95,10 +100,15 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       // Ahead of every other case, and replacing all of them: an agent is
       // rewriting this card's file right now, so the prompt behind every
       // run entry here is about to stop being true (developingCards.ts).
-      // One entry, and it goes where the answer is.
+      // The jump goes where the answer is; Finish is the way out of a run
+      // that will never write the card (developingCards.ts).
       entries.push({
         label: DEVELOPING_MENU_LABEL,
         onPick: () => void revealDevelopingCard(workspaceId, card.id),
+      });
+      entries.push({
+        label: FINISH_DEVELOPING_LABEL,
+        onPick: () => void finishDeveloping(workspaceId, card.id),
       });
     } else if (run) {
       entries.push({
@@ -140,10 +150,23 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         },
       });
     } else if (binding) {
+      // Only where the binding recorded a launch: one linked to a session
+      // that was already running has nothing to replay, and Launch as new
+      // session below is then the way to start an agent here.
+      if (canReplay(binding)) {
+        entries.push({
+          label: "Re-launch agent",
+          onPick: () => {
+            void relaunchCard(workspaceId, card.id).then((err) => {
+              if (err) hooks.reportError(err);
+            });
+          },
+        });
+      }
       entries.push({
-        label: "Re-launch agent",
+        label: NEW_SESSION_MENU_LABEL,
         onPick: () => {
-          void relaunchCard(workspaceId, card.id).then((err) => {
+          void launchCardAsNewSession(workspaceId, card).then((err) => {
             if (err) hooks.reportError(err);
           });
         },

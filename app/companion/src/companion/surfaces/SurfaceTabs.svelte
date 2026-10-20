@@ -32,7 +32,7 @@
 </div>
 
 <style>
-  /* Eight surfaces outgrow a narrow phone: the strip scrolls sideways
+  /* Nine surfaces outgrow a narrow phone: the strip scrolls sideways
      rather than squeezing a label onto two lines. */
   .tabs {
     display: flex;

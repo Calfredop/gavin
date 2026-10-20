@@ -2,12 +2,14 @@
 //! its send permissions, and deliver a Workstation's ciphertext.
 
 use crate::clock::Clock;
-use crate::id::{new_secret, same_hash, secret_hash, Id};
+use crate::id::{new_secret, random_bytes, same_hash, secret_hash, Id};
 use crate::log::Log;
 use crate::permission::{Claims, PermissionKey};
 use crate::rate::{Limiter, RateLimit};
-use crate::sender::{ApnsEnvironment, Delivery, Sender};
-use crate::store::{DeviceRow, Platform, Registration, Store};
+use crate::sender::{ApnsEnvironment, Delivery, PushBody, Sender};
+use crate::store::{ConfirmOutcome, DeviceRow, Platform, Registration, Store};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use std::sync::Arc;
 
 /// The most ciphertext one push may carry. APNs and FCM both cap a
@@ -45,6 +47,9 @@ pub enum Refusal {
     DeviceUnauthorized,
     PlatformUnavailable,
     TooManyPermissions,
+    /// The Device has not yet echoed the verification nonce for its
+    /// pending token, so it may not mint permissions or deliver.
+    TokenUnconfirmed,
     PermissionNotFound,
     PermissionInvalid,
     PermissionExpired,
@@ -64,6 +69,7 @@ impl Refusal {
             Refusal::DeviceUnauthorized => "device_unauthorized",
             Refusal::PlatformUnavailable => "platform_unavailable",
             Refusal::TooManyPermissions => "too_many_permissions",
+            Refusal::TokenUnconfirmed => "token_unconfirmed",
             Refusal::PermissionNotFound => "permission_not_found",
             Refusal::PermissionInvalid => "permission_invalid",
             Refusal::PermissionExpired => "permission_expired",
@@ -81,6 +87,13 @@ impl Refusal {
 pub struct Registered {
     pub device_id: Id,
     pub device_secret: String,
+    /// Present only when the sender cannot deliver a real verification
+    /// push (dry-run): the Device confirms with this nonce over HTTP.
+    pub verification_nonce: Option<String>,
+}
+
+pub struct TokenReplaced {
+    pub verification_nonce: Option<String>,
 }
 
 pub struct Granted {
@@ -115,33 +128,78 @@ impl Gateway {
         &self.log
     }
 
-    pub fn register(&self, platform: &str, token: &str, environment: Option<&str>) -> Result<Registered, Refusal> {
+    pub async fn register(
+        &self,
+        platform: &str,
+        token: &str,
+        environment: Option<&str>,
+    ) -> Result<Registered, Refusal> {
         let platform = Platform::parse(platform).ok_or(Refusal::BadRequest("unknown_platform"))?;
         let registration = self.registration(platform, token, environment)?;
         let (device_id, device_secret) = (Id::random(), new_secret());
+        let (nonce, nonce_hash) = verification_nonce();
         self.store
-            .insert_device(device_id, &secret_hash(&device_secret), &registration, self.clock.now_s())
+            .insert_device(device_id, &secret_hash(&device_secret), &registration, &nonce_hash, self.clock.now_s())
             .map_err(|e| self.internal("register", e))?;
-        self.log.info(format!("device {device_id} registered ({})", platform.as_str()));
-        Ok(Registered { device_id, device_secret })
+        if let Err(refused) = self.send_verification(&registration, &nonce).await {
+            let _ = self.store.delete_device(device_id);
+            return Err(refused);
+        }
+        self.log.info(format!("device {device_id} registered ({}); token pending confirmation", platform.as_str()));
+        Ok(Registered {
+            device_id,
+            device_secret,
+            verification_nonce: self.sender.reveals_verification_nonce().then_some(nonce),
+        })
     }
 
-    /// A newer token for the same Device. Every permission it has minted
-    /// keeps working, because they name the Device and not the token.
-    pub fn replace_token(
+    /// A newer token for the same Device. The live token keeps delivering
+    /// until the Device confirms the pending claim; permissions are
+    /// untouched either way.
+    pub async fn replace_token(
         &self,
         device: &str,
         secret: Option<&str>,
         token: &str,
         environment: Option<&str>,
-    ) -> Result<(), Refusal> {
+    ) -> Result<TokenReplaced, Refusal> {
         let (id, row) = self.authenticate(device, secret)?;
         let registration = self.registration(row.platform, token, environment)?;
+        let (nonce, nonce_hash) = verification_nonce();
         self.store
-            .replace_token(id, &registration, self.clock.now_s())
+            .replace_token(id, &registration, &nonce_hash, self.clock.now_s())
             .map_err(|e| self.internal("replace token", e))?;
-        self.log.info(format!("device {id} replaced its token"));
-        Ok(())
+        self.send_verification(&registration, &nonce).await?;
+        self.log.info(format!("device {id} claimed a new token; pending confirmation"));
+        Ok(TokenReplaced { verification_nonce: self.sender.reveals_verification_nonce().then_some(nonce) })
+    }
+
+    /// Whether this Device still has a pending token claim.
+    pub fn token_pending(&self, device: &str, secret: Option<&str>) -> Result<bool, Refusal> {
+        let (_, row) = self.authenticate(device, secret)?;
+        Ok(row.pending.is_some())
+    }
+
+    /// Echoes the nonce from the verification push. Only then does the
+    /// pending claim become the live token, and only then do other
+    /// holders of that token lose theirs.
+    pub fn confirm_token(&self, device: &str, secret: Option<&str>, nonce: &str) -> Result<(), Refusal> {
+        let (id, _) = self.authenticate(device, secret)?;
+        if nonce.is_empty() || nonce.len() > 128 {
+            return Err(Refusal::BadRequest("bad_nonce"));
+        }
+        let hash = secret_hash(nonce);
+        match self.store.confirm_token(id, &hash, self.clock.now_s()).map_err(|e| self.internal("confirm token", e))? {
+            ConfirmOutcome::Confirmed => {
+                self.log.info(format!("device {id} confirmed its token"));
+                Ok(())
+            }
+            ConfirmOutcome::UnknownDevice => Err(Refusal::DeviceUnauthorized),
+            ConfirmOutcome::NothingPending => Err(Refusal::BadRequest("nothing_pending")),
+            // Same shape as a wrong secret: guessing nonces should not
+            // tell the caller whether a claim is waiting.
+            ConfirmOutcome::BadNonce => Err(Refusal::DeviceUnauthorized),
+        }
     }
 
     pub fn unregister(&self, device: &str, secret: Option<&str>) -> Result<(), Refusal> {
@@ -152,8 +210,13 @@ impl Gateway {
     }
 
     /// Mints a send permission for the Device to hand one Workstation.
+    /// Refused until the Device has confirmed a deliverable token, so a
+    /// free registration of a random token never earns an allowance.
     pub fn grant(&self, device: &str, secret: Option<&str>) -> Result<Granted, Refusal> {
-        let (id, _) = self.authenticate(device, secret)?;
+        let (id, row) = self.authenticate(device, secret)?;
+        if row.token.is_none() {
+            return Err(Refusal::TokenUnconfirmed);
+        }
         let now = self.clock.now_s();
         let live = self.store.permission_count(id, now).map_err(|e| self.internal("grant", e))?;
         if live >= self.settings.max_permissions_per_device {
@@ -215,7 +278,7 @@ impl Gateway {
         };
         let platform = target.platform().as_str();
         let what = format!("push on permission {} to {platform} device {device}", claims.permission);
-        match self.sender.send(target, ciphertext).await {
+        match self.sender.send(target, PushBody::Ciphertext(ciphertext)).await {
             Delivery::Delivered => {
                 self.log.info(format!("{what}: delivered, {} bytes", ciphertext.len()));
                 Ok(())
@@ -249,6 +312,28 @@ impl Gateway {
                 self.log.info(format!("pruned {permissions} expired permissions and {devices} idle devices"))
             }
             Err(e) => self.log.info(format!("pruning failed: {e:#}")),
+        }
+    }
+
+    async fn send_verification(&self, reg: &Registration, nonce: &str) -> Result<(), Refusal> {
+        let target = match reg.platform {
+            Platform::Ios => crate::sender::Target::Apns { token: &reg.token, environment: reg.environment },
+            Platform::Android => crate::sender::Target::Fcm { token: &reg.token },
+        };
+        match self.sender.send(target, PushBody::Verification(nonce)).await {
+            Delivery::Delivered => Ok(()),
+            Delivery::TokenGone(reason) => {
+                self.log.info(format!("verification push: token gone ({reason})"));
+                Err(Refusal::DeviceUnreachable)
+            }
+            Delivery::Rejected(reason) => {
+                self.log.info(format!("verification push: rejected ({reason})"));
+                Err(Refusal::UpstreamRejected)
+            }
+            Delivery::Unavailable(reason) => {
+                self.log.info(format!("verification push: unavailable ({reason})"));
+                Err(Refusal::UpstreamUnavailable)
+            }
         }
     }
 
@@ -302,4 +387,10 @@ impl Gateway {
         self.log.info(format!("{what} failed: {e:#}"));
         Refusal::Internal
     }
+}
+
+fn verification_nonce() -> (String, [u8; 32]) {
+    let nonce = URL_SAFE_NO_PAD.encode(random_bytes::<32>());
+    let hash = secret_hash(&nonce);
+    (nonce, hash)
 }

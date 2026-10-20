@@ -1,3 +1,4 @@
+mod agent_edits;
 mod agent_models;
 mod agent_playwright;
 mod agent_setup;
@@ -21,6 +22,7 @@ mod keep_running;
 mod layout;
 mod mac_window;
 mod memory;
+mod navigation_guard;
 mod program;
 mod pull_request;
 mod remote;
@@ -74,7 +76,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // Refuses top-level navigation off the app's own origin for every
+        // webview (main and ws-*). Frontend link interception is the
+        // primary path; this is the host backstop (navigation_guard.rs).
+        .plugin(navigation_guard::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -102,6 +108,11 @@ pub fn run() {
         .manage(device_commit::DeviceCommitRequests::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
+            // Same soft-RLIMIT raise the daemon does at serve(): the host
+            // is also Finder-launched, and its sockets, watchers and
+            // children share the inherited soft 256. No-op on Windows.
+            protocol::nofile::raise_soft_nofile();
+
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 mac_window::round_window_corners(&window, 10.0);
@@ -134,6 +145,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             session::write_input,
             session::resize_session,
+            session::return_pty_size,
             session::create_session,
             session::kill_session,
             session::adopt_session,
@@ -204,10 +216,13 @@ pub fn run() {
             session::list_devices,
             session::get_relay_state,
             session::get_direct_state,
+            session::get_desk_relay_state,
             session::revoke_device,
             session::revoke_all_devices,
             session::set_remote_access,
             session::set_direct_access,
+            session::set_desk_relay,
+            session::refresh_relay_admission,
             session::set_push_gateway_url,
             session::push_companion_notify,
             daemon_compat,
@@ -216,6 +231,7 @@ pub fn run() {
             session::get_board,
             session::card_session,
             session::card_runs,
+            session::shell_writes,
             session::set_board,
             session::get_orchestration,
             session::set_orchestration,
@@ -283,6 +299,7 @@ pub fn run() {
             browser_view::get_playwright_pane_open,
             browser_view::set_playwright_pane_open,
             agent_setup::setup_agent_integration,
+            agent_setup::scan_foreign_mcp_servers,
             agent_setup::agent_profiles,
             agent_setup::detect_agent_binaries,
             agent_models::agent_model_catalog,
@@ -294,6 +311,7 @@ pub fn run() {
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
             agent_tokens::conversation_log,
+            agent_edits::card_run_touched_files,
             session::get_launch_config,
             session::set_launch_config,
             session::get_custom_resume_args,

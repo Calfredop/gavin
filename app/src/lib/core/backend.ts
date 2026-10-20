@@ -40,7 +40,7 @@ import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/works
 import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
-import type { DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
+import type { DeskRelayState, DeviceList, DirectState, PairingOffer, RelayState } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
@@ -154,6 +154,25 @@ export function getDirectState(): Promise<DirectState> {
 /// access is on too, it listens for Devices on this network or tailnet.
 export function setDirectAccess(enabled: boolean): Promise<void> {
   return invoke("set_direct_access", { enabled });
+}
+
+/// Where this Mac's own Relay stands (v73). Every change after this read
+/// arrives as the `desk-relay-state-changed` event.
+export function getDeskRelayState(): Promise<DeskRelayState> {
+  return invoke("get_desk_relay_state");
+}
+
+/// "Run a Relay on this Mac" (v73). The daemon acts on it: on, while
+/// remote access is on, a release daemon runs `gavin-relay`, mints its
+/// token and fills in the Relay URL. A dev daemon never starts one.
+export function setDeskRelay(enabled: boolean): Promise<void> {
+  return invoke("set_desk_relay", { enabled });
+}
+
+/// Replace the admission token the desk minted (v73). The old one is still
+/// accepted for a day, while every connected Device is handed the new one.
+export function refreshRelayAdmission(): Promise<void> {
+  return invoke("refresh_relay_admission");
 }
 
 export function revokeDevice(deviceId: string): Promise<void> {
@@ -913,6 +932,13 @@ export function resizeSession(sessionId: string, cols: number, rows: number): Pr
   return invoke("resize_session", { sessionId, cols, rows });
 }
 
+/// Ends a Device's borrow of the session's PTY size and puts back the size
+/// this desk last asked for (v74). A Device sends it when it closes the
+/// terminal, and the daemon honours that only from the borrower.
+export function returnPtySize(sessionId: string): Promise<void> {
+  return invoke("return_pty_size", { sessionId });
+}
+
 /// Asks the daemon to repaint this session's terminal from its own model of
 /// the screen. See the Rust command for why a reloaded frontend needs it and
 /// why it isn't a second Attach.
@@ -1253,6 +1279,13 @@ export interface McpForeignServers {
   isolateRefusal?: string;
 }
 
+/// A root that looks like a gavin checkout but has no matching mark on
+/// this machine. Present after a run that wrote the absolute binary so
+/// Integration can ask whether to trust the repo launcher.
+export interface CheckoutMarkOffer {
+  launcher: string;
+}
+
 /// What a setup run wrote, and what it could not (spec §6). `skipped` is
 /// [what, why] pairs, rendered verbatim so an unavailable MCP config is
 /// visible rather than silent. `mcpForeign` is set instead of the MCP
@@ -1268,6 +1301,7 @@ export interface IntegrationResult {
   /// already there.
   replaced: Array<[string, string]>;
   mcpForeign?: McpForeignServers;
+  checkoutMarkOffer?: CheckoutMarkOffer;
 }
 
 /// `instructionsFile` is the workspace's RESOLVED agent file — the one
@@ -1281,18 +1315,34 @@ export interface IntegrationResult {
 /// Omit it (or pass a value that does not match what is on disk right
 /// now) to have the MCP write held back and `mcpForeign` reported
 /// instead, rather than assume any particular answer.
+///
+/// `approveCheckoutMark` is true when the human approved a previous
+/// call's `checkoutMarkOffer` — records the mark and names the relative
+/// launcher. Omit or pass false to keep the absolute binary.
 export function setupAgentIntegration(
   rootPath: string,
   instructionsFile: string,
   mcpForeignChoice?: "keep" | "isolate",
-  profileId?: string
+  profileId?: string,
+  approveCheckoutMark?: boolean
 ): Promise<IntegrationResult> {
   return invoke("setup_agent_integration", {
     rootPath,
     instructionsFile,
     mcpForeignChoice,
     profileId,
+    approveCheckoutMark,
   });
+}
+
+/// Read-only AG-07 scan of the foreign servers the given profile's agent
+/// would load from `rootPath` (the launch cwd / Cursor `projectRoot`).
+/// Empty when there is nothing foreign or the profile has no MCP layout.
+export function scanForeignMcpServers(
+  rootPath: string,
+  profileId?: string
+): Promise<ForeignMcpServer[]> {
+  return invoke("scan_foreign_mcp_servers", { rootPath, profileId });
 }
 
 export function createPlan(
@@ -1305,7 +1355,8 @@ export function createPlan(
   kind?: "note" | "task" | "plan",
   parent?: string,
   attachments?: string,
-  complexity?: string
+  complexity?: string,
+  direct?: boolean
 ): Promise<string> {
   return invoke("create_plan", {
     contextFolder,
@@ -1318,6 +1369,7 @@ export function createPlan(
     parent,
     attachments,
     complexity,
+    direct,
   });
 }
 
@@ -1338,7 +1390,8 @@ export function setPlanFrontmatterField(
     | "complexity"
     | "agent"
     | "model"
-    | "effort",
+    | "effort"
+    | "direct",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });
@@ -1491,6 +1544,44 @@ export function conversationLog(
   return invoke("conversation_log", { profileId, conversationId });
 }
 
+/// Mirrors `TouchReport` in `agent_edits.rs`.
+export type TouchReport =
+  | { kind: "ready"; paths: string[] }
+  | { kind: "unavailable"; reason: string };
+
+/// Mirrors `protocol::shell_writes::ShellWrites`: what the shell-write
+/// hook recorded of one conversation's shell calls -- the calls it
+/// watched, by the CLI's id for each, and the files they wrote under each
+/// repository root.
+export type ShellWrites = {
+  calls: string[];
+  files: { root: string; paths: string[] }[];
+};
+
+/// The shell-write hook's records for one run (v72). Gate on
+/// FEATURE_MIN_VERSION.shellWrites before calling: an older daemon keeps
+/// none and is refused the question.
+export function shellWrites(workspaceId: string, conversationId: string): Promise<ShellWrites> {
+  return invoke("shell_writes", { workspaceId, conversationId });
+}
+
+/// Which of `candidates` -- root-relative paths under `root`, the
+/// checkout `gitRunChanges` resolved -- one run's agent touched, read out
+/// of its transcript the way `cardRunTokens` reads its cost. `cwd` is the
+/// run's launch directory, which relative paths in the transcript are
+/// taken against. `observed` is what `shellWrites` returned for the run:
+/// a shell command the hook watched is judged by what it wrote rather
+/// than by the paths its text names; null judges every one by its text.
+export function cardRunTouchedFiles(
+  conversationId: string | null,
+  cwd: string,
+  root: string,
+  candidates: string[],
+  observed: ShellWrites | null
+): Promise<TouchReport> {
+  return invoke("card_run_touched_files", { conversationId, cwd, root, candidates, observed });
+}
+
 export function deleteBoard(workspaceId: string): Promise<void> {
   return invoke("delete_board", { workspaceId });
 }
@@ -1553,6 +1644,7 @@ export function detectAgentBinaries(): Promise<
     command: string;
     found: boolean;
     path: string | null;
+    warning?: string | null;
   }>
 > {
   return invoke("detect_agent_binaries");

@@ -3,7 +3,13 @@
 // `registration.ts` are written against. Every refusal is the gateway's own
 // `{"error": "<code>"}`, kept as `GatewayError.code` for callers to branch on.
 import type { GatewayAnswer, GatewayRequest } from "$shell/native/push";
-import type { MintedPermission, PushGatewayClient, RegisteredDevice, RegisterDeviceRequest } from "$shell/push/permissions";
+import type {
+  MintedPermission,
+  PushGatewayClient,
+  RegisteredDevice,
+  RegisterDeviceRequest,
+  TokenClaim,
+} from "$shell/push/permissions";
 
 export class GatewayError extends Error {
   constructor(
@@ -35,14 +41,44 @@ export function gatewayClient(call: GatewayCall): PushGatewayClient {
       const answer = (await send({ method: "POST", path: "/v1/devices", body: JSON.stringify(body) }, 201)) as {
         device_id?: unknown;
         device_secret?: unknown;
+        verification_nonce?: unknown;
       } | null;
       if (typeof answer?.device_id !== "string" || typeof answer.device_secret !== "string") {
         throw new GatewayError(201, "unreadable_answer");
       }
-      return { deviceId: answer.device_id, deviceSecret: answer.device_secret };
+      const registered: RegisteredDevice = { deviceId: answer.device_id, deviceSecret: answer.device_secret };
+      if (typeof answer.verification_nonce === "string") {
+        registered.verificationNonce = answer.verification_nonce;
+      }
+      return registered;
     },
-    async putToken(deviceId, deviceSecret, body) {
-      await send({ method: "PUT", path: `${device(deviceId)}/token`, bearer: deviceSecret, body: JSON.stringify(body) }, 204);
+    async putToken(deviceId, deviceSecret, body): Promise<TokenClaim> {
+      const answer = (await send(
+        { method: "PUT", path: `${device(deviceId)}/token`, bearer: deviceSecret, body: JSON.stringify(body) },
+        200
+      )) as { verification_nonce?: unknown } | null;
+      const claim: TokenClaim = {};
+      if (typeof answer?.verification_nonce === "string") {
+        claim.verificationNonce = answer.verification_nonce;
+      }
+      return claim;
+    },
+    async confirmToken(deviceId, deviceSecret, nonce) {
+      await send(
+        {
+          method: "POST",
+          path: `${device(deviceId)}/token/confirm`,
+          bearer: deviceSecret,
+          body: JSON.stringify({ nonce }),
+        },
+        204
+      );
+    },
+    async tokenPending(deviceId, deviceSecret) {
+      const answer = (await send({ method: "GET", path: `${device(deviceId)}/token`, bearer: deviceSecret }, 200)) as {
+        token_pending?: unknown;
+      } | null;
+      return answer?.token_pending === true;
     },
     async mintPermission(deviceId, deviceSecret): Promise<MintedPermission> {
       const answer = (await send({ method: "POST", path: `${device(deviceId)}/permissions`, bearer: deviceSecret }, 201)) as {

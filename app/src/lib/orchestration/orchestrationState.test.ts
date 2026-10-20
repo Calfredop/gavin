@@ -84,6 +84,8 @@ vi.mock("$lib/core/layoutState", () => ({
   profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
   promptExtrasFor: vi.fn((): string[] => []),
+  // Pass-through: these tests are not about the AG-07 Cursor gate.
+  prepareCursorAgentLaunch: vi.fn(async (_ws: string, _root: string, agent: unknown) => agent),
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
   // agent -- and a test that moves one has to move both, or a rail's
@@ -114,6 +116,14 @@ vi.mock("$lib/core/layoutState", () => ({
   // nobody has read. True by default, since almost every fixture here is
   // about scheduling rather than about provenance.
   cardReviewed: vi.fn(() => true),
+  // Organize/Reorganize also read config trust for the worktree-setup
+  // block they put in the prompt. Approved by default.
+  configTrustFor: vi.fn(() => ({
+    trusted: true,
+    keys: { command: "", file: "", setup: [] },
+    hash: "",
+    needsApproval: false,
+  })),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   retainTabOnExit: vi.fn(),
   // tick() reads this through get(), so it has to be a real store.
@@ -218,6 +228,8 @@ vi.mock("$lib/core/gavinState", () => ({
   },
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
+  // Organize/Reorganize read the trusted setup list from this store.
+  worktreeSetups: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
 }));
 // The daemon's own pushes, capturable: initOrchestrationListeners is the
 // third place a plan can arrive, and the only one that needs a real
@@ -362,10 +374,11 @@ import { appDuty } from "$lib/shell/appDuty";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
-import { noPromptReason } from "$lib/cards/cardRun";
+import { noPromptReason, shellQuote } from "$lib/cards/cardRun";
 import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
+import { sshLinks } from "$lib/workspace/sshLinkState";
 
 function rail(id: string): Rail {
   return { id, name: id, position: 0, worktreePath: null, pageId: null, stages: [] };
@@ -953,7 +966,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1"
+      `claude --resume ${shellQuote("conv-1")}`
     );
     // The same conversation id, the new session, and the budget
     // UNTOUCHED: a human's press is not an automatic attempt.
@@ -994,7 +1007,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       { profileId: "claude-code", withoutHeadroom: true }
     );
     expect(isAwaitingFirstSubmit("sess-2")).toBe(true);
@@ -1020,7 +1033,7 @@ describe("rail controls", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      "claude --resume conv-1",
+      `claude --resume ${shellQuote("conv-1")}`,
       "claude-code"
     );
   });
@@ -1558,6 +1571,168 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null, "ws-1");
   });
 
+  // An ssh workspace's plan is host-writable. A start-rail step there that
+  // names a LOCAL workspace id must stall, not arm that local rail --
+  // otherwise the host starts work on the desk with no click on the local
+  // workspace (sec-fix-ssh-start-rail-local-workspace).
+  it("refuses an ssh workspace's start-rail arming a local workspace", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-local"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r-local",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/local",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s-local",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-local" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [], ssh: { host: "h" } },
+        { id: "ws-local", pages: [], rootPath: "/ws-local" },
+      ],
+    });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-local": [] });
+    vi.mocked(backend.setRailRun).mockClear();
+    vi.mocked(backend.setStepRun).mockClear();
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setRailRun).not.toHaveBeenCalledWith(
+      "r-local",
+      expect.anything(),
+      expect.anything(),
+      "ws-local"
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("same host"),
+      null,
+      null,
+      null,
+      "ws-1"
+    );
+    expect(backend.setStepRun).not.toHaveBeenCalledWith(
+      "t1",
+      "done",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "ws-1"
+    );
+  });
+
+  // Same-host ssh-to-ssh stays allowed: both plans live on that host.
+  // startRail still asks sshLaunchBlocker of the TARGET, so the link
+  // must be up or the arm would silently no-op past the trust check.
+  it("allows an ssh workspace's start-rail to arm another workspace on the same host", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-2"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r2",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/wt2",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s2",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-2" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [], ssh: { host: "h" } },
+        { id: "ws-2", pages: [], rootPath: "/ws2", ssh: { host: "h" } },
+      ],
+    });
+    sshLinks.set({ h: { status: "ready", daemonVersion: 40 } });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-2": [] });
+
+    try {
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+      expect(backend.setRailRun).toHaveBeenCalledWith("r2", "running", "s2", "ws-2");
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null, "ws-1");
+    } finally {
+      sshLinks.set({});
+    }
+  });
+
   it("resuming a stalled step reopens it on the rail's page too", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValueOnce({
       profileId: "claude-code",
@@ -1572,7 +1747,7 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     await setRailRunAction("ws-1", "r1", "paused", "s1");
     expect(await resumeStep("ws-1", "t1")).toBeNull();
     expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
-      ...pageArgs("claude --resume conv-1")
+      ...pageArgs(`claude --resume ${shellQuote("conv-1")}`)
     );
   });
 });
@@ -1621,6 +1796,35 @@ describe("executeActions", () => {
     await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
     await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null, null, null, null, "ws-1");
+  });
+
+  // Rule 5 pauses around a stall. When reconciliation later learns the
+  // card reached Done (session died a tick early), markDone has to put
+  // the rail back to running -- otherwise the sequence advances nothing,
+  // the same trap Skip documents. Only from a STALLED step: clearing a
+  // running row on a paused rail is a different story (human pause).
+  it("markDone of a stalled step puts a paused rail back to running", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1", "ws-1");
+  });
+
+  it("markDone of a stalled step does not start an idle rail", async () => {
+    await setRailRunAction("ws-1", "r1", "idle", null);
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+
+  it("markDone of a running step leaves a paused rail paused", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
   });
 
   it("advance moves the rail's current stage", async () => {
@@ -4283,6 +4487,14 @@ describe("a rail armed from outside the app (a push carrying run state)", () => 
     await settle();
     expect(backend.getOrchestration).not.toHaveBeenCalled();
   });
+
+  // A remote OrchestrationChanged naming a LOCAL workspace id used to
+  // reach this listener and tick that workspace (observation:
+  // "applies a push under whatever workspace id the payload names").
+  // The refuse is in session.rs now — `accept_host_workspace_push` /
+  // `a_remote_orch_or_tools_push_for_a_local_workspace_id_is_not_emitted`
+  // — so a forged id never becomes a Tauri event. This suite cannot
+  // drive the relay; the listener below still trusts whatever arrives.
 });
 
 // ---- What a running step says about itself ---------------------------------

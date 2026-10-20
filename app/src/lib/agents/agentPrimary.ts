@@ -63,6 +63,18 @@ export interface PrimaryView {
   ownsCliArgs: boolean;
 }
 
+/// Whether gavin can read this agent's usage limits, so a hold at a limit
+/// or a fallback walk can ever fire for it. Today that is the profiles the
+/// host gives a `usageProbe`; every other agent -- and a custom, which has
+/// none -- only has the schedule to hold it.
+export function primaryReportsUsage(
+  profiles: readonly { id: string; usageProbe?: string | null }[],
+  primaryId: string
+): boolean {
+  const id = (primaryId ?? "").trim();
+  return Boolean(id && profiles.find((p) => p.id === id)?.usageProbe);
+}
+
 function has(map: Record<string, unknown> | null | undefined, key: string): boolean {
   return Boolean(map && Object.prototype.hasOwnProperty.call(map, key));
 }

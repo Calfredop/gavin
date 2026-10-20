@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from "$lib/core/Modal.svelte";
+  import { visibleControls } from "$lib/core/visibleControls";
 
   interface Choice {
     label: string;
@@ -49,8 +50,10 @@
     // Text the reader has to see byte for byte, in a scrollable
     // monospace box under the lines. For the first-Run card review,
     // where the whole question is "is this the prompt you meant to
-    // send" -- a rendered or summarised form would defeat it, so this
-    // is plain text and stays plain text.
+    // send" -- a rendered or summarised form would defeat it. Drawn
+    // through `visibleControls` so C0 and invisible formatting marks
+    // the digest covers are not silent on screen; the digest itself
+    // still hashes the raw `text`.
     block?: { label: string; text: string } | null;
     choices: Choice[];
     // The dismissing button's word. "Cancel" reads right when the other
@@ -166,7 +169,7 @@
   {/if}
   {#if block}
     <div class="block-label">{block.label}</div>
-    <pre class="block">{block.text}</pre>
+    <pre class="block">{visibleControls(block.text)}</pre>
   {/if}
   {#if check}
     <label class="check"><input type="checkbox" bind:checked /> {check.label}</label>

@@ -73,7 +73,42 @@ pub struct Launched {
 
 /// Starts the headless shell with its profile in `profile_dir` (made
 /// fresh) and its output in `log`, and waits for the port it chose.
+///
+/// Sandboxed first, always. Only a browser that died saying it has no
+/// usable sandbox is started again without one: Ubuntu 23.10 and later
+/// refuse unprivileged user namespaces to any binary without an AppArmor
+/// profile of its own, and Playwright's downloaded headless shell has
+/// none, so on a stock Ubuntu 24.04 -- a desktop and a CI runner alike --
+/// the sandboxed launch aborts before it listens, every time. Playwright
+/// itself launches Chromium with `--no-sandbox` unless asked otherwise;
+/// this keeps the sandbox wherever the machine allows one and drops it
+/// only where Chromium cannot run with it at all, and says so.
 pub fn launch(exe: &Path, profile_dir: &Path, log: &Path) -> Result<Launched, String> {
+    match launch_with(exe, profile_dir, log, Sandbox::On) {
+        Err(e) if sandbox_unusable(&std::fs::read_to_string(log).unwrap_or_default()) => {
+            eprintln!(
+                "gavin-daemon: {} has no usable sandbox on this machine (unprivileged user namespaces are refused); starting it with --no-sandbox",
+                exe.display()
+            );
+            launch_with(exe, profile_dir, log, Sandbox::Off).map_err(|again| format!("{e}\nwithout the sandbox: {again}"))
+        }
+        other => other,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sandbox {
+    On,
+    Off,
+}
+
+/// Chromium's own words when it aborts for want of a sandbox
+/// (`zygote_host_impl_linux.cc`), in the output it wrote before dying.
+fn sandbox_unusable(log: &str) -> bool {
+    log.contains("No usable sandbox!")
+}
+
+fn launch_with(exe: &Path, profile_dir: &Path, log: &Path, sandbox: Sandbox) -> Result<Launched, String> {
     let _ = std::fs::remove_dir_all(profile_dir);
     std::fs::create_dir_all(profile_dir)
         .map_err(|e| format!("could not create {}: {e}", profile_dir.display()))?;
@@ -89,6 +124,7 @@ pub fn launch(exe: &Path, profile_dir: &Path, log: &Path) -> Result<Launched, St
         // Without it the headless viewport is 800x600: the MCP connects
         // with Playwright's `noDefaults` and sets none of its own.
         .arg("--window-size=1280,800")
+        .args((sandbox == Sandbox::Off).then_some("--no-sandbox"))
         .arg("about:blank")
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
@@ -257,6 +293,17 @@ pub fn sweep(record_path: &Path, base: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_chromiums_no_sandbox_abort_drops_the_sandbox() {
+        assert!(sandbox_unusable(
+            "[1014/100315.771778:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:130] No usable sandbox! If you are running on Ubuntu 23.10+ ..."
+        ));
+        assert!(!sandbox_unusable(""));
+        assert!(!sandbox_unusable(
+            "error while loading shared libraries: libnss3.so: cannot open shared object file"
+        ));
+    }
 
     #[test]
     fn port_file_reads_only_when_whole() {

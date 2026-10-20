@@ -31,7 +31,7 @@ describe("the composer", () => {
   it("offers the box only where the kind can carry it", () => {
     // Not `kind !== "note"` spelled out again here: the rule lives in
     // autoCommit.ts, and a second copy is a second thing to update.
-    expect(source(COMPOSER)).toContain("{#if autoCommitAppliesTo(kind)}");
+    expect(source(COMPOSER)).toContain("{#if autoCommitAppliesTo(kind) && !directOn}");
   });
 
   it("hands the flag to the pure builder, so the card reaches disk complete", () => {

@@ -101,7 +101,7 @@ describe("the card surfaces", () => {
   it("files the level in the SAME CreatePlan as the card", () => {
     // A card written first and rated second has a window in which it
     // exists unrated -- and could be run in it, at the wrong agent.
-    expect(source(COMPOSER)).toContain("attachments, autoCommit, complexity }");
+    expect(source(COMPOSER)).toContain("attachments, autoCommit, complexity, direct: directOn }");
     expect(source(COMPOSER)).toContain("args.complexity");
   });
 

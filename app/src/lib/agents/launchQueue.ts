@@ -251,7 +251,7 @@ export const fleetStripLine: Readable<FleetStrip | null> = derived(
 export type LaunchIntentKind = "card" | "tool" | "review" | "commit" | "orchestration" | "clean";
 
 /// The card launches, in the vocabulary `cardRunActions` already uses.
-export type CardLaunchMode = "run" | "resume" | "review" | "develop" | "relaunch";
+export type CardLaunchMode = "run" | "resume" | "review" | "develop" | "relaunch" | "new-session";
 
 interface IntentBase {
   /// Minted here, not by the caller: the queue has to be able to cancel

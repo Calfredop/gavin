@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalReport } from "$lib/terminal/terminalReport";
+import { isTerminalReport, mendMouseReports } from "$lib/terminal/terminalReport";
 
 // The same cases the daemon's `every_sgr_mouse_report_is_the_terminal_and_nothing_else_is`
 // holds `is_mouse_report` to, plus the focus reports: the two sides must
@@ -37,5 +37,47 @@ describe("isTerminalReport", () => {
     ["a paste that happens to contain one", "\x1b[200~\x1b[<35;10;5M\x1b[201~"],
   ])("%s is typing", (_, data) => {
     expect(isTerminalReport(data)).toBe(false);
+  });
+});
+
+// xterm 6.1 turns a swipe into wheel reports once the program tracks the
+// mouse, and keeps sending them through the swipe's momentum -- frames that
+// carry no pointer position, so their coordinates come out `NaN`. Claude
+// Code cannot parse those as reports and types them into its prompt.
+describe("mendMouseReports", () => {
+  it("leaves typing alone and remembers nothing from it", () => {
+    expect(mendMouseReports("ls -la\r", null)).toEqual({ data: "ls -la\r", at: null });
+    expect(mendMouseReports("NaN;NaNM", "4;7")).toEqual({ data: "NaN;NaNM", at: "4;7" });
+  });
+
+  it("remembers where the last whole report was", () => {
+    expect(mendMouseReports("\x1b[<65;12;30M", null)).toEqual({ data: "\x1b[<65;12;30M", at: "12;30" });
+    expect(mendMouseReports("\x1b[<64;1;1M\x1b[<64;2;3M", "9;9")).toEqual({
+      data: "\x1b[<64;1;1M\x1b[<64;2;3M",
+      at: "2;3",
+    });
+  });
+
+  it("puts a momentum frame's report where the swipe last was", () => {
+    expect(mendMouseReports("\x1b[<65;NaN;NaNM", "12;30")).toEqual({ data: "\x1b[<65;12;30M", at: "12;30" });
+    expect(mendMouseReports("\x1b[<64;NaN;NaNM\x1b[<64;NaN;NaNM", "5;6")).toEqual({
+      data: "\x1b[<64;5;6M\x1b[<64;5;6M",
+      at: "5;6",
+    });
+  });
+
+  it("drops a report with nowhere to put it", () => {
+    expect(mendMouseReports("\x1b[<65;NaN;NaNM", null)).toEqual({ data: "", at: null });
+  });
+
+  it("mends a report among others and leaves them be", () => {
+    expect(mendMouseReports("\x1b[<65;3;4M\x1b[<65;NaN;NaNMx", null)).toEqual({
+      data: "\x1b[<65;3;4M\x1b[<65;3;4Mx",
+      at: "3;4",
+    });
+  });
+
+  it("what it mends is a report again", () => {
+    expect(isTerminalReport(mendMouseReports("\x1b[<65;NaN;NaNM", "1;2").data)).toBe(true);
   });
 });

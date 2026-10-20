@@ -285,7 +285,8 @@ describe("card session bindings", () => {
 
     await linkCardSessionAction("ws-1", binding);
 
-    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([onBoard]);
+    // With whether it has a command, never the command itself.
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([{ ...onBoard, replayable: true }]);
     // The last four are the conversation this run IS, where it was
     // launched, how many times gavin has resumed it by itself, and the
     // commit it started on -- null on a binding that predates them, and
@@ -302,7 +303,7 @@ describe("card session bindings", () => {
       null,
       null
     );
-    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(onBoard);
+    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual({ ...onBoard, replayable: true });
 
     // Upsert replaces:
     await linkCardSessionAction("ws-1", { ...binding, sessionId: "s-2" });

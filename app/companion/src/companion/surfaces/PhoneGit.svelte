@@ -318,6 +318,8 @@
     line-height: 1.5;
   }
   .note.problem {
+    -webkit-user-select: text;
+    user-select: text;
     color: var(--danger-text);
   }
   .git {
@@ -448,6 +450,8 @@
     background: var(--surface-hover);
   }
   .agent-why {
+    -webkit-user-select: text;
+    user-select: text;
     flex: 1 1 10em;
     color: var(--text-subtle);
     font-size: 0.75rem;

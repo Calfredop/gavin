@@ -12,6 +12,7 @@ import {
   type ConnectTarget,
 } from "$shell/connection/connection";
 import { DIRECT_DIAL_MS, RelayLegError, type RelayMessage, type RelaySocket } from "$shell/pairing/relaySocket";
+import { DIRECT_ADMISSION_REFUSED, RELAY_ADMISSION_REFUSED } from "./paths";
 
 const HASH = "ab".repeat(32);
 const TARGET: ConnectTarget = { workstationKey: "42".repeat(32), relays: ["ws://127.0.0.1:8443"], relayAdmission: "let-me-in" };
@@ -27,6 +28,9 @@ function scriptedCore(options: { dials?: Array<typeof DIAL & { pin?: string }>; 
   const exchange: CoreExchange = {
     pairingStart: () => {
       throw new Error("a connection does not pair");
+    },
+    bundleCheck: () => {
+      throw new Error("a connection opens no bundle");
     },
     bundleOpen: () => {
       throw new Error("a connection opens no bundle");
@@ -176,8 +180,8 @@ describe("connecting to a paired Workstation", () => {
 
   it("is unreachable, in the Relay's words, when a Relay turns it away for another reason", async () => {
     const { core } = scriptedCore();
-    const outcome = await connect(TARGET, deps(core, [leg([refusedBy("admission")])]));
-    expect(outcome).toEqual({ outcome: "unreachable", problem: "Its Relay turned the connection away: refused: admission." });
+    const outcome = await connect(TARGET, deps(core, [leg([refusedBy("version")])]));
+    expect(outcome).toEqual({ outcome: "unreachable", problem: "Its Relay turned the connection away: refused: version." });
   });
 
   it("is unreachable when the Workstation hangs up during the handshake", async () => {
@@ -246,7 +250,49 @@ describe("connecting to a paired Workstation", () => {
     const outcome = await connect(TARGET, deps(core, [new RelayLegError("unreachable", "no route")]));
     expect(outcome).toEqual({
       outcome: "unreachable",
-      problem: "Could not reach it at wss://192.168.1.20:8445. Is this phone on the same network or tailnet as the Workstation?",
+      problem: "Could not reach it directly at wss://192.168.1.20:8445. Is this phone on the same network or tailnet as the Workstation?",
+    });
+  });
+
+  // 2026-10-14: the hub said only "Could not reach its Relay", the last
+  // reason heard, when the direct address had failed first for another.
+  it("says which way in failed, and how, for every way it tried", async () => {
+    const DIRECT = { url: "wss://192.168.1.20:8445", hello: DIAL.hello, pin: "ab".repeat(32) };
+    const { core } = scriptedCore({ dials: [DIRECT, DIAL] });
+    const outcome = await connect(TARGET, deps(core, [new RelayLegError("unreachable", "no route"), leg([refusedBy("version")])]));
+    expect(outcome).toEqual({
+      outcome: "unreachable",
+      problem:
+        "Could not reach it directly at wss://192.168.1.20:8445. Is this phone on the same network or tailnet as the Workstation? " +
+        "Its Relay turned the connection away: refused: version.",
+    });
+  });
+
+  // While the desk holds a token the direct listener asks for it (ADR
+  // 0009, amended 2026-10-15). A phone paired before that is told to pair
+  // again, in its own words -- not the Relay's.
+  it("says to pair again when the direct listener turns this phone's token away", async () => {
+    const DIRECT = { url: "wss://192.168.1.20:8445", hello: DIAL.hello, pin: "ab".repeat(32) };
+    const { core } = scriptedCore({ dials: [DIRECT, DIAL] });
+    const outcome = await connect(TARGET, deps(core, [leg([refusedBy("admission")]), new RelayLegError("unreachable", "no route")]));
+    expect(outcome).toEqual({
+      outcome: "unreachable",
+      problem: `${DIRECT_ADMISSION_REFUSED} Could not reach its Relay at ${DIAL.url}. Check that this phone is online.`,
+    });
+  });
+
+  it("does not dial a Relay URL that is the Workstation's own direct port, and says so", async () => {
+    const DIRECT = { url: "wss://192.168.68.125:8445", hello: DIAL.hello, pin: "ab".repeat(32) };
+    const SELF = { ...DIAL, url: "ws://192.168.68.125:8445" };
+    const { core } = scriptedCore({ dials: [DIRECT, SELF] });
+    const d = deps(core, [new RelayLegError("unreachable", "no route")]);
+    const outcome = await connect(TARGET, d);
+    expect(d.open).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({
+      outcome: "unreachable",
+      problem:
+        "Could not reach it directly at wss://192.168.68.125:8445. Is this phone on the same network or tailnet as the Workstation? " +
+        "Its Relay URL, ws://192.168.68.125:8445, is the Workstation’s own direct port, not a Relay. Set the Relay’s own port at the desk, then pair again.",
     });
   });
 
@@ -331,6 +377,26 @@ describe("a live connection", () => {
     expect(await connection.closed).toBe("The Workstation ended the connection.");
     expect(connection.isClosed).toBe(true);
     await expect(connection.request({}, () => true, 10)).rejects.toThrow("closed");
+  });
+
+  // v73: the desk refreshed its token and hands this phone the new one.
+  // It is not a push for the bundle, and never an answer to a request.
+  it("hands a refreshed admission token to onAdmission and to nothing else", async () => {
+    const { connection, relay, lines } = await connected();
+    const tokens: string[] = [];
+    const pushed: unknown[] = [];
+    connection.onAdmission!((token) => tokens.push(token));
+    connection.onPush((m) => pushed.push(m));
+    lines.push('{"type":"RelayAdmissionChanged","token":"new-token"}');
+    relay.push(byte(7));
+    await vi.waitFor(() => expect(tokens).toEqual(["new-token"]));
+    expect(pushed).toEqual([]);
+  });
+
+  it("says to pair again when the Relay turns this phone's token away", async () => {
+    const { core } = scriptedCore();
+    const outcome = await connect(TARGET, deps(core, [leg([refusedBy("admission")])]));
+    expect(outcome).toEqual({ outcome: "unreachable", problem: RELAY_ADMISSION_REFUSED });
   });
 
   it("hands a push to whoever listens, and the answer to the request waiting", async () => {

@@ -1,5 +1,7 @@
 <script lang="ts">
-  // The app hub: a fleet overview above every workspace. A thin template
+  // The app hub: a fleet overview above every workspace, in three columns
+  // -- the workspaces, one feed of what needs you and what is moving, and
+  // the gauges -- under the live app icon. A thin template
   // over appHub.ts (order, ages, links, the fleet tallies),
   // sidebarSummary.ts (the per-row recap and the badge vocabulary) and
   // workspaceCreate.ts (the one creation flow) -- it decides nothing
@@ -10,7 +12,6 @@
   import {
     Plus,
     SquareArrowOutUpRight,
-    Boxes,
     GitBranch,
     Kanban,
     Route,
@@ -103,6 +104,8 @@
   import { tooltip } from "$lib/core/tooltip";
   import { accentVar } from "$lib/core/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
+  import LiveAppIcon from "$lib/ui/LiveAppIcon.svelte";
+  import { fleetIconStatus } from "$lib/ui/appIconMotion";
 
   /// The row's badge is the board card's badge for the same session --
   /// one agent vocabulary (ui/indicators.ts) rather than the private dot
@@ -178,6 +181,9 @@
   const stats: FleetSummary = $derived(fleetSummary(fleet));
   const running: WorkspaceRunning[] = $derived(runningTasks(fleet));
 
+  /// Cards with an agent behind them, per workspace, for the rail's count.
+  const runningIn = $derived(Object.fromEntries(running.map((g) => [g.workspaceId, g.tasks.length])));
+
   // The same stores the fleet reads, plus the rails' raw step marks --
   // `attention` above is those marks already folded down to rail ids,
   // which is what the strip counts and not what a row needs. Nothing new
@@ -196,6 +202,21 @@
       },
       now
     )
+  );
+
+  /// Sessions the feed already lists as a wait, so the task rows under
+  /// them do not list the same agent twice.
+  const waitingIds = $derived(new Set(inbox.map((row) => row.sessionId)));
+
+  /// What the masthead's live icon shows, from the very figures drawn
+  /// beside it.
+  const iconStatus = $derived(
+    fleetIconStatus({
+      running: stats.agents.running,
+      failed: stats.agents.failed,
+      inbox: inbox.length,
+      paused: $pausedWorkspaces.length,
+    })
   );
 
   // ---- what the daemon is holding ------------------------------------
@@ -429,194 +450,62 @@
 
 <div class="hub">
   <header>
-    <h1>
-      <!-- The app icon's own 8-bit prompt glyph, so the hub's masthead
-           and the thing in the dock read as one mark. -->
-      <span class="mark" aria-hidden="true">&gt;</span>Gavin
-    </h1>
-    <!-- The daemon's protocol version only once it is known: the hub can
-         be on screen before the compat probe answers, and "v0" would be
-         a lie rather than a placeholder. -->
-    <p class="version">v{APP_VERSION}{daemonLine}</p>
+    <!-- The app icon itself, live: its wall moves with the figures this
+         hub draws (appIconMotion.ts), so the masthead and the thing in the
+         Dock read as one mark that also says how the fleet is. -->
+    <LiveAppIcon status={iconStatus} size={64} />
+    <div class="masthead">
+      <h1>Gavin</h1>
+      <!-- The daemon's protocol version only once it is known: the hub can
+           be on screen before the compat probe answers, and "v0" would be
+           a lie rather than a placeholder. -->
+      <p class="version">v{APP_VERSION}{daemonLine}</p>
+    </div>
+    <!-- appLinks() has already dropped every entry without a url -- that
+         is how the website row stays out until there is a site to point it
+         at -- and the guard below is what proves it to the type checker
+         rather than a second policy. -->
+    <nav class="links" aria-label="Gavin links">
+      {#each links as link (link.id)}
+        {@const url = link.url}
+        {#if url}
+          <button type="button" class="link" onclick={() => void openUrl(url)}>
+            {link.label}
+            <SquareArrowOutUpRight size={11} />
+          </button>
+        {/if}
+      {/each}
+    </nav>
   </header>
 
-  <!-- The whole fleet in one strip, in the sidebar's own badge
-       vocabulary: a hairline pill per group, a glyph and a tabular
-       number per stat, colour only where it is semantic. Readouts, not
-       buttons -- every one of them spans every workspace, so there is no
-       single tab a click could honestly go to. -->
-  <section class="stats" aria-label="Fleet totals">
-    <span class="stat-group" role="group" use:tooltip={workspacesTip()} aria-label={workspacesTip()}>
-      <Boxes size={12} />
-      <span class="count">{stats.workspaces}</span>
-      <span class="stat-label">{stats.workspaces === 1 ? "workspace" : "workspaces"}</span>
-    </span>
-
-    <span class="stat-group" role="group" use:tooltip={agentsTip()} aria-label={agentsTip()}>
-      <PanelsTopLeft size={12} />
-      <span class="count">{stats.agents.tabs}</span>
-      <span class="stat-label">tabs</span>
-      <!-- The breakdown only where there is one: a fleet with no agent
-           in it would otherwise carry a divider and a bare "0", which
-           reads as a rendering fault rather than as an empty fleet. -->
-      {#if stats.agents.agents > 0}
-        <span class="divider" aria-hidden="true"></span>
-        <!-- The agent badge from ui/indicators.ts, as the sidebar's own
-             strip draws it: these count the very sessions the column
-             below lists, and the two must not disagree about what
-             "running" looks like. The group has one bubble, so the
-             badges take none. -->
-        {#if stats.agents.running > 0}
-          <StatusBadge indicator={agentIndicatorByState("working")} size={10} tip={null} text={stats.agents.running} />
-        {/if}
-        {#if stats.agents.waiting > 0}
-          <StatusBadge indicator={agentIndicatorByState("waiting_for_input")} size={10} tip={null} text={stats.agents.waiting} />
-        {/if}
-        {#if stats.agents.failed > 0}
-          <StatusBadge indicator={agentIndicatorByState("failed")} size={10} tip={null} text={stats.agents.failed} />
-        {/if}
-        {#if stats.agents.idle > 0}
-          <StatusBadge indicator={agentIndicatorByState("idle")} size={10} tip={null} text={stats.agents.idle} />
-        {/if}
-      {/if}
-    </span>
-
-    <!-- The memory group, beside the agents it is about. Drawn only when
-         there is something to say (fleetStrip), so a quiet machine costs
-         the strip no width at all. -->
-    {#if stats.memory}
-      <span
-        class="stat-group memory-group tone-{stats.memory.tone}"
-        role="group"
-        use:tooltip={"Agents running now against the ceiling, and how full this machine is. Set the ceiling in Settings."}
-        aria-label={stats.memory.text}
-      >
-        <MemoryStick size={12} />
-        <span class="stat-label">{stats.memory.text}</span>
-      </span>
-    {/if}
-
-    {#if showGitChip(stats.git)}
-      <span class="stat-group" role="group" use:tooltip={gitTip()} aria-label={gitTip()}>
-        {#if stats.git.committing}
-          <span class="commit-spinner" aria-hidden="true"></span>
-        {:else}
-          <GitBranch size={12} />
-        {/if}
-        <span class="count">{stats.git.repoCount}</span>
-        <span class="stat-label">{stats.git.repoCount === 1 ? "repo" : "repos"}</span>
-        {#if stats.git.dirtyCount > 0}
-          <StatusBadge indicator={gitIndicator(true)} size={10} tip={null} />
-          <span class="count">{stats.git.dirtyCount}</span>
-        {/if}
-        {#if stats.git.ahead > 0}<span class="delta">&uarr;{stats.git.ahead}</span>{/if}
-        {#if stats.git.behind > 0}<span class="delta">&darr;{stats.git.behind}</span>{/if}
-      </span>
-    {/if}
-
-    <!-- Spelled out column by column, unlike the 200px sidebar, which
-         has room for the total only and expands on hover. Same chips off
-         the same fold -- kanbanColumnChips over a summary merged by the
-         very slug the tallies were counted by -- so a column's tone here
-         and in the sidebar can never disagree. -->
-    {#if stats.cards.total > 0}
-      <span class="stat-group" role="group" use:tooltip={cardsTip()} aria-label={cardsTip()}>
-        <Kanban size={12} />
-        <span class="count">{stats.cards.total}</span>
-        <span class="stat-label">cards</span>
-        <span class="divider" aria-hidden="true"></span>
-        {#each kanbanColumnChips(stats.cards) as column}
-          <span class="stat card-col {column.tone}">
-            <span class="col-initials">{column.initials}</span>
-            <span class="count">{column.count}</span>
-          </span>
-        {/each}
-      </span>
-    {/if}
-
-    {#if stats.rails.total > 0}
-      <span class="stat-group" role="group" use:tooltip={railsTip()} aria-label={railsTip()}>
-        <Route size={12} />
-        <span class="count">{stats.rails.total}</span>
-        <span class="stat-label">{stats.rails.total === 1 ? "rail" : "rails"}</span>
-        <span class="divider" aria-hidden="true"></span>
-        {#each railStripStats(stats.rails) as key (key)}
-          {#if key === "done"}
-            <span class="stat done"><Check size={10} /><span class="count">{stats.rails[key]}</span></span>
-          {:else}
-            <StatusBadge
-              indicator={agentIndicatorByState(key === "running" ? "working" : key === "attention" ? "waiting_for_input" : "idle")}
-              size={10}
-              tip={null}
-              text={stats.rails[key]}
-            />
-          {/if}
-        {/each}
-      </span>
-    {/if}
-  </section>
-
+  <!-- Three columns that scroll on their own: where you can go, what is
+       happening now, and what it all costs. -->
   <div class="columns">
-    <!-- What has stopped and is waiting for you, fleet-wide, longest
-         wait first. A sibling of the running column and built from the
-         same stores; the difference is the question -- that one asks
-         what is moving, this one asks what needs you.
-
-         Full width because a row carries six facts. When there is
-         nothing in it the panel goes away entirely and leaves one quiet
-         line: an empty bordered box is a thing to read, and "nobody is
-         waiting" should cost a glance. -->
-    {#if inbox.length === 0}
-      <p class="inbox-quiet">Nothing is waiting on you.</p>
-    {:else}
-      <section class="panel inbox">
-        <h2>Waiting on you<span class="tally live">{inbox.length}</span></h2>
-        <div class="inbox-rows">
-          {#each inbox as row (row.sessionId)}
-            <button
-              type="button"
-              class="waiting-row reason-{row.reason}"
-              onclick={() => void revealWaitingSession(row)}
-              use:tooltip={rowTip(row)}
-              aria-label={rowTip(row)}
-            >
-              <StatusBadge indicator={attentionIndicator(row.reason)} size={11} tip={null} />
-              <span class="reason">{REASON_LABEL[row.reason]}</span>
-              <span class="where">
-                <span class="ws">{row.workspaceName}</span>
-                <span class="sep" aria-hidden="true">·</span>
-                <span class="page">{row.pageName}</span>
-                <span class="sep" aria-hidden="true">·</span>
-                <span class="tab">{row.tabName}</span>
-              </span>
-              <!-- Empty rather than absent for a session nobody filed a
-                   card for: the column has to stay in place or every row
-                   below it shifts under the pointer. -->
-              <span class="card">{row.cardTitle ?? ""}</span>
-              <span class="waited" class:bounded={!row.watched}>
-                {waitLabel(row.waitedMs, row.watched)}
-              </span>
-            </button>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
-    <section class="panel recents">
-      <h2>Recent workspaces<span class="tally">{stats.workspaces}</span></h2>
+    <nav class="column rail" aria-label="Workspaces">
+      <h2>Workspaces<span class="tally">{stats.workspaces}</span></h2>
       <div class="rows">
         {#each recents as ws (ws.id)}
+          {@const busy = runningIn[ws.id] ?? 0}
+          <!-- Each its own box, with the accent stripe the sidebar row for
+               the same workspace carries, so the two lists read as one
+               fleet. A workspace with no colour gets a neutral stripe, so
+               every box still has its edge. -->
           <button
             type="button"
             class="row"
             class:current={ws.id === $layoutState.activeWorkspaceId}
-            style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+            style:--row-accent={accentVar(ws.color, themeState.effective) ?? "var(--border-strong)"}
             onclick={() => void switchWorkspace(ws.id)}
           >
             <span class="row-main">
               <span class="name">{ws.name}</span>
-              <span class="recap">{recap(ws.id)}</span>
+              {#if busy > 0}
+                <span class="busy" use:tooltip={plural(busy, "card", "cards") + " with an agent behind it"}>{busy}</span>
+              {/if}
             </span>
+            {#if recap(ws.id)}
+              <span class="recap">{recap(ws.id)}</span>
+            {/if}
             <span class="row-detail">
               <!-- An unrooted workspace says so rather than showing an
                    empty gap: "no folder" is the reason its hub tabs are
@@ -626,334 +515,488 @@
             </span>
           </button>
         {/each}
+
+        {#if naming}
+          <input
+            class="new-name"
+            aria-label="New workspace name"
+            placeholder="Workspace name"
+            bind:this={nameInput}
+            value={naming.name}
+            oninput={(e) => setNewWorkspaceName(e.currentTarget.value)}
+            onblur={() => void commitNewWorkspace()}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitNewWorkspace();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelNewWorkspace();
+              }
+            }}
+          />
+        {:else}
+          <button type="button" class="new" onclick={() => startCreatingWorkspace("hub")}>
+            <Plus size={13} />
+            New workspace…
+          </button>
+        {/if}
+      </div>
+    </nav>
+
+    <!-- One feed of what needs you and what is moving, in that order:
+         every wait fleet-wide, longest first, then every card with an
+         agent behind it. A session already listed as a wait is not listed
+         again as a task. -->
+    <section class="column now" aria-label="Now">
+      <h2>Now</h2>
+      {#if inbox.length === 0 && running.length === 0}
+        <p class="empty">
+          Nothing is running and nothing is waiting on you. Start a card from a workspace's board and it appears here.
+        </p>
+      {:else}
+        <div class="feed">
+          {#each inbox as row (row.sessionId)}
+            <button
+              type="button"
+              class="item waiting-row reason-{row.reason}"
+              onclick={() => void revealWaitingSession(row)}
+              use:tooltip={rowTip(row)}
+              aria-label={rowTip(row)}
+            >
+              <StatusBadge indicator={attentionIndicator(row.reason)} size={12} tip={null} />
+              <span class="item-text">
+                <!-- The card when there is one, else the tab: whichever
+                     name the human would look for. -->
+                <span class="item-title">{row.cardTitle ?? row.tabName}</span>
+                <span class="item-meta">
+                  <span class="reason">{REASON_LABEL[row.reason]}</span>
+                  <span class="sep" aria-hidden="true">·</span>
+                  <span class="where">{row.workspaceName} › {row.pageName} › {row.tabName}</span>
+                </span>
+              </span>
+              <span class="waited" class:bounded={!row.watched}>
+                {waitLabel(row.waitedMs, row.watched)}
+              </span>
+            </button>
+          {/each}
+
+          {#each running as group (group.workspaceId)}
+            {@const tasks = group.tasks.filter((task) => !waitingIds.has(task.sessionId))}
+            {#if tasks.length > 0 || group.looseAgents > 0}
+              <div class="group" style:--row-accent={accentOf(group.workspaceId)}>
+                <button
+                  type="button"
+                  class="group-head"
+                  onclick={() => void switchWorkspace(group.workspaceId)}
+                  use:tooltip={`Switch to ${group.name}`}
+                >
+                  <span class="group-name">{group.name}</span>
+                  <span class="group-count">{group.tasks.length}</span>
+                </button>
+                {#each tasks as task (task.sessionId)}
+                  <div class="item task" class:interrupted={task.phase === "interrupted"}>
+                    <button type="button" class="task-main" onclick={() => openCard(task)} use:tooltip={taskTip(task)}>
+                      <StatusBadge indicator={phaseIndicator(task.phase)} size={11} tip={null} />
+                      <span class="item-text">
+                        <span class="item-title">{task.title}</span>
+                        <span class="item-meta">
+                          <span class="phase {task.phase}">{PHASE_LABEL[task.phase]}</span>
+                          {#if task.cardStatus}
+                            <span class="sep" aria-hidden="true">·</span>
+                            <span class="column-name">{task.cardStatus}</span>
+                          {/if}
+                          {#if task.pageName}
+                            <span class="sep" aria-hidden="true">·</span>
+                            <span class="page">{task.pageName}</span>
+                          {/if}
+                        </span>
+                      </span>
+                      {#if task.view === "orchestration"}
+                        <span class="on-rail" aria-hidden="true"><Route size={11} /></span>
+                      {/if}
+                    </button>
+                    <!-- The card is what the row is about; the terminal is
+                         the other place you might want to be, so it gets
+                         its own target rather than a second guess about
+                         which one the click meant. -->
+                    <button
+                      type="button"
+                      class="to-terminal"
+                      aria-label={`Open the terminal running ${task.title}`}
+                      use:tooltip={"Open the terminal"}
+                      disabled={!task.pageId}
+                      onclick={() => openTerminal(task)}
+                    >
+                      <SquareTerminal size={13} />
+                    </button>
+                  </div>
+                {/each}
+                {#if group.looseAgents > 0}
+                  <!-- Agents nobody filed a card for. Named rather than
+                       folded into the count above: they are work in
+                       flight, but they are not tasks, and a heading that
+                       counted them would not match the rows under it. -->
+                  <p class="loose">
+                    {plural(group.looseAgents, "busy agent", "busy agents")} with no card
+                  </p>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <aside class="column gauges" aria-label="Fleet">
+      <!-- The four numbers a glance is for. Readouts, not buttons: each
+           spans every workspace, so there is no one tab a click could
+           honestly go to. -->
+      <div class="bigs">
+        <div class="big" class:live={stats.agents.running > 0} use:tooltip={agentsTip()}>
+          <span class="big-n">{stats.agents.running}</span>
+          <span class="big-l">working</span>
+        </div>
+        <div class="big" class:attention={inbox.length > 0}>
+          <span class="big-n">{inbox.length}</span>
+          <span class="big-l">waiting on you</span>
+        </div>
+        <!-- The count is fleetSummary's, not a tally of the feed, so this
+             and the rows beside it are one number. -->
+        <div class="big">
+          <span class="big-n">{stats.tasks}</span>
+          <span class="big-l">{stats.tasks === 1 ? "task" : "tasks"}</span>
+        </div>
+        <div class="big" use:tooltip={workspacesTip()}>
+          <span class="big-n">{stats.workspaces}</span>
+          <span class="big-l">{stats.workspaces === 1 ? "workspace" : "workspaces"}</span>
+        </div>
       </div>
 
-      {#if naming}
-        <input
-          class="new-name"
-          aria-label="New workspace name"
-          placeholder="Workspace name"
-          bind:this={nameInput}
-          value={naming.name}
-          oninput={(e) => setNewWorkspaceName(e.currentTarget.value)}
-          onblur={() => void commitNewWorkspace()}
-          onkeydown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void commitNewWorkspace();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              cancelNewWorkspace();
-            }
-          }}
-        />
-      {:else}
-        <button type="button" class="new" onclick={() => startCreatingWorkspace("hub")}>
-          <Plus size={13} />
-          New workspace…
-        </button>
-      {/if}
-    </section>
-
-    <!-- Every card with an agent behind it, wherever it is filed. The
-         count is fleetSummary's, not a tally of its own, so the strip
-         above and this heading are one number. -->
-    <section class="panel running">
-      <h2>Running tasks<span class="tally" class:live={stats.tasks > 0}>{stats.tasks}</span></h2>
-      {#if running.length === 0}
-        <p class="empty">
-          Nothing is running. Start a card from a workspace's board and it appears here.
-        </p>
-      {:else}
-        <div class="groups">
-          {#each running as group (group.workspaceId)}
-            <div class="group" style:--row-accent={accentOf(group.workspaceId)}>
-              <button
-                type="button"
-                class="group-head"
-                onclick={() => void switchWorkspace(group.workspaceId)}
-                use:tooltip={`Switch to ${group.name}`}
-              >
-                <span class="group-name">{group.name}</span>
-                <span class="group-count">{group.tasks.length}</span>
-              </button>
-              {#each group.tasks as task (task.sessionId)}
-                <div class="task" class:waiting={task.phase === "waiting"} class:interrupted={task.phase === "interrupted"}>
-                  <button type="button" class="task-main" onclick={() => openCard(task)} use:tooltip={taskTip(task)}>
-                    <StatusBadge indicator={phaseIndicator(task.phase)} size={10} tip={null} />
-                    <span class="task-text">
-                      <span class="task-title">{task.title}</span>
-                      <span class="task-meta">
-                        <span class="phase {task.phase}">{PHASE_LABEL[task.phase]}</span>
-                        {#if task.cardStatus}
-                          <span class="sep" aria-hidden="true">·</span>
-                          <span class="column">{task.cardStatus}</span>
-                        {/if}
-                        {#if task.pageName}
-                          <span class="sep" aria-hidden="true">·</span>
-                          <span class="page">{task.pageName}</span>
-                        {/if}
-                      </span>
-                    </span>
-                    {#if task.view === "orchestration"}
-                      <span class="on-rail" aria-hidden="true"><Route size={11} /></span>
-                    {/if}
-                  </button>
-                  <!-- The card is what the row is about; the terminal is
-                       the other place you might want to be, so it gets
-                       its own target rather than a second guess about
-                       which one the click meant. -->
-                  <button
-                    type="button"
-                    class="to-terminal"
-                    aria-label={`Open the terminal running ${task.title}`}
-                    use:tooltip={"Open the terminal"}
-                    disabled={!task.pageId}
-                    onclick={() => openTerminal(task)}
-                  >
-                    <SquareTerminal size={12} />
-                  </button>
-                </div>
-              {/each}
-              {#if group.looseAgents > 0}
-                <!-- Agents nobody filed a card for. Named rather than
-                     folded into the count above: they are work in
-                     flight, but they are not tasks, and a heading that
-                     counted them would not match the rows under it. -->
-                <p class="loose">
-                  {plural(group.looseAgents, "busy agent", "busy agents")} with no card
-                </p>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </section>
-
-    <!-- What the agents the fleet runs have left to spend. One row per
-         PROFILE, not per workspace: a limit belongs to the subscription,
-         and four workspaces on Claude Code share one window between
-         them. Absence is never zero here -- a profile nobody has read
-         yet, one that publishes nothing, and one at 0% are three
-         different sentences (appHub's usageRowNote). -->
-    <section class="panel usage">
-      <h2>
-        Agent usage
-        {#if worstAgent?.worst}
-          <!-- The fleet's nearest ceiling, since the heading has room
-               for exactly one number. Omitted rather than drawn "ok"
-               when nothing has a reading: "gavin cannot see" must never
-               render in the colour of "plenty left". -->
-          <span
-            class="tally usage-{worstAgent.severity}"
-            use:tooltip={worstAgentTip()}
-            aria-label={worstAgentTip()}>{displayPercent(worstAgent.worst.usedPercent)}%</span
-          >
-        {/if}
-        <button type="button" class="panel-link" onclick={() => showAppPanel("usage")}>
-          Details…
-        </button>
-      </h2>
-
-      {#if usage.length === 0}
-        <p class="empty">No workspace is running an agent yet.</p>
-      {:else}
-        <div class="usage-rows">
-          {#each usage as row (row.profileId)}
-            {@const note = usageRowNote(row, $nowStore)}
-            {@const worst = row.worst}
-            <div class="usage-row">
-              <span
-                class="usage-name"
-                use:tooltip={plural(row.workspaces, "workspace", "workspaces") +
-                  " running this agent"}>{row.label}</span
-              >
-              {#if worst && !note}
-                <span class="usage-window">{worst.label}</span>
-                <div class="track">
-                  <!-- The bands are agentUsage.ts's; the colours only
-                       name them, exactly as the usage panel draws them. -->
-                  <div
-                    class="fill {row.severity}"
-                    style="width: {barPercent(worst.usedPercent)}%"
-                  ></div>
-                </div>
-                <span class="pct">{displayPercent(worst.usedPercent)}%</span>
-                <span class="resets">{formatResetsIn(worst.resetsAt, $nowStore) ?? ""}</span>
-                <!-- Tokens Headroom saved in this same window, from the
-                     runs of the workspaces on this agent. Nothing at all
-                     when none of them ran compressed in it. -->
-                {@const saved = savedByProfile[row.profileId] ?? null}
-                {@const savedLine = windowSavingsLine(saved)}
-                {#if saved && savedLine}
-                  <span class="saved" use:tooltip={windowSavingsTip(saved, worst)}>{savedLine}</span>
-                {/if}
-              {:else}
-                <span class="usage-note">{note}</span>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if $pausedWorkspaces.length > 0}
-        <!-- A hold is the one thing on this panel that is not a
-             readout: work that would have started has not. Fleet-wide,
-             because a workspace on another agent is not held by this
-             one being full. -->
-        <p class="paused" use:tooltip={pausedTip()} aria-label={pausedTip()}>
-          {plural($pausedWorkspaces.length, "workspace", "workspaces")} paused
-        </p>
-      {/if}
-    </section>
-
-    <!-- Every session the daemon is holding, whether or not a tab is
-         showing it -- the task manager's list, folded to a recap. The
-         rows here name what is stale; ending one is the panel's job, so
-         nothing on the home screen kills a process. -->
-    <section class="panel sessions">
-      <h2>
-        Sessions
-        <span class="tally" class:stale={sessions.stale > 0}>{sessions.sessions}</span>
-        <button type="button" class="panel-link" onclick={() => showAppPanel("sessions")}>
-          Task manager…
-        </button>
-      </h2>
-
-      <!-- The failure is a line ABOVE the figures, never in place of
-           them, exactly as the task manager reports its own: a poll that
-           failed does not unmake the last one that worked, and blanking
-           the recap would lose the numbers it is still honest about. -->
-      {#if sessionsError}
-        <p class="session-line">Couldn’t read the session list: {sessionsError}</p>
-      {/if}
-
-      {#if !sessionsLoaded}
-        {#if !sessionsError}
-          <p class="empty">Reading what the daemon is holding…</p>
-        {/if}
-      {:else if sessions.sessions === 0}
-        <p class="empty">The daemon is holding no sessions.</p>
-      {:else}
-        <div class="cost">
-          {#if metricsBlocked}
-            <span class="coverage">{metricsBlocked}</span>
-          {:else}
-            <!-- The task manager's own sums over the task manager's own
-                 rows, so the hub and the panel it opens can never state
-                 different totals for one daemon. -->
-            <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
-              CPU <span class="count">{formatCpu(sessions.totals.cpuPercent)}</span>
-            </span>
-            <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
-              MEM <span class="count">{formatMemory(sessions.totals.memBytes)}</span>
-            </span>
-          {/if}
-          <span class="coverage">{totalsCoverage(sessions.totals)}</span>
-        </div>
-
-        {#if sessionsLine}
-          <p class="session-line">{sessionsLine}</p>
-        {/if}
-
-        {#each sessions.attention as row (row.id)}
-          <button
-            type="button"
-            class="stale-row"
-            class:survivor={row.staleness === "orphaned"}
-            use:tooltip={staleTip(row)}
-            aria-label={staleTip(row)}
-            onclick={() => showAppPanel("sessions")}
-          >
-            <!-- The task manager's own marks: a triangle for the one
-                 case with a live process nobody is hosting, a hollow
-                 ring for a row whose run is over. -->
-            {#if row.staleness === "orphaned"}
-              <TriangleAlert size={11} />
-            {:else}
-              <CircleDashed size={11} />
+      <!-- The rest of the fleet, in the sidebar's own badge vocabulary: a
+           hairline pill per group, a glyph and a tabular number per stat,
+           colour only where it is semantic. -->
+      <section class="stats" aria-label="Fleet totals">
+        <span class="stat-group" role="group" use:tooltip={agentsTip()} aria-label={agentsTip()}>
+          <PanelsTopLeft size={12} />
+          <span class="count">{stats.agents.tabs}</span>
+          <span class="stat-label">tabs</span>
+          <!-- The breakdown only where there is one: a fleet with no agent
+               in it would otherwise carry a divider and a bare "0". -->
+          {#if stats.agents.agents > 0}
+            <span class="divider" aria-hidden="true"></span>
+            {#if stats.agents.running > 0}
+              <StatusBadge indicator={agentIndicatorByState("working")} size={10} tip={null} text={stats.agents.running} />
             {/if}
-            <span class="stale-state">{row.state}</span>
-            <span class="stale-name">{row.label}</span>
-            <span class="stale-where">{row.workspaceName ?? "no workspace"}</span>
-          </button>
-        {/each}
-        {#if sessions.more > 0}
-          <p class="session-line">+{sessions.more} more stale</p>
-        {/if}
-      {/if}
-    </section>
-  </div>
+            {#if stats.agents.waiting > 0}
+              <StatusBadge indicator={agentIndicatorByState("waiting_for_input")} size={10} tip={null} text={stats.agents.waiting} />
+            {/if}
+            {#if stats.agents.failed > 0}
+              <StatusBadge indicator={agentIndicatorByState("failed")} size={10} tip={null} text={stats.agents.failed} />
+            {/if}
+            {#if stats.agents.idle > 0}
+              <StatusBadge indicator={agentIndicatorByState("idle")} size={10} tip={null} text={stats.agents.idle} />
+            {/if}
+          {/if}
+        </span>
 
-  <footer>
-    <!-- appLinks() has already dropped every entry without a url --
-         that is how the website row stays out until there is a site to
-         point it at -- and the guard below is what proves it to the
-         type checker rather than a second policy. -->
-    {#each links as link (link.id)}
-      {@const url = link.url}
-      {#if url}
-        <button type="button" class="link" onclick={() => void openUrl(url)}>
-          {link.label}
-          <SquareArrowOutUpRight size={11} />
-        </button>
-      {/if}
-    {/each}
-  </footer>
+        {#if stats.memory}
+          <span
+            class="stat-group memory-group tone-{stats.memory.tone}"
+            role="group"
+            use:tooltip={"Agents running now against the ceiling, and how full this machine is. Set the ceiling in Settings."}
+            aria-label={stats.memory.text}
+          >
+            <MemoryStick size={12} />
+            <span class="stat-label">{stats.memory.text}</span>
+          </span>
+        {/if}
+
+        {#if showGitChip(stats.git)}
+          <span class="stat-group" role="group" use:tooltip={gitTip()} aria-label={gitTip()}>
+            {#if stats.git.committing}
+              <span class="commit-spinner" aria-hidden="true"></span>
+            {:else}
+              <GitBranch size={12} />
+            {/if}
+            <span class="count">{stats.git.repoCount}</span>
+            <span class="stat-label">{stats.git.repoCount === 1 ? "repo" : "repos"}</span>
+            {#if stats.git.dirtyCount > 0}
+              <StatusBadge indicator={gitIndicator(true)} size={10} tip={null} />
+              <span class="count">{stats.git.dirtyCount}</span>
+            {/if}
+            {#if stats.git.ahead > 0}<span class="delta">&uarr;{stats.git.ahead}</span>{/if}
+            {#if stats.git.behind > 0}<span class="delta">&darr;{stats.git.behind}</span>{/if}
+          </span>
+        {/if}
+
+        <!-- Same chips off the same fold as the sidebar's -- kanbanColumnChips
+             over a summary merged by the very slug the tallies were counted
+             by -- so a column's tone here and there can never disagree. -->
+        {#if stats.cards.total > 0}
+          <span class="stat-group" role="group" use:tooltip={cardsTip()} aria-label={cardsTip()}>
+            <Kanban size={12} />
+            <span class="count">{stats.cards.total}</span>
+            <span class="stat-label">cards</span>
+            <span class="divider" aria-hidden="true"></span>
+            {#each kanbanColumnChips(stats.cards) as column}
+              <span class="stat card-col {column.tone}">
+                <span class="col-initials">{column.initials}</span>
+                <span class="count">{column.count}</span>
+              </span>
+            {/each}
+          </span>
+        {/if}
+
+        {#if stats.rails.total > 0}
+          <span class="stat-group" role="group" use:tooltip={railsTip()} aria-label={railsTip()}>
+            <Route size={12} />
+            <span class="count">{stats.rails.total}</span>
+            <span class="stat-label">{stats.rails.total === 1 ? "rail" : "rails"}</span>
+            <span class="divider" aria-hidden="true"></span>
+            {#each railStripStats(stats.rails) as key (key)}
+              {#if key === "done"}
+                <span class="stat done"><Check size={10} /><span class="count">{stats.rails[key]}</span></span>
+              {:else}
+                <StatusBadge
+                  indicator={agentIndicatorByState(key === "running" ? "working" : key === "attention" ? "waiting_for_input" : "idle")}
+                  size={10}
+                  tip={null}
+                  text={stats.rails[key]}
+                />
+              {/if}
+            {/each}
+          </span>
+        {/if}
+      </section>
+
+      <!-- What the agents the fleet runs have left to spend. One row per
+           PROFILE, not per workspace: a limit belongs to the subscription,
+           and four workspaces on Claude Code share one window between
+           them. Absence is never zero here -- a profile nobody has read
+           yet, one that publishes nothing, and one at 0% are three
+           different sentences (appHub's usageRowNote). -->
+      <section class="panel usage">
+        <h2>
+          Agent usage
+          {#if worstAgent?.worst}
+            <!-- The fleet's nearest ceiling, since the heading has room
+                 for exactly one number. Omitted rather than drawn "ok"
+                 when nothing has a reading. -->
+            <span
+              class="tally usage-{worstAgent.severity}"
+              use:tooltip={worstAgentTip()}
+              aria-label={worstAgentTip()}>{displayPercent(worstAgent.worst.usedPercent)}%</span
+            >
+          {/if}
+          <button type="button" class="panel-link" onclick={() => showAppPanel("usage")}>Details…</button>
+        </h2>
+
+        {#if usage.length === 0}
+          <p class="empty">No workspace is running an agent yet.</p>
+        {:else}
+          <div class="usage-rows">
+            {#each usage as row (row.profileId)}
+              {@const note = usageRowNote(row, $nowStore)}
+              {@const worst = row.worst}
+              {@const saved = savedByProfile[row.profileId] ?? null}
+              {@const savedLine = windowSavingsLine(saved)}
+              <div class="usage-row">
+                <span class="usage-head">
+                  <span
+                    class="usage-name"
+                    use:tooltip={plural(row.workspaces, "workspace", "workspaces") + " running this agent"}
+                    >{row.label}</span
+                  >
+                  {#if worst && !note}
+                    <span class="pct">{displayPercent(worst.usedPercent)}%</span>
+                  {/if}
+                </span>
+                {#if worst && !note}
+                  <div class="track">
+                    <!-- The bands are agentUsage.ts's; the colours only
+                         name them, exactly as the usage panel draws them. -->
+                    <div class="fill {row.severity}" style="width: {barPercent(worst.usedPercent)}%"></div>
+                  </div>
+                  <span class="usage-foot">
+                    <span class="usage-window">{worst.label}</span>
+                    <span class="resets">{formatResetsIn(worst.resetsAt, $nowStore) ?? ""}</span>
+                    <!-- Tokens Headroom saved in this same window, from the
+                         runs of the workspaces on this agent. Nothing at all
+                         when none of them ran compressed in it. -->
+                    {#if saved && savedLine}
+                      <span class="saved" use:tooltip={windowSavingsTip(saved, worst)}>{savedLine}</span>
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="usage-note">{note}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if $pausedWorkspaces.length > 0}
+          <!-- A hold is the one thing on this panel that is not a readout:
+               work that would have started has not. Fleet-wide, because a
+               workspace on another agent is not held by this one being
+               full. -->
+          <p class="paused" use:tooltip={pausedTip()} aria-label={pausedTip()}>
+            {plural($pausedWorkspaces.length, "workspace", "workspaces")} paused
+          </p>
+        {/if}
+      </section>
+
+      <!-- Every session the daemon is holding, whether or not a tab is
+           showing it -- the task manager's list, folded to a recap. The rows
+           here name what is stale; ending one is the panel's job, so
+           nothing on the home screen kills a process. -->
+      <section class="panel sessions">
+        <h2>
+          Sessions
+          <span class="tally" class:stale={sessions.stale > 0}>{sessions.sessions}</span>
+          <button type="button" class="panel-link" onclick={() => showAppPanel("sessions")}>Task manager…</button>
+        </h2>
+
+        <!-- The failure is a line ABOVE the figures, never in place of
+             them, exactly as the task manager reports its own: a poll that
+             failed does not unmake the last one that worked. -->
+        {#if sessionsError}
+          <p class="session-line">Couldn’t read the session list: {sessionsError}</p>
+        {/if}
+
+        {#if !sessionsLoaded}
+          {#if !sessionsError}
+            <p class="empty">Reading what the daemon is holding…</p>
+          {/if}
+        {:else if sessions.sessions === 0}
+          <p class="empty">The daemon is holding no sessions.</p>
+        {:else}
+          <div class="cost">
+            {#if metricsBlocked}
+              <span class="coverage">{metricsBlocked}</span>
+            {:else}
+              <!-- The task manager's own sums over the task manager's own
+                   rows, so the hub and the panel it opens can never state
+                   different totals for one daemon. -->
+              <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
+                CPU <span class="count">{formatCpu(sessions.totals.cpuPercent)}</span>
+              </span>
+              <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
+                MEM <span class="count">{formatMemory(sessions.totals.memBytes)}</span>
+              </span>
+            {/if}
+            <span class="coverage">{totalsCoverage(sessions.totals)}</span>
+          </div>
+
+          {#if sessionsLine}
+            <p class="session-line">{sessionsLine}</p>
+          {/if}
+
+          {#each sessions.attention as row (row.id)}
+            <button
+              type="button"
+              class="stale-row"
+              class:survivor={row.staleness === "orphaned"}
+              use:tooltip={staleTip(row)}
+              aria-label={staleTip(row)}
+              onclick={() => showAppPanel("sessions")}
+            >
+              <!-- The task manager's own marks: a triangle for the one case
+                   with a live process nobody is hosting, a hollow ring for
+                   a row whose run is over. -->
+              {#if row.staleness === "orphaned"}
+                <TriangleAlert size={11} />
+              {:else}
+                <CircleDashed size={11} />
+              {/if}
+              <span class="stale-state">{row.state}</span>
+              <span class="stale-name">{row.label}</span>
+              <span class="stale-where">{row.workspaceName ?? "no workspace"}</span>
+            </button>
+          {/each}
+          {#if sessions.more > 0}
+            <p class="session-line">+{sessions.more} more stale</p>
+          {/if}
+        {/if}
+      </section>
+    </aside>
+  </div>
 </div>
 
 <style>
   .hub {
     height: 100%;
     min-height: 0;
-    /* The COLUMNS scroll, not the page: two panels that each keep their
+    /* The COLUMNS scroll, not the page: three panes that each keep their
        heading in view read as a dashboard, where one long page that
-       scrolls both away reads as a document. The narrow layout below
-       gives the page its scroll back, because two stacked panels sharing
-       one short height would leave neither usable. */
+       scrolls them away reads as a document. The narrow layouts below
+       give the page its scroll back. */
     overflow: hidden;
     box-sizing: border-box;
-    padding: 28px 24px 16px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
     font-family: monospace;
     color: var(--text);
   }
   header {
     flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  /* The icon's 1024 frame keeps a margin for its shadow; pull the tile
+     itself into line with the column edges below it. */
+  header :global(canvas) {
+    margin: -4px 0 -4px -6px;
+  }
+  .masthead {
+    min-width: 0;
   }
   h1 {
     margin: 0;
-    font-size: 1.55em;
-    font-weight: 600;
+    font-size: 1.6em;
+    font-weight: 700;
     letter-spacing: 0.02em;
   }
-  /* Accented and set back from the name, so the mark reads as the
-     prompt the app icon draws rather than as part of the word. */
-  .mark {
-    color: var(--accent-text);
-    margin-right: 6px;
-    opacity: 0.9;
-  }
   .version {
-    margin: 3px 0 0;
+    margin: 2px 0 0;
     color: var(--text-subtle);
     font-size: 0.78em;
+  }
+  .links {
+    margin-left: auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 14px;
+  }
+  .link {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.78em;
+  }
+  .link:hover {
+    color: var(--text);
   }
   h2 {
     display: flex;
     align-items: center;
     gap: 8px;
     margin: 0 0 10px;
-    padding-bottom: 8px;
-    /* A rule under the heading, the idiom the Kanban and Orchestration
-       tabs' own first rows already use. */
-    border-bottom: 1px solid var(--border);
-    color: var(--text-muted);
+    color: var(--text-subtle);
     text-transform: uppercase;
-    font-size: 0.7em;
-    letter-spacing: 0.08em;
+    font-size: 0.68em;
+    letter-spacing: 0.1em;
     font-weight: 600;
   }
   /* The section's own number, in the heading rather than beside the
@@ -971,268 +1014,72 @@
     letter-spacing: 0;
     font-variant-numeric: tabular-nums;
   }
-  /* Only when something IS running -- a live accent on a zero would be
-     the loudest thing on a quiet hub. */
-  .tally.live {
-    border-color: var(--border-accent);
-    color: var(--accent-text);
-  }
-
-  /* --- the fleet strip --- */
-  .stats {
-    flex: 0 0 auto;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.8em;
-    color: var(--text-muted);
-  }
-  .stat-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-sunken);
-    white-space: nowrap;
-  }
-  /* Colour only when the machine is saying something -- the same three
-     tokens IndicatorTone maps to, so this group and a badge beside it
-     are the same amber. */
-  .memory-group.tone-warning {
-    color: var(--warning-text);
-    border-color: var(--warning-text);
-  }
-  .memory-group.tone-danger {
-    color: var(--danger-text);
-    border-color: var(--danger-text);
-  }
-  /* The hub has width the sidebar does not, so a group can say what its
-     leading number counts instead of leaving the glyph to carry it. */
-  .stat-label {
+  .empty {
+    margin: 0;
+    padding: 4px 2px;
     color: var(--text-subtle);
-  }
-  .stat {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-  }
-  /* Separates a group's headline number from the breakdown after it, so
-     a run of digits does not read as one number. */
-  .divider {
-    width: 1px;
-    align-self: stretch;
-    margin: 1px 2px;
-    background: var(--border);
-  }
-  .count {
-    font-variant-numeric: tabular-nums;
-  }
-  .delta {
-    font-size: 0.9em;
-    white-space: nowrap;
-  }
-  /* The very tones the sidebar's strip uses, for the same reasons: idle
-     stays the row's muted default, because "not doing anything" is the
-     absence of news. */
-  .stat.running,
-  .card-col.progress {
-    color: var(--accent-text);
-  }
-  .stat.done,
-  .card-col.done {
-    color: var(--success-text);
-  }
-  .stat.attention {
-    color: var(--warning-text);
-  }
-  .col-initials {
-    opacity: 0.65;
-    margin-right: 2px;
-  }
-  /* Takes the branch glyph's place rather than sitting beside it, so the
-     group keeps its width while a run is in flight. */
-  .commit-spinner {
-    width: 10px;
-    height: 10px;
-    flex: 0 0 auto;
-    margin: 1px;
-    border: 2px solid var(--border-accent);
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: hub-spin 0.8s linear infinite;
-  }
-  @keyframes hub-spin {
-    to {
-      transform: rotate(360deg);
-    }
+    font-size: 0.8em;
+    line-height: 1.5;
   }
 
-  /* --- the two columns --- */
+  /* --- the three columns --- */
   .columns {
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
-    /* minmax(0, …) on both, or a long root path in the left column
-       stretches the track instead of ellipsing inside it. */
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    /* The inbox takes only the height its rows need, the two lists under
-       it take the rest, and the two recaps at the foot take only theirs.
-       An `auto auto` pair would have the grid hand the inbox half the
-       hub for two rows; three `auto`s would do the same to the recaps. */
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 16px;
-    align-items: stretch;
+    grid-template-columns: 240px minmax(0, 1fr) 290px;
   }
-  /* Full width: an inbox row carries six facts, and a third of the hub
-     is not enough for any of them. */
-  .inbox,
-  .inbox-quiet {
-    grid-column: 1 / -1;
-  }
-  /* The empty state. One line, no border, no heading -- the same
-     register as a page's own "nothing here" note rather than a card
-     announcing that it has nothing to say. */
-  .inbox-quiet {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: 0.82em;
-  }
-  .inbox {
-    /* Never taller than a third of the hub: the recents and running
-       columns underneath must stay reachable however long the queue
-       gets, and the rows scroll inside instead. */
-    max-height: 34vh;
-  }
-  .inbox-rows {
+  .column {
+    min-width: 0;
     min-height: 0;
     overflow-y: auto;
+    box-sizing: border-box;
+    padding: 14px 14px 20px;
+  }
+  .rail {
+    border-right: 1px solid var(--border);
+  }
+  .gauges {
+    border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 14px;
   }
-  .waiting-row {
-    display: grid;
-    /* Column tracks rather than a flex row, so the reason, the location
-       and the card line up down the list and the eye can run one column
-       instead of re-parsing every row. Every text track is minmax(0, …)
-       so a long name ellipses inside its own cell. */
-    grid-template-columns: auto minmax(0, 0.85fr) minmax(0, 1fr) minmax(0, 1.15fr) auto;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    box-sizing: border-box;
-    padding: 5px 8px;
-    border: 0;
-    border-radius: 5px;
-    /* The tone lives on the badge, not on the row: a list where every
-       row is amber says nothing, and the glyph is what carries which of
-       the three reasons this is. */
-    background: transparent;
-    color: var(--text);
-    font: inherit;
-    font-size: 0.82em;
-    text-align: left;
-    cursor: pointer;
-  }
-  .waiting-row:hover {
-    background: var(--surface-raised);
-  }
-  .waiting-row:focus-visible {
-    outline: 1px solid var(--border-accent);
-    outline-offset: -1px;
-  }
-  .waiting-row .reason,
-  .waiting-row .where,
-  .waiting-row .card {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .waiting-row .where,
-  .waiting-row .card {
-    color: var(--text-muted);
-  }
-  .waiting-row .tab {
-    color: var(--text);
-  }
-  .waiting-row .sep {
-    margin: 0 4px;
-    color: var(--text-subtle);
-  }
-  /* Only the broken rows get colour of their own. `asking` and
-     `turn-ended` are ordinary waits and read in the body colour; a
-     failure is the one row in the list that is not merely patient. */
-  .waiting-row.reason-failed .reason {
-    color: var(--danger-text);
-  }
-  .waited {
-    justify-self: end;
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  /* A wait gavin did not watch begin. Quieter than a measured one, and
-     the "≥" it carries is spelled out in the row's own bubble. */
-  .waited.bounded {
-    color: var(--text-subtle);
-  }
-  /* One column under a narrow window, and the page scrolls again. The
-     hub shares the width with the sidebar, so this fires earlier than
-     the number suggests. */
-  @media (max-width: 900px) {
+  /* Two columns when the window narrows: the gauges drop under both and
+     the page scrolls. The hub shares the width with the sidebar, so these
+     fire earlier than the numbers suggest. */
+  @media (max-width: 1180px) {
     .hub {
       overflow-y: auto;
     }
     .columns {
-      grid-template-columns: minmax(0, 1fr);
-      /* Back to implicit auto rows: stacked, the inbox is the first of
-         three panels rather than a band across the top, and the wide
-         layout's `auto minmax(0, 1fr)` would squash the second one. */
-      grid-template-rows: none;
-      align-items: start;
+      flex: 0 0 auto;
+      grid-template-columns: 220px minmax(0, 1fr);
     }
-    /* Stacked, nothing is competing for the height any more, so every
-       panel says what it has to say in full and the page scrolls. The
-       two recaps need naming as well as .panel: their own cap is
-       declared later in the file, so equal specificity would let it
-       win here. */
-    .panel,
-    .usage,
-    .sessions {
-      max-height: none;
+    .column {
       overflow-y: visible;
     }
+    .gauges {
+      grid-column: 1 / -1;
+      border-left: 0;
+      border-top: 1px solid var(--border);
+    }
   }
-  .panel {
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
-    padding: 12px 12px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    /* The hairline is the whole panel: the app's own ground is
-       --surface-base, so a fill of it would be a no-op that stops being
-       one the day the ground changes. The rows inside recess instead. */
-    background: transparent;
+  @media (max-width: 760px) {
+    .columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .rail {
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+    }
   }
+
+  /* --- workspaces --- */
   .rows {
-    /* Shrinks and scrolls when the fleet is long, but never GROWS: the
-       create button belongs under the last workspace, not stranded at
-       the foot of a mostly empty panel. */
-    flex: 0 1 auto;
-    min-height: 0;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    /* The rows carry their own accent stripe on the left; a scrollbar
-       gutter on the right keeps them from jumping when one appears. */
-    scrollbar-gutter: stable;
+    gap: 6px;
   }
   .row {
     display: flex;
@@ -1240,23 +1087,26 @@
     gap: 3px;
     align-items: stretch;
     text-align: left;
-    /* The accent stripe the sidebar row for this workspace also carries,
-       so the two lists read as the same fleet. */
+    /* A box per workspace: a hairline all round so neighbours never run
+       together, and the accent stripe on the left. */
     border: 1px solid var(--border);
     border-left: 3px solid var(--row-accent);
     border-radius: 6px;
-    background: var(--surface-sunken);
+    background: var(--surface-raised);
     color: var(--text);
-    padding: 8px 10px;
+    padding: 8px 9px 8px 10px;
     cursor: pointer;
     font-family: inherit;
     font-size: 0.82em;
   }
   .row:hover {
     background: var(--surface-hover);
+    border-color: var(--border-strong);
+    border-left-color: var(--row-accent);
   }
   .row.current {
-    border-color: var(--border-strong);
+    background: var(--surface-selected);
+    border-color: var(--border-accent);
     border-left-color: var(--row-accent);
   }
   .row-main,
@@ -1264,7 +1114,7 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
   }
   .name {
@@ -1273,22 +1123,34 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .recap,
-  .age {
+  .busy {
     flex: 0 0 auto;
-    color: var(--text-muted);
+    color: var(--accent-text);
     font-size: 0.9em;
+    font-variant-numeric: tabular-nums;
   }
-  .root {
-    color: var(--text-subtle);
+  .recap {
+    color: var(--text-muted);
     font-size: 0.9em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .root {
+    min-width: 0;
+    color: var(--text-subtle);
+    font-size: 0.85em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .age {
+    flex: 0 0 auto;
+    color: var(--text-subtle);
+    font-size: 0.85em;
+  }
   .new,
   .new-name {
-    margin-top: 8px;
     width: 100%;
     box-sizing: border-box;
     display: flex;
@@ -1318,42 +1180,116 @@
     outline: none;
   }
 
-  /* --- running tasks --- */
-  .empty {
-    margin: 0;
-    padding: 10px 2px;
-    color: var(--text-subtle);
-    font-size: 0.8em;
-    line-height: 1.5;
-  }
-  .groups {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
+  /* --- now --- */
+  .feed {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    scrollbar-gutter: stable;
+    gap: 6px;
   }
-  /* The workspace's accent, as a rule down the left of its whole group
-     rather than on each row: the group is the workspace, the rows are
-     its cards. */
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-sizing: border-box;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+  }
+  .item-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .item-title {
+    font-size: 0.88em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    color: var(--text-subtle);
+    font-size: 0.74em;
+  }
+  .item-meta > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item-meta > .sep,
+  .item-meta > .phase,
+  .item-meta > .reason {
+    flex: 0 0 auto;
+  }
+  /* A wait is the one thing in the feed that wants you, so it carries the
+     waiting tone as its edge and a wash of it as its ground. */
+  .waiting-row {
+    padding: 9px 12px;
+    border-color: var(--border-warning);
+    border-left: 3px solid var(--warning-text);
+    background: color-mix(in srgb, var(--warning-text) 8%, var(--surface-raised));
+    cursor: pointer;
+  }
+  .waiting-row:hover {
+    background: color-mix(in srgb, var(--warning-text) 14%, var(--surface-raised));
+  }
+  .waiting-row:focus-visible {
+    outline: 1px solid var(--border-accent);
+    outline-offset: -1px;
+  }
+  /* Only the broken rows get a colour of their own: a failure is the one
+     wait in the list that is not merely patient. */
+  .waiting-row.reason-failed {
+    border-color: var(--border-danger);
+    border-left-color: var(--danger-text);
+    background: color-mix(in srgb, var(--danger-text) 8%, var(--surface-raised));
+  }
+  .waiting-row.reason-failed .reason {
+    color: var(--danger-text);
+  }
+  .waited {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 0.75em;
+    font-variant-numeric: tabular-nums;
+  }
+  /* A wait gavin did not watch begin. Quieter than a measured one, and
+     the "≥" it carries is spelled out in the row's own bubble. */
+  .waited.bounded {
+    color: var(--text-subtle);
+  }
+  /* The workspace's accent, as a rule down the left of its whole group:
+     the group is the workspace, the rows are its cards. */
   .group {
+    margin-top: 6px;
+    padding-left: 9px;
     border-left: 2px solid var(--row-accent);
-    padding-left: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .group-head {
     display: flex;
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 0 0 5px;
+    padding: 0;
     background: none;
     border: none;
     color: var(--text-muted);
     cursor: pointer;
     font-family: inherit;
-    font-size: 0.72em;
+    font-size: 0.7em;
     letter-spacing: 0.07em;
     text-transform: uppercase;
     text-align: left;
@@ -1372,22 +1308,11 @@
     letter-spacing: 0;
   }
   .task {
-    display: flex;
+    gap: 0;
     align-items: stretch;
-    gap: 2px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-sunken);
-    margin-bottom: 4px;
   }
   .task:hover {
     border-color: var(--border-strong);
-  }
-  /* A card that stopped for a human is the one thing on this column
-     worth an edge of its own -- in its own dot's tone, so the ring and
-     the row can never say different things about the same agent. */
-  .task.waiting {
-    border-color: var(--border-danger);
   }
   .task.interrupted {
     border-color: var(--border-warning);
@@ -1397,61 +1322,23 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 4px 7px 9px;
+    gap: 10px;
+    padding: 8px 6px 8px 12px;
     background: none;
     border: none;
-    color: var(--text);
+    color: inherit;
     cursor: pointer;
-    font-family: inherit;
-    font-size: 0.82em;
+    font: inherit;
     text-align: left;
   }
-  .task-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .task-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .task-meta {
-    display: flex;
-    align-items: baseline;
-    gap: 4px;
-    min-width: 0;
-    color: var(--text-subtle);
-    font-size: 0.88em;
-  }
-  /* The phase is the answer and keeps its width; the column and the page
-     are context and give theirs up first. min-width:0 because a flex
-     item will not ellipse without it. */
-  .phase {
-    flex: 0 0 auto;
-  }
-  .column,
-  .page {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* The same four phases the dot draws, worded. Only the two that want a
-     human are coloured -- working is background information, and idle is
-     the absence of news. */
-  .phase.waiting {
-    color: var(--danger-text);
-  }
+  /* The same phases the badge draws, worded. Only interrupted is
+     coloured -- working is background information, and idle is the
+     absence of news; a wait is already a row of its own above. */
   .phase.interrupted {
     color: var(--warning-text);
   }
-  .sep {
-    flex: 0 0 auto;
-    color: var(--text-subtle);
+  .phase.failed {
+    color: var(--danger-text);
   }
   /* Which rail carries this card, in the same Route glyph the board's
      own cards use for it. */
@@ -1464,10 +1351,11 @@
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    padding: 0 9px;
+    padding: 0 11px;
     background: none;
     border: none;
     border-left: 1px solid var(--border);
+    border-radius: 0 8px 8px 0;
     color: var(--text-subtle);
     cursor: pointer;
   }
@@ -1480,16 +1368,130 @@
     cursor: default;
   }
   .loose {
-    margin: 6px 0 2px;
+    margin: 0;
     color: var(--text-subtle);
     font-size: 0.75em;
   }
 
-  /* --- agent usage and sessions --- */
+  /* --- gauges --- */
+  .bigs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .big {
+    display: flex;
+    flex-direction: column;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .big-n {
+    font-size: 1.8em;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .big-l {
+    color: var(--text-subtle);
+    font-size: 0.68em;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  /* Colour only when the number is news: work in flight, a human wanted. */
+  .big.live .big-n {
+    color: var(--accent-text);
+  }
+  .big.attention {
+    border-color: var(--border-warning);
+  }
+  .big.attention .big-n {
+    color: var(--warning-text);
+  }
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.78em;
+    color: var(--text-muted);
+  }
+  .stat-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-sunken);
+    white-space: nowrap;
+  }
+  /* The same three tokens IndicatorTone maps to, so this group and a
+     badge beside it are the same amber. */
+  .memory-group.tone-warning {
+    color: var(--warning-text);
+    border-color: var(--warning-text);
+  }
+  .memory-group.tone-danger {
+    color: var(--danger-text);
+    border-color: var(--danger-text);
+  }
+  .stat-label {
+    color: var(--text-subtle);
+  }
+  .stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  /* Separates a group's headline number from the breakdown after it, so
+     a run of digits does not read as one number. */
+  .divider {
+    width: 1px;
+    align-self: stretch;
+    margin: 1px 2px;
+    background: var(--border);
+  }
+  .count {
+    font-variant-numeric: tabular-nums;
+  }
+  .delta {
+    font-size: 0.9em;
+    white-space: nowrap;
+  }
+  .card-col.progress {
+    color: var(--accent-text);
+  }
+  .stat.done,
+  .card-col.done {
+    color: var(--success-text);
+  }
+  .col-initials {
+    opacity: 0.65;
+    margin-right: 2px;
+  }
+  /* Takes the branch glyph's place rather than sitting beside it, so the
+     group keeps its width while a run is in flight. */
+  .commit-spinner {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 auto;
+    margin: 1px;
+    border: 2px solid var(--border-accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: hub-spin 0.8s linear infinite;
+  }
+  @keyframes hub-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .panel {
+    display: flex;
+    flex-direction: column;
+  }
   /* The panel's own action, at the end of its heading: the recap says
-     what there is, the panel it opens is where anything is done about
-     it. Sits in the heading rather than under the rows so it stays put
-     while the list under it changes. */
+     what there is, the panel it opens is where anything is done about it. */
   .panel-link {
     margin-left: auto;
     padding: 0;
@@ -1505,46 +1507,45 @@
   .panel-link:hover {
     color: var(--text);
   }
-  /* Both recaps are read at a glance and never scrolled to: they take
-     the height of their content and cap it, rather than stretching to a
-     track the way the two lists above them do. */
-  .usage,
-  .sessions {
-    flex: 0 0 auto;
-    max-height: 32vh;
-    overflow-y: auto;
-  }
   .usage-rows {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
     font-size: 0.8em;
   }
   .usage-row {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-sunken);
+    min-width: 0;
+  }
+  .usage-head,
+  .usage-foot {
+    display: flex;
+    align-items: baseline;
     gap: 8px;
     min-width: 0;
   }
-  /* The agent's name keeps its width so the bars line up down the list;
-     everything after it gives way first. */
   .usage-name {
-    flex: 0 0 auto;
-    max-width: 40%;
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text);
   }
-  .usage-window {
+  .pct {
     flex: 0 0 auto;
-    color: var(--text-muted);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
   .track {
-    flex: 1 1 auto;
-    min-width: 40px;
     height: 5px;
-    background: var(--surface-sunken);
+    background: var(--border);
     border-radius: 3px;
     overflow: hidden;
   }
@@ -1558,38 +1559,35 @@
   .fill.critical {
     background: var(--danger);
   }
-  .pct {
+  .usage-foot {
+    font-size: 0.9em;
+  }
+  .usage-window {
     flex: 0 0 auto;
-    min-width: 34px;
-    text-align: right;
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
   }
   .resets {
     flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-subtle);
   }
   .saved {
+    margin-left: auto;
     flex: 0 0 auto;
     white-space: nowrap;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
   }
   /* A sentence where a bar would be: no probe, no reading yet, or a
-     reading that carried no windows. Wraps, because every one of them is
-     a sentence rather than a figure. */
+     reading that carried no windows. */
   .usage-note {
-    flex: 1 1 auto;
-    min-width: 0;
     color: var(--text-subtle);
   }
-  /* The heading badge takes the bands' own tones -- the same three the
-     bars use, so the number at the top and the bar it came from can
-     never disagree. `ok` is left in the tally's default: a full window
-     is news, a half-empty one is not. */
+  /* The heading badge takes the bands' own tones, so the number at the
+     top and the bar it came from can never disagree. */
   .tally.usage-warn {
     border-color: var(--border-warning);
     color: var(--warning-text);
@@ -1598,9 +1596,7 @@
     border-color: var(--border-danger);
     color: var(--danger-text);
   }
-  /* Stale rows are the reason to open the panel, so the count says so.
-     Not `.live`, which is the accent every other tally uses for work in
-     flight -- a row whose run is over is the opposite of that. */
+  /* Stale rows are the reason to open the panel, so the count says so. */
   .tally.stale {
     border-color: var(--border-warning);
     color: var(--warning-text);
@@ -1610,16 +1606,13 @@
     color: var(--warning-text);
     font-size: 0.78em;
   }
-  /* The two sums and what they cover, on one line: the figures lead
-     because they are why anyone looks, and the coverage behind them says
-     how many things went into each. */
   .cost {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: 10px;
-    font-size: 0.8em;
     color: var(--text-muted);
+    font-size: 0.8em;
   }
   .figure .count {
     color: var(--text);
@@ -1657,8 +1650,7 @@
     border-color: var(--border-strong);
     color: var(--text);
   }
-  /* The one kind with a live process nobody is hosting. The only row
-     here that earns an edge of its own. */
+  /* The one kind with a live process nobody is hosting. */
   .stale-row.survivor {
     border-color: var(--border-warning);
     color: var(--warning-text);
@@ -1681,29 +1673,5 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-subtle);
-  }
-
-  footer {
-    flex: 0 0 auto;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
-  }
-  .link {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    background: none;
-    border: none;
-    padding: 0;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 0.78em;
-  }
-  .link:hover {
-    color: var(--text);
   }
 </style>

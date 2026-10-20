@@ -8,7 +8,7 @@
 
 use crate::clock::Clock;
 use crate::jwt;
-use crate::sender::{http_client, reason_code, transport_reason, ApnsEnvironment, Delivery};
+use crate::sender::{http_client, reason_code, transport_reason, ApnsEnvironment, Delivery, PushBody};
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -73,7 +73,7 @@ impl Apns {
         Ok(token)
     }
 
-    pub async fn send(&self, token: &str, environment: ApnsEnvironment, ciphertext: &[u8]) -> Delivery {
+    pub async fn send(&self, token: &str, environment: ApnsEnvironment, body: PushBody<'_>) -> Delivery {
         let provider_token = match self.provider_token() {
             Ok(t) => t,
             Err(_) => return Delivery::Unavailable("provider-token".into()),
@@ -82,14 +82,27 @@ impl Apns {
             ApnsEnvironment::Production => &self.config.production_url,
             ApnsEnvironment::Development => &self.config.development_url,
         };
-        let body = json!({
-            "aps": {
-                "alert": {"title": PLACEHOLDER_TITLE, "body": PLACEHOLDER_BODY},
-                "mutable-content": 1,
-                "sound": "default",
-            },
-            "c": STANDARD.encode(ciphertext),
-        });
+        let body = match body {
+            PushBody::Ciphertext(ciphertext) => json!({
+                "aps": {
+                    "alert": {"title": PLACEHOLDER_TITLE, "body": PLACEHOLDER_BODY},
+                    "mutable-content": 1,
+                    "sound": "default",
+                },
+                "c": STANDARD.encode(ciphertext),
+            }),
+            // Proof of possession: the phone echoes `v`. No ciphertext, so
+            // the Notification Service Extension leaves the placeholder
+            // (or filters it) and the app confirms with the gateway.
+            PushBody::Verification(nonce) => json!({
+                "aps": {
+                    "alert": {"title": PLACEHOLDER_TITLE, "body": "Confirming this device."},
+                    "mutable-content": 1,
+                    "sound": "default",
+                },
+                "v": nonce,
+            }),
+        };
         let response = self
             .client
             .post(format!("{base}/3/device/{token}"))

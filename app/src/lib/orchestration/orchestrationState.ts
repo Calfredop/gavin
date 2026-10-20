@@ -105,9 +105,11 @@ import {
   agentForProfile,
   resolvedAgentFor,
   promptExtrasFor,
+  prepareCursorAgentLaunch,
   armFailureDetection,
   baseShaForLaunch,
   cardReviewed,
+  configTrustFor,
   conversationIdForLaunch,
   createSessionOnPage,
   createSessionOnNewPage,
@@ -135,7 +137,7 @@ import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
 import { fetchTools, libraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
-import { gavinTrees, patchPlanField } from "$lib/core/gavinState";
+import { gavinTrees, patchPlanField, worktreeSetups } from "$lib/core/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/git/gitState";
 import { branchResolvable } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
@@ -144,6 +146,8 @@ import { allSessionIds } from "$lib/panes/layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
+  isDirectPrompt,
+  EMPTY_DIRECT_PROMPT,
   buildRunCommand,
   buildResumeCommand,
   noPromptReason,
@@ -170,7 +174,7 @@ import {
 import { sessionLiveness } from "$lib/core/workspace";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { DEVELOPING_STALL } from "$lib/cards/developingCards";
-import { unreviewedStallReason } from "$lib/cards/cardReview";
+import { cardContentOf, unreviewedStallReason } from "$lib/cards/cardReview";
 import type { OrchestrationAgentRecord } from "$lib/core/workspace";
 import {
   conversationLogFor,
@@ -190,6 +194,7 @@ import {
   mayLaunch,
   type OrchestrationIntent,
 } from "$lib/agents/launchQueue";
+import { trustedSetup } from "$lib/workspace/workspaceTrust";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -1436,7 +1441,17 @@ async function executeToolLaunch(
   }
 
   const body = resolveToolBody(tool, stepParams(step));
-  const agent = resolvedAgentFor(workspaceId);
+  let agent = resolvedAgentFor(workspaceId, cwd);
+  if (tool.kind === "agent") {
+    // A rail step is unattended: Cursor's MCP dialog would stall with
+    // nobody watching, so an unresolved disclosure refuses here.
+    const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, agent, "unattended");
+    if (typeof prepared === "string") {
+      await stallLaunch(workspaceId, step.id, prepared);
+      return false;
+    }
+    agent = prepared;
+  }
   // Only an AGENT tool gets a conversation: a command, script or until
   // step is a shell, and its verdict is its exit code (tools spec T5).
   const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
@@ -1610,11 +1625,18 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // The human answers it on the card, where the body can actually be
   // read; Retry then starts the step.
   if (
-    !cardReviewed(workspaceId, step.cardPath, {
-      title: entry.plan.title,
-      body,
-      attachments: entry.plan.attachments ?? [],
-    })
+    !cardReviewed(
+      workspaceId,
+      step.cardPath,
+      cardContentOf({
+        title: entry.plan.title,
+        body,
+        attachments: entry.plan.attachments,
+        agent: entry.plan.agent,
+        model: entry.plan.model,
+        effort: entry.plan.effort,
+      })
+    )
   ) {
     await stallLaunch(workspaceId, stepId, unreviewedStallReason(entry.plan.title));
     return false;
@@ -1643,11 +1665,30 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   if (decision.kind === "pause") {
     return false;
   }
-  const launchAgent =
-    decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
+  let launchAgent =
+    decision.viaFallback ? agentForProfile(workspaceId, decision.profileId, entry.plan) : agent;
+  {
+    const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, launchAgent, "unattended");
+    if (typeof prepared === "string") {
+      await stallLaunch(workspaceId, stepId, prepared);
+      return false;
+    }
+    launchAgent = prepared;
+  }
   let prompt: string;
   const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
-  if (entry.plan.kind === "task") {
+  // A direct prompt goes out as written, on a rail as on the board: no
+  // framing, no decoy note, no retry prefix and no extras. The step then
+  // finishes the way any card whose agent never filed it does -- marked
+  // turn-ended when the agent goes quiet, for a human to Mark done.
+  const verbatim = isDirectPrompt(entry.plan);
+  if (verbatim) {
+    if (body === "") {
+      await stallLaunch(workspaceId, stepId, EMPTY_DIRECT_PROMPT);
+      return false;
+    }
+    prompt = body;
+  } else if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
       step.cardPath,
       entry.plan.title,
@@ -1677,14 +1718,16 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
-  prompt = withRetryPrefix(
-    prompt,
-    await retryNoteFor(workspaceId, rail, stepId),
-    mustPromptBody("action:until-retry-prefix", workspaceId)
-  );
-  // The agent that actually launches (a fallback's, not the card's
-  // primary): the lines are instructions to THAT agent.
-  prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
+  if (!verbatim) {
+    prompt = withRetryPrefix(
+      prompt,
+      await retryNoteFor(workspaceId, rail, stepId),
+      mustPromptBody("action:until-retry-prefix", workspaceId)
+    );
+    // The agent that actually launches (a fallback's, not the card's
+    // primary): the lines are instructions to THAT agent.
+    prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
+  }
 
   const conversationId = conversationIdForLaunch(launchAgent);
   // An injection launch (K3) is the board Run's: the CLI has no prompt
@@ -2046,10 +2089,32 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       if (!mayLaunch()) continue;
       again = (await executeLaunch(workspaceId, action.stepId)) || again;
     } else if (action.kind === "markDone") {
-      const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
+      const prior = orch.stepRuns.find((r) => r.stepId === action.stepId);
+      const sessionId = prior?.sessionId ?? null;
+      // Read BEFORE the write: once the row is `done`, the stall that
+      // paused the rail is no longer visible, and the unpause below
+      // would never fire.
+      const wasStalled = prior?.state === "stalled";
       // The session id is kept deliberately: the step is finished, but
       // its transcript stays reachable from the chip.
       await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
+      // Rule 5 pauses around a stall. When reconciliation later marks
+      // that stalled step done (card reached Done a tick after the
+      // session died), leave the rail paused and the sequence advances
+      // nothing -- the same trap skipStep documents. Only from
+      // `stalled`, and only from `paused`: clearing a running row must
+      // not override a human pause, and an idle rail stays idle.
+      const rail = wasStalled ? railOwning(orch, action.stepId) : null;
+      if (rail && railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+        const current = get(orchestrations)[workspaceId].railRuns.find(
+          (r) => r.railId === rail.id
+        )?.currentStageId;
+        const owning = rail.stages.find((g) => g.steps.some((t) => t.id === action.stepId))?.id ?? null;
+        await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+        // The next tick has to see the rail running, or Rule 2 never
+        // launches the step after this one.
+        again = true;
+      }
       // A step finishing on an IDLE rail -- the reconciling markDone
       // above -- can be the last one that rail owed, and no `complete`
       // follows it: the rail is already idle. So this is the other half
@@ -3183,16 +3248,67 @@ async function launchOrchestrationAgent(
   return null;
 }
 
+/// Titles of cards whose content this run would hand an agent, and which
+/// the first-Run review has not cleared. Empty when every entry is
+/// reviewed (or when `requireReview` resolves off — `cardReviewed` is
+/// true then). Reads each body from disk so the digest covers what the
+/// skill will open, not only the title the prompt inlines.
+async function unreviewedTitles(workspaceId: string, entries: CardEntry[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of entries) {
+    const file = await backend.readFileForViewer(e.plan.path);
+    const body = file.exists ? stripFrontmatter(file.content).trim() : "";
+    if (
+      !cardReviewed(
+        workspaceId,
+        e.plan.path,
+        cardContentOf({
+          title: e.plan.title,
+          body,
+          attachments: e.plan.attachments,
+          agent: e.plan.agent,
+          model: e.plan.model,
+          effort: e.plan.effort,
+        })
+      )
+    ) {
+      out.push(e.plan.title);
+    }
+  }
+  return out;
+}
+
+function organizeReviewRefusal(titles: string[]): string {
+  return `Review these cards before an agent reads them: ${titles.join(", ")}`;
+}
+
+/// The `[worktree] setup` lines this Organize/Reorganize launch may tell
+/// the agent to run — already gated by config trust. Off the store, not
+/// a fresh disk read: that is the list the trust digest hashed.
+function trustedWorktreeSetupLines(workspaceId: string): string[] {
+  return trustedSetup(
+    get(worktreeSetups)[workspaceId] ?? [],
+    configTrustFor(workspaceId).trusted
+  );
+}
+
 /// The GENERATE request: the cards nobody has placed, plus a summary of
 /// what the tab currently shows, so the agent starts from the same
 /// picture the human is looking at -- it still calls
 /// gavin_get_orchestration for the authoritative read.
-export function requestOrganize(
+///
+/// The first-Run review clears HERE, before `host.hold` and before any
+/// session is spawned: the prompt inlines titles and the skill weighs
+/// bodies, so an unreviewed cloned card must not reach this agent. The
+/// Device path inherits the check because it calls the same function.
+export async function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
   conflictSummary: string[],
   host: OrchestrationLaunchHost = DESK_ORCHESTRATION_HOST
 ): Promise<string | null> {
+  const unreviewed = await unreviewedTitles(workspaceId, unplaced);
+  if (unreviewed.length > 0) return organizeReviewRefusal(unreviewed);
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
     workspaceId,
@@ -3202,7 +3318,8 @@ export function requestOrganize(
       unplaced,
       conflictSummary,
       mustPromptBody("action:organize", workspaceId),
-      mustPromptBody("action:name-tab-first", workspaceId)
+      mustPromptBody("action:name-tab-first", workspaceId),
+      trustedWorktreeSetupLines(workspaceId)
     ),
     host
   );
@@ -3212,7 +3329,11 @@ export function requestOrganize(
 /// the rail out of the store rather than taking it from the caller, so a
 /// rail deleted between render and click is caught here instead of
 /// launching an agent at work that no longer exists.
-export function requestRailReorganize(
+///
+/// Same first-Run review as Organize, over the rail's card steps (tool
+/// steps carry no card content). Queued intents only exist after this
+/// check, so a drain cannot bypass it.
+export async function requestRailReorganize(
   workspaceId: string,
   railId: string,
   cards: Map<string, CardEntry>,
@@ -3222,7 +3343,14 @@ export function requestRailReorganize(
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
-  if (!orch || !rail) return Promise.resolve("That rail is gone");
+  if (!orch || !rail) return "That rail is gone";
+  const stepCards = rail.stages
+    .flatMap((s) => s.steps)
+    .filter((s) => !isToolStep(s))
+    .map((s) => cards.get(s.cardPath))
+    .filter((e): e is CardEntry => e != null);
+  const unreviewed = await unreviewedTitles(workspaceId, stepCards);
+  if (unreviewed.length > 0) return organizeReviewRefusal(unreviewed);
   return launchOrchestrationAgent(
     workspaceId,
     { railId, label: reorganizeLabel(rail.name) },
@@ -3233,7 +3361,8 @@ export function requestRailReorganize(
       tools,
       conflictSummary,
       mustPromptBody("action:reorganize", workspaceId),
-      mustPromptBody("action:name-tab-first", workspaceId)
+      mustPromptBody("action:name-tab-first", workspaceId),
+      trustedWorktreeSetupLines(workspaceId)
     ),
     host
   );

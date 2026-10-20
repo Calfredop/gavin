@@ -19,6 +19,7 @@ function memoryStore(): PairedStore & { held: Map<string, PairedWorkstation> } {
     held,
     list: async () => [...held.values()].sort((a, b) => a.pairedAt - b.pairedAt),
     save: async (record) => void held.set(record.id, record),
+    remove: async (id) => void held.delete(id),
   };
 }
 
@@ -127,7 +128,7 @@ describe("the hub's pairing flow", () => {
 
   it("says so when the phone could not keep what the desk paired", async () => {
     const { f } = flow({
-      store: { list: async () => [], save: vi.fn(async () => Promise.reject(new Error("keychain full"))) },
+      store: { list: async () => [], save: vi.fn(async () => Promise.reject(new Error("keychain full"))), remove: async () => {} },
     });
     await f.startWith("qr");
     expect(get(f.sheet)).toMatchObject({ step: "failed", problem: expect.stringContaining("keychain full") });

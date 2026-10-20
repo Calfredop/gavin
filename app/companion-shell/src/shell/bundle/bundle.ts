@@ -5,11 +5,12 @@
 // The cache is by content hash (the manifest's), so the same bundle from
 // two Workstations on one version is stored once, and a Workstation
 // that upgrades names a hash the cache does not hold and is fetched
-// afresh. What is trusted is decided before the fetch (`trust.ts`), the
-// signature is verified by the Companion core once the archive is in
-// hand, and the files reach the native store only out of a bundle the
-// core accepted. Nothing here touches the native side but through
-// `BundleStore`, so it runs against a map in the suites.
+// afresh. What is trusted is decided before the fetch (`trust.ts`), and
+// the Companion core verifies the signature on every load -- including a
+// cache hit -- from the manifest alone (`bundleCheck`); the archive is
+// checked only when installing. The files reach the native store only
+// out of a bundle the core accepted. Nothing here touches the native
+// side but through `BundleStore`, so it runs against a map in the suites.
 import { fetchArchive, progressLine } from "$shell/bundle/fetch";
 import { askBundle, BundleError, type BundleManifest } from "$shell/bundle/manifest";
 import { judgeSigner } from "$shell/bundle/trust";
@@ -60,6 +61,15 @@ export async function readyBundle(deps: ReadyBundleDeps): Promise<ReadyBundle> {
   const verdict = judgeSigner(manifest, deps.trusted);
   if (!verdict.trusted) throw new BundleError(verdict.reason);
 
+  say("Checking its signature…");
+  try {
+    const exchange = await (await deps.core()).exchange();
+    exchange.bundleCheck({ manifest, trustedKeys: deps.trusted });
+  } catch (e) {
+    if (e instanceof CoreError && e.kind === "bundle") throw new BundleError(sentence(e.message));
+    throw new BundleError(`This Companion could not check the Workstation's UI: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   if (await deps.store.installed(manifest.hash)) {
     return { hash: manifest.hash, manifest, fetched: false };
   }
@@ -68,7 +78,6 @@ export async function readyBundle(deps: ReadyBundleDeps): Promise<ReadyBundle> {
     onProgress: (progress) => say(progressLine(progress)),
     signal: deps.signal,
   });
-  say("Checking its signature…");
   let opened;
   try {
     const exchange = await (await deps.core()).exchange();

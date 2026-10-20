@@ -92,6 +92,12 @@ export interface PlanFileInfo {
   // half of the same override, raw for `model`'s reason; a pre-v56 daemon
   // never sends it.
   effort?: string | null;
+  // The card's `direct:` line (v75): true when its body is the WHOLE
+  // prompt, sent with none of gavin's framing (`isDirectPrompt`). Only a
+  // task carries it -- the daemon reads it on any other kind as a warning
+  // and false. A pre-v75 daemon never sends it, and its absence reads as
+  // an ordinary task, which is how that daemon would have run it.
+  direct?: boolean;
   // The card's `Decision:` / `Human test:` lines, parsed -- everything on
   // this card waiting on a person.
   //

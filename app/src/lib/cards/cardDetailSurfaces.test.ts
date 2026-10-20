@@ -77,7 +77,6 @@ describe("the session bar", () => {
     const bar = at(DETAIL, 'class="session-bar');
     expect(bar).toBeLessThan(at(DETAIL, '<div class="scroll"'));
     // And the card's own text is below it, which is the inversion.
-    expect(bar).toBeLessThan(at(DETAIL, '<pre class="prompt">'));
     expect(bar).toBeLessThan(at(DETAIL, '<div class="body-preview">'));
   });
 
@@ -136,9 +135,17 @@ describe("what the scroller carries", () => {
     // Two scrollbars inside one another was the price of keeping the
     // session block reachable. The panel scrolls once now.
     const styles = DETAIL.slice(DETAIL.lastIndexOf("<style>"));
-    expect(styles).toMatch(/\.prompt \{[^}]*\}/);
-    expect(styles).not.toMatch(/\.prompt \{[^}]*max-height:/);
+    expect(styles).toMatch(/\.body-preview \{[^}]*\}/);
     expect(styles).not.toMatch(/\.body-preview \{[^}]*max-height:/);
+  });
+
+  it("renders every kind's body as markdown, a task's prompt included", () => {
+    // A task's body used to sit in a <pre> as raw source while a plan's
+    // and a note's were rendered: the same markdown read two ways.
+    expect(DETAIL).not.toContain('<pre class="prompt">');
+    expect(DETAIL).not.toContain('card.kind === "task" && bodyHtml');
+    expect(DETAIL).toContain('isDirectPrompt(card) ? "Prompt · sent as written" : card.kind === "task" ? "Prompt" : "Body"');
+    expect(DETAIL.match(/\{@html bodyHtml\}/g)).toHaveLength(1);
   });
 
   it("folds the two blocks a human comes here to change rather than to read", () => {

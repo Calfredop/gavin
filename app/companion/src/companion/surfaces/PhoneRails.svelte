@@ -13,6 +13,7 @@
   import { daemonCompat } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import { orchestrations, saveErrors, dismissSaveError } from "$lib/orchestration/orchestrationState";
+  import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { railIndicator, stepIndicator } from "$lib/ui/indicators";
   import {
@@ -51,7 +52,14 @@
 
   const orch = $derived($orchestrations[workspace.id] ?? null);
   const input = $derived(
-    orch ? { orch, tree: $gavinTrees[workspace.id], board: $kanbanState[workspace.id] } : null
+    orch
+      ? {
+          orch,
+          tree: $gavinTrees[workspace.id],
+          board: $kanbanState[workspace.id],
+          tools: renderLibraryFor($toolRecords, workspace.id),
+        }
+      : null
   );
   const rails = $derived(input ? railRows(input) : []);
   const choices = $derived(input ? cardsToPlace(input) : []);

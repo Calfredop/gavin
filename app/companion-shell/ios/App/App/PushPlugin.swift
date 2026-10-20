@@ -228,6 +228,42 @@ public class PushPlugin: CAPPlugin, CAPBridgedPlugin {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: registrationService] as CFDictionary)
     }
 
+    /// Echoes a verification nonce to the gateway (proof the phone holds
+    /// the push token). Best-effort: a miss is retried on the next launch
+    /// when the shell's `registerToken` path sees a dry-run nonce, or when
+    /// another verification push arrives.
+    static func confirmToken(nonce: String) {
+        guard let base = gatewayURL,
+              let record = readRegistrationRecord(),
+              let data = record.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let deviceId = json["deviceId"] as? String,
+              let secret = json["deviceSecret"] as? String,
+              let url = URL(string: base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                  + "/v1/devices/\(deviceId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? deviceId)/token/confirm")
+        else { return }
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["nonce": nonce])
+        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    static func readRegistrationRecord() -> String? {
+        var found: CFTypeRef?
+        let status = SecItemCopyMatching(
+            [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: registrationService,
+                kSecReturnData as String: true,
+            ] as CFDictionary,
+            &found
+        )
+        guard status == errSecSuccess, let data = found as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     // MARK: notifications on screen
 
     /// Clears one Workstation's notifications the desk has dealt with:
@@ -281,12 +317,19 @@ final class PushTaps: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// In front, a notification still shows: it may be another
-    /// Workstation's than the one open.
+    /// Workstation's than the one open. A verification push (`v`, no `c`)
+    /// is confirmed with the gateway and never drawn.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        let info = notification.request.content.userInfo
+        if let nonce = info["v"] as? String, info["c"] == nil {
+            PushPlugin.confirmToken(nonce: nonce)
+            completionHandler([])
+            return
+        }
         completionHandler([.banner, .list, .sound])
     }
 }

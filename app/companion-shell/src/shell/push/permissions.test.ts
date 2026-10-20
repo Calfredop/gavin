@@ -21,6 +21,8 @@ function fakeClient(overrides: Partial<PushGatewayClient> = {}): PushGatewayClie
     },
     registerDevice: vi.fn(),
     putToken: vi.fn(),
+    confirmToken: vi.fn(),
+    tokenPending: vi.fn(async () => false),
     mintPermission: vi.fn(async () => {
       minted += 1;
       const n = minted;

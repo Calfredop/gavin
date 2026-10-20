@@ -37,6 +37,7 @@
   import {
     ownCycleSeed,
     ownListSeed,
+    primaryReportsUsage,
     primaryView,
     saveComplexityTable,
     saveList,
@@ -59,12 +60,13 @@
     profiles: AgentProfileInfo[];
     /// Required in the workspace scope.
     workspaceId?: string;
-    /// Whether any agent in use can be asked about its limits; the app
-    /// scope says so under the pause fields rather than offering a gate
-    /// that silently never fires.
-    limitsProbed?: boolean;
   }
-  let { scope, primaryId, label, profiles, workspaceId = "", limitsProbed = true }: Props = $props();
+  let { scope, primaryId, label, profiles, workspaceId = "" }: Props = $props();
+
+  /// Only an agent whose limits gavin can read can be held at one; for any
+  /// other the limit controls are drawn off and say why, rather than offer
+  /// a gate that silently never fires.
+  const canHoldAtLimit = $derived(primaryReportsUsage(profiles, primaryId));
 
   const ws = $derived(
     scope === "workspace" ? ($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null) : null
@@ -274,7 +276,8 @@
     <label class="check">
       <input
         type="checkbox"
-        checked={cycle.limitEnabled}
+        checked={cycle.limitEnabled && canHoldAtLimit}
+        disabled={!canHoldAtLimit}
         onchange={(e) => editCycle({ limitEnabled: e.currentTarget.checked })}
       />
       <span>Hold when a window is</span>
@@ -284,7 +287,7 @@
       type="number"
       min="1"
       max="100"
-      disabled={!cycle.limitEnabled}
+      disabled={!cycle.limitEnabled || !canHoldAtLimit}
       value={cycle.limitPercent}
       onchange={(e) => editCycle({ limitPercent: Number(e.currentTarget.value) })}
     />
@@ -292,10 +295,10 @@
   </div>
   {#if cycleError}
     <p class="hint error">{cycleError}</p>
-  {:else if !limitsProbed}
+  {:else if !canHoldAtLimit}
     <p class="hint">
-      Holding at a limit needs an agent whose limits gavin can read — today Claude Code and Codex.
-      No workspace here runs one, so only the schedule applies.
+      Holding at a limit needs an agent whose limits gavin can read — every built-in agent, but not
+      a custom one. {label} is custom, so only the schedule applies to it.
     </p>
   {/if}
 {/if}

@@ -1,4 +1,5 @@
 ---
+order: 12288
 kind: note
 labels: memory
 topics: companion, css, layout

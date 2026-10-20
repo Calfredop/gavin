@@ -8,24 +8,33 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import type { ResolvedAgent } from "$lib/core/settings";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
-import type { CardSessionRecord } from "$lib/board/kanban";
+import { canReplay, NOTHING_TO_REPLAY, type CardSessionRecord } from "$lib/board/kanban";
 import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import {
   composeTaskPrompt,
   composePlanPrompt,
   composeResumeTaskPrompt,
+  isDirectPrompt,
+  EMPTY_DIRECT_PROMPT,
   composeResumePlanPrompt,
   composeDevelopPrompt,
   composeReviewLaunchPrompt,
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
+  withRelaunchNote,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
+  relaunchNote,
+  commandUsesLaunchAgent,
+  rebindRunCommand,
   noPromptReason,
   usesPromptInjection,
   withPromptExtras,
@@ -49,8 +58,8 @@ import {
   type AttachmentStatus,
 } from "$lib/cards/attachments";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
-import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
+import { cardContentOf, UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent, bracketedPaste } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
@@ -99,7 +108,10 @@ function agentForNewLaunch(
   const primary = agentForCard(workspaceId, card);
   const decision = launchDecision(workspaceId, primary.profileId, resume);
   if (decision.kind === "use" && decision.viaFallback) {
-    return { decision, agent: agentForProfile(workspaceId, decision.profileId) };
+    // Pass the card so the fallback profile's own complexity table
+    // (model / effort for this level) reaches argv — not a bare profile
+    // resolve that dropped every row and left Cursor on its CLI default.
+    return { decision, agent: agentForProfile(workspaceId, decision.profileId, card) };
   }
   return { decision, agent: primary };
 }
@@ -323,6 +335,29 @@ export function runCard(
   return launchCard(workspaceId, card, "run", { host });
 }
 
+// Launch as new session: a Run of the card AS IT IS NOW, for a card that
+// already has a binding. Re-launch replays the command the binding
+// stored -- stale once the card has moved on, and missing altogether for
+// a session that was linked rather than launched -- while this composes
+// the prompt fresh from the card file, exactly as Run does, with the note
+// a re-launch adds: the card was already under way, so check what is
+// done before redoing it.
+//
+// Everything else is Run's: the same gates (develop, ssh, the agent, the
+// launch wall, the first-Run review), the card's own agent, its context
+// folder, a fresh conversation id, a fresh baseline and a fresh resume
+// budget -- and the new binding replaces the old. A LIVE binding is a
+// refusal rather than a jump: the action exists to start an agent, and a
+// second one in a checkout an agent is still working in is the outcome
+// every other launch goes out of its way to prevent.
+export function launchCardAsNewSession(
+  workspaceId: string,
+  card: CardView,
+  host: CardLaunchHost = DESK_LAUNCH_HOST
+): Promise<string | null> {
+  return launchCard(workspaceId, card, "new-session", { host });
+}
+
 // Resume: the same launch, with the prompt that tells the agent work on
 // this card already happened (columnRunAction.ts). Deliberately usable
 // on a card whose bound session has EXITED -- picking that work back up
@@ -445,7 +480,14 @@ export async function developCard(
   const file = await backend.readFileForViewer(card.id);
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
-  const content = { title: card.title, body, attachments: card.attachments ?? [] };
+  const content = cardContentOf({
+    title: card.title,
+    body,
+    attachments: card.attachments,
+    agent: card.agent,
+    model: card.model,
+    effort: card.effort,
+  });
   if (
     !(await ensureCardReviewed({
       workspaceId,
@@ -476,9 +518,17 @@ export async function developCard(
   // is not a level: develop overwhelmingly targets a card that names
   // neither field, and `agentForCard` resolves that to EXACTLY
   // `resolvedAgentFor` -- the behaviour this route had before.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
+  const { decision, agent: launchAgent } = agentForNewLaunch(workspaceId, card, false);
   const held = holdLaunch(workspaceId, decision);
   if (held) return held;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    card.contextFolder,
+    launchAgent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   const prompt = withPromptExtras(
     composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop")),
     promptExtrasFor(workspaceId, agent.profileId)
@@ -537,20 +587,29 @@ export async function developCard(
 async function launchCard(
   workspaceId: string,
   card: CardView,
-  mode: "run" | "resume" | "review",
+  mode: "run" | "resume" | "review" | "new-session",
   options: { automatic?: boolean; queued?: boolean; withoutHeadroom?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
   const host = options.host ?? DESK_LAUNCH_HOST;
 
-  if ((await host.jump(workspaceId, card.id)) === "jumped") return null;
+  // A new session is asked for BESIDE a bound one, so a live binding is
+  // the one thing it must not jump to and call done (launchCardAsNewSession).
+  if (mode === "new-session") {
+    const bound = cardSessionFor(get(kanbanState)[workspaceId], card.id);
+    if (cardSessionState(get(layoutState), bound) === "live") return NEW_SESSION_WHILE_LIVE;
+  } else if ((await host.jump(workspaceId, card.id)) === "jumped") {
+    return null;
+  }
   const state = get(layoutState);
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   // Re-checked rather than trusted from the jump above, which is async:
   // a session that became live in between is still the work. An
   // INTERRUPTED binding falls through on purpose -- launching replaces
   // it, which is the only way a card gets un-stuck from a killed run.
-  if (cardSessionState(state, binding) === "live") return null;
+  if (cardSessionState(state, binding) === "live") {
+    return mode === "new-session" ? NEW_SESSION_WHILE_LIVE : null;
+  }
 
   // All three gates run BEFORE the status write below. A refused launch
   // must leave the card exactly as it was: writing In Progress and then
@@ -578,9 +637,27 @@ async function launchCard(
   // attributed) resolves to exactly the workspace's agent -- so this
   // reads the same as `resolvedAgentFor` did for every card that
   // predates the fields.
-  const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
+  const { decision, agent: launchAgent } = agentForNewLaunch(
+    workspaceId,
+    card,
+    mode === "resume" || mode === "review"
+  );
   const fallbackHold = holdLaunch(workspaceId, decision);
   if (fallbackHold) return fallbackHold;
+  // Cursor's projectRoot is the launch cwd. A review runs where the work
+  // is (binding.launchCwd); every other mode uses the card's context.
+  const cursorRoot =
+    mode === "review"
+      ? (binding?.launchCwd ?? binding?.cwd ?? card.contextFolder)
+      : card.contextFolder;
+  const prepared = await prepareCursorAgentLaunch(
+    workspaceId,
+    cursorRoot,
+    launchAgent,
+    options.automatic || options.queued ? "unattended" : "interactive"
+  );
+  if (typeof prepared === "string") return prepared;
+  const agent: ResolvedAgent = prepared;
   if (agent.promptArgs === null && !usesPromptInjection(agent)) return noPromptReason(agent.label, agent.profileId);
 
   // Whether the conversation a resume would reopen exists at all. Asked
@@ -680,7 +757,11 @@ async function launchCard(
   // by the note refusal at the top of this function, and a closure over a
   // parameter loses that.
   const kind = card.kind;
+  // A review is the one mode a direct prompt does not change: the
+  // reviewer is asked about the work, not handed the card's body to do.
+  const verbatim = isDirectPrompt(card) && mode !== "review";
   const composeCardPrompt = (at: string): string => {
+    if (verbatim) return body;
     if (mode === "review") {
       return composeReviewLaunchPrompt(
         at,
@@ -732,17 +813,31 @@ async function launchCard(
           promptOpts(workspaceId, "action:run-plan")
         );
   };
+  // A new session on a card that already had one says so, as a re-launch
+  // does: the run prompt was written for a card nobody had started.
+  const composeLaunchPrompt = (at: string): string =>
+    mode === "new-session" && !verbatim ? composeCardPrompt(at) + relaunchNote(at) : composeCardPrompt(at);
   // The launching agent's own extra prompt lines, after whichever card
   // prompt the mode composed. Keyed by the agent that actually launches
   // (a fallback's, not the card's primary), because the lines are
   // instructions to THAT agent.
   const composePrompt = (at: string): string =>
-    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
+    verbatim
+      ? composeLaunchPrompt(at)
+      : withPromptExtras(composeLaunchPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
     if (!file.exists) return `Card file not found: ${card.id}`;
     body = stripFrontmatter(file.content).trim();
-    const content = { title: card.title, body, attachments: card.attachments ?? [] };
+    if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
+    const content = cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    });
     if (options.automatic) {
       // Unattended (auto-resume): refuse rather than ask. A modal raised
       // with nobody watching holds the recovery open behind whatever
@@ -955,6 +1050,9 @@ async function launchCard(
   return null;
 }
 
+const NEW_SESSION_WHILE_LIVE =
+  "This card's agent is still running — jump to it, or end it before launching a new session";
+
 const NO_MAIN_AGENT = "No workspace agent running — start it on the Home tab first";
 
 /// The workspace's running main agent, or null. Exported so callers can
@@ -1009,7 +1107,7 @@ export async function pasteToMainAgent(
     return queueFollowUp(mainSessionId, target, prompt);
   }
   try {
-    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
+    await backend.writeInput(mainSessionId, bracketedPaste(prompt));
   } catch (e) {
     return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -1058,32 +1156,45 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // whatever CLI the workspace chose -- a card's own `agent:`/`model:`
   // attribution never changes that.
   const agent = resolvedAgentFor(workspaceId);
+  const verbatim = isDirectPrompt(card);
+  if (verbatim && body === "") return EMPTY_DIRECT_PROMPT;
   const composeCardPrompt = (at: string): string =>
-    card.kind === "task"
-      ? composeTaskPrompt(
-          at,
-          card.title,
-          body,
-          resolved.paths,
-          null,
-          resolved.withheld,
-          agent.sessionIdDiscovery,
-          promptOpts(workspaceId, "action:run-task")
-        )
-      : composePlanPrompt(
-          at,
-          resolved.paths,
-          null,
-          resolved.withheld,
-          agent.sessionIdDiscovery,
-          promptOpts(workspaceId, "action:run-plan")
-        );
+    verbatim
+      ? body
+      : card.kind === "task"
+        ? composeTaskPrompt(
+            at,
+            card.title,
+            body,
+            resolved.paths,
+            null,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:run-task")
+          )
+        : composePlanPrompt(
+            at,
+            resolved.paths,
+            null,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:run-plan")
+          );
   const composePrompt = (at: string): string =>
-    withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
+    verbatim
+      ? composeCardPrompt(at)
+      : withPromptExtras(composeCardPrompt(at), promptExtrasFor(workspaceId, agent.profileId));
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
-    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    content: cardContentOf({
+      title: card.title,
+      body,
+      attachments: card.attachments,
+      agent: card.agent,
+      model: card.model,
+      effort: card.effort,
+    }),
     statuses: resolved.statuses,
     prompt: composePrompt(card.id),
   });
@@ -1109,23 +1220,28 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 
 // Re-launch from the remembered binding (same cwd/command), replacing
 // the stored session id -- the old modal's behavior, file-card edition.
+//
+// Only where there IS a remembered command. A binding made by linking a
+// session that was already running -- an agent claiming the card over
+// MCP -- recorded none, and replaying nothing spawned a bare login shell
+// and re-bound the card to it as if the agent had come back. That is
+// refused (NOTHING_TO_REPLAY) on the board's word before any gate, and
+// again on the command read back, before anything is spawned or bound.
 export async function relaunchCard(
   workspaceId: string,
   path: string,
   options: { queued?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
-  if (!cardSessionFor(get(kanbanState)[workspaceId], path)) return "No session remembered for this card";
+  const onBoard = cardSessionFor(get(kanbanState)[workspaceId], path);
+  if (!onBoard) return "No session remembered for this card";
+  // Before the launch wall: a re-launch that queued with nothing to
+  // replay would be refused at drain time, into a void.
+  if (!canReplay(onBoard)) return NOTHING_TO_REPLAY;
   const host = options.host ?? DESK_LAUNCH_HOST;
   // Re-launch replays the ORIGINAL prompt, which for a card being
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
   // least.
-  //
-  // And no first-Run review, for the opposite reason to develop's: this
-  // replays the command the binding STORED, so the bytes it sends are the
-  // ones a human already read before the first launch. Re-reading the
-  // card here would be the wrong question -- the file may have moved on,
-  // and none of it is going anywhere.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
   const remote = sshLaunchBlocker(workspaceId);
@@ -1145,12 +1261,16 @@ export async function relaunchCard(
     });
     if (!held.go) return held.error;
   }
-  // Through the card's OWN agent, not the workspace's, because the
-  // command being replayed is the one that card LAUNCHED with -- and
-  // `sessionIdArgs` below has to describe that binary. Resolving the
-  // workspace's agent here would hand codex's replay claude's
-  // `--session-id`, which is garbage in its argv.
-  const agent = agentForCard(workspaceId, cardViewForPath(get(gavinTrees)[workspaceId], path));
+  // Re-decide the agent the same way Run does. A prior limit-hit walk
+  // stored the FALLBACK's binary on the binding; replaying that verbatim
+  // kept spawning Gemini (or whoever) after the human removed them from
+  // the chain. The remembered prompt still rides; only the binary is
+  // rebound when launchDecision picks someone else.
+  const relaunched = cardViewForPath(get(gavinTrees)[workspaceId], path);
+  const { decision, agent: decided } = agentForNewLaunch(workspaceId, relaunched, false);
+  let agent = decided;
+  const fallbackHold = holdLaunch(workspaceId, decision);
+  if (fallbackHold) return fallbackHold;
   // The binding WHOLE, read by card: the board carries no launch command
   // (v43), and this is the one action that replays it. Read after the
   // gates, so a re-launch that queued reads it when it finally runs.
@@ -1161,6 +1281,46 @@ export async function relaunchCard(
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
   if (!binding) return "No session remembered for this card";
+  // The command itself, whatever the board said: a daemon too old to
+  // say anything reads as replayable there.
+  if (!binding.command?.trim()) return NOTHING_TO_REPLAY;
+  // Link/Claim can store an arbitrary string on the binding. withRelaunchNote
+  // and withFreshConversationId hand unrecognised commands back unchanged,
+  // so anything that is not one buildRunCommand wrote for this agent — and
+  // that cannot be rebound from a stale fallback binary — is refused here
+  // before createSession. Launch as new session composes a fresh, gated
+  // command from the card now.
+  const usesThisAgent = commandUsesLaunchAgent(binding.command, agent.launchCommand);
+  let rebound: { command: string; conversationId: string | null } | null = null;
+  if (usesThisAgent) {
+    if (!isGavinBuiltCommand(binding.command, agent)) return FOREIGN_RELAUNCH_COMMAND;
+  } else {
+    // Shell wrappers can carry a trailing quoted string that rebind would
+    // otherwise treat as a prompt — refuse those before rebuilding.
+    const head = binding.command.trimStart().split(/\s+/)[0] ?? "";
+    if (/^(?:.*\/)?(sh|bash|zsh|dash|cmd(?:\.exe)?|powershell|pwsh)$/i.test(head)) {
+      return FOREIGN_RELAUNCH_COMMAND;
+    }
+    if (/[;|&`$()<>]/.test(binding.command.split("'")[0] ?? "")) {
+      return FOREIGN_RELAUNCH_COMMAND;
+    }
+    rebound = rebindRunCommand(binding.command, agent);
+    if (!rebound) {
+      return (
+        "This card's remembered launch was on a different agent, and gavin could not " +
+        "rebuild it for the one that should run now — use Launch as new session."
+      );
+    }
+  }
+  const relaunchRoot = binding.launchCwd ?? binding.cwd;
+  const cursorReady = await prepareCursorAgentLaunch(
+    workspaceId,
+    relaunchRoot,
+    agent,
+    options.queued ? "unattended" : "interactive"
+  );
+  if (typeof cursorReady === "string") return cursorReady;
+  agent = cursorReady;
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is
@@ -1170,7 +1330,66 @@ export async function relaunchCard(
   // A fresh id is also what this button means. Re-launch is "run this
   // again from the beginning"; reopening the old conversation is
   // Resume, which is a different entry with different words on it.
-  const fresh = withFreshConversationId(binding.command, agent.sessionIdArgs);
+  //
+  // And the replayed prompt says the card was already under way, and
+  // where its status is recorded: the original was written for a card
+  // nobody had started. Not a direct prompt's, which carries no word of
+  // gavin's -- a note naming the card would be the first.
+  const verbatim = Boolean(relaunched && isDirectPrompt(relaunched));
+  const sourceCommand = rebound?.command ?? binding.command;
+  const replayed = verbatim ? sourceCommand : withRelaunchNote(sourceCommand, path);
+  // A direct prompt's replayed bytes are the stored, already-reviewed
+  // body and get no relaunch note. Every other card -- a plan whose
+  // stored prompt only names the file, a task whose framing points at
+  // it, anything withRelaunchNote extends -- tells the agent to read the
+  // card at its CURRENT path. That is the card's content reaching the
+  // agent, so the first-Run review applies the same way new-session mode
+  // gates the identical note: read the file, digest it, ask or refuse
+  // unattended, before createSession and before the binding is rewritten.
+  if (!verbatim) {
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    const content = cardContentOf({
+      title: relaunched?.title ?? "",
+      body: stripFrontmatter(file.content).trim(),
+      attachments: relaunched?.attachments,
+      agent: relaunched?.agent,
+      model: relaunched?.model,
+      effort: relaunched?.effort,
+    });
+    if (options.queued && !cardReviewed(workspaceId, path, content)) return UNREVIEWED_UNATTENDED;
+    const resolved = await resolveAttachmentsForRun(workspaceId, content.attachments);
+    if ("error" in resolved) return resolved.error;
+    if (
+      !(await ensureCardReviewed({
+        workspaceId,
+        path,
+        content,
+        statuses: resolved.statuses,
+        prompt: replayed ?? binding.command,
+      }))
+    ) {
+      return null;
+    }
+  }
+  // Rebind already minted a fresh conversation id; the same-agent path
+  // still needs one so a replayed `--session-id` is not reused.
+  let fresh: { command: string | null; conversationId: string | null } = rebound
+    ? { command: replayed, conversationId: rebound.conversationId }
+    : withFreshConversationId(replayed, agent.sessionIdArgs);
+  // A remembered Cursor command may still carry `--approve-mcps` from a
+  // launch before the disclosure changed. Strip it (and bare `--force`)
+  // when the AG-07 answer is withhold, so a re-launch cannot pre-approve
+  // servers the human has not kept.
+  if (agent.profileId === "cursor" && agent.cursorMcpApproval === "withhold" && fresh.command) {
+    fresh = {
+      ...fresh,
+      command: fresh.command
+        .split(/\s+/)
+        .filter((part) => part && part !== "--approve-mcps" && part !== "--force")
+        .join(" "),
+    };
+  }
   // Re-launch is "run this again from the beginning", so the baseline is
   // resolved again too -- in the same directory the remembered command
   // was launched in, which is where it is about to run again.
@@ -1181,8 +1400,8 @@ export async function relaunchCard(
       binding.cwd,
       fresh.command ?? undefined,
       workspaceRootPath(workspaceId) ?? undefined,
-      // The card's own agent, for the reason `agent` above is: it is
-      // what the remembered command is taken to have launched with.
+      // The agent launchDecision picked, which may be a fallback — and
+      // which may differ from the binary the binding stored.
       profileIdForLaunch(agent)
     );
   } catch (e) {

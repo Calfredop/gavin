@@ -1,6 +1,16 @@
+import { get, writable } from "svelte/store";
 import type { ForeignMcpServer, IntegrationResult } from "$lib/core/backend";
 import * as backend from "$lib/core/backend";
+import { askConfirm } from "$lib/core/dialog";
 import { sha256Hex } from "$lib/core/sha256";
+
+/// Per-project-root cache of the last foreign-server scan. Keyed by the
+/// launch cwd Cursor treats as `projectRoot` (cwd, not necessarily the
+/// workspace root — a rail worktree has its own `.cursor/mcp.json`).
+/// A missing key means "not scanned yet"; an empty array means scanned
+/// and nothing foreign. A store so "Launches as" and the commit blocker
+/// update when a scan lands.
+export const foreignMcpScanStore = writable<Record<string, ForeignMcpServer[]>>({});
 
 /// The AG-07 gate: whether a workspace's target MCP config file already
 /// names servers gavin did not add, and what the human said about them.
@@ -61,6 +71,81 @@ export function mcpForeignDecision(
   return choice.hash === foreignMcpServersHash(servers) ? choice.action : undefined;
 }
 
+/// Whether a Cursor launch may carry `--approve-mcps` (and `--force` on
+/// the headless line). Those flags skip Cursor's own "MCP Server Approval
+/// Required" dialog and persist an approval of every server in the
+/// project's `.cursor/mcp.json`, so they are consent for the foreign set
+/// the AG-07 disclosure asks about — granted only when that set is empty
+/// or the human answered Keep for exactly its hash. Isolate and an
+/// undecided set both withhold: Cursor's dialog (interactive) or a
+/// refusal (headless / unattended) is the real isolate.
+export function cursorMcpApproval(
+  servers: readonly ForeignMcpServer[],
+  choice: McpForeignChoice | null | undefined
+): "approve" | "withhold" {
+  if (servers.length === 0) return "approve";
+  return mcpForeignDecision(servers, choice) === "keep" ? "approve" : "withhold";
+}
+
+/// Why a hidden Cursor run is refused while the foreign-server disclosure
+/// is unresolved. Named once so the Git tab blocker, the commit launch
+/// path and any other headless gate stay on the same sentence.
+export const CURSOR_MCP_HEADLESS_BLOCKER =
+  "Answer the MCP server disclosure for this workspace before a hidden Cursor run";
+
+/// Why an unattended Cursor launch (queued intent, rail step, auto-resume)
+/// is refused while the disclosure is unresolved. A dialog in a tab
+/// nobody watches is a silent stall — the same posture
+/// `UNREVIEWED_UNATTENDED` takes for the review gate.
+export const CURSOR_MCP_UNATTENDED_BLOCKER =
+  "Answer the MCP server disclosure for this workspace before an unattended Cursor run";
+
+/// One-line reason a visible Cursor launch is withholding `--approve-mcps`,
+/// so the human knows why Cursor's own approval dialog will appear.
+export const CURSOR_MCP_DIALOG_NOTICE =
+  "This workspace has MCP servers gavin did not add that you have not kept — Cursor will ask before loading them.";
+
+/// The cached foreign set for `rootPath`, or `undefined` when nothing has
+/// been scanned there yet.
+export function cachedForeignMcpServers(rootPath: string): ForeignMcpServer[] | undefined {
+  const entry = get(foreignMcpScanStore)[rootPath];
+  return entry;
+}
+
+/// Refresh the foreign-server scan for the project root a Cursor launch
+/// will use as cwd. Returns the set and stores it for sync resolve.
+export async function refreshForeignMcpServers(
+  rootPath: string,
+  profileId?: string
+): Promise<ForeignMcpServer[]> {
+  const servers = await backend.scanForeignMcpServers(rootPath, profileId);
+  foreignMcpScanStore.update((m) => ({ ...m, [rootPath]: servers }));
+  return servers;
+}
+
+/// Seed the cache from an Integration result that already scanned, so a
+/// Keep/Isolate answer and the next launch see the same set without a
+/// second round trip.
+export function rememberForeignMcpServers(
+  rootPath: string,
+  servers: readonly ForeignMcpServer[]
+): void {
+  foreignMcpScanStore.update((m) => ({ ...m, [rootPath]: [...servers] }));
+}
+
+/// Input for `resolveAgentConfig`'s Cursor composition, or `undefined`
+/// when the root has not been scanned yet (withhold by default).
+export function cursorMcpInputFor(
+  rootPath: string | null | undefined,
+  choice: McpForeignChoice | null | undefined,
+  scans: Record<string, ForeignMcpServer[]> = get(foreignMcpScanStore)
+): { servers: readonly ForeignMcpServer[]; choice: McpForeignChoice | null | undefined } | undefined {
+  if (!rootPath) return undefined;
+  const servers = scans[rootPath];
+  if (servers === undefined) return undefined;
+  return { servers, choice };
+}
+
 /// What the human is told before answering, naming the count so a
 /// one-line banner reads correctly for one server or several.
 export function mcpForeignNotice(servers: readonly ForeignMcpServer[]): string {
@@ -98,6 +183,38 @@ export function integrationNote(
   return `${clauses.join(". ")} — re-run any time to update.`;
 }
 
+/// Asks whether to trust a `checkoutMarkOffer`, and re-runs Integration
+/// with the mark when the human approves. Declining leaves the absolute
+/// binary already on disk and strips the offer from the result.
+export async function resolveCheckoutMarkOffer(
+  result: IntegrationResult,
+  rootPath: string,
+  instructionsFile: string,
+  mcpForeignChoice?: "keep" | "isolate",
+  profileId?: string
+): Promise<IntegrationResult> {
+  if (!result.checkoutMarkOffer) return result;
+  const ok = await askConfirm({
+    title: `Trust ${result.checkoutMarkOffer.launcher}?`,
+    lines: [
+      "This root ships a gavin-mcp launcher. Approving lets this repository choose what gavin's MCP entry runs.",
+      "Declining keeps the absolute gavin-mcp beside the app.",
+    ],
+    confirmLabel: "Trust launcher",
+  });
+  if (!ok) {
+    const { checkoutMarkOffer: _, ...rest } = result;
+    return rest;
+  }
+  return backend.setupAgentIntegration(
+    rootPath,
+    instructionsFile,
+    mcpForeignChoice,
+    profileId,
+    true
+  );
+}
+
 /// Runs `setupAgentIntegration`, resolving the gate from `storedChoice`
 /// when it already answers the set the host reports back. A first call
 /// with no choice is unavoidable either way -- reading the target file
@@ -107,6 +224,11 @@ export function integrationNote(
 /// recorded, or the set changed), the MCP write stays held back and the
 /// result's `mcpForeign` is what the caller shows a chooser for; call
 /// `setupAgentIntegration` again with the human's pick once they answer.
+///
+/// When the host offers a checkout mark (`checkoutMarkOffer`), asks with
+/// `askConfirm` whether to trust the repository's launcher. Approving
+/// re-runs with the mark recorded so gavin's entry names that launcher;
+/// declining leaves the absolute binary already written.
 export async function runIntegration(
   rootPath: string,
   instructionsFile: string,
@@ -114,9 +236,11 @@ export async function runIntegration(
   profileId?: string
 ): Promise<IntegrationResult> {
   const first = await backend.setupAgentIntegration(rootPath, instructionsFile, undefined, profileId);
-  if (!first.mcpForeign) return first;
+  if (!first.mcpForeign) {
+    return resolveCheckoutMarkOffer(first, rootPath, instructionsFile, undefined, profileId);
+  }
   const decided = mcpForeignDecision(first.mcpForeign.servers, storedChoice);
-  return decided
-    ? backend.setupAgentIntegration(rootPath, instructionsFile, decided, profileId)
-    : first;
+  if (!decided) return first;
+  const after = await backend.setupAgentIntegration(rootPath, instructionsFile, decided, profileId);
+  return resolveCheckoutMarkOffer(after, rootPath, instructionsFile, decided, profileId);
 }

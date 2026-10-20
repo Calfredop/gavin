@@ -1,7 +1,9 @@
 mod bridge;
 mod browser;
+mod card_rank;
 mod changes_only;
 mod connect;
+mod desk_relay;
 mod direct;
 mod gavin;
 mod git_status;
@@ -13,10 +15,12 @@ mod kimi_trust;
 mod memory_index;
 mod orchestration;
 mod osc;
+mod outside_contexts;
 mod ownership;
 mod pairing;
 mod presence;
 mod proc;
+mod pty_borrow;
 mod program;
 mod pty;
 mod notify_crypto;
@@ -27,6 +31,8 @@ mod remote;
 mod screen;
 mod server;
 mod shell;
+mod shell_writes;
+mod singleton;
 mod status;
 #[cfg(test)]
 mod testing;
@@ -104,6 +110,11 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn serve() -> anyhow::Result<()> {
+    // Before any SQLite open, PTY recover, or socket bind: Finder-launched
+    // processes inherit macOS's soft RLIMIT_NOFILE of 256, and recovery
+    // alone can need more than that. See `protocol::nofile`.
+    protocol::nofile::raise_soft_nofile();
+
     let dir = protocol::app_support_dir()?;
 
     std::fs::create_dir_all(&dir)?;
@@ -116,6 +127,13 @@ fn serve() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
+
+    // First, before any store is opened: a second daemon of this build
+    // must leave without bumping the registry generation, recovering the
+    // first one's sessions, sweeping its browsers, resuming Headroom or
+    // minting a token over the one the app holds (`singleton.rs`). The
+    // error is the one line the log gets, and the exit is non-zero.
+    let _singleton = singleton::acquire(&protocol::daemon_lock::daemon_lock_path()?)?;
 
     // `Registry::open` secures its own file; kanban and orchestration
     // don't carry that logic themselves, so it's asserted here instead --
@@ -166,6 +184,10 @@ fn serve() -> anyhow::Result<()> {
     // only while the store says remote access AND direct connection are
     // on, and otherwise sleeps.
     direct::spawn(&manager);
+    // This Mac's own Relay (v73), on the same terms again: it starts
+    // `gavin-relay` only while the store says remote access AND "Run a
+    // Relay on this Mac" are on, and only in a release build's daemon.
+    desk_relay::spawn(&manager);
     // Hands a pocketed phone's sessions back to the desk once its grace
     // runs out (v68, `ownership.rs`).
     server::spawn_owner_lapse(&manager);

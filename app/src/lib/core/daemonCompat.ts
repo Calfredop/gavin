@@ -636,6 +636,22 @@ export const FEATURE_MIN_VERSION = {
   // `pairingUnavailable` reads before it lets a listener stand in for the
   // Relay.
   directAccess: 69,
+  // This Mac's own Relay (v73): `SetDeskRelay` and `GetDeskRelayState`
+  // are new request TYPES an older daemon answers `Unsupported`, and
+  // `Devices.deskRelayEnabled` is a widened reply it never sends. That
+  // would read as "off" for a daemon that has no option to be off.
+  //
+  // Consumer: `remoteAccess.ts`'s `deskRelayBlocked`, which the Settings
+  // section reads before it draws or sends "Run a Relay on this Mac" and
+  // before it asks where that Relay stands.
+  deskRelay: 73,
+  // Refreshing the desk's token (v73): `RefreshRelayAdmission` is a new
+  // request TYPE, and `Devices.relayAdmissionSetAt`/`relayAdmissionByDesk`
+  // are widened replies an older daemon never sends.
+  //
+  // Consumer: `remoteAccess.ts`'s `admissionRefreshBlocked`, which the
+  // Settings section reads before it offers Refresh token.
+  admissionRefresh: 73,
   // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
   // and the `DeviceRefusalChanged` push are v62. An older daemon sends
   // neither, and a row with no refusal reads as "nothing was refused" --
@@ -696,6 +712,30 @@ export const FEATURE_MIN_VERSION = {
   // Companion's terminal reads in its Hand over sheet, the one place a
   // Device holding a session looks at what holding it means.
   deskInputNotice: 70,
+  // What each shell call of an agent wrote (v72,
+  // `feat-touched-files-shell-hook.md`): `RecordShellWrites`, sent by the
+  // CLI hook, and `ShellWrites`, which the Review tab reads. Two new TYPES,
+  // so `min_version_for` already stops both against an older daemon --
+  // which recorded nothing to read.
+  //
+  // Consumer: `transcriptNarrow.ts`'s `shellWritesFor` (Review and the
+  // session Changes view), which does not ask an older daemon at all and
+  // reads the run's transcript alone, exactly as before -- a refusal
+  // there is not a fault to show, it is a daemon that kept no records.
+  shellWrites: 72,
+  // The direct-prompt task (v75, `feat-direct-prompt-task.md`): a task's
+  // `direct: true` line, sending its body as the whole prompt. It widens
+  // EXISTING requests and replies -- `PlanFileInfo.direct`,
+  // `CreatePlan.direct`, a `SetPlanFrontmatterField` key -- so
+  // `min_version_for` is blind to it. A v74 daemon refuses the key loudly
+  // but drops `CreatePlan`'s flag silently, and never parses the line: a
+  // card filed as direct would come back an ordinary task and run wrapped
+  // in gavin's prompt with nothing on screen to say so.
+  //
+  // Consumers: the composer's Direct prompt box (CardComposeModal), which
+  // greys out and never sends the flag, and the card detail modal's Direct
+  // prompt row.
+  directPrompt: 75,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

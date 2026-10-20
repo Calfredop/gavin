@@ -3,6 +3,8 @@ import { fileExtension } from "$lib/files/fileTypes";
 // no-runtime-CodeMirror-imports rule below.
 import type { Extension } from "@codemirror/state";
 import { applyFormat, chordToKeyName, FORMAT_GROUPS, type FormatAction } from "$lib/files/markdownFormatting";
+import { canFormatDocument, formatDocument, type FormatDocumentResult } from "$lib/files/documentFormat";
+import { snippetsForLanguage } from "$lib/files/editorSnippets";
 
 // NO top-level runtime @codemirror imports in this module. Every one of
 // them is dynamic, inside a function, so codeMirror.test.ts can import
@@ -34,6 +36,45 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 
 export function languageIdForPath(path: string): string | null {
   return LANGUAGE_BY_EXTENSION[fileExtension(path)] ?? null;
+}
+
+/// CSS rules for the completion tooltip, keyed the way EditorView.theme
+/// wants them. Shared by light and dark so the list always reads app
+/// tokens rather than CodeMirror's defaults. Exported for the unit test
+/// that greps the token names — the seam that can cover "theme the
+/// completion UI" without mounting a DOM editor.
+export function completionThemeStyles(): Record<string, Record<string, string>> {
+  return {
+    ".cm-tooltip": {
+      backgroundColor: "var(--surface-raised)",
+      color: "var(--text)",
+      border: "1px solid var(--border)",
+      borderRadius: "4px",
+    },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul": {
+      fontFamily: "monospace",
+      fontSize: "0.85em",
+    },
+    ".cm-tooltip-autocomplete ul li": {
+      padding: "2px 8px",
+    },
+    ".cm-tooltip-autocomplete ul li[aria-selected]": {
+      backgroundColor: "var(--surface-selected)",
+      color: "var(--text)",
+    },
+    ".cm-completionLabel": {
+      color: "var(--text)",
+    },
+    ".cm-completionDetail": {
+      color: "var(--text-muted)",
+      fontStyle: "normal",
+    },
+    ".cm-completionMatchedText": {
+      color: "var(--accent-text)",
+      textDecoration: "none",
+      fontWeight: "600",
+    },
+  };
 }
 
 // Lazy: opening a markdown file must never load the Rust grammar.
@@ -76,6 +117,10 @@ export interface EditorHandle {
   /// Applies one of the markdown bar's actions at the current selection
   /// and returns focus to the editor. A no-op while read-only.
   format(action: FormatAction): void;
+  /// Runs the cheap document formatter for this path (JSON today). A
+  /// no-op while read-only; returns the same shape as formatDocument so
+  /// the host can surface a reason when the buffer is invalid.
+  formatDocument(): FormatDocumentResult;
   measure(): void;
   destroy(): void;
 }
@@ -94,16 +139,25 @@ export interface CreateEditorOptions {
 }
 
 export async function createEditor(options: CreateEditorOptions): Promise<EditorHandle> {
-  const [stateMod, view, commands, themeOneDark, languageMod, language] = await Promise.all([
+  const [stateMod, view, commands, themeOneDark, languageMod, autocomplete, language] = await Promise.all([
     import("@codemirror/state"),
     import("@codemirror/view"),
     import("@codemirror/commands"),
     import("@codemirror/theme-one-dark"),
     import("@codemirror/language"),
+    import("@codemirror/autocomplete"),
     languageExtension(options.path),
   ]);
   const { EditorState, Compartment } = stateMod;
   const { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } = view;
+  const {
+    autocompletion,
+    closeBrackets,
+    closeBracketsKeymap,
+    completionKeymap,
+    snippetCompletion,
+    completeFromList,
+  } = autocomplete;
 
   const readOnlyCompartment = new Compartment();
   const themeCompartment = new Compartment();
@@ -138,13 +192,68 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
           }))
       : [];
 
+  const runFormatDocument = (view: InstanceType<typeof EditorView>): FormatDocumentResult => {
+    if (view.state.readOnly) {
+      return { ok: false, reason: "Editor is read-only." };
+    }
+    const result = formatDocument(options.path, view.state.doc.toString());
+    if (!result.ok) return result;
+    if (result.text === view.state.doc.toString()) return result;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: result.text },
+      scrollIntoView: true,
+      userEvent: "input.formatDocument",
+    });
+    return result;
+  };
+
+  // Mod-Shift-f beside Mod-s: a chord every code editor shares for
+  // "format document", and only bound when this path has a formatter so
+  // a .ts file keeps the key free.
+  const formatDocumentKeymap = canFormatDocument(options.path)
+    ? [
+        {
+          key: chordToKeyName({ key: "f", shift: true }),
+          preventDefault: true,
+          run: (view: InstanceType<typeof EditorView>) => {
+            const result = runFormatDocument(view);
+            return result.ok;
+          },
+        },
+      ]
+    : [];
+
+  // Curated snippets ride beside the language pack's own completions via
+  // languageData — override would replace those packs, which is the
+  // opposite of what the plan asks for.
+  const curated = snippetsForLanguage(languageIdForPath(options.path));
+  const snippetExtensions: Extension[] =
+    curated.length === 0
+      ? []
+      : [
+          EditorState.languageData.of(() => [
+            {
+              autocomplete: completeFromList(
+                curated.map((s) =>
+                  snippetCompletion(s.template, {
+                    label: s.label,
+                    detail: s.detail,
+                    type: "keyword",
+                  })
+                )
+              ),
+            },
+          ]),
+        ];
+
   /// oneDark bundles its own HighlightStyle, and it is the ONLY source of
   /// syntax colour here -- there is no defaultHighlightStyle in the
   /// extension list. So the light arm has to supply one, or light mode
-  /// would render every token in the same flat colour.
+  /// would render every token in the same flat colour. Completion chrome
+  /// is appended in both arms so the tooltip always uses app tokens.
   const themeFor = (theme: "light" | "dark") =>
     theme === "dark"
-      ? themeOneDark.oneDark
+      ? [themeOneDark.oneDark, EditorView.theme(completionThemeStyles(), { dark: true })]
       : [
           languageMod.syntaxHighlighting(languageMod.defaultHighlightStyle),
           EditorView.theme(
@@ -161,6 +270,7 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
               "&.cm-focused .cm-selectionBackground, ::selection": {
                 backgroundColor: "var(--surface-selected)",
               },
+              ...completionThemeStyles(),
             },
             { dark: false }
           ),
@@ -173,8 +283,20 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
       highlightActiveLine(),
       drawSelection(),
       commands.history(),
+      // Language-aware indent on Enter / reindent; close-brackets so typing
+      // `(` inserts `)` the way a normal editor does.
+      languageMod.indentOnInput(),
+      languageMod.bracketMatching(),
+      closeBrackets(),
+      // As-you-type plus Ctrl/Cmd-Space (completionKeymap). Language packs
+      // already register their own sources; snippets join via languageData.
+      autocompletion({ activateOnTyping: true }),
+      ...snippetExtensions,
       // Mod-s and the format chords first so they win over any default
       // binding (defaultKeymap has Mod-i as "select parent syntax").
+      // closeBrackets / completion / indentWithTab ahead of defaultKeymap
+      // so Tab indents (or advances a snippet field) instead of inserting
+      // a literal tab character into a binding that never asked for one.
       keymap.of([
         {
           key: "Mod-s",
@@ -185,6 +307,10 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
           },
         },
         ...formatKeymap,
+        ...formatDocumentKeymap,
+        ...closeBracketsKeymap,
+        ...completionKeymap,
+        commands.indentWithTab,
         ...commands.defaultKeymap,
         ...commands.historyKeymap,
       ]),
@@ -240,6 +366,11 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
       // A bar click took focus even with mousedown prevented on some
       // WebKit paths; typing must continue in the editor either way.
       editorView.focus();
+    },
+    formatDocument() {
+      const result = runFormatDocument(editorView);
+      editorView.focus();
+      return result;
     },
     measure() {
       editorView.requestMeasure();

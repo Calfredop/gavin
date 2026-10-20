@@ -121,6 +121,18 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // addresses and a port, which the QR prints anyway.
   get_direct_state: ["ordinary"],
   set_direct_access: ["ordinary"],
+  // This Mac's own Relay (v73), by the same reasoning. Turning it on
+  // starts `gavin-relay`, a process that admits only the token the desk
+  // minted, and a Device it carries still needs `confirm_pairing`. Gating
+  // it would gate turning the Relay off. The state read carries a port
+  // and a URL, which the QR prints anyway, and never the token.
+  get_desk_relay_state: ["ordinary"],
+  set_desk_relay: ["ordinary"],
+  // Rotating the desk's token removes no work and ends no process: the
+  // Relay reads its tokens again in place, connected Devices are handed
+  // the new one, and the old one is accepted for a day. The new token is
+  // in no answer.
+  refresh_relay_admission: ["ordinary"],
   // Where the daemon posts notifications, and what it posts (v49/v67).
   // Neither removes work or ends a process. A gateway of a script's
   // choosing is handed sealed payloads it holds no key for, and the send
@@ -166,12 +178,15 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   ],
   revoke_all_devices: [
     "destructive",
-    "revoke_device for every row, plus a rotation of the daemon's static key -- the half that is irreversible in the strong sense, because the old key is gone and every phone pinned it. Deliberately not gated for revoke_device's reason, and more so: this is §3's one-button answer to a lost phone, and a confirmation the host has to mint is a hurdle in front of the one control whose whole job is to be reachable in a hurry. The app confirms it on every route (revokeAllCopy).",
+    "revoke_device for every row, plus a rotation of the daemon's static key -- the half that cuts every phone off while the live store holds the new key, because each one pinned the old. Deliberately not gated for revoke_device's reason, and more so: this is §3's one-button answer to a lost phone, and a confirmation the host has to mint is a hurdle in front of the one control whose whole job is to be reachable in a hurry. The app confirms it on every route (revokeAllCopy).",
   ],
 
   // ---- ordinary ----
   write_input: ["ordinary"],
   resize_session: ["ordinary"],
+  // The desk's size back from a Device that has the session open (v74).
+  // A Device's call is answered by the daemon as that Device.
+  return_pty_size: ["ordinary"],
   create_session: ["ordinary"],
   adopt_session: ["ordinary"],
   snapshot_session: ["ordinary"],
@@ -248,6 +263,9 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_board: ["ordinary"],
   card_session: ["ordinary"],
   card_runs: ["ordinary"],
+  // A read: what the shell-write hook recorded of one run's shell calls,
+  // for the Review tab. Writes nothing.
+  shell_writes: ["ordinary"],
   set_board: ["ordinary"],
   get_orchestration: ["ordinary"],
   set_orchestration: ["ordinary"],
@@ -336,6 +354,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_playwright_pane_open: ["ordinary"],
   set_playwright_pane_open: ["ordinary"],
   setup_agent_integration: ["ordinary"],
+  scan_foreign_mcp_servers: ["ordinary"],
   agent_profiles: ["ordinary"],
   // A read: which agent CLIs resolve on PATH. It spawns none of them.
   detect_agent_binaries: ["ordinary"],
@@ -347,6 +366,10 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // the same resolver card_run_tokens reads through. It writes nothing and
   // reaches nothing but files the CLI wrote on this machine.
   conversation_log: ["ordinary"],
+  // A read: which of a checkout's changed files one run's transcript
+  // says its agent touched, for the Review tab. Same files
+  // card_run_tokens reads; writes nothing.
+  card_run_touched_files: ["ordinary"],
   get_agent_defaults: ["ordinary"],
   set_agent_defaults: ["ordinary"],
   // The memory wall. A read and a preference write, the same shape as

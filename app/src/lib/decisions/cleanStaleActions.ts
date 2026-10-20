@@ -29,7 +29,17 @@ import {
   resolvedAgentFor,
   setSessionName,
 } from "$lib/core/layoutState";
-import { revealSession, sshLaunchBlocker, type CardLaunchHost } from "$lib/cards/cardRunActions";
+import { gavinTrees } from "$lib/core/gavinState";
+import { cardViewForPath } from "$lib/core/planBoard";
+import type { CardContent } from "$lib/cards/cardReview";
+import { stripFrontmatter } from "$lib/cards/planChecklist";
+import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
+import {
+  revealSession,
+  resolveAttachmentsForRun,
+  sshLaunchBlocker,
+  type CardLaunchHost,
+} from "$lib/cards/cardRunActions";
 import { buildRunCommand, noPromptReason, provisionalSessionName, withPromptExtras } from "$lib/cards/cardRun";
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { holdOrQueue, type CleanIntent } from "$lib/agents/launchQueue";
@@ -40,6 +50,24 @@ import {
   type CleanEntry,
   type CleanKind,
 } from "$lib/decisions/cleanStale";
+
+/// Title, stripped body and attachments as developCard reads them for
+/// the first-run digest — the bytes a Clean stale agent is told to open.
+/// Null when the tree has no card at that path or the file is gone.
+export async function cardContentForLaunch(
+  workspaceId: string,
+  cardPath: string
+): Promise<CardContent | null> {
+  const card = cardViewForPath(get(gavinTrees)[workspaceId], cardPath);
+  if (!card) return null;
+  const file = await backend.readFileForViewer(cardPath);
+  if (!file.exists) return null;
+  return {
+    title: card.title,
+    body: stripFrontmatter(file.content).trim(),
+    attachments: card.attachments ?? [],
+  };
+}
 
 /// Where a clean meets the surface that asked for it: a card launch's
 /// wall and placing, without the jump to a card's session -- there is no
@@ -66,16 +94,51 @@ const DESK_CLEAN_HOST: CleanLaunchHost = {
 /// The confirm lives here rather than in either tab for answerHumanItem's
 /// reason: it belongs to the ACTION, and a second surface that forgot to
 /// ask is exactly what it is there to prevent.
+///
+/// First-run review runs before the confirm and before holdOrQueue: no
+/// card content the human has not reviewed reaches the composed prompt
+/// (or the queued CleanIntent snapshot). Each listed card raises the same
+/// sheet develop raises when its digest is missing; a declined card is
+/// withheld and named in the confirm so a mixed list can still clean the
+/// ones the human accepted.
 export async function requestCleanStale(
   workspaceId: string,
   kind: CleanKind,
   entries: readonly CleanEntry[],
   host: CleanLaunchHost = DESK_CLEAN_HOST
 ): Promise<string | null> {
-  if (!(await askConfirm(cleanConfirm(kind, entries)))) return null;
+  const reviewed: CleanEntry[] = [];
+  const withheld: string[] = [];
+  for (const entry of entries) {
+    const content = await cardContentForLaunch(workspaceId, entry.cardPath);
+    if (!content) {
+      withheld.push(entry.title);
+      continue;
+    }
+    const resolved = await resolveAttachmentsForRun(workspaceId, content.attachments);
+    if ("error" in resolved) return resolved.error;
+    if (
+      await ensureCardReviewed({
+        workspaceId,
+        path: entry.cardPath,
+        content,
+        statuses: resolved.statuses,
+        prompt: content.body,
+        blockLabel: "The card body the agent will read:",
+      })
+    ) {
+      reviewed.push(entry);
+    } else {
+      withheld.push(entry.title);
+    }
+  }
+  if (reviewed.length === 0) {
+    return withheld.length > 0 ? `Review these cards first: ${withheld.join(", ")}` : null;
+  }
+  if (!(await askConfirm(cleanConfirm(kind, reviewed, withheld)))) return null;
   const prompt = composeCleanPrompt(
     kind,
-    entries,
+    reviewed,
     mustPromptBody("action:clean-stale", workspaceId),
     mustPromptBody("action:name-tab-first", workspaceId)
   );

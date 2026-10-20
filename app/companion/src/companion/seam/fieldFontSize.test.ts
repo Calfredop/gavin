@@ -51,7 +51,9 @@ function fieldsIn(sources: Record<string, string>): { tag: string; type: string 
 }
 
 const SHIPPED = { ...companionSources(), ...allSources() };
-const floorRule = rulesOf(phoneCss).find((rule) => rule.selectors.includes("textarea"));
+const floorRule = rulesOf(phoneCss).find(
+  (rule) => rule.selectors.includes("textarea") && rule.declarations.has("font-size")
+);
 
 describe("the floor under every field", () => {
   it("is a rule of the page's stylesheet", () => {

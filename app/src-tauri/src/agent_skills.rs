@@ -148,7 +148,18 @@ fn route(profile_id: &str) -> Route {
     match profile_id {
         "claude-code" => Route::Plugin,
         "codex" => Route::SkillsCli("codex"),
-        "gemini" => Route::SkillsCli("gemini-cli"),
+        // Prefer antigravity-cli whenever Antigravity is on PATH (or
+        // neither Google CLI is — point installs at the successor).
+        // Legacy `gemini-cli` only when that binary is the sole hit.
+        "gemini" => {
+            let agy = crate::program::on_path("agy") || crate::program::on_path("antigravity");
+            let gemini = crate::program::on_path("gemini");
+            if gemini && !agy {
+                Route::SkillsCli("gemini-cli")
+            } else {
+                Route::SkillsCli("antigravity-cli")
+            }
+        }
         "cursor" => Route::SkillsCli("cursor"),
         "opencode" => Route::SkillsCli("opencode"),
         _ => Route::Manual,
@@ -162,9 +173,50 @@ fn skills_cli_args(agent: &str) -> [&str; 9] {
     ["-y", "skills@latest", "add", SKILLS_SOURCE, "--skill", "*", "-a", agent, "-y"]
 }
 
+/// What the skills CLI route will spawn: program, argv, and cwd.
+///
+/// The skills CLI installs into its process cwd, so that stays the
+/// workspace root. npm's project config and local package tree must not
+/// come from that root — a cloned repo's `.npmrc` can set `script-shell`
+/// or `registry`. `--prefix` names a directory outside it; `@npmcli/config`
+/// then takes its project layer from there, while libnpmexec still runs
+/// the bin in the process cwd.
+#[derive(Debug, PartialEq, Eq)]
+struct SkillsCliSpawn {
+    program: &'static str,
+    args: Vec<String>,
+    cwd: PathBuf,
+}
+
+fn skills_cli_spawn(agent: &str, root: &Path, neutral: &Path) -> SkillsCliSpawn {
+    // `-y` then `--prefix` before the package spec: npm's own flags, so
+    // `@npmcli/config` sets `localPrefix` from the CLI and never walks
+    // up from cwd into the workspace's `.npmrc` / `node_modules`.
+    // libnpmexec still runs the bin in the process cwd (`root`).
+    let mut args = vec![
+        "-y".to_string(),
+        "--prefix".to_string(),
+        neutral.to_string_lossy().into_owned(),
+    ];
+    args.extend(
+        skills_cli_args(agent)
+            .iter()
+            .skip(1) // the leading `-y` is already above
+            .map(|s| (*s).to_string()),
+    );
+    SkillsCliSpawn {
+        program: "npx",
+        args,
+        cwd: root.to_path_buf(),
+    }
+}
+
 /// The command each profile installs with, as the row shows it. For the
-/// two runnable routes it is exactly what gavin runs; for a custom agent
-/// it is the interactive form that asks which agent to install for.
+/// plugin route it is exactly what gavin runs; for the skills CLI the
+/// row omits the internal `--prefix <neutral>` (home path) that keeps
+/// npm config out of the workspace — same shape as the Playwright
+/// install row, which also does not show its neutral cwd. For a custom
+/// agent it is the interactive form that asks which agent to install for.
 fn command_for(profile_id: &str) -> String {
     match route(profile_id) {
         Route::Plugin => format!("claude plugin install {PLUGIN_PACKAGE} --scope project -y"),
@@ -663,7 +715,9 @@ fn install(
         }
         Route::SkillsCli(agent) => {
             let _installing = SKILLS_CLI.lock().unwrap_or_else(PoisonError::into_inner);
-            run("npx", &skills_cli_args(agent), &root, INSTALL_TIMEOUT)?
+            let spawn = skills_cli_spawn(agent, &root, &crate::home::neutral_cwd());
+            let args: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
+            run(spawn.program, &args, &spawn.cwd, INSTALL_TIMEOUT)?
         }
         Route::Manual => {
             let label = crate::agent_setup::profile_by_id(&profile_id).label;
@@ -863,21 +917,115 @@ mod tests {
     fn every_known_profile_has_an_install_route_and_custom_has_none() {
         assert_eq!(route("claude-code"), Route::Plugin);
         assert_eq!(route("codex"), Route::SkillsCli("codex"));
-        assert_eq!(route("gemini"), Route::SkillsCli("gemini-cli"));
+        // PATH-dependent: Antigravity when agy/antigravity is present (or
+        // neither Google CLI is); gemini-cli only on a gemini-only box.
+        let agy = crate::program::on_path("agy") || crate::program::on_path("antigravity");
+        let gemini = crate::program::on_path("gemini");
+        let expected = if gemini && !agy {
+            Route::SkillsCli("gemini-cli")
+        } else {
+            Route::SkillsCli("antigravity-cli")
+        };
+        assert_eq!(route("gemini"), expected);
         assert_eq!(route("cursor"), Route::SkillsCli("cursor"));
         assert_eq!(route("opencode"), Route::SkillsCli("opencode"));
         assert_eq!(route("custom"), Route::Manual);
         assert_eq!(route("custom-agent"), Route::Manual);
     }
 
-    /// What the row shows is what gavin runs, word for word.
+    /// What the row shows is the install the human would type; the
+    /// skills CLI route adds `--prefix` at spawn time (see
+    /// `skills_cli_spawn`), not in this string.
     #[test]
     fn the_shown_command_is_the_run_command() {
-        let quoted: Vec<String> = skills_cli_args("gemini-cli")
+        let agent = match route("gemini") {
+            Route::SkillsCli(a) => a,
+            _ => panic!("gemini installs via the skills CLI"),
+        };
+        let quoted: Vec<String> = skills_cli_args(agent)
             .iter().map(|a| if *a == "*" { "'*'".to_string() } else { a.to_string() }).collect();
         assert_eq!(command_for("gemini"), format!("npx {}", quoted.join(" ")));
         assert_eq!(command_for("claude-code"), "claude plugin install mattpocock-skills --scope project -y");
         assert_eq!(command_for("custom"), "npx skills@latest add mattpocock/skills");
+    }
+
+    /// npx must not take its project `.npmrc` / `node_modules` from the
+    /// workspace. The skills CLI still needs cwd = root (it installs there);
+    /// `--prefix` outside the root is what keeps npm config away from it.
+    #[test]
+    fn skills_cli_npx_does_not_take_npm_config_from_the_workspace() {
+        let root = PathBuf::from("/tmp/evil-clone");
+        let neutral = PathBuf::from("/home/ada");
+        let spawn = skills_cli_spawn("codex", &root, &neutral);
+        assert_eq!(spawn.program, "npx");
+        assert_eq!(spawn.cwd, root);
+        let prefix_at = spawn
+            .args
+            .iter()
+            .position(|a| a == "--prefix")
+            .expect("skills CLI npx must pass --prefix so project config is not the workspace");
+        let prefix = Path::new(&spawn.args[prefix_at + 1]);
+        assert_eq!(prefix, neutral.as_path());
+        assert!(
+            !prefix.starts_with(&root),
+            "prefix {:?} must not be under the workspace {:?}",
+            prefix,
+            root
+        );
+        // The package spec still follows npm's own flags.
+        let spec_at = spawn.args.iter().position(|a| a == "skills@latest").unwrap();
+        assert!(spec_at > prefix_at);
+    }
+
+    /// Offline proof against npm 11's project-layer `script-shell`: the
+    /// skills route's exact argv and cwd must not run a workspace-shipped
+    /// shell. Skipped where `npx` is absent.
+    #[test]
+    fn skills_cli_argv_ignores_a_workspace_script_shell() {
+        if crate::program::resolve("npx").is_none() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let neutral = tempfile::tempdir().unwrap();
+        let marker = root.path().join("marker");
+        let evil = root.path().join("evil.sh");
+        std::fs::write(root.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(
+            root.path().join(".npmrc"),
+            format!("script-shell={}\n", evil.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            &evil,
+            format!("#!/bin/sh\necho fired > '{}'\nexec /bin/sh \"$@\"\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&evil).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&evil, perms).unwrap();
+        }
+        let spawn = skills_cli_spawn("codex", root.path(), neutral.path());
+        // A short, offline npx: resolve the package argv the install uses,
+        // but ask skills only for --help so nothing is installed. Same
+        // npm config path as the real install.
+        let mut args: Vec<String> = spawn
+            .args
+            .iter()
+            .take_while(|a| a.as_str() != "skills@latest")
+            .cloned()
+            .collect();
+        args.push("skills@latest".into());
+        args.push("--help".into());
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = run(spawn.program, &arg_refs, &spawn.cwd, Duration::from_secs(60));
+        assert!(
+            !marker.is_file(),
+            "workspace script-shell wrote {} — npm config came from the root",
+            marker.display()
+        );
     }
 
     #[test]

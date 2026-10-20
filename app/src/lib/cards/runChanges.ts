@@ -149,10 +149,16 @@ export interface DiscardPrompt {
 /// warning: that warning could never name what goes with the reset, and
 /// these lines can. Nothing about the reset changes with them -- the
 /// untracked list, the label and what the backend is told are the same.
+///
+/// `listNarrowed` is true when the on-screen file list was cut to this
+/// agent's transcript. The reset is still the whole worktree -- so the
+/// co-tenancy line has to say that the list is not the scope of the
+/// discard, or the narrowed list would look like a file-scoped reset.
 export function discardPrompt(
   changes: RunChanges,
   cardTitle: string,
-  foreignLines: readonly string[] = []
+  foreignLines: readonly string[] = [],
+  listNarrowed: boolean = false
 ): DiscardPrompt {
   const untracked = untrackedPaths(changes);
   const tracked = trackedFiles(changes);
@@ -181,7 +187,11 @@ export function discardPrompt(
     );
   }
   lines.push(...foreignLines);
-  lines.push("Anything another run put in this checkout goes with it — the reset is the whole worktree, not this card's files.");
+  lines.push(
+    listNarrowed
+      ? "The list above is only this agent's files — the reset is still the whole worktree. Anything another run put in this checkout goes with it."
+      : "Anything another run put in this checkout goes with it — the reset is the whole worktree, not this card's files."
+  );
   return {
     title: `Discard everything this run did to ${cardTitle}?`,
     lines,
@@ -189,6 +199,18 @@ export function discardPrompt(
     untracked,
   };
 }
+
+/// Quiet strip when the file list is the whole checkout, not this
+/// agent's transcript. Null when the list was narrowed -- the rows
+/// already mean "this agent".
+export function checkoutSourceStrip(source: "transcript" | "checkout"): string | null {
+  if (source !== "checkout") return null;
+  return "Everything dirty in this checkout since the baseline — not only this agent's files. The run's transcript couldn't narrow the list.";
+}
+
+/// Empty-list copy after a successful transcript narrow. Matches Review.
+export const EMPTY_AFTER_NARROW =
+  "Nothing this run's agent touched is changed in the checkout.";
 
 /// What the discard actually achieved, for the strip afterwards. Null
 /// when it did exactly what it said -- silence is the right report for a

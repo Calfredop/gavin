@@ -356,7 +356,7 @@ mod tests {
                 rail_id: Some(s("rail")),
                 label: s("Generate"),
             }),
-            developing_cards: vec![DevelopingCardRecord { path: s("/card"), session_id: s("dev") }],
+            developing_cards: vec![DevelopingCardRecord { path: s("/card"), session_id: s("dev"), baseline_modified_at: None }],
             legacy_agent_command: Some(s("claude")),
             color: Some(s("#color")),
             notify_needs_input: flavour == "a",

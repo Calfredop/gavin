@@ -5,6 +5,9 @@ fn main() {
     // regenerated icon never re-embeds into the dev binary (the macOS dev
     // Dock icon is baked in at compile time via generate_context!).
     println!("cargo:rerun-if-changed=icons");
+    // updater.rs compiles in the build number `bundle.mjs` exports, so a
+    // new number has to rebuild the crate even when no source changed.
+    println!("cargo:rerun-if-env-changed=GAVIN_BUILD_NUMBER");
     embed_companion_bundle();
     tauri_build::build()
 }

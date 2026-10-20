@@ -10,11 +10,18 @@ import {
   composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
+  isGavinBuiltCommand,
+  FOREIGN_RELAUNCH_COMMAND,
   withPromptExtras,
   buildResumeCommand,
   unresumableConversationReason,
   mintConversationId,
   withFreshConversationId,
+  withRelaunchNote,
+  relaunchNote,
+  promptFromRunCommand,
+  commandUsesLaunchAgent,
+  rebindRunCommand,
   noPromptReason,
   agentPromptBlocker,
   usesPromptInjection,
@@ -26,6 +33,7 @@ import {
   developAvailable,
   provisionalSessionName,
   cardHomeNote,
+  isDirectPrompt,
 } from "$lib/cards/cardRun";
 
 describe("composeTaskPrompt", () => {
@@ -38,6 +46,18 @@ describe("composeTaskPrompt", () => {
         "While you work, keep this card's status current with gavin_set_plan_field on /p/t.md; " +
         "set it to the board's done column when finished."
     );
+  });
+});
+
+describe("isDirectPrompt", () => {
+  it("is a task carrying direct: true, and nothing else", () => {
+    expect(isDirectPrompt({ kind: "task", direct: true })).toBe(true);
+    expect(isDirectPrompt({ kind: "task", direct: false })).toBe(false);
+    expect(isDirectPrompt({ kind: "task" })).toBe(false);
+    // A plan's prompt is "read this file": its body is never the prompt,
+    // so a view that says direct on one must not send it as one.
+    expect(isDirectPrompt({ kind: "plan", direct: true })).toBe(false);
+    expect(isDirectPrompt({ kind: "note", direct: true })).toBe(false);
   });
 });
 
@@ -498,10 +518,12 @@ describe("mintConversationId", () => {
 describe("buildResumeCommand", () => {
   // No prompt. Resume puts the agent back at the end of its OWN
   // transcript; a prompt here would be a fresh instruction on top of a
-  // conversation that already holds the whole task.
+  // conversation that already holds the whole task. The id is one
+  // shell-quoted token so a stored value cannot change the line's shape
+  // under `sh -c` (sec-fix-conversation-id-token-grammar).
   it("reopens the conversation and hands the agent nothing else", () => {
     expect(buildResumeCommand("claude --model opus", "--resume", "u1")).toBe(
-      "claude --model opus --resume u1"
+      `claude --model opus --resume ${shellQuote("u1")}`
     );
   });
 
@@ -527,9 +549,32 @@ describe("buildResumeCommand", () => {
   // a CLAUDE_CONFIG_DIR pointed elsewhere, the check itself failing -- is
   // today's behaviour: build the command and let the CLI answer.
   it("reopens a conversation whose log is present or unknowable", () => {
-    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe("claude --resume u1");
-    expect(buildResumeCommand("claude", "--resume", "u1")).toBe("claude --resume u1");
+    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+    expect(buildResumeCommand("claude", "--resume", "u1")).toBe(
+      `claude --resume ${shellQuote("u1")}`
+    );
+  });
+
+  // An agent can overwrite card_sessions.conversation_id via NameSession.
+  // A stored id outside the opaque-token grammar must not reach `sh -c`
+  // as extra argv or a second command — fall through to reconstruction.
+  it("refuses a stored id outside the opaque token grammar", () => {
+    expect(buildResumeCommand("claude", "--resume", "u1; touch /tmp/pwned")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "id with spaces")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "a".repeat(129))).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "")).toBeNull();
+  });
+
+  it("shell-quotes a grammar-valid id so metacharacters cannot split the line", () => {
+    const id = "rollout-abc123._:OK";
+    expect(buildResumeCommand("claude", "--resume", id)).toBe(
+      `claude --resume ${shellQuote(id)}`
+    );
   });
 });
 
@@ -589,6 +634,100 @@ describe("withFreshConversationId", () => {
   });
 });
 
+describe("withRelaunchNote", () => {
+  // The replayed prompt was written for a card nobody had started; the
+  // note tells the fresh conversation the card was under way and where
+  // its status is recorded.
+  it("appends the note to the quoted prompt as one argument", () => {
+    const command = withRelaunchNote("claude --session-id 1 'do it'", "/p/t.md");
+    expect(command).toBe(`claude --session-id 1 'do it'${shellQuote(relaunchNote("/p/t.md"))}`);
+    expect(relaunchNote("/p/t.md")).toContain("already being worked on");
+    expect(relaunchNote("/p/t.md")).toContain("card file at /p/t.md");
+  });
+
+  // The command is stored for the next re-launch, and the card may have
+  // moved in between.
+  it("replaces a note an earlier re-launch appended rather than stacking it", () => {
+    const once = withRelaunchNote("claude 'do it'", "/p/t.md");
+    const twice = withRelaunchNote(once, "/p/done/t.md");
+    expect(twice).toBe(`claude 'do it'${shellQuote(relaunchNote("/p/done/t.md"))}`);
+  });
+
+  it("leaves a command with no quoted prompt alone", () => {
+    expect(withRelaunchNote("kimi", "/p/t.md")).toBe("kimi");
+    expect(withRelaunchNote(null, "/p/t.md")).toBeNull();
+  });
+});
+
+describe("promptFromRunCommand / commandUsesLaunchAgent / rebindRunCommand", () => {
+  it("reads the prompt out of a stored buildRunCommand line", () => {
+    expect(promptFromRunCommand("claude 'do it'")).toBe("do it");
+    expect(promptFromRunCommand("gemini --yolo --prompt='attached'")).toBe("attached");
+    expect(promptFromRunCommand(`claude ${shellQuote("it's fine")}`)).toBe("it's fine");
+    expect(promptFromRunCommand("kimi")).toBeNull();
+  });
+
+  it("recognises whether a stored line was built for this launch binary", () => {
+    expect(commandUsesLaunchAgent("claude --model opus 'x'", "claude --model opus")).toBe(true);
+    expect(commandUsesLaunchAgent("gemini --yolo 'x'", "claude --model opus")).toBe(false);
+  });
+
+  it("rebuilds a stored prompt onto a different agent's binary", () => {
+    const rebound = rebindRunCommand("gemini --yolo 'do the thing'", {
+      launchCommand: "claude --model opus",
+      promptArgs: "",
+      sessionIdArgs: "",
+    });
+    expect(rebound).toEqual({
+      command: "claude --model opus 'do the thing'",
+      conversationId: null,
+    });
+  });
+});
+
+describe("rebindRunCommand onto cursor", () => {
+  // claude-code -> cursor: the binding still holds the gemini line a
+  // earlier limit-hit walk wrote.
+  it("rebuilds a stored gemini line onto cursor's binary, with no gemini left", () => {
+    const rebound = rebindRunCommand("gemini --yolo 'do the thing'", {
+      launchCommand: "agent --trust",
+      promptArgs: "",
+      sessionIdArgs: "",
+    });
+    expect(rebound).toEqual({ command: "agent --trust 'do the thing'", conversationId: null });
+    expect(commandUsesLaunchAgent("gemini --yolo 'do the thing'", "agent --trust")).toBe(false);
+  });
+});
+
+describe("isGavinBuiltCommand", () => {
+  const claude = { launchCommand: "claude --model opus", promptArgs: "", sessionIdArgs: "" };
+  const withId = { ...claude, sessionIdArgs: "--session-id" };
+  const opencode = { launchCommand: "opencode", promptArgs: "--prompt=", sessionIdArgs: "" };
+
+  it("accepts what buildRunCommand writes", () => {
+    expect(isGavinBuiltCommand(buildRunCommand(claude.launchCommand, "", "do it")!, claude)).toBe(true);
+    expect(
+      isGavinBuiltCommand(
+        buildRunCommand(withId.launchCommand, "", "do it", "--session-id", "u1")!,
+        withId
+      )
+    ).toBe(true);
+    expect(isGavinBuiltCommand(buildRunCommand("opencode", "--prompt=", "do it")!, opencode)).toBe(true);
+  });
+
+  it("accepts a stored command that already carries a re-launch note", () => {
+    const once = withRelaunchNote(buildRunCommand(claude.launchCommand, "", "do it"), "/p/t.md")!;
+    expect(isGavinBuiltCommand(once, claude)).toBe(true);
+  });
+
+  it("refuses a command no gavin launch could have built", () => {
+    expect(isGavinBuiltCommand("sh -c 'touch x'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude --model opus 'ok'; sh -c 'bad'", claude)).toBe(false);
+    expect(isGavinBuiltCommand("claude 'x'", claude)).toBe(false);
+    expect(FOREIGN_RELAUNCH_COMMAND).toMatch(/Launch as new session/);
+  });
+});
+
 describe("buildHeadlessCommand", () => {
   it("puts the profile's headless argv between the command and the quoted prompt", () => {
     expect(buildHeadlessCommand("claude", '-p --allowedTools "Bash(git *)" --', "do it")).toBe(
@@ -604,8 +743,8 @@ describe("buildHeadlessCommand", () => {
   // shape interactive `--prompt=` rows use -- a space before the quote
   // would make `-p` / `--prompt` eat the next flag instead.
   it("attaches the prompt with no space when the argv ends in =", () => {
-    expect(buildHeadlessCommand("gemini", "--yolo --prompt=", "do it")).toBe(
-      "gemini --yolo --prompt='do it'"
+    expect(buildHeadlessCommand("agy", "--dangerously-skip-permissions --prompt=", "do it")).toBe(
+      "agy --dangerously-skip-permissions --prompt='do it'"
     );
   });
 

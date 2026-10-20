@@ -50,6 +50,9 @@ export interface CardView {
   // card naming only `effort:` still replaces its level's pair. A pre-v56
   // daemon never sends it.
   effort?: string | null;
+  // Whether this task's body is sent as the whole prompt. Optional for
+  // the same reason `effort` is: fixtures, and a pre-v75 daemon.
+  direct?: boolean;
   checklistDone: number;
   checklistTotal: number;
   contextName: string;
@@ -129,6 +132,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
     agent: plan.agent ?? null,
     model: plan.model ?? null,
     effort: plan.effort ?? null,
+    direct: plan.direct === true,
     checklistDone: plan.checklistDone,
     checklistTotal: plan.checklistTotal,
     contextName: ctx.name,
