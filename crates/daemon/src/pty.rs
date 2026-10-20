@@ -29,6 +29,10 @@ pub struct PtySession {
     /// Shared with the exit watcher too: `Child::try_wait` takes the
     /// child mutably, and the watcher is a second caller of it.
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    /// Pid the session env passthrough file was written under, so Drop
+    /// and `retire` can remove it. `None` when the write was skipped
+    /// (no app-support dir, or the child had no pid yet).
+    passthrough_pid: Option<u32>,
 }
 
 /// What a session holds of its pty's master end.
@@ -400,8 +404,31 @@ impl PtySession {
             cmd.env(key, value);
         }
 
+        // Captured for the MCP passthrough file below: Cursor strips the
+        // PTY env from stdio MCP children, and putting these values in
+        // `.cursor/mcp.json`'s `env` block makes Cursor re-prompt for
+        // approval every launch (it hashes the resolved env). gavin-mcp
+        // recovers them by walking to this child pid's file instead.
+        let passthrough = protocol::mcp_env::Passthrough {
+            session_id: session_id.to_string(),
+            session_token: session_token.unwrap_or("").to_string(),
+            session_socket: protocol::socket_path()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            gavin_mcp: gavin_mcp_beside_this_binary()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
+
+        let passthrough_pid = child.process_id().and_then(|pid| {
+            let dir = protocol::mcp_env::dir().ok()?;
+            protocol::mcp_env::write(&dir, pid, &passthrough).ok()?;
+            Some(pid)
+        });
 
         let master = Arc::new(Mutex::new(Master::Open(pair.master)));
         let child = Arc::new(Mutex::new(child));
@@ -411,6 +438,7 @@ impl PtySession {
             master,
             input: InputQueue::spawn(writer),
             child,
+            passthrough_pid,
         })
     }
 
@@ -555,6 +583,7 @@ impl PtySession {
     /// so "the reply came back before the process died" is not a state
     /// any caller can reach.
     pub fn retire(self) {
+        self.clear_passthrough();
         self.hangup();
         // Nothing is going to read what is still waiting: the program
         // has just been told its terminal is gone.
@@ -565,6 +594,17 @@ impl PtySession {
             // the drop that follows closes the pty master.
             let _ = session.kill();
         });
+    }
+
+    /// Drop the Cursor MCP env file for this tab. Best-effort: a missing
+    /// dir or file is fine.
+    fn clear_passthrough(&self) {
+        let Some(pid) = self.passthrough_pid else {
+            return;
+        };
+        if let Ok(dir) = protocol::mcp_env::dir() {
+            protocol::mcp_env::remove(&dir, pid);
+        }
     }
 
     /// SIGHUP and return -- portable-pty's own signaller, which is the
@@ -641,6 +681,7 @@ fn watch_for_exit(child: Arc<Mutex<Box<dyn Child + Send + Sync>>>, master: Arc<M
 
 impl Drop for PtySession {
     fn drop(&mut self) {
+        self.clear_passthrough();
         // Best-effort: don't leave an orphaned/zombie child behind when a
         // session is dropped without an explicit kill() (e.g. create_session
         // failing after spawn, or a session replaced during recover()).
@@ -1041,10 +1082,33 @@ mod tests {
         assert!(output.contains("SIDMARK=[sid-42]"), "got: {output}");
     }
 
+    /// Cursor MCP children cannot inherit the PTY env; the daemon writes
+    /// the session under mcp-env/<child-pid> so gavin-mcp can recover it
+    /// without putting per-session values in mcp.json (which Cursor
+    /// hashes into its approval fingerprint).
+    #[test]
+    fn spawn_writes_an_mcp_env_passthrough_for_the_child() {
+        let session =
+            PtySession::spawn("/tmp", Some("/bin/sh"), "sid-pass", Some("tok-pass")).unwrap();
+        let pid = session.passthrough_pid.expect("passthrough pid recorded");
+        let dir = protocol::mcp_env::dir().expect("app support dir");
+        let body = std::fs::read_to_string(protocol::mcp_env::path_for(&dir, pid))
+            .expect("passthrough file");
+        let pass = protocol::mcp_env::Passthrough::parse(&body);
+        assert_eq!(pass.session_id, "sid-pass");
+        assert_eq!(pass.session_token, "tok-pass");
+        assert!(!pass.session_socket.is_empty(), "{pass:?}");
+        drop(session);
+        assert!(
+            !protocol::mcp_env::path_for(&dir, pid).exists(),
+            "Drop must remove the passthrough file"
+        );
+    }
+
     /// A minted session token must reach the PTY: gavin-mcp presents it
-    /// in Hello for the `agent` role, and Cursor's `${env:GAVIN_SESSION_TOKEN}`
-    /// interpolation reads it from the agent process. Without it,
-    /// PlaywrightEndpoint is Forbidden as a bare `local` connection.
+    /// in Hello for the `agent` role (inherited through the agent, or via
+    /// the mcp-env passthrough when Cursor strips MCP child env). Without
+    /// it, PlaywrightEndpoint is Forbidden as a bare `local` connection.
     #[test]
     fn spawn_exports_the_session_token_into_the_pty() {
         let mut session =

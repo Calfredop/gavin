@@ -3,12 +3,6 @@
     "gavin": {
       "args": [],
       "command": "scripts/gavin-mcp",
-      "env": {
-        "GAVIN_MCP": "${env:GAVIN_MCP}",
-        "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
-        "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
-        "GAVIN_SESSION_TOKEN": "${env:GAVIN_SESSION_TOKEN}"
-      },
       "type": "stdio"
     },
     "playwright": {
@@ -16,12 +10,6 @@
         "playwright"
       ],
       "command": "scripts/gavin-mcp",
-      "env": {
-        "GAVIN_MCP": "${env:GAVIN_MCP}",
-        "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
-        "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
-        "GAVIN_SESSION_TOKEN": "${env:GAVIN_SESSION_TOKEN}"
-      },
       "type": "stdio"
     }
   }

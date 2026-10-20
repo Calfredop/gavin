@@ -891,11 +891,9 @@ mod tests {
                 assert_eq!(entry["type"], "stdio");
                 assert_eq!(entry["command"], BINARY);
                 assert_eq!(entry["args"], serde_json::json!(["playwright"]));
-                // Cursor's MCP servers see almost none of the agent's
-                // environment; the shim needs its session.
-                for var in ["GAVIN_SESSION_ID", "GAVIN_SESSION_TOKEN", "GAVIN_SESSION_SOCKET"] {
-                    assert_eq!(entry["env"][var], format!("${{env:{var}}}"), "{var}");
-                }
+                // Session env reaches the shim via protocol::mcp_env, not
+                // mcp.json — Cursor hashes resolved env into approvals.
+                assert!(entry.get("env").is_none(), "{entry}");
             }
             "opencode" => {
                 assert_eq!(

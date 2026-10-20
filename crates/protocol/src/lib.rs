@@ -55,6 +55,12 @@ pub mod kimi_trust;
 // read-only test both the hook and the transcript reader apply. Pure.
 pub mod shell_writes;
 
+// Cursor MCP session env that cannot ride in `.cursor/mcp.json` (its
+// approval fingerprint hashes resolved env). Behind `os`: filesystem and
+// parent-pid walk. See the module docs.
+#[cfg(feature = "os")]
+pub mod mcp_env;
+
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, NotRunningReason, WorkstationState,
     ATTENTION_API_VERSION,

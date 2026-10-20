@@ -2230,6 +2230,11 @@ fn reexec_command(exe: &Path, blob: &[u8]) -> std::process::Command {
 }
 
 fn main() {
+    // Cursor's Agent CLI strips the PTY's GAVIN_SESSION_* from stdio MCP
+    // children. The daemon wrote them under mcp-env/<pty-pid>; recover
+    // before anything reads those variables (playwright, Hello, tools).
+    protocol::mcp_env::apply_from_ancestor_passthrough();
+
     // `gavin-mcp playwright`: not this MCP server at all, but the shim
     // that becomes the pinned Playwright MCP for this session's browser
     // (`playwright.rs`). Dispatched before anything else is read or said.

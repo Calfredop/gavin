@@ -23,17 +23,18 @@ pub enum McpFormat {
     /// Antigravity CLI (`.agents/mcp_config.json`).
     JsonServers,
     /// The same, plus the `type: "stdio"` Cursor's docs list as required
-    /// for a local server, and an `env` block that re-forwards the
-    /// `GAVIN_SESSION_*` values and `GAVIN_MCP` the daemon put on the
-    /// PTY. Cursor's Agent CLI strips almost every inherited variable
-    /// when it spawns an MCP server (PATH/cwd only), so without
-    /// `${env:…}` interpolation `gavin_name_session` sees no tab id even
-    /// though the agent itself has one, and the launcher never sees
-    /// which gavin-mcp this build pinned. Its own variant rather than a
-    /// key written unconditionally: Gemini's documented server fields do
-    /// not include `type`, Claude inherits the full PTY env so it needs
-    /// no passthrough, and gavin does not put keys it has not verified
-    /// into someone else's config.
+    /// for a local server. Cursor's Agent CLI strips almost every
+    /// inherited variable when it spawns an MCP server (PATH/cwd only),
+    /// so session identity reaches gavin-mcp through a PPID passthrough
+    /// file the daemon writes (`protocol::mcp_env`) — NOT through an
+    /// `env` block here. Putting `${env:GAVIN_SESSION_*}` in mcp.json
+    /// used to work for the tools, but Cursor hashes the *resolved* env
+    /// into its MCP approval fingerprint, so every new tab forced a
+    /// re-approval of the same servers. No `env` keeps that fingerprint
+    /// stable. Its own variant rather than a key written unconditionally:
+    /// Gemini's documented server fields do not include `type`, Claude
+    /// inherits the full PTY env so it needs no passthrough, and gavin
+    /// does not put keys it has not verified into someone else's config.
     JsonServersStdio,
     /// JSON `mcp.<key>` = `{ type: "local", command: [...], enabled }` —
     /// opencode (`opencode.json`). The command is an array here, not a
@@ -2330,22 +2331,16 @@ impl McpFormat {
                 serde_json::json!({ "type": "local", "command": line, "enabled": true })
             }
             McpFormat::JsonServersStdio => {
-                // Cursor's `${env:NAME}` interpolation reads from the
-                // agent process (the PTY child that still has the
-                // daemon's injections) and puts them back on gavin-mcp.
-                // Literal values would freeze one tab's id into the
-                // workspace file; absent vars become empty and the tools
-                // fail closed the same way a bare terminal does.
+                // No `env` block: Cursor hashes resolved env into its MCP
+                // approval id, and per-session values would invalidate
+                // approval on every tab. Session identity reaches
+                // gavin-mcp via `protocol::mcp_env` instead. `args` is
+                // always present (empty for gavin's own entry) so the
+                // written shape matches what Cursor already approved.
                 serde_json::json!({
                     "type": "stdio",
                     "command": command,
                     "args": args,
-                    "env": {
-                        "GAVIN_MCP": "${env:GAVIN_MCP}",
-                        "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
-                        "GAVIN_SESSION_TOKEN": "${env:GAVIN_SESSION_TOKEN}",
-                        "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
-                    }
                 })
             }
             McpFormat::JsonServers | McpFormat::TomlServers => {
@@ -7663,8 +7658,8 @@ mod tests {
     }
 
     /// Antigravity and Cursor share the mcpServers shape, but Cursor also
-    /// needs `type: "stdio"` and the GAVIN_SESSION_* env passthrough —
-    /// Cursor strips inherited env when spawning MCP, Antigravity does not.
+    /// needs `type: "stdio"`. Session env does NOT ride in Cursor's
+    /// mcp.json (approval fingerprint); Antigravity inherits the PTY env.
     #[test]
     fn antigravity_and_cursor_write_mcp_servers_at_their_own_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -7693,21 +7688,10 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&c).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/gavin/type").unwrap(), "stdio");
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
-        assert_eq!(
-            v.pointer("/mcpServers/gavin/env/GAVIN_MCP").unwrap(),
-            "${env:GAVIN_MCP}"
-        );
-        assert_eq!(
-            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_ID").unwrap(),
-            "${env:GAVIN_SESSION_ID}"
-        );
-        assert_eq!(
-            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_TOKEN").unwrap(),
-            "${env:GAVIN_SESSION_TOKEN}"
-        );
-        assert_eq!(
-            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_SOCKET").unwrap(),
-            "${env:GAVIN_SESSION_SOCKET}"
+        assert_eq!(v.pointer("/mcpServers/gavin/args").unwrap(), &serde_json::json!([]));
+        assert!(
+            v.pointer("/mcpServers/gavin/env").is_none(),
+            "Cursor mcp.json must not carry per-session env (approval hash)"
         );
     }
 
