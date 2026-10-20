@@ -43,6 +43,7 @@
 <symbol id="t-files" overflow="visible"><path d="M-2.5 -5.5 H2 L4.5 -3 V3 H-2.5 Z M-4.5 -2.5 V5.5 H2"/></symbol>
 <symbol id="t-bot" overflow="visible"><rect x="-5" y="-2.5" width="10" height="7.5" rx="2"/><path d="M0 -2.5 V-5 M-2 1 V2 M2 1 V2"/></symbol>
 <symbol id="t-doc" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-2 0 H2 M-2 2.5 H2"/></symbol>
+<symbol id="t-gavel" overflow="visible"><path d="M-3.5 -2.5 L0.5 -6.5 L3.5 -3.5 L-0.5 0.5 Z M1.5 -1.5 L5.5 2.5 M-5 5 H1"/></symbol>
 <symbol id="t-eye" overflow="visible"><path d="M-6 0 C-3 -5 3 -5 6 0 C3 5 -3 5 -6 0 Z"/><circle r="1.8"/></symbol>
 <symbol id="t-way" overflow="visible"><circle cx="-4" cy="3.5" r="1.6"/><circle cx="4" cy="3.5" r="1.6"/><circle cx="0" cy="-3.5" r="1.6"/><path d="M-3 2 L-1 -2 M3 2 L1 -2 M-2.4 3.5 H2.4"/></symbol>
 <symbol id="t-kanban" overflow="visible"><path d="M-4 -5 V5 M0 -5 V1 M4 -5 V3.5"/></symbol>
@@ -87,21 +88,24 @@
 <use href="#tool" x="518.6500000000001" y="20" stroke="#999"/>
 <text x="532.6500000000001" y="24.5" fill="#999" font-size="12.5">Tools</text>
 <line x1="585.7750000000001" y1="13" x2="585.7750000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
-<use href="#t-eye" x="608.2750000000001" y="20" stroke="#999"/>
-<text x="622.2750000000001" y="24.5" fill="#999" font-size="12.5">Review</text>
-<line x1="682.9250000000001" y1="13" x2="682.9250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
-<use href="#t-doc" x="705.4250000000001" y="20" stroke="#999"/>
-<text x="719.4250000000001" y="24.5" fill="#999" font-size="12.5">PRD</text>
-<line x1="757.5000000000001" y1="13" x2="757.5000000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
-<use href="#t-bot" x="780.0000000000001" y="20" stroke="#999"/>
-<text x="794.0000000000001" y="24.5" fill="#999" font-size="12.5">AGENTS.md</text>
-<line x1="877.2250000000001" y1="13" x2="877.2250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
-<use href="#folder" x="899.7250000000001" y="20" stroke="#999"/>
-<text x="913.7250000000001" y="24.5" fill="#999" font-size="12.5">Plans</text>
-<line x1="966.8500000000001" y1="13" x2="966.8500000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
-<use href="#t-files" x="989.3500000000001" y="20" stroke="#999"/>
-<text x="1003.3500000000001" y="24.5" fill="#999" font-size="12.5">Files</text>
-<use href="#lock" x="1071.9750000000001" y="20" stroke="#999"/>
+<use href="#t-gavel" x="608.2750000000001" y="20" stroke="#999"/>
+<text x="622.2750000000001" y="24.5" fill="#999" font-size="12.5">Decisions</text>
+<line x1="705.5000000000001" y1="13" x2="705.5000000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-eye" x="728" y="20" stroke="#999"/>
+<text x="742" y="24.5" fill="#999" font-size="12.5">Review</text>
+<line x1="802.65" y1="13" x2="802.65" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-doc" x="825.15" y="20" stroke="#999"/>
+<text x="839.15" y="24.5" fill="#999" font-size="12.5">PRD</text>
+<line x1="877.225" y1="13" x2="877.225" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-bot" x="899.725" y="20" stroke="#999"/>
+<text x="913.725" y="24.5" fill="#999" font-size="12.5">AGENTS.md</text>
+<line x1="996.95" y1="13" x2="996.95" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#folder" x="1019.45" y="20" stroke="#999"/>
+<text x="1033.45" y="24.5" fill="#999" font-size="12.5">Plans</text>
+<line x1="1086.58" y1="13" x2="1086.58" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-files" x="1109.08" y="20" stroke="#999"/>
+<text x="1123.08" y="24.5" fill="#999" font-size="12.5">Files</text>
+<use href="#lock" x="1191.7" y="20" stroke="#999"/>
 <use href="#t-gear" x="1484" y="20" stroke="#999"/>
 <use href="#t-win" x="1514" y="20" stroke="#999"/>
 <line x1="1534" y1="13" x2="1534" y2="27" stroke="#3a3a3a" stroke-width="1"/>
