@@ -57,13 +57,17 @@ so the board the human reads is the board the agents keep.
 - **Complexity picks the agent.** A card's five-level complexity chooses
   which agent, model and thinking effort runs it; a card can also name
   its own.
+- **Direct prompts.** A task can be marked direct, and its body then goes
+  to the agent exactly as you wrote it, with no card framing around it.
 - **Develop a one-liner.** A card that is only a line of intent can be
   developed into a plan — the agent interviews you first and writes
   nothing until you approve.
 - **Best of N.** Run one card on several agents at once, each in a
   worktree of its own, tiled on one page, and keep the best result.
 - **Run history and changes.** Every run of a card is kept with its
-  tokens and duration, and opens on exactly the diff that run made.
+  tokens and duration, and opens on exactly the diff that run made —
+  narrowed to the files that agent touched, even in a checkout other
+  sessions are editing too.
 - **Search by meaning.** When a keyword search comes back empty, the
   board offers the closest cards by meaning instead.
 - **Review before run, commit after.** A first-run gate shows you what a
@@ -108,10 +112,11 @@ is clicking while it tests the UI it just built.
 
 ### Every agent CLI you use
 
-Six agents come configured — **Claude Code, Codex, Gemini CLI, opencode,
-Cursor and Kimi Code** — and you can add named custom profiles for any
-other CLI. An **Agents** settings hub holds the general defaults and a tab
-per agent:
+Six agents come configured — **Claude Code, Codex, Antigravity (the
+successor to Gemini CLI, which still works when it is the only one
+installed), opencode, Cursor and Kimi Code** — and you can add named
+custom profiles for any other CLI. An **Agents** settings hub holds the
+general defaults and a tab per agent:
 
 - model and **thinking effort**, set wherever a model is set;
 - per-agent complexity levels, prompt lines and CLI arguments;
@@ -120,9 +125,10 @@ per agent:
 - an optional **Claude advisor** per complexity level.
 
 Gavin reads each agent's **usage limits**, projects when you will hit
-them, and can **pause** launches until the window resets. A run that was
-cut short — a crash, a reboot, a limit — is noticed and **resumed**
-unattended when its cause clears.
+them, and can **pause** launches until the window resets. The sidebar
+shows one usage badge per agent, coloured by how close that agent is to
+its limit. A run that was cut short — a crash, a reboot, a limit — is
+noticed and **resumed** unattended when its cause clears.
 
 ### Decisions and Review
 
@@ -138,10 +144,11 @@ agent to clean them up.
 ### Gavin Companion — the board in your pocket
 
 <p align="center">
-  <img src="docs/images/companion-workspaces.png" width="23%" alt="Gavin Companion — a Workstation's workspaces, each with its running and waiting sessions and its card counts per column">
-  <img src="docs/images/companion-board.png" width="23%" alt="Gavin Companion — a workspace's board on the phone: In Progress cards, one agent working and one waiting for you">
-  <img src="docs/images/companion-terminal.png" width="23%" alt="Gavin Companion — an agent's live terminal on the phone, with Esc, Ctrl-C and a reply field">
-  <img src="docs/images/companion-decisions.png" width="23%" alt="Gavin Companion — a decision an agent is waiting on, answered from the phone">
+  <img src="docs/images/companion-workspaces.png" width="18%" alt="Gavin Companion — a Workstation's workspaces, each with its running and waiting sessions and its card counts per column">
+  <img src="docs/images/companion-board.png" width="18%" alt="Gavin Companion — a workspace's board on the phone: In Progress cards, one agent working and one waiting for you">
+  <img src="docs/images/companion-terminal.png" width="18%" alt="Gavin Companion — an agent's live terminal on the phone, with Esc, Ctrl-C and a reply field">
+  <img src="docs/images/companion-tools.png" width="18%" alt="Gavin Companion — the workspace's tools on the phone, each with its last run, ready to run from there">
+  <img src="docs/images/companion-decisions.png" width="18%" alt="Gavin Companion — a decision an agent is waiting on, answered from the phone">
   <br>
   <sub>Screenshots of the Companion on its built-in Demo Workstation — the projects and agent output are invented.</sub>
 </p>
@@ -149,10 +156,10 @@ agent to clean them up.
 A store app for **iOS and Android** that pairs with your Workstation by
 QR code and then reaches it from anywhere:
 
-- **Board, rails, terminals, Git and Files** — the desktop's own
+- **Board, rails, terminals, tools, Git and Files** — the desktop's own
   components, fitted to a touch screen. Open a card and run it, steer a
-  rail, organize rails with an agent, type into a session, commit via an
-  agent, watch an agent's browser live.
+  rail, organize rails with an agent, type into a session, run one of the
+  workspace's tools, commit via an agent, watch an agent's browser live.
 - **Decisions and Review** on the phone, and **push notifications** for
   whatever newly waits on you — sealed end to end, so the push gateway
   never reads them.
@@ -163,7 +170,8 @@ QR code and then reaches it from anywhere:
   from the phone is locked to you.
 - **Direct or relayed.** On the same network or tailnet the phone dials
   the Workstation directly; anywhere else it goes through a **Relay** you
-  can self-host ([`docs/self-hosting-relay.md`](docs/self-hosting-relay.md)).
+  can self-host ([`docs/self-hosting-relay.md`](docs/self-hosting-relay.md)),
+  or that the desktop runs for you on the Mac with one switch.
 
 The sidebar's **Devices** panel shows each paired phone, where it is
 connected from and what it started. To install it, see
@@ -171,9 +179,15 @@ connected from and what it started. To install it, see
 
 ### And underneath
 
+- **App hub** — before you open a workspace, one page across all of them:
+  the workspaces, a single feed of what is happening now and what waits
+  on you, and the fleet's totals, agent usage and sessions, under a live
+  app icon that reflects the fleet's state.
 - **Git tab** — local changes, sync, branches, history, a 3-pane conflict
   merge, and a **compare** view of the checkout, any branch or worktree
   against any ref. A selected commit names the card it was made for.
+- **Files tab with an editor** — browse the checkout and edit in place,
+  with language completions, snippets and JSON formatting.
 - **Worktrees** — every worktree is cut into the workspace's own
   `.gavin-worktrees/`, with an optional setup script run in a visible
   session.
@@ -276,6 +290,26 @@ powershell -ExecutionPolicy Bypass -File scripts\start-release-win.ps1
 
 (`-SkipBuild` launches the installed app as is; `-DryRun` only checks.)
 
+#### Linux
+
+There is no install script for Linux yet. Install the system packages CI
+uses (Debian/Ubuntu names):
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+then build the bundles from a clean checkout of `main`:
+
+```bash
+cd app && npm ci && npm run bundle
+```
+
+The `.deb`, `.rpm` and `.AppImage` land in `target/release/bundle/`. The
+AppImage step downloads `linuxdeploy` the first time, so that first build
+needs network access.
+
 ### Gavin Companion (iOS and Android)
 
 The Companion is not in the App Store or Play yet, so it builds from
@@ -293,25 +327,37 @@ cd app && npm ci && cd companion-shell && npm ci
 From `app/companion-shell`:
 
 ```bash
+scripts/usb-install.sh                                     # every phone plugged into this Mac
 scripts/compile.sh ios --install <simulator-udid>          # iOS Simulator
 scripts/compile.sh android --install <emulator-serial>     # Android emulator
 DEVELOPMENT_TEAM=<TEAM_ID> scripts/device-drive.sh ios-device <udid>   # a real iPhone over USB
 scripts/compile.sh android --out /tmp/gavin-android        # an APK to `adb install` on a phone
 ```
 
+`usb-install.sh` finds Android phones through adb and iPhones through
+`devicectl` (`--list` shows what it found, `--only` picks one, `--network`
+adds iPhones paired over Wi-Fi), builds only the platforms it found, then
+installs and launches the app. It never replaces a store build, because
+uninstalling one deletes the phone's keys.
+
 A real iPhone needs a paid Apple Developer team, because the app carries
 the Push Notifications capability.
 
 **To pair**, open Settings → **Remote access** on the desktop and turn it
-on. Then either turn on **Direct connection**, for a phone on the same
-network or tailnet with no Relay, or enter a Relay URL and its admission
-token. In the sidebar's **Devices** panel, press **Pair a device**, scan
-the QR code from the Companion, and confirm the pairing at the desk.
-Builds for the stores, signing and push setup are in
+on. Then turn on **Direct connection** for a phone on the same network or
+tailnet, **Run a Relay on this Mac** to have the desktop start a Relay
+and fill in its URL and token, or enter the URL and admission token of a
+Relay you host elsewhere. In the sidebar's **Devices** panel, press
+**Pair a device**, scan the QR code from the Companion, and confirm the
+pairing at the desk. Builds for the stores, signing and push setup are in
 [`docs/companion-mobile.md`](docs/companion-mobile.md).
 
 Signed and notarized builds for macOS, Windows and Linux come from the
 tagged release workflow — see [`docs/RELEASING.md`](docs/RELEASING.md).
+The Preview build is published from a Mac by
+`scripts/publish-preview.sh`, which builds both installers from
+`origin/main` and refuses to publish unless CI passed on that commit
+(`--dry-run` builds and stages them without uploading).
 
 ## Development
 
@@ -331,6 +377,7 @@ platform notes are in [`docs/dev-setup.md`](docs/dev-setup.md).
 cargo test --workspace
 cd app && npm test && npm run check && npm run build
 cd app && npm run companion:test && npm run companion:check && npm run companion:build
+cd app/companion-shell && npm ci && cd .. && npm run companion-shell:test && npm run companion-shell:check && npm run companion-shell:build
 ```
 
 ## Contributing
