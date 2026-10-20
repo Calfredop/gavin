@@ -244,6 +244,11 @@
     color: var(--text-subtle);
     text-align: left;
   }
+  /* The kind icon and the chevron keep their size: `.text` gives way
+     first, and its ellipsis is what a long name or description costs. */
+  .row > :global(svg) {
+    flex: 0 0 auto;
+  }
   .row:active {
     background: var(--surface-hover);
   }
