@@ -22,6 +22,7 @@
     showWorkspaces,
     view,
   } from "$companion/state/workstation";
+  import PhoneActivity from "$companion/surfaces/PhoneActivity.svelte";
   import PhoneAddWorkspace from "$companion/surfaces/PhoneAddWorkspace.svelte";
   import PhoneAppSettings from "$companion/surfaces/PhoneAppSettings.svelte";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
@@ -177,6 +178,10 @@
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}
             <PhoneFiles workspace={open} place={$view.files} onPlace={placeFiles} />
+          {:else if $view.surface === "activity"}
+            <div class="scroll">
+              <PhoneActivity workspace={open} />
+            </div>
           {:else if $view.surface === "settings"}
             <PhoneWorkspaceSettings workspace={open} />
           {:else}
@@ -199,6 +204,7 @@
         />
         <div class="scroll">
           <WorkspaceList onOpen={openWorkspace} onAdd={() => showScreen("add-workspace")} />
+          <PhoneActivity />
         </div>
       {/if}
 

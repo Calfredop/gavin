@@ -20,6 +20,7 @@ export const SURFACES = [
   "scheduled",
   "git",
   "files",
+  "activity",
   "settings",
 ] as const;
 export type Surface = (typeof SURFACES)[number];
@@ -34,6 +35,7 @@ export const SURFACE_LABELS: Record<Surface, string> = {
   scheduled: "Scheduled",
   git: "Git",
   files: "Files",
+  activity: "Activity",
   settings: "Settings",
 };
 
@@ -42,9 +44,10 @@ export const SURFACE_LABELS: Record<Surface, string> = {
 export type BoardPage = { kind: "card"; path: string } | { kind: "prd" };
 
 /// The surfaces a card opens over, and closing it goes back to: the
-/// board, and the two lists of cards owed something. Anywhere else a
-/// card opens over the board.
-const PAGE_SURFACES: readonly Surface[] = ["board", "decisions", "review"];
+/// board, the two lists of cards owed something, and the activity
+/// calendar a run's row opened it from. Anywhere else a card opens over
+/// the board.
+const PAGE_SURFACES: readonly Surface[] = ["board", "decisions", "review", "activity"];
 
 /// What the Companion shows while no workspace is open: the workspace
 /// list, the Workstation's own settings, or adding a workspace.

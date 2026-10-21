@@ -10,13 +10,15 @@
 //
 // A board's and a card's commands have a table of their own
 // (cardCommands.ts), as do a workspace's rails (railCommands.ts) and its
-// tools (toolCommands.ts), the Git tab's and the Files tab's
+// tools (toolCommands.ts), the activity calendar's two reads
+// (activityCommands.ts), the Git tab's and the Files tab's
 // (gitCommands.ts, fileCommands.ts), the desk's
 // commit agent a phone asks for (agentCommit.ts), the
 // settings (settingsCommands.ts) and the workspaces as Workstation data
 // (workspaceCommands.ts), gathered in with the rest below.
 import { agentLastLine } from "$lib/agents/turnVerdict";
 import type { GavinTree } from "$lib/core/gavin";
+import { ACTIVITY_COMMANDS } from "$companion/demo/activityCommands";
 import { AGENT_COMMIT_COMMANDS } from "$companion/demo/agentCommit";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { BROWSER_COMMANDS } from "$companion/demo/browser";
@@ -287,6 +289,7 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...RAIL_COMMANDS,
   ...TOOL_COMMANDS,
   ...SCHEDULED_COMMANDS,
+  ...ACTIVITY_COMMANDS,
   ...BROWSER_COMMANDS,
   ...OWNER_COMMANDS,
 };
