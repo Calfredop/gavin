@@ -123,3 +123,13 @@ _Avoid_: push token (that is Apple's or Google's address for the Device), grant,
 **Preview build**:
 An unsigned desktop installer published from every push to `main` that passes CI, replacing the previous one at a single download address. What a person installs before Gavin has a signed version, not a version of its own.
 _Avoid_: release (that is the session term above, and the signed tag build is a different thing), nightly, main build
+
+### Activity
+
+**Activity**:
+What happened in a workspace, counted by when it happened: agent runs (of a card or a tool), commits, pushes, and the files those commits changed. Read from the record that already exists; nothing is kept for its own sake.
+_Avoid_: usage (that is a subscription's limits), history (that is one card's runs, or the Git log)
+
+**Activity calendar**:
+Activity drawn over time, for one workspace or for every workspace on a Workstation, which zooms from a year down to a single hour.
+_Avoid_: heatmap (that is only its year view), contribution graph, timeline
