@@ -10,6 +10,7 @@ import type {
   ScheduledTask,
   ScheduledTaskField,
 } from "$lib/scheduling/scheduledTask";
+import type { ActivityRun, GitActivity } from "$lib/activity/activity";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import { isTerminalReport } from "$lib/terminal/terminalReport";
@@ -1527,6 +1528,15 @@ export function cardRuns(workspaceId: string, path: string): Promise<CardRun[]> 
   return invoke("card_runs", { workspaceId, path });
 }
 
+/// Every card run and standalone tool run of one workspace that started
+/// in `[since, until)` (UTC unix seconds, v78), oldest first, for the
+/// activity calendar. Routed to an ssh workspace's host. Gate on
+/// FEATURE_MIN_VERSION.activityCalendar (`sshActivityBlocked` for an ssh
+/// workspace) before calling: an older daemon refuses the request.
+export function activityRuns(workspaceId: string, since: number, until: number): Promise<ActivityRun[]> {
+  return invoke("activity_runs", { workspaceId, since, until });
+}
+
 /// What one run cost, read out of the agent CLI's own transcript by the
 /// conversation id gavin minted for it. No daemon involved and no gate:
 /// these are files on this machine, and the report names its own reason
@@ -2070,6 +2080,14 @@ export function worktreeSetup(rootPath: string): Promise<string[]> {
 
 export function gitLog(cwd: string, all: boolean, skip: number, limit: number): Promise<LogPage> {
   return invoke("git_log", { cwd, all, skip, limit });
+}
+
+/// Every commit on any ref since `since` (UTC unix seconds) with the
+/// files it changed, and every push read off the remote-tracking
+/// reflogs, for the activity calendar. Empty lists for a folder that is
+/// not a repository.
+export function gitActivity(cwd: string, since: number): Promise<GitActivity> {
+  return invoke("git_activity", { cwd, since });
 }
 
 export function gitCommitDetail(cwd: string, sha: string): Promise<CommitDetail> {

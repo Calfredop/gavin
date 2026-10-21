@@ -744,6 +744,18 @@ export const FEATURE_MIN_VERSION = {
   // which grey out with this reason, and the scheduler, which does not
   // tick against an older daemon at all.
   scheduledTasks: 77,
+  // The activity calendar's run read (v78, `tbd-feat-activity-calendar.md`).
+  // `Request::ActivityRuns` is a new request TYPE, so `min_version_for`
+  // refuses it against an older daemon and nothing is silently dropped --
+  // the entry is for what the calendar draws INSTEAD. Refused, it would
+  // show a year of commits with no runs in it, which reads as "no agent
+  // ran" about months of work. The consumer is the calendar's loader
+  // (`activity/activityLoad.ts`): commits and pushes still draw, and the
+  // calendar says why the runs are missing.
+  activityCalendar: 78,
+  // Its ssh twin: the same read against an ssh workspace's HOST daemon
+  // (`sshActivityBlocked` in sshWorkspace.ts), never the local one's.
+  sshActivityCalendar: 78,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

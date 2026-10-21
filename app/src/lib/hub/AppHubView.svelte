@@ -106,6 +106,8 @@
   import { themeState } from "$lib/ui/themeState.svelte";
   import LiveAppIcon from "$lib/ui/LiveAppIcon.svelte";
   import { fleetIconStatus } from "$lib/ui/appIconMotion";
+  import ActivityCalendar from "$lib/activity/ActivityCalendar.svelte";
+  import { openRunCard, openToolsTab } from "$lib/activity/activityNav";
 
   /// The row's badge is the board card's badge for the same session --
   /// one agent vocabulary (ui/indicators.ts) rather than the private dot
@@ -646,6 +648,14 @@
           {/each}
         </div>
       {/if}
+
+      <!-- What happened, over the last twelve months, summed over every
+           workspace (activity/). Under the feed: what needs you now comes
+           before what already happened. -->
+      <section class="activity-section" aria-label="Activity">
+        <h2>Activity</h2>
+        <ActivityCalendar onOpenCard={openRunCard} onOpenTool={openToolsTab} />
+      </section>
     </section>
 
     <aside class="column gauges" aria-label="Fleet">
@@ -1020,6 +1030,10 @@
     color: var(--text-subtle);
     font-size: 0.8em;
     line-height: 1.5;
+  }
+
+  .activity-section {
+    margin-top: 22px;
   }
 
   /* --- the three columns --- */

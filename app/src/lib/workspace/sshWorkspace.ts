@@ -131,6 +131,13 @@ export function sshRunBlocked(ws: Workspace | null | undefined, links: SshLinks)
   return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshCardRuns, "to run cards there");
 }
 
+/// Whether the activity calendar can read this workspace's runs from its
+/// host right now (see `sshFeatureBlocked`). Its commits and pushes go
+/// over the same link through `RunGit`, which `sshTabBlocked` gates.
+export function sshActivityBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshActivityCalendar, "to read its activity");
+}
+
 /// Whether the Git tab and Files tree can serve this workspace right now.
 /// Their operations need the host daemon's v40 file and git requests, so
 /// this is what the two hub views gate on -- rendering their content when

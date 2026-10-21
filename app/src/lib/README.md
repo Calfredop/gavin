@@ -12,6 +12,7 @@ one thing and reading either one means reading the other.
 
 | folder | files | what lives there |
 |---|---|---|
+| `activity/` | 6 | The activity calendar: runs, commits, pushes and files over the last twelve months, bucketed by local day and hour, the loader that reads them per workspace, and the calendar the app hub and Home draw. |
 | `agents/` | 41 | What an agent is and what happens to it while it runs: model and pause state, usage probes and projection, the launch gate, queue and estimate, auto-resume, the follow-up queue, the attention inbox, the memory wall. |
 | `board/` | 31 | The kanban board — columns, cards, drag, selection, filters, search, and the facets the hub board is narrowed by. |
 | `cards/` | 66 | A card's whole life: compose, detail, agent binding, complexity, run, run history, run changes, best-of-N, review request, completion. |

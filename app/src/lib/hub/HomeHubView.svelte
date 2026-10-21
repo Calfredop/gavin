@@ -42,6 +42,8 @@
     resolveAgentShare,
   } from "$lib/hub/homeSplit";
   import { tooltip } from "$lib/core/tooltip";
+  import ActivityCalendar from "$lib/activity/ActivityCalendar.svelte";
+  import { openRunCard, openToolsTab } from "$lib/activity/activityNav";
 
   interface Props {
     workspaceId: string;
@@ -482,6 +484,15 @@
             </span>
           {/if}
         </button>
+        <!-- The activity calendar as a widget, not a tab: a div rather
+             than a button like the panels above, since it is made of
+             controls of its own. -->
+        <div class="panel activity-panel">
+          <span class="panel-head">Activity</span>
+          <div class="activity-body">
+            <ActivityCalendar {workspaceId} onOpenCard={openRunCard} onOpenTool={openToolsTab} />
+          </div>
+        </div>
       </div>
     </div>
     <div class="tiles">
@@ -613,6 +624,19 @@
   .rail-panel {
     flex: 0 1 auto;
     max-height: 45%;
+  }
+  /* Sized to the calendar, capped so a day's long event list scrolls
+     inside the widget instead of pushing the other panels away. */
+  .activity-panel {
+    flex: 0 1 auto;
+    max-height: 55%;
+    cursor: default;
+  }
+  .activity-body {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   /* Two axes kept apart, as on the tab (spec O9): the count is the fact,
      the colour is only whether any of them is live right now. */
