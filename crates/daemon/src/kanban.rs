@@ -1,5 +1,5 @@
 use protocol::shell_writes::{RootFiles, ShellWrites};
-use protocol::{Board, CardRun, CardSession, Column, Label, RunSavings};
+use protocol::{ActivityRun, ActivityRunKind, Board, CardRun, CardSession, Column, Label, RunSavings};
 use protocol::scheduled::{FireClaim, ScheduledFire};
 use rusqlite::{params, Connection};
 
@@ -183,6 +183,12 @@ impl KanbanStore {
                 ON card_runs (workspace_id, path, id);
             CREATE INDEX IF NOT EXISTS card_runs_by_session
                 ON card_runs (session_id);
+            -- v78: the activity calendar reads a workspace's runs by the
+            -- time they started. An index reaches the table every install
+            -- already has from right here, which a column would not: this
+            -- statement runs on every open, against an old file too.
+            CREATE INDEX IF NOT EXISTS card_runs_by_time
+                ON card_runs (workspace_id, started_at);
             -- v72: what each shell call of an agent wrote, as its CLI's
             -- hook saw it (`gavin-mcp shell-writes`). Keyed by the CLI's
             -- OWN ids -- the conversation and the call -- rather than by
@@ -607,6 +613,35 @@ impl KanbanStore {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// This workspace's card runs that STARTED in `[since, until)`, oldest
+    /// first, for the activity calendar (v78). Read through
+    /// `card_runs_by_time`, whose rowid tail is the id tiebreak for two
+    /// runs opened in the same second. The outcome is the row's own; the
+    /// caller reconciles a `running` claim, as `card_runs` does.
+    pub fn activity_runs(&self, workspace_id: &str, since: i64, until: i64) -> anyhow::Result<Vec<ActivityRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, session_id, command, started_at, ended_at, exit_code, outcome
+             FROM card_runs
+             WHERE workspace_id = ?1 AND started_at >= ?2 AND started_at < ?3
+             ORDER BY started_at, id",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, since, until], |row| {
+            Ok(ActivityRun {
+                kind: ActivityRunKind::Card,
+                workspace_id: workspace_id.to_string(),
+                path: Some(row.get(0)?),
+                tool_id: None,
+                session_id: row.get(1)?,
+                command: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                exit_code: row.get(5)?,
+                outcome: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Keeps what one shell call wrote. A second record for the same call
@@ -1138,6 +1173,99 @@ mod tests {
     fn a_card_with_no_runs_reports_an_empty_history_rather_than_erroring() {
         let (_dir, store) = store();
         assert!(store.card_runs("ws-1", "/p/t.md").unwrap().is_empty());
+    }
+
+    // --- the activity calendar's window (v78) -------------------------
+
+    fn insert_run(store: &KanbanStore, workspace: &str, session: &str, started_at: i64, ended_at: Option<i64>, outcome: &str) {
+        store
+            .conn
+            .execute(
+                "INSERT INTO card_runs (workspace_id, path, session_id, command, started_at, ended_at, outcome)
+                 VALUES (?1, '/p/t.md', ?2, 'claude', ?3, ?4, ?5)",
+                params![workspace, session, started_at, ended_at, outcome],
+            )
+            .unwrap();
+    }
+
+    /// `since` is in the window and `until` is not, so two adjacent
+    /// windows count a run on their shared edge once. A run still open
+    /// is in it by its start, with no end.
+    #[test]
+    fn activity_runs_are_one_workspaces_runs_started_inside_the_window_oldest_first() {
+        let (_dir, mut store) = store();
+        insert_run(&store, "ws-1", "late", 150, None, "running");
+        insert_run(&store, "ws-1", "before", 99, Some(120), "exited");
+        insert_run(&store, "ws-1", "edge", 100, Some(130), "exited");
+        insert_run(&store, "ws-1", "after", 200, Some(210), "exited");
+        insert_run(&store, "ws-2", "other", 120, Some(125), "exited");
+
+        let runs = store.activity_runs("ws-1", 100, 200).unwrap();
+
+        assert_eq!(runs.iter().map(|r| r.session_id.as_str()).collect::<Vec<_>>(), vec!["edge", "late"]);
+        assert!(runs.iter().all(|r| r.kind == ActivityRunKind::Card && r.workspace_id == "ws-1"));
+        assert_eq!(runs[0].path.as_deref(), Some("/p/t.md"));
+        assert_eq!(runs[0].tool_id, None);
+        assert_eq!((runs[1].ended_at, runs[1].outcome.as_str()), (None, "running"));
+        assert_eq!(store.activity_runs("ws-2", 0, i64::MAX).unwrap().len(), 1);
+        assert!(store.activity_runs("ws-nobody", 0, i64::MAX).unwrap().is_empty());
+
+        store.finish_runs_for_session("late", Some(3)).unwrap();
+        let late = store.activity_runs("ws-1", 150, 151).unwrap().remove(0);
+        assert_eq!((late.outcome.as_str(), late.exit_code), ("exited", Some(3)), "a crash is told from a finish");
+    }
+
+    /// The index has to reach a database that already has `card_runs`,
+    /// and the read has to use it: a year of runs is read on every
+    /// calendar open.
+    #[test]
+    fn opening_a_pre_v78_database_indexes_card_runs_by_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE card_runs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     command TEXT,
+                     conversation_id TEXT,
+                     launch_cwd TEXT,
+                     base_sha TEXT,
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER,
+                     exit_code INTEGER,
+                     outcome TEXT NOT NULL,
+                     resume_attempts INTEGER,
+                     headroom_tokens_saved INTEGER,
+                     headroom_requests INTEGER
+                 );
+                 INSERT INTO card_runs (workspace_id, path, session_id, started_at, ended_at, outcome)
+                 VALUES ('ws-1', '/p/t.md', 's-old', 10, 20, 'exited');",
+            )
+            .unwrap();
+        }
+
+        let store = KanbanStore::open(&path).unwrap();
+
+        assert_eq!(store.activity_runs("ws-1", 0, 100).unwrap().len(), 1, "the old run is in the window");
+        let plan: String = store
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT path FROM card_runs
+                 WHERE workspace_id = 'ws-1' AND started_at >= 0 AND started_at < 100
+                 ORDER BY started_at, id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(plan.contains("card_runs_by_time"), "the window read is indexed: {plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "and needs no sort of its own: {plan}");
     }
 
     /// The whole point of the table. Three launches used to leave one

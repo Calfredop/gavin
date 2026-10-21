@@ -150,6 +150,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("get_board", RemoteAllowance::Allowed),
     ("card_session", RemoteAllowance::Allowed),
     ("card_runs", RemoteAllowance::Allowed),
+    ("activity_runs", RemoteAllowance::Allowed),
     ("shell_writes", RemoteAllowance::Allowed),
     // Scheduled tasks (v77). A Device reads the list and its reports,
     // and edits, pauses, duplicates and deletes them on the desk. It
@@ -326,6 +327,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("git_worktree_remove", RemoteAllowance::Allowed),
     ("git_worktree_prune", RemoteAllowance::Allowed),
     ("git_log", RemoteAllowance::Allowed),
+    ("git_activity", RemoteAllowance::Allowed),
     ("git_commit_detail", RemoteAllowance::Allowed),
     ("git_checkout_commit", RemoteAllowance::Allowed),
     ("git_cherry_pick", RemoteAllowance::Allowed),

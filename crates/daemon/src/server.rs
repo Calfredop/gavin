@@ -4919,6 +4919,51 @@ impl SessionManager {
         orchestration.tool_runs(workspace_id)
     }
 
+    /// Every card run and standalone tool run of this workspace that
+    /// STARTED in `[since, until)`, oldest first: the activity calendar's
+    /// read (v78). One list over both stores, because the calendar counts
+    /// them as one kind of activity; a run started in the same second as
+    /// another of the other kind sorts card first.
+    ///
+    /// A `running` claim is reconciled exactly as `card_runs` and
+    /// `tool_runs` reconcile it -- a session the registry no longer hosts
+    /// is `abandoned`, written back to its store -- or a run that ended
+    /// unattached months ago would sit on the calendar as still going.
+    pub fn activity_runs(&self, workspace_id: &str, since: i64, until: i64) -> anyhow::Result<Vec<protocol::ActivityRun>> {
+        let mut runs = self.kanban.lock().unwrap().activity_runs(workspace_id, since, until)?;
+        runs.extend(self.orchestration.lock().unwrap().activity_runs(workspace_id, since, until)?);
+        runs.sort_by_key(|r| r.started_at);
+        let claimed: Vec<&str> = runs
+            .iter()
+            .filter(|r| r.outcome == "running")
+            .map(|r| r.session_id.as_str())
+            .collect();
+        if claimed.is_empty() {
+            return Ok(runs);
+        }
+        let registry = self.registry.lock().unwrap();
+        let gone: Vec<String> = claimed
+            .into_iter()
+            .filter(|id| {
+                !matches!(
+                    registry.get(id),
+                    Ok(Some(ref record)) if record.status != SessionStatus::Exited
+                )
+            })
+            .map(|id| id.to_string())
+            .collect();
+        drop(registry);
+        if gone.is_empty() {
+            return Ok(runs);
+        }
+        self.kanban.lock().unwrap().abandon_runs_for_sessions(&gone)?;
+        self.orchestration.lock().unwrap().abandon_tool_runs_for_sessions(&gone)?;
+        for run in runs.iter_mut().filter(|r| r.outcome == "running" && gone.contains(&r.session_id)) {
+            run.outcome = "abandoned".to_string();
+        }
+        Ok(runs)
+    }
+
     pub fn group_templates(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::GroupTemplate>> {
         self.orchestration.lock().unwrap().group_templates(workspace_id)
     }
@@ -7220,6 +7265,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
+        Request::ActivityRuns { workspace_id, since, until } => manager
+            .activity_runs(&workspace_id, since, until)
+            .map(|runs| Response::ActivityRuns { runs }),
         // What a shell call wrote (v72). An agent reaches the write only
         // for a root in its own scope (`agent_allows`); the read is the
         // app's.
@@ -7833,6 +7881,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnlinkCardSession { .. }
         | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
+        // The activity calendar's read (v78): every run in a window, the
+        // run history above across a whole workspace.
+        | Request::ActivityRuns { .. }
         // What every run's shell calls wrote (v72): the Review tab's
         // read. An agent records its own and has no use for this one.
         | Request::ShellWrites { .. }
@@ -15463,6 +15514,62 @@ mod tests {
             }
             other => panic!("expected CardRuns, got {other:?}"),
         }
+    }
+
+    // --- the activity calendar (v78) -----------------------------------
+
+    /// Two workspaces' card and tool runs, read back per workspace over
+    /// the wire as one list. A live session's run keeps `running` with no
+    /// end; one whose session is gone reads (and is written back as)
+    /// `abandoned`. The window is half-open, so the same runs fall out of
+    /// a window that ends at their start or begins after it.
+    #[test]
+    fn activity_runs_answers_one_workspaces_card_and_tool_runs_in_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let live = live_session(&manager);
+        manager
+            .link_card_session("ws-1", "/p/t.md", &live, "/tmp", Some("claude"), None, None, None, None)
+            .unwrap();
+        manager.start_tool_run("ws-1", "builtin:push", "s-tool-gone", Some("git push"), None, None).unwrap();
+        manager
+            .link_card_session("ws-2", "/q/u.md", "s-other", "/q", Some("claude"), None, None, None, None)
+            .unwrap();
+        manager.start_tool_run("ws-2", "t-b", "s-other-tool", None, None, None).unwrap();
+        let ask = |workspace: &str, since: i64, until: i64| {
+            match handle_request(
+                &manager,
+                Request::ActivityRuns { workspace_id: workspace.into(), since, until },
+            ) {
+                Response::ActivityRuns { runs } => runs,
+                other => panic!("expected ActivityRuns, got {other:?}"),
+            }
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let runs = ask("ws-1", now - 60, now + 60);
+
+        assert_eq!(runs.len(), 2, "ws-1's card run and tool run, not ws-2's: {runs:?}");
+        assert_eq!(runs[0].kind, protocol::ActivityRunKind::Card, "a card run sorts first within its second");
+        assert_eq!(runs[0].path.as_deref(), Some("/p/t.md"));
+        assert_eq!((runs[0].outcome.as_str(), runs[0].ended_at), ("running", None), "its session is live");
+        assert_eq!(runs[1].kind, protocol::ActivityRunKind::Tool);
+        assert_eq!(runs[1].tool_id.as_deref(), Some("builtin:push"));
+        assert_eq!(runs[1].outcome, "abandoned", "no session hosts it any more");
+        assert_eq!(manager.tool_runs("ws-1").unwrap()[0].outcome, "abandoned", "written back");
+        assert!(runs.iter().all(|r| r.workspace_id == "ws-1"));
+        assert_eq!(ask("ws-2", now - 60, now + 60).len(), 2);
+
+        let started = runs[0].started_at.min(runs[1].started_at);
+        let ended = runs[0].started_at.max(runs[1].started_at);
+        assert!(ask("ws-1", started - 60, started).is_empty(), "a window ending at their start holds none");
+        assert!(ask("ws-1", ended + 1, ended + 60).is_empty(), "nor one beginning after it");
+        assert!(ask("ws-nobody", 0, i64::MAX).is_empty(), "an unknown workspace is an empty list");
+
+        manager.kill_session(&live).unwrap();
     }
 
     // --- standalone tool runs (v30) -----------------------------------

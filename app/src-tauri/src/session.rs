@@ -7397,6 +7397,39 @@ pub async fn card_runs(
     card_runs_impl(&lanes_for(route, &state, &compat), workspace_id, path).await.map_err(|e| e.to_string())
 }
 
+async fn activity_runs_impl(
+    lanes: &DaemonLanes,
+    workspace_id: String,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<Vec<protocol::ActivityRun>> {
+    match lanes.request(Request::ActivityRuns { workspace_id, since, until }).await? {
+        Response::ActivityRuns { runs } => Ok(runs),
+        other => anyhow::bail!("expected ActivityRuns, got {other:?}"),
+    }
+}
+
+/// Every card run and standalone tool run of one workspace that started
+/// in `[since, until)` (v78), for the activity calendar. Routed by the
+/// workspace like `card_runs`: an ssh workspace's runs live with its
+/// host's daemon. The calendar checks FEATURE_MIN_VERSION.activityCalendar
+/// (or its ssh twin) first; an older daemon is refused here before
+/// anything is sent.
+#[tauri::command]
+pub async fn activity_runs(
+    workspace_id: String,
+    since: i64,
+    until: i64,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<Vec<protocol::ActivityRun>, String> {
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    activity_runs_impl(&lanes_for(route, &state, &compat), workspace_id, since, until)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn shell_writes_impl(
     lanes: &DaemonLanes,
     conversation_id: String,
@@ -9160,6 +9193,28 @@ mod kanban_command_tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].session_id, "s-2");
         assert_eq!(runs[1].outcome, "exited");
+    }
+
+    #[test]
+    fn activity_runs_impl_returns_the_windows_runs_as_the_daemon_ordered_them() {
+        let run = |kind, session: &str, started_at| protocol::ActivityRun {
+            kind,
+            workspace_id: "ws-1".to_string(),
+            path: (kind == protocol::ActivityRunKind::Card).then(|| "/p/t.md".to_string()),
+            tool_id: (kind == protocol::ActivityRunKind::Tool).then(|| "t-a".to_string()),
+            session_id: session.to_string(),
+            command: None,
+            started_at,
+            ended_at: None,
+            exit_code: None,
+            outcome: "running".to_string(),
+        };
+        let runs = vec![run(protocol::ActivityRunKind::Card, "s-1", 10), run(protocol::ActivityRunKind::Tool, "s-2", 20)];
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ActivityRuns { runs: runs.clone() }]);
+
+        let got = block_on(activity_runs_impl(&lanes_over(client), "ws-1".to_string(), 0, 100)).unwrap();
+
+        assert_eq!(got, runs);
     }
 
     #[test]

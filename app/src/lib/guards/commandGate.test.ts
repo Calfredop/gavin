@@ -263,6 +263,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_board: ["ordinary"],
   card_session: ["ordinary"],
   card_runs: ["ordinary"],
+  activity_runs: ["ordinary"],
   // A read: what the shell-write hook recorded of one run's shell calls,
   // for the Review tab. Writes nothing.
   shell_writes: ["ordinary"],
@@ -470,6 +471,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   git_worktree_add: ["ordinary"],
   git_worktree_prune: ["ordinary"],
   git_log: ["ordinary"],
+  git_activity: ["ordinary"],
   git_commit_detail: ["ordinary"],
   git_checkout_commit: ["ordinary"],
   git_cherry_pick: ["ordinary"],

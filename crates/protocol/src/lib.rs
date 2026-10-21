@@ -117,6 +117,15 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v78 is the activity calendar (`tbd-feat-activity-calendar.md`):
+/// `ActivityRuns`, every card run and standalone tool run of a workspace
+/// that started inside a time window, read off the `card_runs` and
+/// `tool_runs` the daemon already keeps. One new request TYPE and no
+/// widened payload, so `min_version_for` is its whole wire gate and
+/// `MIN_COMPATIBLE_VERSION` stands; the app owes
+/// `FEATURE_MIN_VERSION.activityCalendar` (and its ssh-host twin) for the
+/// copy the calendar shows instead of an empty year.
+///
 /// v77 is Scheduled tasks (`feat-scheduled-tasks-plans.md`, ADR 0010): a
 /// copy of a task card under `.gavin-root/scheduled/` that the app fires
 /// headless on a schedule. Eight new request TYPES -- the list, create,
@@ -1015,7 +1024,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 77;
+pub const PROTOCOL_VERSION: u32 = 78;
 
 /// The first version that has Scheduled tasks and pushes
 /// `ScheduledTasksChanged` (v77). The daemon compares the watching app's
@@ -1827,6 +1836,16 @@ pub enum Request {
     CardRuns {
         workspace_id: String,
         path: String,
+    },
+    /// Every card run and standalone tool run of this workspace that
+    /// STARTED in `[since, until)` (v78), oldest first, for the activity
+    /// calendar. Both bounds are UTC unix seconds. Rail steps are card
+    /// runs and are counted there once; `tool_runs` never holds them.
+    /// Never an error for an unknown workspace: an empty list.
+    ActivityRuns {
+        workspace_id: String,
+        since: i64,
+        until: i64,
     },
     /// What one shell call of an agent wrote (v72), sent by the
     /// `gavin-mcp shell-writes` hook after the call: the files that
@@ -2714,6 +2733,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // history" rather than "this card has never been run".
         Request::CardRuns { .. } => 27,
 
+        // The activity calendar's run read (v78). A new request TYPE, so
+        // this match is its whole wire gate; the app mirrors it as
+        // FEATURE_MIN_VERSION.activityCalendar so the calendar says the
+        // daemon is too old rather than drawing a year with no runs in it.
+        Request::ActivityRuns { .. } => 78,
+
         // One binding, command included (v43), now the board read leaves
         // the command out. A new request TYPE, so this is the whole wire
         // gate -- and no app surface is greyed behind it: the app host
@@ -3537,6 +3562,7 @@ pub enum Response {
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     CardSession { card_session: Option<CardSession> },
     CardRuns { runs: Vec<CardRun> },
+    ActivityRuns { runs: Vec<ActivityRun> },
     /// The answer to `ShellWrites` (v72).
     ShellWrites { writes: shell_writes::ShellWrites },
     /// The answer to `ListScheduledTasks` (v77).
@@ -5125,6 +5151,44 @@ pub struct ToolRun {
     /// the session stopped. A tool run's whole point IS the verdict, and
     /// "exited with code 1" is the evidence for it rather than a
     /// substitute for saying it.
+    pub outcome: String,
+}
+
+/// Which record an [`ActivityRun`] was read from.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActivityRunKind {
+    /// A `card_runs` row: a card launched from the board, a rail step, a
+    /// resume.
+    Card,
+    /// A `tool_runs` row: a tool launched standalone from the Tools tab.
+    Tool,
+}
+
+/// One run on the activity calendar (v78): a [`CardRun`] or a [`ToolRun`]
+/// reduced to what a calendar cell and its event list draw. `path` is set
+/// for a card run and `tool_id` for a tool run, never both.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityRun {
+    pub kind: ActivityRunKind,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub tool_id: Option<String>,
+    pub session_id: String,
+    pub command: Option<String>,
+    /// UTC unix seconds; what the run is counted at.
+    pub started_at: i64,
+    /// None while the run is open, and for one whose end nobody saw --
+    /// the same absence `CardRun::ended_at` carries.
+    pub ended_at: Option<i64>,
+    /// The session's exit code when the daemon watched it exit: what
+    /// tells a card run that `exited` cleanly from one that crashed.
+    pub exit_code: Option<i32>,
+    /// The record's own outcome, unchanged: `CardRun`'s vocabulary for a
+    /// card run, `ToolRun`'s for a tool run.
     pub outcome: String,
 }
 
@@ -8529,7 +8593,10 @@ mod tests {
         // v77: Scheduled tasks -- eight new TYPES (list, create, field,
         // duplicate, delete, the fire claim, the launch record, the
         // report read) and the ScheduledTasksChanged push.
-        assert_eq!(PROTOCOL_VERSION, 77);
+        // v78: Request::ActivityRuns + Response::ActivityRuns -- a
+        // workspace's card and tool runs inside a time window, for the
+        // activity calendar. One new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 78);
     }
 
     #[test]
@@ -8948,6 +9015,7 @@ mod tests {
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
+            Request::ActivityRuns { workspace_id: "w".into(), since: 0, until: 1 },
             // v72: what a shell call wrote.
             Request::RecordShellWrites {
                 conversation_id: "c".into(),
@@ -9309,6 +9377,8 @@ mod tests {
         // ClaimScheduledFire, RecordScheduledLaunch, ScheduledReport --
         // Scheduled tasks.
         expected.insert(77, 8);
+        // ActivityRuns -- a workspace's runs inside a time window.
+        expected.insert(78, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -9370,6 +9440,54 @@ mod tests {
         match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
             Response::CardRuns { runs } => assert_eq!(runs, vec![run]),
             other => panic!("expected CardRuns, got {other:?}"),
+        }
+    }
+
+    /// The activity calendar's runs cross to the frontend, so the shape is
+    /// pinned: `kind` as the lowercase word the calendar switches on, and
+    /// the field a run of the OTHER kind carries (`toolId` on a card run)
+    /// as an explicit null rather than an absent key.
+    #[test]
+    fn activity_run_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let run = ActivityRun {
+            kind: ActivityRunKind::Card,
+            workspace_id: "ws".to_string(),
+            path: Some("/p/t.md".to_string()),
+            tool_id: None,
+            session_id: "s-1".to_string(),
+            command: Some("claude 'x'".to_string()),
+            started_at: 1_790_000_000,
+            ended_at: None,
+            exit_code: None,
+            outcome: "running".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            serde_json::json!({ "kind": "card", "workspaceId": "ws", "path": "/p/t.md",
+                                "toolId": null, "sessionId": "s-1", "command": "claude 'x'",
+                                "startedAt": 1_790_000_000i64, "endedAt": null,
+                                "exitCode": null, "outcome": "running" })
+        );
+        let tool = ActivityRun { kind: ActivityRunKind::Tool, path: None, tool_id: Some("t".into()), ..run.clone() };
+        assert_eq!(serde_json::to_value(&tool).unwrap()["kind"], "tool");
+
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::ActivityRuns {
+            workspace_id: "ws".to_string(),
+            since: 1_760_000_000,
+            until: 1_792_000_000,
+        }).unwrap();
+        write_message(&mut buf, &Response::ActivityRuns { runs: vec![run.clone(), tool.clone()] }).unwrap();
+        let mut reader = &buf[..];
+        match read_message::<_, Request>(&mut reader).unwrap().unwrap() {
+            Request::ActivityRuns { workspace_id, since, until } => {
+                assert_eq!((workspace_id.as_str(), since, until), ("ws", 1_760_000_000, 1_792_000_000));
+            }
+            other => panic!("expected ActivityRuns, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::ActivityRuns { runs } => assert_eq!(runs, vec![run, tool]),
+            other => panic!("expected ActivityRuns, got {other:?}"),
         }
     }
 

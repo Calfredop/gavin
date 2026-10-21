@@ -1,6 +1,6 @@
 use protocol::{
     default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
-    RailRun, RailTrigger, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
+    ActivityRun, ActivityRunKind, RailRun, RailTrigger, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
 };
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -120,7 +120,11 @@ impl OrchestrationStore {
             CREATE INDEX IF NOT EXISTS tool_runs_by_tool
                 ON tool_runs (workspace_id, tool_id, id);
             CREATE INDEX IF NOT EXISTS tool_runs_by_session
-                ON tool_runs (session_id);",
+                ON tool_runs (session_id);
+            -- v78: the activity calendar's read by start time. Like
+            -- card_runs_by_time, it reaches an existing file from here.
+            CREATE INDEX IF NOT EXISTS tool_runs_by_time
+                ON tool_runs (workspace_id, started_at);",
         )?;
         // orch_steps predates tool steps and is already live on disk, so
         // CREATE TABLE IF NOT EXISTS above would silently keep the old
@@ -1011,6 +1015,34 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// This workspace's standalone tool runs that STARTED in
+    /// `[since, until)`, oldest first, for the activity calendar (v78) --
+    /// the history `tool_runs` deliberately does not answer. A rail's
+    /// steps are never here (see the table), so nothing is counted twice.
+    pub fn activity_runs(&self, workspace_id: &str, since: i64, until: i64) -> anyhow::Result<Vec<ActivityRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tool_id, session_id, command, started_at, ended_at, exit_code, outcome
+             FROM tool_runs
+             WHERE workspace_id = ?1 AND started_at >= ?2 AND started_at < ?3
+             ORDER BY started_at, id",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, since, until], |row| {
+            Ok(ActivityRun {
+                kind: ActivityRunKind::Tool,
+                workspace_id: workspace_id.to_string(),
+                path: None,
+                tool_id: Some(row.get(0)?),
+                session_id: row.get(1)?,
+                command: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                exit_code: row.get(5)?,
+                outcome: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// The LAST run of each of this workspace's tools. Not a history:
     /// the Tools tab draws one chip per row and would throw the rest
     /// away, and a response that grew with every run would be paid for
@@ -1804,6 +1836,81 @@ mod tests {
         t.cwd = None;
         s.save_tool(&t).unwrap();
         assert_eq!(s.tools("ws-1").unwrap()[0].cwd, None);
+    }
+
+    fn insert_tool_run(s: &OrchestrationStore, workspace: &str, session: &str, started_at: i64, ended_at: Option<i64>, outcome: &str) {
+        s.conn
+            .execute(
+                "INSERT INTO tool_runs (workspace_id, tool_id, session_id, command, started_at, ended_at, outcome)
+                 VALUES (?1, 't-a', ?2, 'git push', ?3, ?4, ?5)",
+                params![workspace, session, started_at, ended_at, outcome],
+            )
+            .unwrap();
+    }
+
+    /// Every run in the window, not the last one per tool: the calendar
+    /// counts each. `since` in, `until` out, an open run by its start.
+    #[test]
+    fn activity_runs_are_one_workspaces_tool_runs_started_inside_the_window_oldest_first() {
+        let s = store();
+        insert_tool_run(&s, "ws-1", "late", 150, None, "running");
+        insert_tool_run(&s, "ws-1", "before", 99, Some(120), "passed");
+        insert_tool_run(&s, "ws-1", "edge", 100, Some(101), "failed");
+        insert_tool_run(&s, "ws-1", "after", 200, Some(201), "passed");
+        insert_tool_run(&s, "ws-2", "other", 120, Some(121), "passed");
+
+        let runs = s.activity_runs("ws-1", 100, 200).unwrap();
+
+        assert_eq!(runs.iter().map(|r| r.session_id.as_str()).collect::<Vec<_>>(), vec!["edge", "late"]);
+        assert!(runs.iter().all(|r| r.kind == ActivityRunKind::Tool && r.workspace_id == "ws-1"));
+        assert_eq!((runs[0].tool_id.as_deref(), runs[0].path.as_deref()), (Some("t-a"), None));
+        assert_eq!((runs[1].ended_at, runs[1].outcome.as_str()), (None, "running"));
+        assert_eq!(s.activity_runs("ws-2", 0, i64::MAX).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn opening_a_pre_v78_database_indexes_tool_runs_by_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orchestration.sqlite");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE tool_runs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id TEXT NOT NULL,
+                     tool_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     command TEXT,
+                     launch_cwd TEXT,
+                     conversation_id TEXT,
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER,
+                     exit_code INTEGER,
+                     outcome TEXT NOT NULL
+                 );
+                 INSERT INTO tool_runs (workspace_id, tool_id, session_id, started_at, ended_at, outcome)
+                 VALUES ('ws-1', 't-a', 's-old', 10, 20, 'passed');",
+            )
+            .unwrap();
+
+        let s = OrchestrationStore::open(&path).unwrap();
+
+        assert_eq!(s.activity_runs("ws-1", 0, 100).unwrap().len(), 1);
+        let plan: String = s
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT tool_id FROM tool_runs
+                 WHERE workspace_id = 'ws-1' AND started_at >= 0 AND started_at < 100
+                 ORDER BY started_at, id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(plan.contains("tool_runs_by_time"), "the window read is indexed: {plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "and needs no sort of its own: {plan}");
     }
 
     #[test]
