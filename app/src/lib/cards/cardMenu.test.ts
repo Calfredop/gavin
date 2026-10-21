@@ -142,6 +142,7 @@ import { bestOfNRequest, bestOfNRuns } from "$lib/cards/bestOfNState";
 import { isMenuItem, type ContextMenuItem } from "$lib/core/contextMenu";
 import type { CardView } from "$lib/core/planBoard";
 import type { Board } from "$lib/board/kanban";
+import { scheduleRequest } from "$lib/scheduling/scheduledActions";
 
 function card(kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {
   return {
@@ -570,5 +571,37 @@ describe("best-of-N entries", () => {
     const entries = buildCardMenuEntries(card("plan", "In Progress"), h);
     item(entries, "Best of 1 — pick a candidate…")?.onPick();
     expect(h.openDetail).toHaveBeenCalledWith("/p/t.md");
+  });
+});
+
+describe("Schedule…", () => {
+  beforeEach(() => {
+    layoutState.update((s) => ({
+      ...s,
+      workspaces: [{ id: "ws-1", name: "ws", rootPath: "/ws" } as (typeof s.workspaces)[number]],
+    }));
+    scheduleRequest.set(null);
+  });
+
+  it("copies a task card -- archived ones too -- into the Schedule dialog", () => {
+    const archived = card("task", "Done", { id: "/ws/.gavin-root/plans/archive/t.md", agent: "codex" });
+    const entry = item(buildCardMenuEntries(archived, hooks()), "Schedule…");
+    expect(entry?.disabled).toBe(false);
+    entry?.onPick();
+    expect(get(scheduleRequest)).toMatchObject({
+      mode: "card",
+      workspaceId: "ws-1",
+      cardPath: "/ws/.gavin-root/plans/archive/t.md",
+      fields: { agent: "codex" },
+    });
+  });
+
+  it("is refused on a plan, with the reason", () => {
+    const entry = item(buildCardMenuEntries(card("plan", "To Do"), hooks()), "Schedule…");
+    expect(entry).toMatchObject({ disabled: true, tip: "plans can't be scheduled yet" });
+  });
+
+  it("is not offered on a note", () => {
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks()))).not.toContain("Schedule…");
   });
 });

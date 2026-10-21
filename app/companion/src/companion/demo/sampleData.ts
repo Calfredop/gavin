@@ -31,6 +31,8 @@ import type { SessionOwner } from "$lib/core/sessionOwnership";
 import { sampleTerminals } from "$companion/demo/transcripts";
 import { sampleToolRuns, sampleTools, type DemoToolRun } from "$companion/demo/toolCommands";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
+import type { ScheduledTask } from "$lib/scheduling/scheduledTask";
+import { sampleScheduled, type DemoScheduledReports } from "$companion/demo/scheduledCommands";
 
 export const DEMO = {
   workstation: { id: "demo", name: "Demo Workstation", demo: true },
@@ -98,6 +100,10 @@ export interface DemoState {
   tools: ToolRecord[];
   /// Every standalone run of a tool, oldest first.
   toolRuns: DemoToolRun[];
+  /// Every workspace's Scheduled tasks, and what their runs reported
+  /// (scheduledCommands.ts).
+  scheduled: ScheduledTask[];
+  scheduledReports: DemoScheduledReports;
   /// How many sessions have been opened on the demo, which is what
   /// names the next one.
   launched: number;
@@ -424,6 +430,7 @@ export function sampleState(): DemoState {
   const cards = sampleCardFiles(roots);
   const files = { ...projectFiles(roots), ...homeFiles(), ...cards };
   const trees = { [DEMO.atlas]: atlasTree(files), [DEMO.notes]: notesTree(files) };
+  const scheduled = sampleScheduled(Math.floor(Date.now() / 1000));
   return {
     workspaces: { workspaces: workspaces(), activeWorkspaceId: DEMO.atlas, removedWorkspaces: [] },
     trees,
@@ -453,6 +460,8 @@ export function sampleState(): DemoState {
     owners: sampleOwners(),
     tools: sampleTools(),
     toolRuns: sampleToolRuns(Math.floor(Date.now() / 1000)),
+    scheduled: scheduled.tasks,
+    scheduledReports: scheduled.reports,
     launched: 0,
     settings: sampleSettings(),
   };

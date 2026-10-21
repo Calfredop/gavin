@@ -38,6 +38,10 @@ pub mod relay;
 pub mod remote_commands;
 pub mod session_owner;
 
+// Scheduled tasks' shapes and their `schedule:` rule (v77). Pure: the
+// copies are read off disk by the daemon, the next fire is the app's.
+pub mod scheduled;
+
 // Where agent CLIs install themselves. Pure -- the home directory is
 // handed in rather than read -- so it needs no `os` feature either.
 pub mod bin_dirs;
@@ -112,6 +116,18 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v77 is Scheduled tasks (`feat-scheduled-tasks-plans.md`, ADR 0010): a
+/// copy of a task card under `.gavin-root/scheduled/` that the app fires
+/// headless on a schedule. Eight new request TYPES -- the list, create,
+/// field write, duplicate and delete, the fire claim that keeps two
+/// daemons sharing `kanban.sqlite` from firing one slot twice, the launch
+/// record, and the report read -- so `min_version_for` is their whole
+/// wire gate. One push, `ScheduledTasksChanged`, sent only on a watch
+/// whose app speaks 77 (`SCHEDULED_TASKS_MIN_VERSION`): an older app has
+/// no arm for it, and `Response` has no catch-all. No payload widened,
+/// so `MIN_COMPATIBLE_VERSION` stands; the app owes
+/// `FEATURE_MIN_VERSION.scheduledTasks` for the copy on its surfaces.
 ///
 /// v76 is the server challenge that proves the local daemon before the
 /// app discloses its token (`sec-fix-windows-pipe-server-identity.md`).
@@ -999,7 +1015,12 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 76;
+pub const PROTOCOL_VERSION: u32 = 77;
+
+/// The first version that has Scheduled tasks and pushes
+/// `ScheduledTasksChanged` (v77). The daemon compares the watching app's
+/// `Hello` version with this before it writes the push.
+pub const SCHEDULED_TASKS_MIN_VERSION: u32 = 77;
 
 /// The first version that pushes `BrowserChanged`. The daemon compares an
 /// app's `Hello` version with this before it writes the push (v65).
@@ -1827,6 +1848,78 @@ pub enum Request {
     /// run, a CLI with no hook -- which is not an error.
     ShellWrites {
         conversation_id: String,
+    },
+    /// A workspace's Scheduled tasks (v77, ADR 0010): every copy under
+    /// `.gavin-root/scheduled/`, each with its run state. `root_path` is
+    /// a watched workspace root.
+    ListScheduledTasks {
+        root_path: String,
+    },
+    /// Writes a new Scheduled task and answers with its path. With
+    /// `from_card` (a task card anywhere in the workspace, archived
+    /// included) it copies that card's body and run settings and names
+    /// it in `from:`; a plan is refused. Without it, `title` and `body`
+    /// make one from scratch. `schedule` is a `schedule:` line, and
+    /// `agent` overrides the copied one -- the Schedule dialog's pick
+    /// when the card's agent has no headless mode.
+    CreateScheduledTask {
+        root_path: String,
+        #[serde(default)]
+        from_card: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        schedule: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// Rewrites one field of a Scheduled task: `title`, `agent`, `model`,
+    /// `effort`, `complexity`, `schedule`, `paused` or `body`. An empty
+    /// value removes an optional field; an empty `schedule` unschedules
+    /// the task (it keeps Run now). A changed `schedule` starts its
+    /// count again.
+    SetScheduledTaskField {
+        path: String,
+        key: String,
+        value: String,
+    },
+    /// Copies a Scheduled task to a fresh file beside it, with no runs.
+    DuplicateScheduledTask {
+        path: String,
+    },
+    /// Deletes a Scheduled task: its file, its reports and its run rows.
+    DeleteScheduledTask {
+        path: String,
+    },
+    /// Claims one fire of a Scheduled task, atomically across every
+    /// daemon sharing `kanban.sqlite`, so the dev and release apps cannot
+    /// both fire it. `slot` is the grid slot that came due; None is a
+    /// "Run now", which never counts. `stamp` (`YYYYMMDD-HHMMSS`, local)
+    /// names the report. With `skip_reason` the fire is recorded as
+    /// skipped for that reason, and counts. The daemon skips it itself
+    /// when the task's previous run is still going.
+    ClaimScheduledFire {
+        path: String,
+        #[serde(default)]
+        slot: Option<u64>,
+        stamp: String,
+        #[serde(default)]
+        skip_reason: Option<String>,
+    },
+    /// What became of a claimed fire's launch: the session it runs in,
+    /// or why it could not start.
+    RecordScheduledLaunch {
+        fire_id: i64,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// One fire's Run report and saved terminal text, either absent.
+    ScheduledReport {
+        fire_id: i64,
     },
     /// Opens a run for a tool launched STANDALONE from the Tools tab
     /// (v30). The rail's own steps do not come through here: a step
@@ -2749,6 +2842,18 @@ pub fn min_version_for(req: &Request) -> u32 {
         // sent -- the tab checks FEATURE_MIN_VERSION.shellWrites first and
         // reads the transcript alone, exactly as before.
         Request::RecordShellWrites { .. } | Request::ShellWrites { .. } => 72,
+        // Scheduled tasks (v77, ADR 0010). Eight new TYPES and no widened
+        // payload, so this is their whole wire gate; the app's
+        // FEATURE_MIN_VERSION.scheduledTasks is the copy its surfaces read
+        // to say why Schedule is dark rather than vanish.
+        Request::ListScheduledTasks { .. }
+        | Request::CreateScheduledTask { .. }
+        | Request::SetScheduledTaskField { .. }
+        | Request::DuplicateScheduledTask { .. }
+        | Request::DeleteScheduledTask { .. }
+        | Request::ClaimScheduledFire { .. }
+        | Request::RecordScheduledLaunch { .. }
+        | Request::ScheduledReport { .. } => 77,
 
         // The Decisions tab's two writes (v42). New TYPES, so this match
         // is the real wire gate for them -- but it is only half of v42,
@@ -3434,6 +3539,24 @@ pub enum Response {
     CardRuns { runs: Vec<CardRun> },
     /// The answer to `ShellWrites` (v72).
     ShellWrites { writes: shell_writes::ShellWrites },
+    /// The answer to `ListScheduledTasks` (v77).
+    ScheduledTasks { tasks: Vec<scheduled::ScheduledTask> },
+    /// The answer to `CreateScheduledTask` and `DuplicateScheduledTask`.
+    ScheduledTaskCreated { path: String },
+    /// The answer to `ClaimScheduledFire`.
+    ScheduledFireClaimed { claim: scheduled::FireClaim },
+    /// The answer to `ScheduledReport`.
+    ScheduledReportText {
+        #[serde(default)]
+        markdown: Option<String>,
+        #[serde(default)]
+        raw: Option<String>,
+    },
+    /// Push to the connection watching a workspace (v77), when that app
+    /// speaks `SCHEDULED_TASKS_MIN_VERSION`: something under its
+    /// `.gavin-root/scheduled/` changed -- a copy edited, a report
+    /// written. Read the list again.
+    ScheduledTasksChanged { workspace_id: String },
     ToolRuns { runs: Vec<ToolRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -8403,7 +8526,10 @@ mod tests {
         // `directPrompt` is its only gate.
         // v76: Request::ServerChallenge + Response::ServerProof -- prove
         // the daemon before the app discloses its token (DP-06).
-        assert_eq!(PROTOCOL_VERSION, 76);
+        // v77: Scheduled tasks -- eight new TYPES (list, create, field,
+        // duplicate, delete, the fire claim, the launch record, the
+        // report read) and the ScheduledTasksChanged push.
+        assert_eq!(PROTOCOL_VERSION, 77);
     }
 
     #[test]
@@ -8830,6 +8956,26 @@ mod tests {
                 paths: vec!["a.ts".into()],
             },
             Request::ShellWrites { conversation_id: "c".into() },
+            Request::ListScheduledTasks { root_path: "/r".into() },
+            Request::CreateScheduledTask {
+                root_path: "/r".into(),
+                from_card: None,
+                title: None,
+                body: None,
+                schedule: None,
+                agent: None,
+            },
+            Request::SetScheduledTaskField { path: "/p".into(), key: "paused".into(), value: "true".into() },
+            Request::DuplicateScheduledTask { path: "/p".into() },
+            Request::DeleteScheduledTask { path: "/p".into() },
+            Request::ClaimScheduledFire {
+                path: "/p".into(),
+                slot: Some(0),
+                stamp: "20261021-090000".into(),
+                skip_reason: None,
+            },
+            Request::RecordScheduledLaunch { fire_id: 1, session_id: None, error: None },
+            Request::ScheduledReport { fire_id: 1 },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
@@ -9159,6 +9305,10 @@ mod tests {
         expected.insert(74, 1);
         // ServerChallenge -- prove the daemon before disclosing the token.
         expected.insert(76, 1);
+        // List/Create/SetField/Duplicate/Delete ScheduledTask(s),
+        // ClaimScheduledFire, RecordScheduledLaunch, ScheduledReport --
+        // Scheduled tasks.
+        expected.insert(77, 8);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

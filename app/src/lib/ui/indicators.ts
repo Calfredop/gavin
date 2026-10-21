@@ -42,6 +42,7 @@ import {
   CircleSlash2,
   DraftingCompass,
   Eye,
+  FileQuestionMark,
   FileWarning,
   GitBranch,
   Hand,
@@ -622,6 +623,19 @@ export function runIndicator(outcome: string, exitCode: number | null): Indicato
 
 export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
 
+/// A Scheduled task whose latest run wants a look (ADR 0010): it failed
+/// to start, or ended without writing its Run report. A run nobody
+/// watched has only its report to say what it did, so a missing one is
+/// the reason to open the row. On the run axis -- it is a fact about a
+/// run -- and warning, the "wants a human" tone: the run may well have
+/// worked, and only reading its terminal says.
+export function scheduledLookIndicator(): Indicator {
+  return SCHEDULED_LOOK;
+}
+// A page with a question mark rather than the history glyph: History in
+// warning is already `abandoned`, and what is missing here is a file.
+const SCHEDULED_LOOK = make("run", "needs-look", FileQuestionMark, "warning", "failed to start or left no report");
+
 // ---- usage -------------------------------------------------------------
 // Whether an agent's subscription limits will HOLD -- not how full they
 // are, which the panel's bars already say. The question is a race
@@ -922,6 +936,7 @@ export function allIndicators(): Indicator[] {
     ...RAIL_STATES.map(railIndicator),
     railRetryIndicator(),
     ...RUN_OUTCOME_STATES.map((state) => RUN[state]),
+    SCHEDULED_LOOK,
     gitIndicator(true),
     gitIndicator(false),
     worktreeStaleIndicator(),

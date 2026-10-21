@@ -28,6 +28,7 @@ mod notify_display;
 mod companion_push;
 mod registry;
 mod remote;
+mod scheduled;
 mod screen;
 mod server;
 mod shell;

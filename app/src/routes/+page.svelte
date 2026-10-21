@@ -40,6 +40,10 @@
   import SetupWizard from "$lib/workspace/SetupWizard.svelte";
   import WorkspaceCreateModal from "$lib/workspace/WorkspaceCreateModal.svelte";
   import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
+  import ScheduleDialog from "$lib/scheduling/ScheduleDialog.svelte";
+  import { scheduleRequest } from "$lib/scheduling/scheduledActions";
+  import { scheduledTasks } from "$lib/scheduling/scheduledState";
+  import { scheduledTabNeedsLook } from "$lib/scheduling/scheduledView";
   import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
   import CriticalReviewDialog from "$lib/review/CriticalReviewDialog.svelte";
   import FindingsRailDialog from "$lib/review/FindingsRailDialog.svelte";
@@ -238,6 +242,13 @@
     // shape, for the same reason (humanTestsAttention.ts).
     reviewWaiting: activeWorkspace
       ? ($humanTestsWaitingByWorkspace[activeWorkspace.id] ?? false)
+      : false,
+    // The Scheduled tab, when some task's latest run failed to start or
+    // wrote no report. Off the scheduler's own store, which every window
+    // keeps for every workspace it can fire -- the tab is not mounted
+    // while another is on screen.
+    scheduledWantsLook: activeWorkspace
+      ? scheduledTabNeedsLook($scheduledTasks[activeWorkspace.id] ?? [])
       : false,
   });
 
@@ -772,6 +783,13 @@
     onClose={() => bestOfNRequest.set(null)}
     onError={(message) => showAlert({ title: "Couldn't start the run", lines: [message] })}
   />
+{/if}
+
+<!-- The Schedule dialog, mounted once for BestOfNDialog's reason: the
+     card menu, the card detail and the Scheduled tab all open it, and the
+     request comes in through the store. -->
+{#if $scheduleRequest}
+  <ScheduleDialog request={$scheduleRequest} onClose={() => scheduleRequest.set(null)} />
 {/if}
 
 <!-- The app's alerts and confirms, drawn once, here. Last in the

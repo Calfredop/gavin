@@ -13,6 +13,7 @@ mod config;
 mod confirm_gate;
 mod daemon;
 mod device_commit;
+mod device_scheduled;
 mod edge_expand;
 mod fileviewer;
 mod forwarding;
@@ -26,6 +27,7 @@ mod navigation_guard;
 mod program;
 mod pull_request;
 mod remote;
+mod scheduled;
 mod session;
 mod single_instance;
 mod stream_writer;
@@ -232,6 +234,16 @@ pub fn run() {
             session::card_session,
             session::card_runs,
             session::shell_writes,
+            scheduled::list_scheduled_tasks,
+            scheduled::create_scheduled_task,
+            scheduled::set_scheduled_task_field,
+            scheduled::duplicate_scheduled_task,
+            scheduled::delete_scheduled_task,
+            scheduled::claim_scheduled_fire,
+            scheduled::record_scheduled_launch,
+            scheduled::scheduled_report,
+            device_scheduled::scheduled_run_now_for_device,
+            device_scheduled::answer_scheduled_run_now,
             session::set_board,
             session::get_orchestration,
             session::set_orchestration,

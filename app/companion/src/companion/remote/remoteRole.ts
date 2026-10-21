@@ -77,6 +77,12 @@ export const DESK_ONLY_COMMANDS = [
   // A desk window's answer to a Device's "Commit via agent". The Device
   // asks (`agent_commit_for_device`); only a desk window has an answer.
   "answer_agent_commit_request",
+  // Firing a Scheduled task (ADR 0010): the claim and the launch record
+  // are the desk scheduler's, and a phone never fires one. Its Run now is
+  // asked (`scheduled_run_now_for_device`); only a desk window answers.
+  "claim_scheduled_fire",
+  "record_scheduled_launch",
+  "answer_scheduled_run_now",
 ] as const;
 
 const LAYOUT_SAVING: ReadonlySet<string> = new Set(LAYOUT_SAVING_COMMANDS);

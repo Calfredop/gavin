@@ -24,6 +24,7 @@ import {
   DEFAULT_RESUME_TASK,
   DEFAULT_REVIEW_LAUNCH,
   DEFAULT_RUN_PLAN,
+  DEFAULT_RUN_SCHEDULED,
   DEFAULT_RUN_TASK,
   DEFAULT_UNTIL_RETRY_PREFIX,
   fillTemplate,
@@ -42,6 +43,7 @@ export {
   DEFAULT_RESUME_TASK,
   DEFAULT_REVIEW_LAUNCH,
   DEFAULT_RUN_PLAN,
+  DEFAULT_RUN_SCHEDULED,
   DEFAULT_RUN_TASK,
   DEFAULT_UNTIL_RETRY_PREFIX,
   fillTemplate,
@@ -254,6 +256,20 @@ export const ACTION_PROMPTS: ActionPrompt[] = [
       { name: "reviewer_label", label: "Reviewer label", default: "" },
       { name: "reviewer_total", label: "Reviewer count", default: "2" },
       { name: "findings_rail_note", label: "Optional findings-rail note", default: "" },
+    ],
+  },
+  {
+    id: "action:run-scheduled",
+    name: "Run a Scheduled task",
+    description:
+      "Scheduled tab — what a Scheduled task's unattended run is told, around its own prompt.",
+    group: "cards",
+    defaultBody: DEFAULT_RUN_SCHEDULED,
+    params: [
+      { name: "run_label", label: "Which run", default: "scheduled run #1" },
+      { name: "title", label: "Task title", default: "" },
+      { name: "body", label: "The task's own prompt", default: "" },
+      { name: "report_path", label: "Run report path", default: "" },
     ],
   },
   {

@@ -132,8 +132,19 @@ describe("a page over a board", () => {
 });
 
 describe("a workspace's surfaces", () => {
-  it("are the board, rails, sessions, Tools, Decisions, Review, Git, Files and Settings, each with its name on the strip", () => {
-    expect(SURFACES).toEqual(["board", "rails", "sessions", "tools", "decisions", "review", "git", "files", "settings"]);
+  it("are the board, rails, sessions, Tools, Decisions, Review, Scheduled, Git, Files and Settings, each with its name on the strip", () => {
+    expect(SURFACES).toEqual([
+      "board",
+      "rails",
+      "sessions",
+      "tools",
+      "decisions",
+      "review",
+      "scheduled",
+      "git",
+      "files",
+      "settings",
+    ]);
     expect(SURFACES.map((s) => SURFACE_LABELS[s])).toEqual([
       "Board",
       "Rails",
@@ -141,6 +152,7 @@ describe("a workspace's surfaces", () => {
       "Tools",
       "Decisions",
       "Review",
+      "Scheduled",
       "Git",
       "Files",
       "Settings",

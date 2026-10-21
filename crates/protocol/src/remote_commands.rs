@@ -151,6 +151,22 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("card_session", RemoteAllowance::Allowed),
     ("card_runs", RemoteAllowance::Allowed),
     ("shell_writes", RemoteAllowance::Allowed),
+    // Scheduled tasks (v77). A Device reads the list and its reports,
+    // and edits, pauses, duplicates and deletes them on the desk. It
+    // never fires one (ADR 0003): the claim and the launch record are
+    // the desk scheduler's, and a phone's Run now asks the desk.
+    ("list_scheduled_tasks", RemoteAllowance::Allowed),
+    ("create_scheduled_task", RemoteAllowance::Allowed),
+    ("set_scheduled_task_field", RemoteAllowance::Allowed),
+    ("duplicate_scheduled_task", RemoteAllowance::Allowed),
+    ("delete_scheduled_task", RemoteAllowance::Allowed),
+    ("claim_scheduled_fire", RemoteAllowance::Refused), // the desk's scheduler fires
+    ("record_scheduled_launch", RemoteAllowance::Refused), // the desk's scheduler fires
+    ("scheduled_report", RemoteAllowance::Allowed),
+    // A phone's Run now: it asks, and the desk window that runs the
+    // workspace launches (device_scheduled.rs).
+    ("scheduled_run_now_for_device", RemoteAllowance::Allowed),
+    ("answer_scheduled_run_now", RemoteAllowance::Refused), // meaningless away from the desk
     ("set_board", RemoteAllowance::Allowed),
     ("get_orchestration", RemoteAllowance::Allowed),
     ("set_orchestration", RemoteAllowance::Allowed),

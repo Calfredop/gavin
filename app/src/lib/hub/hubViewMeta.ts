@@ -44,6 +44,11 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   // of it reads a checkout -- the diff of what a run did, and the file
   // it did it to.
   { id: "review", label: "Review", requiresRoot: true },
+  // Scheduled tasks (ADR 0010): copies of task cards that run on their
+  // own, off the board. After Review because it is read the same way --
+  // what came of work nobody was watching -- and requiresRoot because a
+  // run needs a checkout and the copies live under `.gavin-root/`.
+  { id: "scheduled", label: "Scheduled", requiresRoot: true },
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },
@@ -217,6 +222,12 @@ export interface HubViewActivity {
   /// is the one the mark has to send the human to. Optional and absent
   /// reads as "nothing waits", like `decisionsWaiting`.
   reviewWaiting?: boolean;
+  /// A Scheduled task's latest run failed to start or wrote no report
+  /// (scheduledView.ts's `scheduledTabNeedsLook`). Never the Decisions
+  /// inbox's: a scheduled run asks nobody anything, and the tab that
+  /// shows its report is where the human goes. Optional, absent reads
+  /// as nothing to look at.
+  scheduledWantsLook?: boolean;
 }
 
 /// Whether this tab should say, from the tab strip, that something it
@@ -235,6 +246,7 @@ export function hubViewAttention(viewId: string, activity: HubViewActivity): boo
   if (viewId === "orchestration") return activity.railsWantingAttention;
   if (viewId === "decisions") return activity.decisionsWaiting === true;
   if (viewId === "review") return activity.reviewWaiting === true;
+  if (viewId === "scheduled") return activity.scheduledWantsLook === true;
   return false;
 }
 
@@ -252,6 +264,7 @@ export function hubViewAttention(viewId: string, activity: HubViewActivity): boo
 export function hubViewAttentionLabel(viewId: string): string {
   if (viewId === "decisions") return "Something here is waiting on you";
   if (viewId === "review") return "A human test is waiting on you";
+  if (viewId === "scheduled") return "A scheduled run failed or left no report";
   return "A rail is waiting on you";
 }
 

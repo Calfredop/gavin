@@ -4114,6 +4114,18 @@ impl SessionManager {
         root_path: &str,
         writer: Arc<Mutex<Stream>>,
     ) {
+        Self::watch_gavin_root_speaking(manager, workspace_id, root_path, writer, 0);
+    }
+
+    /// `watch_gavin_root` for an app whose `Hello` said `speaks`, which
+    /// decides the pushes this watch may write beside the tree.
+    pub fn watch_gavin_root_speaking(
+        manager: &Arc<Self>,
+        workspace_id: &str,
+        root_path: &str,
+        writer: Arc<Mutex<Stream>>,
+        speaks: u32,
+    ) {
         let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
         let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
@@ -4132,6 +4144,9 @@ impl SessionManager {
             writer,
             Some(hook),
         );
+        if speaks >= protocol::SCHEDULED_TASKS_MIN_VERSION {
+            watcher.enable_scheduled_pushes();
+        }
         manager.install_gavin_watcher(workspace_id, generation, watcher);
     }
 
@@ -5048,6 +5063,235 @@ impl SessionManager {
     /// Every shell call recorded for a conversation, for the Review tab.
     pub fn shell_writes(&self, conversation_id: &str) -> anyhow::Result<protocol::shell_writes::ShellWrites> {
         self.kanban.lock().unwrap().shell_writes(conversation_id)
+    }
+
+    // --- Scheduled tasks (v77, ADR 0010) ---------------------------------
+    //
+    // The copies are files (`scheduled.rs`); their run state is
+    // `kanban.sqlite`'s. The app decides WHEN a fire is due -- it knows
+    // the local calendar -- and the daemon decides WHETHER it is this
+    // app's to launch: the claim is the one place two apps on one
+    // machine meet.
+
+    fn scheduled_path(&self, path: &str) -> anyhow::Result<std::path::PathBuf> {
+        crate::scheduled::confine_scheduled_path(std::path::Path::new(path), &self.watched_roots())
+    }
+
+    /// Whether the registry still counts `session_id` as running.
+    fn session_live(&self, session_id: &str) -> bool {
+        matches!(
+            self.registry.lock().unwrap().get(session_id),
+            Ok(Some(ref record)) if record.status != SessionStatus::Exited
+        )
+    }
+
+    /// Marks `abandoned` every fire of `path` that claims a session the
+    /// registry no longer hosts -- `card_runs`' reconciliation, for the
+    /// same reason: a session that ended with nothing attached closed no
+    /// row.
+    fn reconcile_scheduled(&self, path: &str) -> anyhow::Result<()> {
+        let fires = self.kanban.lock().unwrap().scheduled_fires(path, protocol::scheduled::FIRES_LISTED)?;
+        let gone: Vec<i64> = fires
+            .iter()
+            .filter(|f| f.outcome == "running")
+            .filter(|f| f.session_id.as_deref().is_none_or(|s| !self.session_live(s)))
+            .map(|f| f.id)
+            .collect();
+        if !gone.is_empty() {
+            self.kanban.lock().unwrap().abandon_scheduled_fires(&gone)?;
+        }
+        Ok(())
+    }
+
+    fn scheduled_task(&self, copy: crate::scheduled::Copy) -> anyhow::Result<protocol::scheduled::ScheduledTask> {
+        let path = protocol::wire_path(&copy.path);
+        self.reconcile_scheduled(&path)?;
+        let (rule, schedule_error) = match copy.rule() {
+            Ok(rule) => (rule, None),
+            Err(e) => (None, Some(e)),
+        };
+        let kanban = self.kanban.lock().unwrap();
+        let (fire_count, last_slot) = match &copy.schedule {
+            Some(line) => kanban.scheduled_state(&path, line)?,
+            None => (0, None),
+        };
+        let mut fires = kanban.scheduled_fires(&path, protocol::scheduled::FIRES_LISTED)?;
+        drop(kanban);
+        for fire in &mut fires {
+            if let Some(report) = fire.report_path.as_deref().map(std::path::Path::new) {
+                fire.headline = crate::scheduled::report_headline(report);
+                fire.has_report = report.symlink_metadata().is_ok_and(|m| m.is_file());
+                fire.has_raw = crate::scheduled::raw_path_for(report).is_file();
+            }
+        }
+        Ok(protocol::scheduled::ScheduledTask {
+            path,
+            name: copy.name,
+            title: copy.title,
+            agent: copy.agent,
+            model: copy.model,
+            effort: copy.effort,
+            complexity: copy.complexity,
+            from: copy.from,
+            schedule: copy.schedule,
+            rule,
+            schedule_error,
+            paused: copy.paused,
+            body: copy.body,
+            fire_count,
+            last_slot,
+            fires,
+        })
+    }
+
+    pub fn list_scheduled_tasks(&self, root_path: &str) -> anyhow::Result<Vec<protocol::scheduled::ScheduledTask>> {
+        let root = crate::gavin::confine_root_path(std::path::Path::new(root_path), &self.watched_roots())?;
+        crate::scheduled::list_copies(&root).into_iter().map(|copy| self.scheduled_task(copy)).collect()
+    }
+
+    pub fn create_scheduled_task(
+        &self,
+        root_path: &str,
+        from_card: Option<&str>,
+        title: Option<&str>,
+        body: Option<&str>,
+        schedule: Option<&str>,
+        agent: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let root = crate::gavin::confine_root_path(std::path::Path::new(root_path), &self.watched_roots())?;
+        let path = match from_card {
+            Some(card) => crate::scheduled::create_from_card(&root, std::path::Path::new(card), schedule, agent)?,
+            None => crate::scheduled::create_blank(
+                &root,
+                title.unwrap_or_default(),
+                body.unwrap_or_default(),
+                schedule,
+                agent,
+            )?,
+        };
+        Ok(protocol::wire_path(&path))
+    }
+
+    pub fn set_scheduled_task_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        let path = self.scheduled_path(path)?;
+        crate::scheduled::set_field(&path, key, value)
+    }
+
+    pub fn duplicate_scheduled_task(&self, path: &str) -> anyhow::Result<String> {
+        let path = self.scheduled_path(path)?;
+        Ok(protocol::wire_path(&crate::scheduled::duplicate(&path)?))
+    }
+
+    pub fn delete_scheduled_task(&self, path: &str) -> anyhow::Result<()> {
+        let confined = self.scheduled_path(path)?;
+        crate::scheduled::delete(&confined)?;
+        self.kanban.lock().unwrap().purge_scheduled(&protocol::wire_path(&confined))
+    }
+
+    pub fn claim_scheduled_fire(
+        &self,
+        path: &str,
+        slot: Option<u64>,
+        stamp: &str,
+        skip_reason: Option<String>,
+    ) -> anyhow::Result<protocol::scheduled::FireClaim> {
+        let confined = self.scheduled_path(path)?;
+        if !protocol::scheduled::valid_report_stamp(stamp) {
+            anyhow::bail!("not a report stamp (YYYYMMDD-HHMMSS): {stamp}");
+        }
+        let copy = crate::scheduled::read_copy(&confined)?;
+        let path = protocol::wire_path(&confined);
+        let rule = match copy.rule() {
+            Ok(rule) => rule,
+            // Run now needs no schedule, readable or not.
+            Err(_) if slot.is_none() => None,
+            Err(e) => {
+                return Ok(protocol::scheduled::FireClaim {
+                    claimed: false,
+                    fire_id: None,
+                    fire_number: None,
+                    report_path: None,
+                    skipped: None,
+                    why: Some(format!("the schedule cannot be read: {e}")),
+                })
+            }
+        };
+        self.reconcile_scheduled(&path)?;
+        let report = crate::scheduled::report_path(&confined, stamp);
+        let claim = crate::kanban::ScheduledClaim {
+            path,
+            schedule: rule.as_ref().map(|_| copy.schedule.clone().unwrap_or_default()),
+            runs: rule.as_ref().and_then(|r| r.runs),
+            paused: copy.paused,
+            slot,
+            skip_reason: skip_reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()),
+            report_path: protocol::wire_path(&report),
+            now: crate::kanban::now_secs(),
+        };
+        let mut claimed = self.kanban.lock().unwrap().claim_scheduled_fire(&claim)?;
+        if claimed.report_path.is_some() {
+            // The agent writes into this folder; it has to exist first.
+            if let Some(dir) = report.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            claimed.report_path = Some(report.to_string_lossy().to_string());
+        }
+        Ok(claimed)
+    }
+
+    pub fn record_scheduled_launch(
+        &self,
+        fire_id: i64,
+        session_id: Option<&str>,
+        error: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let recorded = self.kanban.lock().unwrap().record_scheduled_launch(fire_id, session_id, error)?;
+        // A run that was over before its launch was recorded: the pump
+        // closed no row for it, so close it here, with what it left.
+        if let (Some(_), Some(session)) = (recorded, session_id) {
+            if !self.session_live(session) {
+                self.finish_scheduled_session(session, None);
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes the scheduled run `session_id` was and saves its terminal
+    /// beside the report. Called when the session ends.
+    fn finish_scheduled_session(&self, session_id: &str, exit_code: Option<i32>) {
+        let reports = match self.kanban.lock().unwrap().finish_scheduled_for_session(session_id, exit_code) {
+            Ok(reports) => reports,
+            Err(e) => {
+                eprintln!("failed to close the scheduled run of session {session_id}: {e}");
+                return;
+            }
+        };
+        if reports.is_empty() {
+            return;
+        }
+        let screen = self.screens.lock().unwrap().get(session_id).cloned();
+        let text = screen.map(|s| s.lock().unwrap().full_text()).unwrap_or_default();
+        for report in reports {
+            crate::scheduled::save_raw(std::path::Path::new(&report), &text);
+        }
+    }
+
+    pub fn scheduled_report(&self, fire_id: i64) -> anyhow::Result<(Option<String>, Option<String>)> {
+        let Some((task, fire)) = self.kanban.lock().unwrap().scheduled_fire(fire_id)? else {
+            return Ok((None, None));
+        };
+        let task = self.scheduled_path(&task)?;
+        let Some(report) = fire.report_path.map(std::path::PathBuf::from) else {
+            return Ok((None, None));
+        };
+        // Only ever a file in this task's own runs folder.
+        if report.parent() != Some(crate::scheduled::runs_dir(&task).as_path()) {
+            return Ok((None, None));
+        }
+        Ok((
+            crate::scheduled::read_run_file(&report),
+            crate::scheduled::read_run_file(&crate::scheduled::raw_path_for(&report)),
+        ))
     }
 
     /// Whether a session's agent talked to its model through Headroom,
@@ -6432,6 +6676,10 @@ impl SessionManager {
             if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
                 eprintln!("failed to close card runs for session {id}: {e}");
             }
+            // And whatever Scheduled task run it was (v77), with its
+            // terminal saved beside the report: the screen is still here,
+            // it is only freed by `kill_session`.
+            manager.finish_scheduled_session(&id, Some(exit_code));
             // And what Headroom saved it (v49), for a compressed session
             // only: an uncompressed one has nothing to snapshot, and
             // asking would cost every plain exit a `/stats`. Whether it
@@ -6981,6 +7229,37 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::ShellWrites { conversation_id } => {
             manager.shell_writes(&conversation_id).map(|writes| Response::ShellWrites { writes })
         }
+        // Scheduled tasks (v77, ADR 0010): the app's, and a Device's
+        // through the desk.
+        Request::ListScheduledTasks { root_path } => {
+            manager.list_scheduled_tasks(&root_path).map(|tasks| Response::ScheduledTasks { tasks })
+        }
+        Request::CreateScheduledTask { root_path, from_card, title, body, schedule, agent } => manager
+            .create_scheduled_task(
+                &root_path,
+                from_card.as_deref(),
+                title.as_deref(),
+                body.as_deref(),
+                schedule.as_deref(),
+                agent.as_deref(),
+            )
+            .map(|path| Response::ScheduledTaskCreated { path }),
+        Request::SetScheduledTaskField { path, key, value } => {
+            manager.set_scheduled_task_field(&path, &key, &value).map(|_| Response::Ok)
+        }
+        Request::DuplicateScheduledTask { path } => {
+            manager.duplicate_scheduled_task(&path).map(|path| Response::ScheduledTaskCreated { path })
+        }
+        Request::DeleteScheduledTask { path } => manager.delete_scheduled_task(&path).map(|_| Response::Ok),
+        Request::ClaimScheduledFire { path, slot, stamp, skip_reason } => manager
+            .claim_scheduled_fire(&path, slot, &stamp, skip_reason)
+            .map(|claim| Response::ScheduledFireClaimed { claim }),
+        Request::RecordScheduledLaunch { fire_id, session_id, error } => manager
+            .record_scheduled_launch(fire_id, session_id.as_deref(), error.as_deref())
+            .map(|_| Response::Ok),
+        Request::ScheduledReport { fire_id } => manager
+            .scheduled_report(fire_id)
+            .map(|(markdown, raw)| Response::ScheduledReportText { markdown, raw }),
         Request::StartToolRun {
             workspace_id,
             tool_id,
@@ -7557,6 +7836,17 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // What every run's shell calls wrote (v72): the Review tab's
         // read. An agent records its own and has no use for this one.
         | Request::ShellWrites { .. }
+        // Scheduled tasks (v77). What runs unattended on this machine,
+        // and when, is the human's to set; a scheduled run's own agent
+        // writes its report as a file and needs none of these.
+        | Request::ListScheduledTasks { .. }
+        | Request::CreateScheduledTask { .. }
+        | Request::SetScheduledTaskField { .. }
+        | Request::DuplicateScheduledTask { .. }
+        | Request::DeleteScheduledTask { .. }
+        | Request::ClaimScheduledFire { .. }
+        | Request::RecordScheduledLaunch { .. }
+        | Request::ScheduledReport { .. }
         // Every card's savings in every workspace (v49): the run history
         // above, read across the whole daemon, and no more the agent's
         // than a card run is.
@@ -8528,7 +8818,7 @@ fn serve_connection(
             let manager = Arc::clone(&manager);
             let writer = Arc::clone(&writer);
             std::thread::spawn(move || {
-                SessionManager::watch_gavin_root(&manager, &workspace_id, &root_path, writer);
+                SessionManager::watch_gavin_root_speaking(&manager, &workspace_id, &root_path, writer, speaks);
             });
             continue;
         }
@@ -15046,6 +15336,109 @@ mod tests {
     /// binding still has an agent behind it.
     fn live_session(manager: &SessionManager) -> String {
         manager.create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap()
+    }
+
+    // --- Scheduled tasks (v77) ----------------------------------------
+
+    /// The whole daemon half of one fire: a task card copied, the fire
+    /// claimed, its session run to its end, and what it printed saved
+    /// beside the report -- read back through the wire's own answers.
+    #[test]
+    fn a_scheduled_fire_runs_to_its_end_and_leaves_its_terminal_beside_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, _card) = manager_watching_a_card(&dir, &ws, "To Do");
+        let task_card = std::path::Path::new(&root).join(".gavin-root/plans/archive/check.md");
+        std::fs::create_dir_all(task_card.parent().unwrap()).unwrap();
+        std::fs::write(&task_card, "---\nkind: task\ntitle: Check\n---\nLook.\n").unwrap();
+
+        let path = match handle_request(
+            &manager,
+            Request::CreateScheduledTask {
+                root_path: root.clone(),
+                from_card: Some(wire_spelling(&task_card)),
+                title: None,
+                body: None,
+                schedule: Some("at=2026-10-21T09:00 every=1h runs=2".into()),
+                agent: None,
+            },
+        ) {
+            Response::ScheduledTaskCreated { path } => path,
+            other => panic!("expected ScheduledTaskCreated, got {other:?}"),
+        };
+        let claim = match handle_request(
+            &manager,
+            Request::ClaimScheduledFire {
+                path: path.clone(),
+                slot: Some(0),
+                stamp: "20261021-090000".into(),
+                skip_reason: None,
+            },
+        ) {
+            Response::ScheduledFireClaimed { claim } => claim,
+            other => panic!("expected ScheduledFireClaimed, got {other:?}"),
+        };
+        assert!(claim.claimed, "{claim:?}");
+        let report = claim.report_path.clone().unwrap();
+        assert!(report.ends_with(".gavin-root/scheduled/runs/check/20261021-090000.md"), "{report}");
+        assert!(std::path::Path::new(&report).parent().unwrap().is_dir(), "the folder is there for the agent");
+
+        let id = manager.create_session(&root, &root, Some("echo scheduled-says-hi; exit 0"), Launch::Shell).unwrap();
+        let (_client, server) = Stream::pair().unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server)));
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::RecordScheduledLaunch { fire_id: claim.fire_id.unwrap(), session_id: Some(id.clone()), error: None }
+            ),
+            Response::Ok
+        ));
+        assert!(wait_until_forgotten(&manager, &id));
+
+        let tasks = match handle_request(&manager, Request::ListScheduledTasks { root_path: root.clone() }) {
+            Response::ScheduledTasks { tasks } => tasks,
+            other => panic!("expected ScheduledTasks, got {other:?}"),
+        };
+        assert_eq!(tasks.len(), 1);
+        let task = &tasks[0];
+        assert_eq!(task.from.as_deref(), Some("check.md"));
+        assert_eq!(task.fire_count, 1);
+        assert_eq!(task.fires[0].outcome, "exited");
+        assert_eq!(task.fires[0].exit_code, Some(0));
+        assert!(task.fires[0].has_raw && !task.fires[0].has_report);
+
+        match handle_request(&manager, Request::ScheduledReport { fire_id: claim.fire_id.unwrap() }) {
+            Response::ScheduledReportText { markdown, raw } => {
+                assert_eq!(markdown, None);
+                assert!(raw.unwrap().contains("scheduled-says-hi"));
+            }
+            other => panic!("expected ScheduledReportText, got {other:?}"),
+        }
+
+        // Deleted, it takes its reports and rows with it.
+        assert!(matches!(handle_request(&manager, Request::DeleteScheduledTask { path: path.clone() }), Response::Ok));
+        assert!(!std::path::Path::new(&report).parent().unwrap().exists());
+        match handle_request(&manager, Request::ListScheduledTasks { root_path: root }) {
+            Response::ScheduledTasks { tasks } => assert!(tasks.is_empty()),
+            other => panic!("expected ScheduledTasks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scheduled_task_outside_an_open_workspace_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let elsewhere = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(elsewhere.path(), "X").unwrap();
+        let path = crate::scheduled::create_blank(elsewhere.path(), "T", "b", None, None).unwrap();
+        for req in [
+            Request::SetScheduledTaskField { path: wire_spelling(&path), key: "paused".into(), value: "true".into() },
+            Request::DeleteScheduledTask { path: wire_spelling(&path) },
+            Request::ListScheduledTasks { root_path: wire_spelling(elsewhere.path()) },
+        ] {
+            assert!(matches!(handle_request(&manager, req), Response::Error { .. }));
+        }
+        assert!(path.exists());
     }
 
     // --- the run history (v27) ---------------------------------------

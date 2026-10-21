@@ -736,6 +736,14 @@ export const FEATURE_MIN_VERSION = {
   // greys out and never sends the flag, and the card detail modal's Direct
   // prompt row.
   directPrompt: 75,
+  // Scheduled tasks (v77, ADR 0010): eight new request TYPES, so
+  // `min_version_for` already keeps every one from an older daemon. This
+  // entry is for what the surfaces SAY instead of vanishing.
+  //
+  // Consumers: the Scheduled hub tab and the card's "Schedule…" entry,
+  // which grey out with this reason, and the scheduler, which does not
+  // tick against an older daemon at all.
+  scheduledTasks: 77,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

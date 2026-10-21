@@ -1492,6 +1492,18 @@ export async function bootstrap(): Promise<void> {
   // itself, and `fetchTools` is a load-once that would never refetch.
   const { initToolListeners } = await import("$lib/orchestration/toolsState");
   unlisteners.push(await initToolListeners());
+  // Scheduled tasks (ADR 0010): the daemon's push when a copy or a report
+  // changes, and the scheduler that fires them. Beside the rail
+  // scheduler and on its terms -- it fires only the workspaces this
+  // window `runsRailsFor` -- and, like it, never started by the Companion,
+  // which does not run this bootstrap. Dynamic for the same cycle reason:
+  // scheduledState imports this module.
+  const { initRunNowRequests, initScheduledListeners, startScheduledScheduler } = await import(
+    "$lib/scheduling/scheduledState"
+  );
+  unlisteners.push(await initScheduledListeners());
+  unlisteners.push(await initRunNowRequests());
+  unlisteners.push(startScheduledScheduler());
   // An agent's browser: the tab's chip, the pane's auto-open and its
   // frames (`browserViewState.ts`). Dynamically imported for the cycle
   // reason above: it opens its panes through this module.

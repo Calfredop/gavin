@@ -107,6 +107,9 @@
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { scheduleCardBlocker } from "$lib/scheduling/scheduleDialog";
+  import { requestScheduleCard } from "$lib/scheduling/scheduledActions";
+  import { scheduledBlockedReason } from "$lib/scheduling/scheduledState";
   import { interruptedCardNote } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
@@ -1039,6 +1042,20 @@
   // Lands on the Plans tab with this card's file selected and its editor
   // in Edit mode: the action is named for the editor, so the human
   // arrives ready to type rather than one mode-click away from it.
+  // "Schedule…" (ADR 0010): copies a task card into a Scheduled task --
+  // from the board, done/ or the archive alike, which is why it is here
+  // as well as in the card menu: an archived card is reached only through
+  // this panel. Read against `$daemonCompat` so a daemon restart re-asks.
+  const scheduleBlocked = $derived(
+    featureBlockedReason($daemonCompat, "scheduledTasks") ??
+      scheduleCardBlocker(card.kind) ??
+      scheduledBlockedReason(workspaceId)
+  );
+  function scheduleThis(): void {
+    errorMessage = requestScheduleCard(workspaceId, card);
+    if (!errorMessage) onClose();
+  }
+
   function openInCardEditor(): void {
     requestedExplorerFile.set({ path: card.id, mode: "edit" });
     void switchWorkspaceView(workspaceId, "plans");
@@ -1927,6 +1944,16 @@
         >
           Open in card editor
         </button>
+        {#if card.kind !== "note"}
+          <button
+            type="button"
+            disabled={scheduleBlocked !== null}
+            title={scheduleBlocked ?? "Makes a Scheduled task: a copy of this card that runs on its own schedule"}
+            onclick={scheduleThis}
+          >
+            Schedule…
+          </button>
+        {/if}
         <button type="button" onclick={() => void openExternally()}>Open externally</button>
         <button type="button" onclick={onClose}>Close</button>
       </div>

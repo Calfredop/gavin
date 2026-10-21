@@ -9,3 +9,6 @@ registry.sqlite
 .svelte-kit/
 .vite/
 /scripts/prune-target-mac.py
+
+# Scheduled tasks' Run reports and saved terminals (ADR 0010).
+.gavin-root/scheduled/runs/

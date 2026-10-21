@@ -28,6 +28,7 @@ import { RAIL_COMMANDS } from "$companion/demo/railCommands";
 import { end, launch, repaint, screenText, type } from "$companion/demo/sessions";
 import { SETTINGS_COMMANDS } from "$companion/demo/settingsCommands";
 import { TOOL_COMMANDS } from "$companion/demo/toolCommands";
+import { SCHEDULED_COMMANDS } from "$companion/demo/scheduledCommands";
 import { WORKSPACE_COMMANDS } from "$companion/demo/workspaceCommands";
 
 export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
@@ -285,6 +286,7 @@ export const COMMANDS: Record<string, DemoCommand> = {
   ...CARD_COMMANDS,
   ...RAIL_COMMANDS,
   ...TOOL_COMMANDS,
+  ...SCHEDULED_COMMANDS,
   ...BROWSER_COMMANDS,
   ...OWNER_COMMANDS,
 };

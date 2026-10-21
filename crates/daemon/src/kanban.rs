@@ -1,5 +1,6 @@
 use protocol::shell_writes::{RootFiles, ShellWrites};
 use protocol::{Board, CardRun, CardSession, Column, Label, RunSavings};
+use protocol::scheduled::{FireClaim, ScheduledFire};
 use rusqlite::{params, Connection};
 
 /// The three canonical statuses (D6's vocabulary). Permanent: the board
@@ -11,7 +12,7 @@ const PERMANENT_COLUMNS: [&str; 3] = ["To Do", "In Progress", "Done"];
 /// Wall-clock seconds, for the run history's own timestamps. Saturated
 /// at 0 rather than propagating an error: a clock set before 1970 is not
 /// a reason to refuse a card launch.
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -46,9 +47,54 @@ pub struct KanbanStore {
     conn: Connection,
 }
 
+/// How long a claimed fire may wait for its launch to be recorded before
+/// it stops counting as a run going. A headless launch is recorded within
+/// a second or two; this only covers an app that died in between.
+const SCHEDULED_LAUNCH_GRACE_SECS: i64 = 120;
+
+/// Fire rows kept per Scheduled task. The count lives in
+/// `scheduled_tasks`; these only feed the list, which shows twenty.
+const SCHEDULED_FIRES_KEPT: i64 = 200;
+
+/// One `ClaimScheduledFire`, with what the daemon read off the copy.
+pub struct ScheduledClaim {
+    pub path: String,
+    /// The copy's `schedule:` line now; None for an unscheduled task.
+    pub schedule: Option<String>,
+    /// The rule's run count; None is indefinite.
+    pub runs: Option<u32>,
+    pub paused: bool,
+    /// The grid slot that came due; None for a Run now.
+    pub slot: Option<u64>,
+    pub skip_reason: Option<String>,
+    pub report_path: String,
+    pub now: i64,
+}
+
+fn fire_from_row(row: &rusqlite::Row) -> rusqlite::Result<ScheduledFire> {
+    Ok(ScheduledFire {
+        id: row.get(0)?,
+        slot: row.get::<_, Option<i64>>(1)?.map(|s| s.max(0) as u64),
+        at: row.get(2)?,
+        outcome: row.get(3)?,
+        skip_reason: row.get(4)?,
+        session_id: row.get(5)?,
+        exit_code: row.get(6)?,
+        ended_at: row.get(7)?,
+        report_path: row.get(8)?,
+        headline: None,
+        has_report: false,
+        has_raw: false,
+    })
+}
+
 impl KanbanStore {
     pub fn open(path: &std::path::Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
+        // The dev and release daemons share this file, and a Scheduled
+        // task's fire claim takes a write lock across both: the loser of
+        // that race has to wait its turn, not fail with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS kanban_boards (
                 workspace_id TEXT PRIMARY KEY
@@ -154,6 +200,37 @@ impl KanbanStore {
             );
             CREATE INDEX IF NOT EXISTS shell_writes_by_age
                 ON shell_writes (recorded_at);
+            -- v77: Scheduled tasks' run state (ADR 0010). The copies
+            -- are files; what they have DONE is here, keyed by the
+            -- copy's path. `schedule` is the line the count was kept
+            -- against: a copy whose line no longer matches it starts
+            -- again from nothing, however the line was changed.
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                path TEXT PRIMARY KEY,
+                schedule TEXT NOT NULL,
+                fire_count INTEGER NOT NULL,
+                last_slot INTEGER
+            );
+            -- One row per fire, and per Run now (`slot` NULL). Claimed
+            -- inside one IMMEDIATE transaction, so of two daemons sharing
+            -- this file only one ever writes a given slot.
+            CREATE TABLE IF NOT EXISTS scheduled_fires (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                slot INTEGER,
+                at INTEGER NOT NULL,
+                -- launching | running | exited | skipped | failed | abandoned
+                outcome TEXT NOT NULL,
+                skip_reason TEXT,
+                session_id TEXT,
+                exit_code INTEGER,
+                ended_at INTEGER,
+                report_path TEXT
+            );
+            CREATE INDEX IF NOT EXISTS scheduled_fires_by_task
+                ON scheduled_fires (path, id);
+            CREATE INDEX IF NOT EXISTS scheduled_fires_by_session
+                ON scheduled_fires (session_id);
             DROP TABLE IF EXISTS kanban_card_labels;
             DROP TABLE IF EXISTS kanban_cards;",
         )?;
@@ -783,6 +860,234 @@ impl KanbanStore {
             "DELETE FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
             params![workspace_id, path],
         )?;
+        Ok(())
+    }
+
+    /// A Scheduled task's count as it stands against `schedule`, the
+    /// line on its copy now: `(fire_count, last_slot)`, or nothing yet
+    /// when the line changed since the count was kept.
+    pub fn scheduled_state(&self, path: &str, schedule: &str) -> anyhow::Result<(u32, Option<u64>)> {
+        let row: Option<(String, i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT schedule, fire_count, last_slot FROM scheduled_tasks WHERE path = ?1",
+                params![path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok();
+        Ok(match row {
+            Some((kept, count, slot)) if kept == schedule => {
+                (count.max(0) as u32, slot.map(|s| s.max(0) as u64))
+            }
+            _ => (0, None),
+        })
+    }
+
+    /// A task's fires, newest first, at most `limit`. Headline and file
+    /// facts are left for the caller, which owns the files.
+    pub fn scheduled_fires(&self, path: &str, limit: usize) -> anyhow::Result<Vec<ScheduledFire>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slot, at, outcome, skip_reason, session_id, exit_code, ended_at, report_path
+             FROM scheduled_fires WHERE path = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![path, limit as i64], fire_from_row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn scheduled_fire(&self, id: i64) -> anyhow::Result<Option<(String, ScheduledFire)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slot, at, outcome, skip_reason, session_id, exit_code, ended_at, report_path, path
+             FROM scheduled_fires WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| Ok((row.get::<_, String>(9)?, fire_from_row(row)?)))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Claims one fire, atomically across every daemon on this file (see
+    /// `ScheduledClaim`). Refusals are answers, not errors.
+    pub fn claim_scheduled_fire(&mut self, claim: &ScheduledClaim) -> anyhow::Result<FireClaim> {
+        let refused = |why: &str| FireClaim {
+            claimed: false,
+            fire_id: None,
+            fire_number: None,
+            report_path: None,
+            skipped: None,
+            why: Some(why.to_string()),
+        };
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // A claim whose launch was never recorded -- the app went away
+        // between the two -- would read as a run going forever.
+        tx.execute(
+            "UPDATE scheduled_fires SET outcome = 'abandoned'
+             WHERE path = ?1 AND outcome = 'launching' AND at < ?2",
+            params![claim.path, claim.now - SCHEDULED_LAUNCH_GRACE_SECS],
+        )?;
+        let busy: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM scheduled_fires
+                           WHERE path = ?1 AND outcome IN ('launching', 'running'))",
+            params![claim.path],
+            |row| row.get(0),
+        )?;
+        let Some(slot) = claim.slot else {
+            if busy {
+                return Ok(refused("a run of this task is already going"));
+            }
+            tx.execute(
+                "INSERT INTO scheduled_fires (path, slot, at, outcome, report_path)
+                 VALUES (?1, NULL, ?2, 'launching', ?3)",
+                params![claim.path, claim.now, claim.report_path],
+            )?;
+            let id = tx.last_insert_rowid();
+            tx.commit()?;
+            return Ok(FireClaim {
+                claimed: true,
+                fire_id: Some(id),
+                fire_number: None,
+                report_path: Some(claim.report_path.clone()),
+                skipped: None,
+                why: None,
+            });
+        };
+        let Some(schedule) = claim.schedule.as_deref() else {
+            return Ok(refused("this task has no schedule"));
+        };
+        if claim.paused {
+            return Ok(refused("this task is paused"));
+        }
+        let kept: Option<(String, i64, Option<i64>)> = tx
+            .query_row(
+                "SELECT schedule, fire_count, last_slot FROM scheduled_tasks WHERE path = ?1",
+                params![claim.path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok();
+        let (count, last_slot) = match kept {
+            Some((line, count, slot)) if line == schedule => (count.max(0) as u32, slot),
+            _ => (0, None),
+        };
+        if claim.runs.is_some_and(|n| count >= n) {
+            return Ok(refused("this task's schedule is completed"));
+        }
+        let slot = i64::try_from(slot).unwrap_or(i64::MAX);
+        if last_slot.is_some_and(|last| last >= slot) {
+            return Ok(refused("that fire was already claimed"));
+        }
+        let skipped = claim
+            .skip_reason
+            .clone()
+            .or_else(|| busy.then(|| "the previous run was still going".to_string()));
+        match &skipped {
+            Some(reason) => tx.execute(
+                "INSERT INTO scheduled_fires (path, slot, at, outcome, skip_reason, ended_at)
+                 VALUES (?1, ?2, ?3, 'skipped', ?4, ?3)",
+                params![claim.path, slot, claim.now, reason],
+            )?,
+            None => tx.execute(
+                "INSERT INTO scheduled_fires (path, slot, at, outcome, report_path)
+                 VALUES (?1, ?2, ?3, 'launching', ?4)",
+                params![claim.path, slot, claim.now, claim.report_path],
+            )?,
+        };
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO scheduled_tasks (path, schedule, fire_count, last_slot) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET
+               schedule = excluded.schedule, fire_count = excluded.fire_count, last_slot = excluded.last_slot",
+            params![claim.path, schedule, count + 1, slot],
+        )?;
+        // Bounded: an every-minute task runs for as long as gavin is
+        // installed. The count is kept above; the rows only feed the list.
+        tx.execute(
+            "DELETE FROM scheduled_fires WHERE path = ?1 AND id NOT IN
+               (SELECT id FROM scheduled_fires WHERE path = ?1 ORDER BY id DESC LIMIT ?2)",
+            params![claim.path, SCHEDULED_FIRES_KEPT],
+        )?;
+        tx.commit()?;
+        Ok(FireClaim {
+            claimed: true,
+            fire_id: Some(id),
+            fire_number: Some(count + 1),
+            report_path: skipped.is_none().then(|| claim.report_path.clone()),
+            skipped,
+            why: None,
+        })
+    }
+
+    /// What became of a claimed fire's launch. Returns the fire's task
+    /// path and report path, or None for a fire that is no longer
+    /// `launching` -- recorded already, or given up on.
+    pub fn record_scheduled_launch(
+        &mut self,
+        fire_id: i64,
+        session_id: Option<&str>,
+        error: Option<&str>,
+    ) -> anyhow::Result<Option<(String, Option<String>)>> {
+        let row: Option<(String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT path, report_path FROM scheduled_fires WHERE id = ?1 AND outcome = 'launching'",
+                params![fire_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        if row.is_none() {
+            return Ok(None);
+        }
+        match (session_id, error) {
+            (Some(session), None) => self.conn.execute(
+                "UPDATE scheduled_fires SET outcome = 'running', session_id = ?2 WHERE id = ?1",
+                params![fire_id, session],
+            )?,
+            (_, error) => self.conn.execute(
+                "UPDATE scheduled_fires SET outcome = 'failed', skip_reason = ?2, ended_at = ?3 WHERE id = ?1",
+                params![fire_id, error.unwrap_or("the run could not be started"), now_secs()],
+            )?,
+        };
+        Ok(row)
+    }
+
+    /// Closes the scheduled run a session was, when it exits. Returns the
+    /// report paths of the fires it closed, for the terminal to be saved
+    /// beside them.
+    pub fn finish_scheduled_for_session(
+        &mut self,
+        session_id: &str,
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT report_path FROM scheduled_fires
+             WHERE session_id = ?1 AND outcome = 'running' AND report_path IS NOT NULL",
+        )?;
+        let reports = stmt.query_map(params![session_id], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        drop(stmt);
+        self.conn.execute(
+            "UPDATE scheduled_fires SET outcome = 'exited', ended_at = ?2, exit_code = ?3
+             WHERE session_id = ?1 AND outcome = 'running'",
+            params![session_id, now_secs(), exit_code],
+        )?;
+        Ok(reports)
+    }
+
+    /// Fires that claim to be running in a session that is gone: over,
+    /// at a time nobody recorded (`abandon_runs_for_sessions`' reading).
+    pub fn abandon_scheduled_fires(&mut self, ids: &[i64]) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE scheduled_fires SET outcome = 'abandoned' WHERE id = ?1 AND outcome = 'running'",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every trace of a deleted Scheduled task.
+    pub fn purge_scheduled(&mut self, path: &str) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM scheduled_tasks WHERE path = ?1", params![path])?;
+        tx.execute("DELETE FROM scheduled_fires WHERE path = ?1", params![path])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1690,5 +1995,146 @@ mod tests {
         assert_eq!(count, 0, "leftover card tables must be dropped (C5 wipe)");
         // And re-opening stays fine.
         assert!(KanbanStore::open(&db_path).is_ok());
+    }
+
+    fn claim(path: &str, slot: Option<u64>) -> ScheduledClaim {
+        ScheduledClaim {
+            path: path.to_string(),
+            schedule: Some("at=2026-10-21T09:00 every=2m runs=3".to_string()),
+            runs: Some(3),
+            paused: false,
+            slot,
+            skip_reason: None,
+            report_path: format!("/r/runs/t/{}.md", slot.unwrap_or(99)),
+            now: now_secs(),
+        }
+    }
+
+    /// The dev and release daemons share kanban.sqlite: two handles on one
+    /// file are two daemons, and one slot is fired by exactly one of them.
+    #[test]
+    fn a_fire_is_claimed_once_across_two_daemons_on_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        let mut dev = KanbanStore::open(&path).unwrap();
+        let mut release = KanbanStore::open(&path).unwrap();
+        let won = dev.claim_scheduled_fire(&claim("/t.md", Some(4))).unwrap();
+        assert!(won.claimed);
+        assert_eq!(won.fire_number, Some(1));
+        assert_eq!(won.report_path.as_deref(), Some("/r/runs/t/4.md"));
+        let lost = release.claim_scheduled_fire(&claim("/t.md", Some(4))).unwrap();
+        assert!(!lost.claimed, "{lost:?}");
+        // Nor a slot behind it, which a lagging clock would compute.
+        assert!(!release.claim_scheduled_fire(&claim("/t.md", Some(3))).unwrap().claimed);
+        assert_eq!(release.scheduled_state("/t.md", "at=2026-10-21T09:00 every=2m runs=3").unwrap(), (1, Some(4)));
+    }
+
+    #[test]
+    fn a_fire_while_the_last_run_is_going_is_skipped_and_counted() {
+        let (_dir, mut store) = store();
+        let first = store.claim_scheduled_fire(&claim("/t.md", Some(0))).unwrap();
+        store.record_scheduled_launch(first.fire_id.unwrap(), Some("s-1"), None).unwrap();
+        let second = store.claim_scheduled_fire(&claim("/t.md", Some(1))).unwrap();
+        assert!(second.claimed);
+        assert_eq!(second.skipped.as_deref(), Some("the previous run was still going"));
+        assert_eq!(second.report_path, None);
+        // A skip the app decided counts too.
+        let mut walled = claim("/t.md", Some(2));
+        walled.skip_reason = Some("paused for the usage limit".into());
+        let third = store.claim_scheduled_fire(&walled).unwrap();
+        assert_eq!(third.skipped.as_deref(), Some("paused for the usage limit"));
+        assert_eq!(third.fire_number, Some(3));
+        let fourth = store.claim_scheduled_fire(&claim("/t.md", Some(3))).unwrap();
+        assert_eq!(fourth.why.as_deref(), Some("this task's schedule is completed"));
+
+        let fires = store.scheduled_fires("/t.md", 20).unwrap();
+        assert_eq!(fires.iter().map(|f| f.outcome.as_str()).collect::<Vec<_>>(), ["skipped", "skipped", "running"]);
+        assert_eq!(store.finish_scheduled_for_session("s-1", Some(0)).unwrap(), ["/r/runs/t/0.md"]);
+        let fires = store.scheduled_fires("/t.md", 20).unwrap();
+        assert_eq!(fires[2].outcome, "exited");
+        assert_eq!(fires[2].exit_code, Some(0));
+    }
+
+    #[test]
+    fn run_now_never_counts_and_never_runs_twice_at_once() {
+        let (_dir, mut store) = store();
+        let now = store.claim_scheduled_fire(&claim("/t.md", None)).unwrap();
+        assert!(now.claimed);
+        assert_eq!(now.fire_number, None);
+        assert_eq!(store.scheduled_state("/t.md", "at=2026-10-21T09:00 every=2m runs=3").unwrap(), (0, None));
+        assert!(!store.claim_scheduled_fire(&claim("/t.md", None)).unwrap().claimed, "one at a time");
+        store.record_scheduled_launch(now.fire_id.unwrap(), None, Some("no agent")).unwrap();
+        let fires = store.scheduled_fires("/t.md", 20).unwrap();
+        assert_eq!(fires[0].outcome, "failed");
+        assert_eq!(fires[0].skip_reason.as_deref(), Some("no agent"));
+        assert!(store.claim_scheduled_fire(&claim("/t.md", None)).unwrap().claimed);
+    }
+
+    #[test]
+    fn a_paused_unscheduled_or_rescheduled_task_claims_accordingly() {
+        let (_dir, mut store) = store();
+        let mut paused = claim("/t.md", Some(0));
+        paused.paused = true;
+        assert_eq!(store.claim_scheduled_fire(&paused).unwrap().why.as_deref(), Some("this task is paused"));
+        let mut none = claim("/t.md", Some(0));
+        none.schedule = None;
+        assert!(!store.claim_scheduled_fire(&none).unwrap().claimed);
+        // Paused or not, Run now still runs.
+        let mut paused_now = claim("/t.md", None);
+        paused_now.paused = true;
+        assert!(store.claim_scheduled_fire(&paused_now).unwrap().claimed);
+        store.purge_scheduled("/t.md").unwrap();
+
+        let mut once = claim("/t.md", Some(0));
+        once.schedule = Some("at=2026-10-21T09:00".into());
+        once.runs = Some(1);
+        once.skip_reason = Some("x".into());
+        assert!(store.claim_scheduled_fire(&once).unwrap().claimed);
+        assert!(!store.claim_scheduled_fire(&once).unwrap().claimed);
+        // The human moved the start: the count begins again.
+        once.schedule = Some("at=2026-10-22T09:00".into());
+        assert!(store.claim_scheduled_fire(&once).unwrap().claimed);
+        assert_eq!(store.scheduled_state("/t.md", "at=2026-10-22T09:00").unwrap(), (1, Some(0)));
+    }
+
+    #[test]
+    fn a_launch_never_recorded_stops_blocking_after_its_grace() {
+        let (_dir, mut store) = store();
+        let mut old = claim("/t.md", Some(0));
+        old.now -= SCHEDULED_LAUNCH_GRACE_SECS + 5;
+        store.claim_scheduled_fire(&old).unwrap();
+        let next = store.claim_scheduled_fire(&claim("/t.md", Some(1))).unwrap();
+        assert!(next.claimed);
+        assert_eq!(next.skipped, None);
+        assert_eq!(store.scheduled_fires("/t.md", 20).unwrap()[1].outcome, "abandoned");
+    }
+
+    /// The tables are new, so `CREATE TABLE IF NOT EXISTS` is what reaches
+    /// an existing file -- proved against one built with the v76 schema.
+    #[test]
+    fn opening_a_pre_v77_database_adds_the_scheduled_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 CREATE TABLE shell_writes (
+                     conversation_id TEXT NOT NULL,
+                     tool_call_id TEXT NOT NULL,
+                     root TEXT NOT NULL,
+                     paths TEXT NOT NULL,
+                     recorded_at INTEGER NOT NULL,
+                     PRIMARY KEY (conversation_id, tool_call_id)
+                 );",
+            )
+            .unwrap();
+        }
+        let mut store = KanbanStore::open(&path).unwrap();
+        assert!(store.scheduled_fires("/t.md", 20).unwrap().is_empty());
+        assert!(store.claim_scheduled_fire(&claim("/t.md", Some(0))).unwrap().claimed);
+        drop(store);
+        let reopened = KanbanStore::open(&path).unwrap();
+        assert_eq!(reopened.scheduled_fires("/t.md", 20).unwrap().len(), 1);
     }
 }

@@ -266,6 +266,18 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // A read: what the shell-write hook recorded of one run's shell calls,
   // for the Review tab. Writes nothing.
   shell_writes: ["ordinary"],
+  // Scheduled tasks (v77): the copies under .gavin-root/scheduled/ are
+  // committed files, and their run state is bookkeeping.
+  list_scheduled_tasks: ["ordinary"],
+  create_scheduled_task: ["ordinary"],
+  set_scheduled_task_field: ["ordinary"],
+  duplicate_scheduled_task: ["ordinary"],
+  delete_scheduled_task: ["destructive", "removes a Scheduled task's copy and its Run reports; the reports are gitignored and do not come back"],
+  claim_scheduled_fire: ["ordinary"],
+  record_scheduled_launch: ["ordinary"],
+  scheduled_report: ["ordinary"],
+  scheduled_run_now_for_device: ["ordinary"],
+  answer_scheduled_run_now: ["ordinary"],
   set_board: ["ordinary"],
   get_orchestration: ["ordinary"],
   set_orchestration: ["ordinary"],

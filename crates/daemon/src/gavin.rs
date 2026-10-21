@@ -50,15 +50,15 @@ const ROOT_CONFIG_TEMPLATE: &str = "version = 1\n\n[agent]\nprofile = \"claude-c
 /// the recognized pairs; anything else in the block is untouched by
 /// parsing and preserved by `write_plan_status`, which edits lines, never
 /// re-serializes.
-struct Frontmatter {
-    fields: Vec<(String, String)>,
+pub(crate) struct Frontmatter {
+    pub(crate) fields: Vec<(String, String)>,
     /// True iff the file has a complete (opened AND closed) block.
-    present: bool,
+    pub(crate) present: bool,
     /// True iff an opening `---` was never closed before EOF.
-    warning: bool,
+    pub(crate) warning: bool,
 }
 
-fn parse_frontmatter(content: &str) -> Frontmatter {
+pub(crate) fn parse_frontmatter(content: &str) -> Frontmatter {
     let mut lines = content.lines();
     if lines.next() != Some("---") {
         return Frontmatter { fields: vec![], present: false, warning: false };
@@ -442,7 +442,7 @@ fn fence_marker(trimmed: &str) -> Option<(char, usize, bool)> {
 /// The first BODY line index -- everything after the frontmatter's
 /// closing marker. `None` when an opening `---` is never closed, which is
 /// exactly how `checklist_counts` reads that file: no body at all.
-fn body_start(content: &str) -> Option<usize> {
+pub(crate) fn body_start(content: &str) -> Option<usize> {
     let mut lines = content.lines();
     if lines.next() != Some("---") {
         return Some(0);
@@ -926,7 +926,7 @@ fn ymd_from_unix(secs: i64) -> String {
 /// insert as the block's first line when the block lacks it, prepend a new
 /// block when the file has none. Every other byte is preserved --
 /// including the presence/absence of a trailing newline.
-fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+pub(crate) fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -1838,7 +1838,7 @@ pub fn set_checklist_item(
 
 /// The daemon-side slug for promoted-task file names (mirrors the
 /// frontend's slugFileName): lowercase, non-alphanumeric runs -> "-".
-fn slug_title(title: &str) -> Option<String> {
+pub(crate) fn slug_title(title: &str) -> Option<String> {
     let mut slug = String::new();
     let mut last_dash = true;
     for c in title.to_lowercase().chars() {
@@ -2905,6 +2905,12 @@ pub fn tree_relevant(root: &Path, last_tree: Option<&GavinTree>, path: &Path) ->
     if path == root {
         return true; // the root itself renamed away, or back
     }
+    // Scheduled tasks are not the tree (ADR 0010): a copy edited or a
+    // report written is `ScheduledTasksChanged`'s, and must not cost a
+    // rescan of every card.
+    if scheduled_relevant(root, path) {
+        return false;
+    }
     let Ok(rel) = path.strip_prefix(root) else {
         // Outside the root -- and yet it reached us, which it can only do
         // through a watch we registered, and every watch we register is
@@ -2937,6 +2943,16 @@ pub fn tree_relevant(root: &Path, last_tree: Option<&GavinTree>, path: &Path) ->
     last_tree.is_some_and(|tree| {
         tree.contexts.iter().any(|ctx| Path::new(&ctx.folder_path).starts_with(path))
     })
+}
+
+/// Whether a filesystem event is under the root context's
+/// `.gavin-root/scheduled/` -- a Scheduled task's copy or one of its
+/// reports (v77).
+pub fn scheduled_relevant(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else { return false };
+    let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
+    parts.next().is_some_and(|c| c == GAVIN_ROOT_DIR)
+        && parts.next().is_some_and(|c| c == crate::scheduled::SCHEDULED_DIR)
 }
 
 /// How long events accumulate before a flush. Short, because the flush
@@ -3042,6 +3058,11 @@ pub struct GavinWatcher {
     card_index: Mutex<Option<Arc<CardIndex>>>,
     debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<crate::changes_only::ChangesOnly>>>,
     on_scan: Option<ScanHook>,
+    /// Whether the app on `writer` speaks `SCHEDULED_TASKS_MIN_VERSION`
+    /// and is pushed `ScheduledTasksChanged`. Off until the daemon says:
+    /// `Response` has no catch-all, so an older app would lose the
+    /// connection to a push it has no arm for.
+    scheduled_pushes: std::sync::atomic::AtomicBool,
 }
 
 impl GavinWatcher {
@@ -3077,6 +3098,7 @@ impl GavinWatcher {
             card_index: Mutex::new(None),
             debouncer: Mutex::new(None),
             on_scan,
+            scheduled_pushes: std::sync::atomic::AtomicBool::new(false),
         });
 
         // Arm the watch BEFORE the initial scan+push -- the daemon-side
@@ -3105,6 +3127,9 @@ impl GavinWatcher {
                         tree_relevant(&watcher.root_path, inner.last_tree.as_ref(), &e.path)
                     })
                 };
+                if events.iter().any(|e| scheduled_relevant(&watcher.root_path, &e.path)) {
+                    watcher.push_scheduled_changed();
+                }
                 if relevant {
                     watcher.rescan_and_push();
                 }
@@ -3292,6 +3317,18 @@ impl GavinWatcher {
         let _ = writer.write_all(line.as_bytes());
         let _ = writer.write_all(b"\n");
         let _ = writer.flush();
+    }
+
+    /// Turns on `ScheduledTasksChanged` for this watch: the app on its
+    /// writer speaks v77.
+    pub fn enable_scheduled_pushes(&self) {
+        self.scheduled_pushes.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn push_scheduled_changed(&self) {
+        if self.scheduled_pushes.load(std::sync::atomic::Ordering::Relaxed) {
+            self.push_response(&Response::ScheduledTasksChanged { workspace_id: self.workspace_id.clone() });
+        }
     }
 
     /// The paths currently registered with the OS, for tests that need to
@@ -6566,6 +6603,36 @@ mod tests {
         .unwrap();
         let after_drop: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(after_drop.is_err(), "a dropped watcher still emitted");
+    }
+
+    /// A Scheduled task's copy or report changing is pushed as
+    /// `ScheduledTasksChanged` to an app that speaks v77, and is not a
+    /// tree change (ADR 0010: the board never sees the copies).
+    #[test]
+    fn a_scheduled_change_pushes_its_own_notice_and_not_the_tree() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::new(Mutex::new(theirs)), None);
+        watcher.enable_scheduled_pushes();
+        let mut reader = BufReader::new(ours);
+        let first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        crate::scheduled::create_blank(&root, "Nightly", "b", None, None).unwrap();
+        let next: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match next {
+            Some(Response::ScheduledTasksChanged { workspace_id }) => assert_eq!(workspace_id, "ws-1"),
+            other => panic!("expected ScheduledTasksChanged, got {other:?}"),
+        }
+        assert!(scheduled_relevant(&root, &root.join(".gavin-root/scheduled/runs/x/1.md")));
+        assert!(!scheduled_relevant(&root, &root.join(".gavin-root/plans/x.md")));
+        assert!(!tree_relevant(&root, None, &root.join(".gavin-root/scheduled/x.md")));
     }
 
     /// inotify reports a card being opened as an event in a watched

@@ -100,6 +100,21 @@ export const DEFAULT_REORGANIZE =
   "{{read_first}}\n" +
   "{{carry_through}}";
 
+/// A Scheduled task's run (ADR 0010): the copy's body, wrapped in what an
+/// unattended run has to know and the Run report it owes. Nobody watches
+/// the run, so the report is what the human reads in its place; its
+/// first-line heading is the Scheduled tab's "Last run result".
+export const DEFAULT_RUN_SCHEDULED =
+  "This is {{run_label}} of the Scheduled task “{{title}}”, started by gavin on its own. " +
+  "Nobody is watching this run: do not ask questions or wait for an answer, and do not " +
+  "change the status of any card. Work in this checkout as it is.\n\n" +
+  "{{body}}\n\n" +
+  "When you are done -- or as soon as you cannot go on -- write a Run report to this file:\n" +
+  "{{report_path}}\n\n" +
+  "Its first line must be a markdown heading with the result in a few words (for example " +
+  "`# Tests green, nothing to fix`). Under it, say what you did, what changed (files, " +
+  "commits), and anything that needs the human. Write the report even when nothing changed.";
+
 export const DEFAULT_CLEAN_STALE =
   "{{name_tab_first}}\n\n" +
   "The {{tab}} tab lists the {{item_noun}} still open on this workspace's cards. Some of them " +

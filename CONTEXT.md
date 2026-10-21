@@ -22,6 +22,20 @@ _Avoid_: proxy (on its own), the compressor, token saver
 A session whose agent sends its model traffic through Headroom. Whether a session is compressed is settled when its agent launches.
 _Avoid_: routed session, proxied session, headroom session
 
+### Scheduling
+
+**Scheduled task**:
+A copy of a task card that lives off the board and runs unattended on its own schedule, once or repeatedly. Copying it leaves the original card where it was; the two do not follow each other's edits.
+_Avoid_: scheduled card (the card itself is never scheduled), cron job, recurring card
+
+**Fire**:
+One moment a Scheduled task's schedule comes due. A fire either launches a run or is skipped with a reason, and either way it counts toward the schedule's runs.
+_Avoid_: tick (that is the scheduler checking, not the schedule coming due), trigger (that arms a rail)
+
+**Run report**:
+The markdown file the agent writes at the end of a Scheduled task's run, saying what it did and what came of it. It is what the human reads afterwards in place of the terminal.
+_Avoid_: log (that is the raw terminal output), summary
+
 ### Remote access
 
 **Workstation**:

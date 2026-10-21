@@ -37,6 +37,9 @@ import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/agents/la
 import { isArchivedCard, slugStatus, type CardView } from "$lib/core/planBoard";
 import { canReplay, type Column } from "$lib/board/kanban";
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
+import { scheduleCardBlocker } from "$lib/scheduling/scheduleDialog";
+import { requestScheduleCard } from "$lib/scheduling/scheduledActions";
+import { scheduledBlockedReason } from "$lib/scheduling/scheduledState";
 
 /// A fresh agent on the card as it is now, replacing an exited binding
 /// (`launchCardAsNewSession`).
@@ -227,6 +230,21 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         void requestCardCriticalReview(workspaceId, card).then((err) => {
           if (err) hooks.reportError(err);
         });
+      },
+    });
+
+    // Scheduling copies the card (ADR 0010), so it is offered whatever
+    // the card's binding or column -- archived and done cards included --
+    // and refused, with the reason, on a plan. The ellipsis is honest:
+    // the dialog asks when.
+    const scheduleBlocked = scheduleCardBlocker(card.kind) ?? scheduledBlockedReason(workspaceId);
+    entries.push({
+      label: "Schedule…",
+      disabled: scheduleBlocked !== null,
+      tip: scheduleBlocked ?? undefined,
+      onPick: () => {
+        const err = requestScheduleCard(workspaceId, card);
+        if (err) hooks.reportError(err);
       },
     });
 

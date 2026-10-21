@@ -33,7 +33,7 @@ pub const REQUESTED: &str = "agent-commit-requested";
 /// daemon's own wait on a forwarded command (`forwarding::DISPATCH_BUDGET`),
 /// so a window that never answers is reported as that, not as a timeout
 /// of the forwarding connection.
-const ANSWER_BUDGET: Duration = Duration::from_secs(30);
+pub(crate) const ANSWER_BUDGET: Duration = Duration::from_secs(30);
 
 const NO_ANSWER: &str =
     "No gavin window on the Workstation answered. Try again once its window has loaded.";
@@ -81,7 +81,7 @@ impl DeviceCommitRequests {
     /// Hands `answer` to the ask `id` names. The first answer is the one
     /// taken; a second, or one for an ask that has stopped waiting, is
     /// dropped.
-    fn settle(&self, id: u64, answer: Answer) {
+    pub(crate) fn settle(&self, id: u64, answer: Answer) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
             let _ = tx.send(answer);
         }
@@ -89,7 +89,7 @@ impl DeviceCommitRequests {
 
     /// Tells the windows through `announce` and waits up to `budget` for
     /// one to answer.
-    async fn ask(&self, announce: impl FnOnce(u64), budget: Duration) -> Result<Value, String> {
+    pub(crate) async fn ask(&self, announce: impl FnOnce(u64), budget: Duration) -> Result<Value, String> {
         let (id, answer) = self.open();
         announce(id);
         match tokio::time::timeout(budget, answer).await {

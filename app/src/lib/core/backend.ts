@@ -4,6 +4,12 @@ import type { GavinMemorySample, SystemMemorySample, WatchmanSample } from "$lib
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { PrReport } from "$lib/git/pullRequest";
 import type { CardRun, TokenReport } from "$lib/cards/runHistory";
+import type {
+  FireClaim,
+  ScheduledReportText,
+  ScheduledTask,
+  ScheduledTaskField,
+} from "$lib/scheduling/scheduledTask";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import { isTerminalReport } from "$lib/terminal/terminalReport";
@@ -1563,6 +1569,98 @@ export type ShellWrites = {
 /// none and is refused the question.
 export function shellWrites(workspaceId: string, conversationId: string): Promise<ShellWrites> {
   return invoke("shell_writes", { workspaceId, conversationId });
+}
+
+/// A workspace's Scheduled tasks with their run state (v77, ADR 0010).
+/// Gate on FEATURE_MIN_VERSION.scheduledTasks: an older daemon refuses it.
+export function listScheduledTasks(workspaceId: string, rootPath: string): Promise<ScheduledTask[]> {
+  return invoke("list_scheduled_tasks", { workspaceId, rootPath });
+}
+
+/// Copies a task card into a new Scheduled task -- or, with no
+/// `fromCard`, writes one from `title` and `body`. Answers with its path.
+/// A plan is refused ("plans can't be scheduled yet").
+export function createScheduledTask(
+  workspaceId: string,
+  rootPath: string,
+  opts: {
+    fromCard?: string;
+    title?: string;
+    body?: string;
+    schedule?: string;
+    agent?: string;
+  }
+): Promise<string> {
+  return invoke("create_scheduled_task", {
+    workspaceId,
+    rootPath,
+    fromCard: opts.fromCard ?? null,
+    title: opts.title ?? null,
+    body: opts.body ?? null,
+    schedule: opts.schedule ?? null,
+    agent: opts.agent ?? null,
+  });
+}
+
+/// Rewrites one field of a Scheduled task. An empty value removes an
+/// optional field; an empty `schedule` unschedules it.
+export function setScheduledTaskField(
+  workspaceId: string,
+  path: string,
+  key: ScheduledTaskField,
+  value: string
+): Promise<void> {
+  return invoke("set_scheduled_task_field", { workspaceId, path, key, value });
+}
+
+export function duplicateScheduledTask(workspaceId: string, path: string): Promise<string> {
+  return invoke("duplicate_scheduled_task", { workspaceId, path });
+}
+
+/// Deletes a Scheduled task with its reports and run rows.
+export function deleteScheduledTask(workspaceId: string, path: string): Promise<void> {
+  return invoke("delete_scheduled_task", { workspaceId, path });
+}
+
+/// Claims one fire at the daemon, atomically against every other app on
+/// this machine. `slot` null is a Run now. `stamp` is the report's
+/// `YYYYMMDD-HHMMSS`, local. With `skipReason` the fire is recorded as
+/// skipped and counts.
+export function claimScheduledFire(
+  workspaceId: string,
+  path: string,
+  slot: number | null,
+  stamp: string,
+  skipReason: string | null
+): Promise<FireClaim> {
+  return invoke("claim_scheduled_fire", { workspaceId, path, slot, stamp, skipReason });
+}
+
+/// What became of a claimed fire's launch: its session, or why not.
+export function recordScheduledLaunch(
+  workspaceId: string,
+  fireId: number,
+  sessionId: string | null,
+  error: string | null
+): Promise<void> {
+  return invoke("record_scheduled_launch", { workspaceId, fireId, sessionId, error });
+}
+
+/// One fire's Run report and saved terminal, either null.
+export function scheduledReport(workspaceId: string, fireId: number): Promise<ScheduledReportText> {
+  return invoke("scheduled_report", { workspaceId, fireId });
+}
+
+/// A Device's Run now: the phone asks, and the desk window that runs the
+/// workspace starts it (`device_scheduled.rs`). Rejects with the desk's
+/// reason when it does not.
+export function scheduledRunNowForDevice(workspaceId: string, path: string): Promise<unknown> {
+  return invoke("scheduled_run_now_for_device", { workspaceId, path });
+}
+
+/// A desk window's answer to a Device's Run now.
+export function answerScheduledRunNow(id: number, answer: { refused: string } | { value: unknown }): Promise<void> {
+  return invoke("answer_scheduled_run_now", { id, answer });
 }
 
 /// Which of `candidates` -- root-relative paths under `root`, the

@@ -5983,6 +5983,14 @@ pub(crate) fn attach_and_relay(
                     }
                     let _ = crate::forwarding::emit(&reader_app_handle, "tools-changed", (workspace_id, tools));
                 }
+                // A Scheduled task's copy or report changed (v77). Local
+                // only: ssh workspaces have no Scheduled tab.
+                Response::ScheduledTasksChanged { workspace_id } => {
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        continue;
+                    }
+                    let _ = crate::forwarding::emit(&reader_app_handle, "scheduled-tasks-changed", workspace_id);
+                }
                 Response::SessionNamed { session_id, name } => {
                     // The frontend applies it through setSessionName, the
                     // very path the tab's own rename UI takes -- so an
@@ -8943,6 +8951,14 @@ mod gate_tests {
             // v64: the profile's word that a session's OSC 133 markers lie.
             // Sent beside SetFailurePatterns for kimi-code.
             Request::DistrustOsc133 { id: "s".into() },
+            Request::ListScheduledTasks { root_path: "/r".into() },
+            Request::CreateScheduledTask { root_path: "/r".into(), from_card: None, title: None, body: None, schedule: None, agent: None },
+            Request::SetScheduledTaskField { path: "/p".into(), key: "paused".into(), value: "true".into() },
+            Request::DuplicateScheduledTask { path: "/p".into() },
+            Request::DeleteScheduledTask { path: "/p".into() },
+            Request::ClaimScheduledFire { path: "/p".into(), slot: Some(0), stamp: "20261021-090000".into(), skip_reason: None },
+            Request::RecordScheduledLaunch { fire_id: 1, session_id: None, error: None },
+            Request::ScheduledReport { fire_id: 1 },
             // Deserialize-only in production, but nothing stops Rust code
             // from constructing it -- and the sweep needs to, to prove it
             // is refused everywhere rather than just trusting the comment

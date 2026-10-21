@@ -69,6 +69,33 @@ impl SessionScreen {
         self.parser.screen().contents()
     }
 
+    /// Everything the session showed, as plain text: the scrolled-off
+    /// rows, then the visible ones, trailing blank lines dropped.
+    ///
+    /// What a Scheduled task's run leaves beside its report (v77), the
+    /// stand-in when the agent wrote none. Unlike `contents`, history is
+    /// the point here: a headless run prints its whole answer and then
+    /// exits, and the top of it is long gone from the visible rows.
+    pub fn full_text(&mut self) -> String {
+        let screen = self.parser.screen_mut();
+        let (_, cols) = screen.size();
+        screen.set_scrollback(usize::MAX);
+        let total = screen.scrollback();
+        let mut lines = Vec::with_capacity(total);
+        for offset in (1..=total).rev() {
+            screen.set_scrollback(offset);
+            if let Some(row) = screen.rows(0, cols).next() {
+                lines.push(row);
+            }
+        }
+        screen.set_scrollback(0);
+        lines.extend(screen.rows(0, cols));
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        lines.iter().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n")
+    }
+
     /// A byte stream that reproduces this screen in a terminal that has never
     /// seen any of the session's output.
     ///
@@ -184,6 +211,15 @@ mod tests {
         p.screen_mut().set_scrollback(0);
         out.extend((0..rows).map(|r| row_text(p.screen(), r, cols)));
         out
+    }
+
+    #[test]
+    fn full_text_is_the_history_then_the_screen_in_plain_text() {
+        let mut s = sized(3, 20);
+        s.feed(b"\x1b[1mone\x1b[0m\r\ntwo\r\nthree\r\nfour\r\n");
+        assert_eq!(s.full_text(), "one\ntwo\nthree\nfour");
+        // Reading it leaves the screen where it was.
+        assert_eq!(s.contents().lines().next(), Some("three"));
     }
 
     fn sized(rows: u16, cols: u16) -> SessionScreen {

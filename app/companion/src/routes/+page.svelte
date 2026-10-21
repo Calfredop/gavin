@@ -35,6 +35,7 @@
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
   import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
   import PhoneTools from "$companion/surfaces/PhoneTools.svelte";
+  import PhoneScheduled from "$companion/surfaces/PhoneScheduled.svelte";
   import PhoneWorkspaceSettings from "$companion/surfaces/PhoneWorkspaceSettings.svelte";
   import SurfaceTabs from "$companion/surfaces/SurfaceTabs.svelte";
   import { trackVisibleArea } from "$companion/surfaces/viewport";
@@ -168,6 +169,10 @@
             <PhoneItems workspace={open} kind="decisions" />
           {:else if $view.surface === "review"}
             <PhoneItems workspace={open} kind="tests" />
+          {:else if $view.surface === "scheduled"}
+            <div class="scroll">
+              <PhoneScheduled workspace={open} />
+            </div>
           {:else if $view.surface === "git"}
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}
