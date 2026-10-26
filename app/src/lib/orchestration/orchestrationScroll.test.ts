@@ -327,7 +327,7 @@ describe("attachRememberedScroll", () => {
 describe("the wiring", () => {
   it("remembers the strip's x on the element that scrolls sideways", () => {
     const hub = source("OrchestrationHubView.svelte");
-    const at = hub.indexOf('<div class="grid"');
+    const at = hub.search(/<div\s+class="grid"/);
     expect(at).toBeGreaterThan(-1);
     const tag = hub.slice(at, hub.indexOf(">", at));
     expect(tag).toContain("use:remembersScroll={{ workspaceId, railId: null }}");

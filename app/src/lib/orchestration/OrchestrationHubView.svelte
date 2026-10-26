@@ -915,7 +915,12 @@
           onEditStepParams={(stepId) => (editingParamsFor = stepId)}
         />
       {:else}
-      <div class="grid" bind:this={gridEl} use:remembersScroll={{ workspaceId, railId: null }}>
+      <div
+        class="grid"
+        class:no-rails={rails.length === 0}
+        bind:this={gridEl}
+        use:remembersScroll={{ workspaceId, railId: null }}
+      >
       {#if rails.length === 0}
         <p class="empty">
           No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
@@ -1376,13 +1381,21 @@
     overflow-x: auto;
     overflow-y: hidden;
   }
-  /* Inside the strip the empty line shares its row with the add-rail
-     stub, so it takes a column's worth of width and wraps, instead of
-     laying one long sentence across the strip and pushing the stub off
-     the right edge. */
+  /* Inside the strip the empty line takes a column's worth of width and
+     wraps, instead of laying one long sentence across the strip. */
   .grid .empty {
     flex: 0 1 auto;
     max-width: 380px;
+  }
+  /* With no rails the strip stacks: the add-rail stub goes UNDER the
+     "No rails yet" line, the sentence that tells the human to press it,
+     rather than beside it where it read as a second, unrelated column.
+     The stub's left edge lines up with the line's text. */
+  .grid.no-rails {
+    flex-direction: column;
+  }
+  .grid.no-rails .add-rail-col {
+    margin: 0 12px;
   }
   /* The kanban's `.add-column`, declaration for declaration: a dashed
      stub at the TOP of the strip rather than a full-height column, so it

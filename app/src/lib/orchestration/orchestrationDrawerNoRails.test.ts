@@ -49,12 +49,17 @@ describe("the unplaced drawer stands even with no rails", () => {
   });
 
   it("puts the “No rails yet” copy inside the grid, beside the drawer", () => {
-    const gridAt = template.indexOf('<div class="grid"');
+    const gridAt = template.search(/<div\s+class="grid"/);
     const emptyAt = template.indexOf("No rails yet");
     const drawerAt = template.indexOf("<OrchestrationDrawer");
     expect(gridAt).toBeGreaterThan(0);
     expect(emptyAt).toBeGreaterThan(gridAt);
     expect(drawerAt).toBeGreaterThan(emptyAt);
+  });
+
+  it("stacks the add-rail stub under the “No rails yet” copy, not beside it", () => {
+    expect(template).toMatch(/class:no-rails=\{rails\.length === 0\}/);
+    expect(hub).toMatch(/\.grid\.no-rails \{\s*flex-direction: column;/);
   });
 
   it("hands the drawer a null target rail rather than withholding the drawer", () => {
