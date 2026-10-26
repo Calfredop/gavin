@@ -34,7 +34,8 @@ Order: spike → broker → (install-wizard ∥ live-pane) → companion → the
 - [ ] Human test: with the workspace override set to "Open from the tab chip" while the app default stays automatic, an agent's first `browser_navigate` opens no pane, and the tab's browser chip opens it
 - [ ] Human test: the same macOS run on a Windows machine and on a Linux machine
 - [ ] Human test: an ssh workspace on a real remote host shows the live pane
-- [ ] Human test: the Companion on a phone shows the live view of a running agent's browser
+- [x] Human test: the Companion on a phone shows the live view of a running agent's browser
+  Closed as stale (2026-10-21): superseded by the child card playwright-companion-view.md, whose open Human test checks the same phone live view step by step (globe, layout, following pages, dismissal).
 - [ ] Human test: a workspace created before this step shows the Home banner once, and "Not now" clears it
 
 <!-- gavin:auto-commit -->

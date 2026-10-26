@@ -25,7 +25,8 @@ After app restart, workspaces (Gavin, Grimoria, treccy) keep spawning Claude eve
 - [x] Confirm which fix: seed DEFAULT_CYCLE.limitEnabled for launches, or require an explicit cycle and fix the Settings display
 - [x] Fix + regression
 - [ ] Human test: restart app with Claude over threshold; Gavin/Grimoria/treccy must not spawn Claude when a fallback is under threshold
-- [ ] Human test: restart app with Claude over threshold; Gavin/Grimoria/treccy must not spawn Claude when a fallback is under threshold
+- [x] Human test: restart app with Claude over threshold; Gavin/Grimoria/treccy must not spawn Claude when a fallback is under threshold
+  Closed as stale (2026-10-21): a word-for-word duplicate of the item directly above, which stays open as the one check.
 - [ ] Human test: Settings > Agents > Pause: a built-in agent's "Hold when a window is N% used" box is live; a custom agent's is greyed out and unchecked with the "only the schedule applies" hint
 
 ## Outcome

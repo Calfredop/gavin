@@ -33,8 +33,9 @@ Read `docs/adr/0010-a-scheduled-task-is-a-copy.md` and the Scheduling terms in `
 - [ ] Human test: Schedule a task every 2 minutes ×3: it fires three times then reads completed; Pause stops the next fire, Run now runs without changing the count, and a run still going when the next is due shows that fire as skipped
 - [ ] Human test: With the dev and release apps both open on this workspace, a scheduled fire launches once, not twice
 - [ ] Human test: On the Companion, the Scheduled surface lists the same tasks, Pause/Run now/Delete act on the desk, and the last report opens
-- [ ] Decision: What may a scheduled run do unattended? The commit agent's headless argv grants Claude Code git only, which cannot even write the Run report. Built now: Claude Code gets `--permission-mode acceptEdits` plus git (edit files, run git, no other shell); codex/gemini/cursor keep their headless grants; opencode is not offered (its headless mode is the git-only commit agent).
+- [x] Decision: What may a scheduled run do unattended? The commit agent's headless argv grants Claude Code git only, which cannot even write the Run report. Built now: Claude Code gets `--permission-mode acceptEdits` plus git (edit files, run git, no other shell); codex/gemini/cursor keep their headless grants; opencode is not offered (its headless mode is the git-only commit agent).
   Options: A) Keep it: edit files + git only B) Widen Claude Code to any shell command (--allowedTools Bash) C) Bypass all permissions for scheduled runs D) Give opencode a scheduled-run agent definition too
+  Answer (2026-10-21): Keep it: edit files + git only
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

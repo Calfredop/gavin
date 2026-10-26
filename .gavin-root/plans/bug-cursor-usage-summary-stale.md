@@ -12,4 +12,5 @@ Cursor limits in the usage panel are wrong or empty. Gavin still probed `GET htt
 - [x] Switch Cursor probe to `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` with Bearer token + Connect-Protocol-Version: 1
 - [x] Parse `planUsage` percents + ms `billingCycleEnd`; keep capped on-demand from `spendLimitUsage` when present
 - [x] Update unit fixtures; keep old usage-summary shape parsing as fallback
-- [ ] Human test: after rebuilding the desktop app, open the usage panel — Cursor Total/Auto should match cursor.com dashboard (~26% on this account), not 0%
+- [x] Human test: after rebuilding the desktop app, open the usage panel — Cursor Total/Auto should match cursor.com dashboard (~26% on this account), not 0%
+  Result (2026-10-21): passed
