@@ -4047,7 +4047,10 @@ fn the_direct_listener_refuses_what_is_not_a_device_hello_for_this_workstation()
 }
 
 /// A socket that opens and says nothing holds one of the listener's
-/// places only until the hello deadline.
+/// places only until its first-byte deadline (`direct.rs`'s `FIRST_BYTE`,
+/// 1 s) -- not the whole 5 s hello deadline, which is for a peer that is
+/// talking. A stranger renewing silent sockets every few seconds used to
+/// keep every place taken that way.
 #[test]
 fn a_peer_that_never_says_hello_is_let_go() {
     let mut workstation = Workstation::start_trusting("");
@@ -4063,8 +4066,10 @@ fn a_peer_that_never_says_hello_is_let_go() {
         matches!(&read, Ok(0)) || matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset),
         "{read:?}"
     );
-    assert!(took >= Duration::from_secs(4), "let go before the deadline: {took:?}");
-    assert!(took < Duration::from_secs(10), "held past the deadline: {took:?}");
+    // The deadline runs from the accept, which can trail the connect by
+    // an accept poll: a little under a second is still the deadline.
+    assert!(took >= Duration::from_millis(900), "let go before the first-byte deadline: {took:?}");
+    assert!(took < Duration::from_secs(4), "held toward the hello deadline: {took:?}");
 }
 
 /// The listener holds a fixed number of sockets at once. One over is

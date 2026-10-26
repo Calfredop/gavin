@@ -477,7 +477,7 @@ pub fn ok(out: GitOutput) -> Result<GitOutput, String> {
 /// textconv on a read the host started on its own. Prefixed ahead of
 /// `--no-optional-locks` so every RO argv carries the same shield whether
 /// it runs locally or is forwarded as `RunGit` to an ssh host.
-fn readonly_git_prefix<'a>(args: &[&'a str]) -> Vec<&'a str> {
+pub(super) fn readonly_git_prefix<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let mut full = Vec::with_capacity(args.len() + 8);
     full.extend_from_slice(&[
         "-c",

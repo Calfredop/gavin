@@ -274,7 +274,7 @@ mod tests {
     use super::*;
     use crate::git::commands::testutil::*;
     use crate::git::commands::{checkout, create_branch, status};
-    use crate::git::run::{git_calls_of, OpControl};
+    use crate::git::run::{git_calls_of, readonly_git_prefix, OpControl};
 
     fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         git(cwd(dir), &["add", "-A"]);
@@ -334,7 +334,10 @@ mod tests {
         let dir = text_conflict();
         let (labels, calls) = git_calls_of(|| labels(cwd(&dir)));
         assert_eq!(labels.unwrap().operation, "merge");
-        let calls: Vec<&str> = calls.iter().map(|c| c.trim_start_matches("--no-optional-locks ")).collect();
+        // What each process DOES: the read-only shield every one carries
+        // is not part of the count.
+        let shield = format!("{} ", readonly_git_prefix(&[]).join(" "));
+        let calls: Vec<&str> = calls.iter().map(|c| c.strip_prefix(shield.as_str()).unwrap_or(c)).collect();
         assert_eq!(
             calls,
             [
