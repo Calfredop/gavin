@@ -4128,8 +4128,24 @@ impl SessionManager {
     ) {
         let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
+        // The Workspace log's card diff (v79). Its first look of this
+        // watch stamps what it finds "noticed on start": anything it sees
+        // changed then happened while nobody was watching. `last` skips
+        // the store when a rescan found the cards as they were.
+        let first_look = std::sync::atomic::AtomicBool::new(true);
+        let last_scan: Mutex<Option<crate::workspace_log::CardScan>> = Mutex::new(None);
         let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
             let manager = weak.upgrade()?;
+            if let Some(scan) = crate::workspace_log::scan_of(tree) {
+                let mut last = last_scan.lock().unwrap();
+                if last.as_ref() != Some(&scan) {
+                    let on_start = first_look.load(std::sync::atomic::Ordering::Relaxed);
+                    if manager.journal_cards(workspace_id, &scan, on_start) {
+                        first_look.store(false, std::sync::atomic::Ordering::Relaxed);
+                        *last = Some(scan);
+                    }
+                }
+            }
             // Keeps the card index up with the board, so gavin_find_cards
             // finds it ready. Returns at once: the embedding runs on a
             // thread of its own, never on this scan's.
@@ -4147,7 +4163,26 @@ impl SessionManager {
         if speaks >= protocol::SCHEDULED_TASKS_MIN_VERSION {
             watcher.enable_scheduled_pushes();
         }
-        manager.install_gavin_watcher(workspace_id, generation, watcher);
+        if speaks >= protocol::WORKSPACE_LOG_MIN_VERSION {
+            watcher.enable_log_pushes();
+        }
+        if !manager.install_gavin_watcher(workspace_id, generation, Arc::clone(&watcher)) {
+            return;
+        }
+        // The workspace's git, for the Workspace log (v79): read once now
+        // and on every reflog change, for as long as this watch lives.
+        // After the install, not before: the app answers the first tree
+        // push with reads that need the watch in place, and this starts a
+        // git process.
+        let weak = Arc::downgrade(manager);
+        let id = workspace_id.to_string();
+        if let Some(reflogs) = crate::reflog::watch(&watcher.root_path, move |sources| {
+            if let Some(manager) = weak.upgrade() {
+                manager.sync_reflogs(&id, sources);
+            }
+        }) {
+            watcher.attach(Box::new(reflogs));
+        }
     }
 
     /// Claims the next watch of `workspace_id`. The value has to come back
@@ -4667,6 +4702,10 @@ impl SessionManager {
         // has since ended must not refuse the write forever. Taken and
         // released before the orchestration lock -- never both at once.
         let live: HashSet<String> = self.sessions.lock().unwrap().keys().cloned().collect();
+        let before: Vec<(String, String)> = self
+            .get_orchestration(workspace_id)
+            .map(|o| o.rails.into_iter().map(|r| (r.id, r.name)).collect())
+            .unwrap_or_default();
         // The `?` before the push is deliberate: a refused write (the
         // running-step guard) must not push a plan that was never stored.
         // The lock is released at the end of this statement, which
@@ -4676,6 +4715,20 @@ impl SessionManager {
             .unwrap()
             .replace_plan(workspace_id, &rails, &conflict_notes, &live)?;
         self.push_orchestration(workspace_id);
+        // The arrangement is written whole, so a rail is created or
+        // deleted by its id appearing or going.
+        let now = crate::kanban::now_secs();
+        let mut kanban = self.kanban.lock().unwrap();
+        for rail in rails.iter().filter(|r| !before.iter().any(|(id, _)| *id == r.id)) {
+            let payload = crate::workspace_log::rail_payload(&rail.id, &rail.name);
+            let _ = kanban.append_log(workspace_id, now, protocol::workspace_log::LogKind::RailCreated, &payload);
+        }
+        for (id, name) in before.iter().filter(|(id, _)| !rails.iter().any(|r| r.id == *id)) {
+            let payload = crate::workspace_log::rail_payload(id, name);
+            let _ = kanban.append_log(workspace_id, now, protocol::workspace_log::LogKind::RailDeleted, &payload);
+        }
+        drop(kanban);
+        self.flush_log();
         Ok(())
     }
 
@@ -4919,6 +4972,133 @@ impl SessionManager {
         orchestration.tool_runs(workspace_id)
     }
 
+    // ---- The Workspace log (v79) ----------------------------------------
+
+    /// A page of a workspace's log, newest first. See `Request::WorkspaceLog`.
+    pub fn workspace_log(
+        &self,
+        workspace_id: &str,
+        before: Option<protocol::workspace_log::LogCursor>,
+        limit: u32,
+        categories: &[protocol::workspace_log::LogCategory],
+        search: Option<&str>,
+    ) -> anyhow::Result<(Vec<protocol::workspace_log::LogEntry>, bool)> {
+        self.kanban.lock().unwrap().workspace_log(workspace_id, before, limit, categories, search)
+    }
+
+    pub fn clear_workspace_log(&self, workspace_id: &str, older_than: Option<i64>) -> anyhow::Result<u64> {
+        self.kanban.lock().unwrap().clear_workspace_log(workspace_id, older_than)
+    }
+
+    /// Appends one entry and pushes it. The seam for writers outside this
+    /// file -- the git reflog reader, the host's branch deletion.
+    pub fn append_log(
+        &self,
+        workspace_id: &str,
+        at: i64,
+        kind: protocol::workspace_log::LogKind,
+        payload: &protocol::workspace_log::LogPayload,
+    ) -> anyhow::Result<protocol::workspace_log::LogEntry> {
+        let entry = self.kanban.lock().unwrap().append_log(workspace_id, at, kind, payload)?;
+        self.flush_log();
+        Ok(entry)
+    }
+
+    /// Pushes every log entry written since the last flush to the app
+    /// watching its workspace, when that app speaks v79. Best-effort, like
+    /// every watcher push: an app that missed one reads it with its next
+    /// page.
+    pub fn flush_log(&self) {
+        let entries = self.kanban.lock().unwrap().take_log_appended();
+        if entries.is_empty() {
+            return;
+        }
+        let mut by_workspace: Vec<(String, Vec<protocol::workspace_log::LogEntry>)> = Vec::new();
+        for entry in entries {
+            match by_workspace.iter_mut().find(|(w, _)| *w == entry.workspace_id) {
+                Some((_, list)) => list.push(entry),
+                None => by_workspace.push((entry.workspace_id.clone(), vec![entry])),
+            }
+        }
+        for (workspace_id, entries) in by_workspace {
+            let watcher = self.gavin_watchers.lock().unwrap().get(&workspace_id).cloned();
+            if let Some(watcher) = watcher.filter(|w| w.log_pushes_enabled()) {
+                watcher.push_response(&protocol::Response::WorkspaceLogAppended { workspace_id, entries });
+            }
+        }
+    }
+
+    /// Journals one scan's cards (the watch hook calls this). A failure is
+    /// reported and stepped over: the snapshot is left as it was, so the
+    /// next scan diffs against it and loses nothing.
+    fn journal_cards(&self, workspace_id: &str, scan: &crate::workspace_log::CardScan, noticed_on_start: bool) -> bool {
+        let result = self.kanban.lock().unwrap().journal_cards(workspace_id, scan, noticed_on_start);
+        self.flush_log();
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("workspace log: could not journal {workspace_id}'s cards: {e}");
+                false
+            }
+        }
+    }
+
+    /// Reads a workspace's new reflog lines (the reflog watch calls this).
+    fn sync_reflogs(&self, workspace_id: &str, sources: &[crate::reflog::Source]) {
+        let result = self.kanban.lock().unwrap().sync_reflogs(workspace_id, sources);
+        if let Err(e) = result {
+            eprintln!("workspace log: could not read {workspace_id}'s reflogs: {e}");
+        }
+        self.flush_log();
+    }
+
+    /// Logs a branch the desktop deleted in the checkout at `cwd`, in the
+    /// watched workspace holding it; nothing for one no workspace holds.
+    pub fn record_branch_deleted(&self, cwd: &str, branch: &str) -> anyhow::Result<()> {
+        let Some(workspace_id) = self.workspace_containing(std::path::Path::new(cwd)) else { return Ok(()) };
+        let worktree = protocol::canonical_path(std::path::Path::new(cwd))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| cwd.to_string());
+        let payload = protocol::workspace_log::LogPayload {
+            branch: Some(branch.trim_start_matches("refs/heads/").to_string()),
+            worktree: Some(worktree),
+            ..Default::default()
+        };
+        let kind = protocol::workspace_log::LogKind::GitBranchDeleted;
+        self.append_log(&workspace_id, crate::kanban::now_secs(), kind, &payload)?;
+        Ok(())
+    }
+
+    /// The watched workspace whose root holds `path`, if any.
+    fn workspace_containing(&self, path: &std::path::Path) -> Option<String> {
+        let canonical = protocol::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
+        self.gavin_watchers
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|w| canonical.starts_with(&w.root_path))
+            .max_by_key(|w| w.root_path.as_os_str().len())
+            .map(|w| w.workspace_id.clone())
+    }
+
+    /// Logs a run-state write's transition for one rail. `before` is the
+    /// rail's state read before the write.
+    fn log_rail_transition(&self, rail_id: &str, before: Option<String>) {
+        let Some(workspace_id) = self.orchestration.lock().unwrap().rail_workspace(rail_id).ok().flatten() else {
+            return;
+        };
+        let Ok(o) = self.get_orchestration(&workspace_id) else { return };
+        let Some(look) = crate::workspace_log::RailLook::of(&o, rail_id, &workspace_id) else { return };
+        let Some((kind, reason)) = crate::workspace_log::rail_transition(before.as_deref(), &look) else { return };
+        let payload = protocol::workspace_log::LogPayload {
+            reason,
+            ..crate::workspace_log::rail_payload(rail_id, &look.name)
+        };
+        if let Err(e) = self.append_log(&workspace_id, crate::kanban::now_secs(), kind, &payload) {
+            eprintln!("workspace log: could not log rail {rail_id}: {e}");
+        }
+    }
+
     /// Every card run and standalone tool run of this workspace that
     /// STARTED in `[since, until)`, oldest first: the activity calendar's
     /// read (v78). One list over both stores, because the calendar counts
@@ -4989,7 +5169,14 @@ impl SessionManager {
         state: &str,
         current_stage_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.orchestration.lock().unwrap().set_rail_run(rail_id, state, current_stage_id.as_deref())
+        let before = {
+            let mut orchestration = self.orchestration.lock().unwrap();
+            let before = orchestration.rail_state(rail_id)?;
+            orchestration.set_rail_run(rail_id, state, current_stage_id.as_deref())?;
+            before
+        };
+        self.log_rail_transition(rail_id, before);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5037,7 +5224,9 @@ impl SessionManager {
             launch_cwd,
             resume_attempts,
             base_sha,
-        )
+        )?;
+        self.flush_log();
+        Ok(())
     }
 
     pub fn unlink_card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
@@ -5274,6 +5463,20 @@ impl SessionManager {
             now: crate::kanban::now_secs(),
         };
         let mut claimed = self.kanban.lock().unwrap().claim_scheduled_fire(&claim)?;
+        if claimed.claimed && claimed.skipped.is_none() {
+            if let Some(workspace_id) = self.workspace_containing(&confined) {
+                let payload = protocol::workspace_log::LogPayload {
+                    scheduled_path: Some(claim.path.clone()),
+                    card_title: Some(copy.title.clone()),
+                    fire_number: claimed.fire_number,
+                    ..Default::default()
+                };
+                let kind = protocol::workspace_log::LogKind::ScheduledFired;
+                if let Err(e) = self.append_log(&workspace_id, claim.now, kind, &payload) {
+                    eprintln!("workspace log: could not log a Scheduled fire: {e}");
+                }
+            }
+        }
         if claimed.report_path.is_some() {
             // The agent writes into this folder; it has to exist first.
             if let Some(dir) = report.parent() {
@@ -5486,6 +5689,7 @@ impl SessionManager {
             held.as_ref().and_then(|h| h.resume_attempts),
             base_sha.as_deref(),
         )?;
+        self.flush_log();
         Ok(true)
     }
 
@@ -6721,6 +6925,7 @@ impl SessionManager {
             if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
                 eprintln!("failed to close card runs for session {id}: {e}");
             }
+            manager.flush_log();
             // And whatever Scheduled task run it was (v77), with its
             // terminal saved beside the report: the screen is still here,
             // it is only freed by `kill_session`.
@@ -7268,6 +7473,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::ActivityRuns { workspace_id, since, until } => manager
             .activity_runs(&workspace_id, since, until)
             .map(|runs| Response::ActivityRuns { runs }),
+        Request::WorkspaceLog { workspace_id, before, limit, categories, search } => manager
+            .workspace_log(&workspace_id, before, limit, &categories, search.as_deref())
+            .map(|(entries, more)| Response::WorkspaceLog { entries, more }),
+        Request::ClearWorkspaceLog { workspace_id, older_than } => manager
+            .clear_workspace_log(&workspace_id, older_than)
+            .map(|removed| Response::WorkspaceLogCleared { removed }),
+        Request::RecordBranchDeleted { cwd, branch } => {
+            manager.record_branch_deleted(&cwd, &branch).map(|_| Response::Ok)
+        }
         // What a shell call wrote (v72). An agent reaches the write only
         // for a root in its own scope (`agent_allows`); the read is the
         // app's.
@@ -7884,6 +8098,14 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // The activity calendar's read (v78): every run in a window, the
         // run history above across a whole workspace.
         | Request::ActivityRuns { .. }
+        // The Workspace log (v79): what happened across the whole
+        // workspace, and its clear -- the human's record, not the agent's.
+        | Request::WorkspaceLog { .. }
+        | Request::ClearWorkspaceLog { .. }
+        // The desktop's own report of a branch it deleted; an agent's
+        // `git branch -D` is its own business, and it could otherwise
+        // write entries about branches that never existed.
+        | Request::RecordBranchDeleted { .. }
         // What every run's shell calls wrote (v72): the Review tab's
         // read. An agent records its own and has no use for this one.
         | Request::ShellWrites { .. }
@@ -10783,6 +11005,247 @@ mod tests {
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
         }
+    }
+
+    // ---- The Workspace log (v79) -------------------------------------------
+
+    /// Puts a card in place in one rename, so no scan can catch it half
+    /// written -- that is the debouncer's job, not this test's subject.
+    fn place_card(plans: &std::path::Path, rel: &str, content: &str) {
+        let staged = plans.parent().unwrap().join(format!("staged-{}", rel.replace('/', "-")));
+        std::fs::write(&staged, content).unwrap();
+        std::fs::rename(&staged, plans.join(rel)).unwrap();
+    }
+
+    fn log_of(manager: &SessionManager, workspace: &str) -> Vec<protocol::workspace_log::LogEntry> {
+        let (mut entries, _) = manager.workspace_log(workspace, None, 500, &[], None).unwrap();
+        entries.reverse();
+        entries
+    }
+
+    fn sorted_kinds(entries: &[protocol::workspace_log::LogEntry]) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = entries
+            .iter()
+            .map(|e| (e.kind.as_str().to_string(), e.payload.card_file.clone().unwrap_or_default()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The card diff end to end: a real watch over real files, with the
+    /// rescans forced rather than waited for. The first look seeds and logs
+    /// nothing; later ones log what changed and push it to an app that
+    /// speaks 79; a fresh watch stamps what changed while nobody looked.
+    #[test]
+    fn a_watched_workspaces_card_changes_are_journaled_and_pushed() {
+        use protocol::workspace_log::LogKind;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let plans = ws.path().join(".gavin-root/plans");
+        place_card(&plans, "a.md", "---\ntitle: Alpha\nstatus: To Do\n---\n");
+        place_card(&plans, "b.md", "---\ntitle: Beta\nstatus: To Do\n---\n");
+        let manager = test_manager(&dir);
+        let (ours, theirs) = Stream::pair().unwrap();
+        let root = ws.path().to_string_lossy().to_string();
+        SessionManager::watch_gavin_root_speaking(&manager, "ws-1", &root, Arc::new(Mutex::new(theirs)), 79);
+        let watcher = manager.gavin_watchers.lock().unwrap().get("ws-1").cloned().unwrap();
+        assert!(log_of(&manager, "ws-1").is_empty(), "a board the log has never seen is not new");
+
+        place_card(&plans, "c.md", "---\ntitle: Gamma\n---\n- [ ] Decision: Which store?\n");
+        place_card(&plans, "a.md", "---\ntitle: Alpha\nstatus: In Progress\n---\n");
+        std::fs::create_dir_all(plans.join("archive")).unwrap();
+        std::fs::rename(plans.join("b.md"), plans.join("archive/b.md")).unwrap();
+        watcher.rescan_and_push();
+        let entries = log_of(&manager, "ws-1");
+        assert_eq!(
+            sorted_kinds(&entries),
+            vec![
+                ("card_archived".into(), "b.md".into()),
+                ("card_created".into(), "c.md".into()),
+                ("card_moved".into(), "a.md".into()),
+                ("decision_filed".into(), "c.md".into()),
+            ]
+        );
+        let moved = entries.iter().find(|e| e.kind == LogKind::CardMoved).unwrap();
+        assert_eq!(moved.payload.from_column.as_deref(), Some("To Do"));
+        assert_eq!(moved.payload.to_column.as_deref(), Some("In Progress"));
+        assert!(entries.iter().all(|e| !e.payload.noticed_on_start), "seen live, not on start");
+
+        // What reached the app, skipping the tree pushes around it.
+        let mut reader = line_reader(ours);
+        let mut pushed = Vec::new();
+        while pushed.len() < entries.len() {
+            match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+                Response::WorkspaceLogAppended { workspace_id, entries } => {
+                    assert_eq!(workspace_id, "ws-1");
+                    pushed.extend(entries);
+                }
+                _ => continue,
+            }
+        }
+        assert_eq!(sorted_kinds(&pushed), sorted_kinds(&entries));
+
+        place_card(&plans, "c.md", "---\ntitle: Gamma\n---\n- [x] Decision: Which store?\n  Answer (2026-10-26): SQLite\n");
+        std::fs::remove_file(plans.join("a.md")).unwrap();
+        watcher.rescan_and_push();
+        let later: Vec<_> = log_of(&manager, "ws-1").into_iter().skip(entries.len()).collect();
+        assert_eq!(
+            sorted_kinds(&later),
+            vec![("card_deleted".into(), "a.md".into()), ("decision_answered".into(), "c.md".into())]
+        );
+        let answered = later.iter().find(|e| e.kind == LogKind::DecisionAnswered).unwrap();
+        assert_eq!(answered.payload.item_text.as_deref(), Some("Which store?"));
+        assert_eq!(answered.payload.item_outcome.as_deref(), Some("Answer (2026-10-26): SQLite"));
+
+        // Changed while no watch was running, then a fresh watch: noticed
+        // on start. And an app that does not speak 79 is pushed nothing.
+        // Gone means gone: a rescan the old watch started may still be
+        // sleeping out its floor with a strong hold on it, and would log
+        // the next card live when it woke.
+        let old = Arc::downgrade(&watcher);
+        drop(watcher);
+        manager.unwatch_gavin_root("ws-1");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while old.upgrade().is_some() {
+            assert!(std::time::Instant::now() < deadline, "the old watch never went away");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        place_card(&plans, "d.md", "---\ntitle: Delta\n---\n");
+        let (_ours, theirs) = Stream::pair().unwrap();
+        SessionManager::watch_gavin_root_speaking(&manager, "ws-1", &root, Arc::new(Mutex::new(theirs)), 78);
+        assert!(!manager.gavin_watchers.lock().unwrap().get("ws-1").unwrap().log_pushes_enabled());
+        let last = log_of(&manager, "ws-1").pop().unwrap();
+        assert_eq!((last.kind, last.payload.card_file.as_deref()), (LogKind::CardCreated, Some("d.md")));
+        assert!(last.payload.noticed_on_start);
+    }
+
+    /// Rails are journaled by the writes that change them: created and
+    /// deleted off the arrangement, the rest off run-state writes read
+    /// against the rail's steps.
+    #[test]
+    fn rail_writes_are_journaled_as_their_transitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let rail = orch_rail("r1", "t1");
+        manager.set_orchestration("ws-1", vec![rail.clone()], vec![]).unwrap();
+        manager.set_rail_run("r1", "running", Some("s1".into())).unwrap();
+        manager.set_rail_run("r1", "running", Some("s1".into())).unwrap();
+        manager.set_rail_run("r1", "paused", Some("s1".into())).unwrap();
+        manager.set_rail_run("r1", "running", Some("s1".into())).unwrap();
+        manager.set_step_run("t1", "stalled", None, Some("worktree missing".into()), None, None, None).unwrap();
+        manager.set_rail_run("r1", "paused", Some("s1".into())).unwrap();
+        manager.set_step_run("t1", "done", None, None, None, None, None).unwrap();
+        manager.set_rail_run("r1", "running", Some("s1".into())).unwrap();
+        manager.set_rail_run("r1", "idle", None).unwrap();
+        manager.set_orchestration("ws-1", vec![], vec![]).unwrap();
+
+        let entries = log_of(&manager, "ws-1");
+        let kinds: Vec<&str> = entries.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "rail_created",
+                "rail_started",
+                "rail_paused",
+                "rail_resumed",
+                "rail_failed",
+                "rail_resumed",
+                "rail_finished",
+                "rail_deleted"
+            ]
+        );
+        assert!(entries.iter().all(|e| e.payload.rail_name.as_deref() == Some("backend")));
+        assert_eq!(entries[4].payload.reason.as_deref(), Some("worktree missing"));
+    }
+
+    /// A watched workspace that is a repository has its git in the log: a
+    /// commit made after the watch began is read off the reflog, and a
+    /// branch the desktop deleted is logged where its checkout is.
+    #[test]
+    fn a_watched_repositorys_commits_and_deleted_branches_reach_the_log() {
+        use protocol::workspace_log::LogKind;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=a@b", "-c", "user.name=A", "-c", "init.defaultBranch=main"])
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        crate::gavin::init_gavin_root(&root, "WS").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "scaffold"]);
+        let manager = test_manager(&dir);
+        let (_ours, theirs) = Stream::pair().unwrap();
+        SessionManager::watch_gavin_root_speaking(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+            79,
+        );
+        assert!(log_of(&manager, "ws-1").iter().all(|e| e.kind != LogKind::GitCommit), "history is not news");
+
+        std::fs::write(root.join("x.txt"), "x").unwrap();
+        git(&["add", "x.txt"]);
+        git(&["commit", "-qm", "watched commit"]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let commit = loop {
+            if let Some(e) = log_of(&manager, "ws-1").into_iter().find(|e| e.kind == LogKind::GitCommit) {
+                break e;
+            }
+            assert!(std::time::Instant::now() < deadline, "the commit never reached the log");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(commit.payload.message.as_deref(), Some("watched commit"));
+        assert_eq!(commit.payload.branch.as_deref(), Some("main"));
+
+        let resp = handle_request(
+            &manager,
+            Request::RecordBranchDeleted { cwd: root.to_string_lossy().to_string(), branch: "refs/heads/feat/x".into() },
+        );
+        assert!(matches!(resp, Response::Ok));
+        let deleted = log_of(&manager, "ws-1").pop().unwrap();
+        assert_eq!((deleted.kind, deleted.payload.branch.as_deref()), (LogKind::GitBranchDeleted, Some("feat/x")));
+        // A checkout no watched workspace holds logs nothing and is no error.
+        let resp = handle_request(&manager, Request::RecordBranchDeleted { cwd: "/nowhere".into(), branch: "b".into() });
+        assert!(matches!(resp, Response::Ok));
+        assert_eq!(log_of(&manager, "ws-1").pop().unwrap().id, deleted.id);
+    }
+
+    /// The page read and the clear over the wire, as the app sends them.
+    #[test]
+    fn the_log_is_read_in_pages_and_cleared_through_handle_request() {
+        use protocol::workspace_log::{LogCategory, LogKind, LogPayload};
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let now = crate::kanban::now_secs();
+        for (at, kind) in [(now - 100 * 86_400, LogKind::CardCreated), (now - 10, LogKind::RailStarted)] {
+            manager.append_log("ws-1", at, kind, &LogPayload::default()).unwrap();
+        }
+        let page = |categories: Vec<LogCategory>| match handle_request(
+            &manager,
+            Request::WorkspaceLog { workspace_id: "ws-1".into(), before: None, limit: 1, categories, search: None },
+        ) {
+            Response::WorkspaceLog { entries, more } => (entries.into_iter().map(|e| e.kind).collect::<Vec<_>>(), more),
+            other => panic!("expected WorkspaceLog, got {other:?}"),
+        };
+        assert_eq!(page(vec![]), (vec![LogKind::RailStarted], true));
+        assert_eq!(page(vec![LogCategory::Cards]), (vec![LogKind::CardCreated], false));
+        match handle_request(
+            &manager,
+            Request::ClearWorkspaceLog { workspace_id: "ws-1".into(), older_than: Some(now - 30 * 86_400) },
+        ) {
+            Response::WorkspaceLogCleared { removed } => assert_eq!(removed, 1),
+            other => panic!("expected WorkspaceLogCleared, got {other:?}"),
+        }
+        assert_eq!(page(vec![]), (vec![LogKind::RailStarted], false));
     }
 
 
@@ -15430,6 +15893,10 @@ mod tests {
             other => panic!("expected ScheduledFireClaimed, got {other:?}"),
         };
         assert!(claim.claimed, "{claim:?}");
+        // The fire is in the Workspace log (v79), under the copy's path.
+        let fired = log_of(&manager, "ws-1").into_iter().find(|e| e.kind.as_str() == "scheduled_fired").unwrap();
+        assert_eq!(fired.payload.scheduled_path.as_deref(), Some(path.as_str()));
+        assert_eq!((fired.payload.card_title.as_deref(), fired.payload.fire_number), (Some("Check"), Some(1)));
         let report = claim.report_path.clone().unwrap();
         assert!(report.ends_with(".gavin-root/scheduled/runs/check/20261021-090000.md"), "{report}");
         assert!(std::path::Path::new(&report).parent().unwrap().is_dir(), "the folder is there for the agent");

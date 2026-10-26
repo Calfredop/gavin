@@ -49,6 +49,11 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   // what came of work nobody was watching -- and requiresRoot because a
   // run needs a checkout and the copies live under `.gavin-root/`.
   { id: "scheduled", label: "Scheduled", requiresRoot: true },
+  // The Workspace log (ADR 0011): everything that happened here, newest
+  // first. After Scheduled because it is the last of the tabs read for
+  // what came of work, and the widest; requiresRoot because almost every
+  // entry is a card, a rail or a checkout under the root.
+  { id: "log", label: "Log", requiresRoot: true },
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },

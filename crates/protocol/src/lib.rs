@@ -42,6 +42,10 @@ pub mod session_owner;
 // copies are read off disk by the daemon, the next fire is the app's.
 pub mod scheduled;
 
+// The Workspace log's shapes (v79, ADR 0011). Pure: the daemon keeps
+// the rows and finds the entries.
+pub mod workspace_log;
+
 // Where agent CLIs install themselves. Pure -- the home directory is
 // handed in rather than read -- so it needs no `os` feature either.
 pub mod bin_dirs;
@@ -116,6 +120,20 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v79 is the Workspace log (`feat-backlog.md`, ADR 0011): one entry per
+/// thing that happened in a workspace -- a card created, moved, archived
+/// or deleted, a run, a rail's transitions, a human item filed or
+/// answered, a Scheduled task fired, a git operation -- recorded by the
+/// daemon as it happens in `kanban.sqlite`. Three new request TYPES,
+/// `WorkspaceLog` (a page, newest first, before a cursor),
+/// `ClearWorkspaceLog`, and `RecordBranchDeleted` (the desktop reporting
+/// the one git act no reflog records), gated by `min_version_for`, and one push,
+/// `WorkspaceLogAppended`, written only on a watch whose app speaks 79
+/// (`WORKSPACE_LOG_MIN_VERSION`): `Response` has no catch-all. No payload
+/// widened, so `MIN_COMPATIBLE_VERSION` stands; the Log tab owes
+/// `FEATURE_MIN_VERSION.workspaceLog` for the copy it shows an older
+/// daemon instead of an empty log.
 ///
 /// v78 is the activity calendar (`tbd-feat-activity-calendar.md`):
 /// `ActivityRuns`, every card run and standalone tool run of a workspace
@@ -1024,7 +1042,12 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 78;
+pub const PROTOCOL_VERSION: u32 = 79;
+
+/// The first version that keeps the Workspace log and pushes
+/// `WorkspaceLogAppended` (v79). The daemon compares the watching app's
+/// `Hello` version with this before it writes the push.
+pub const WORKSPACE_LOG_MIN_VERSION: u32 = 79;
 
 /// The first version that has Scheduled tasks and pushes
 /// `ScheduledTasksChanged` (v77). The daemon compares the watching app's
@@ -1846,6 +1869,40 @@ pub enum Request {
         workspace_id: String,
         since: i64,
         until: i64,
+    },
+    /// A page of this workspace's log (v79), newest first: at most
+    /// `limit` entries (capped at `workspace_log::MAX_LOG_PAGE`) strictly
+    /// older than `before`, or the newest when it is None. `categories`
+    /// keeps only those families, every one when empty; `search` keeps
+    /// entries whose card names, rail names, git branches or worktrees
+    /// contain it, ignoring case. Never an error for an unknown workspace:
+    /// an empty page.
+    WorkspaceLog {
+        workspace_id: String,
+        #[serde(default)]
+        before: Option<workspace_log::LogCursor>,
+        limit: u32,
+        #[serde(default)]
+        categories: Vec<workspace_log::LogCategory>,
+        #[serde(default)]
+        search: Option<String>,
+    },
+    /// Deletes this workspace's log entries older than `older_than` (UTC
+    /// unix seconds), or every one when it is None (v79). Log rows only:
+    /// `card_runs`, which the first log was copied from, is never touched.
+    ClearWorkspaceLog {
+        workspace_id: String,
+        #[serde(default)]
+        older_than: Option<i64>,
+    },
+    /// The desktop deleted a branch in the checkout at `cwd` (v79). A
+    /// deletion leaves no reflog line for the Workspace log to read, so the
+    /// host that ran it says so; the daemon logs it in the watched
+    /// workspace whose root holds `cwd`, and answers `Ok` with nothing
+    /// logged for a checkout no watched workspace holds.
+    RecordBranchDeleted {
+        cwd: String,
+        branch: String,
     },
     /// What one shell call of an agent wrote (v72), sent by the
     /// `gavin-mcp shell-writes` hook after the call: the files that
@@ -2739,6 +2796,17 @@ pub fn min_version_for(req: &Request) -> u32 {
         // daemon is too old rather than drawing a year with no runs in it.
         Request::ActivityRuns { .. } => 78,
 
+        // The Workspace log's page read and its clear (v79). New request
+        // TYPES, so this match is their whole wire gate; the Log tab
+        // mirrors it as FEATURE_MIN_VERSION.workspaceLog so an older
+        // daemon reads as one to restart, not as a workspace where
+        // nothing ever happened.
+        Request::WorkspaceLog { .. } | Request::ClearWorkspaceLog { .. } => 79,
+        // The host's branch deletion, the one git entry no reflog carries
+        // (v79). A new TYPE: against an older daemon the host's lanes
+        // refuse it before the wire, and the deletion simply goes unlogged.
+        Request::RecordBranchDeleted { .. } => 79,
+
         // One binding, command included (v43), now the board read leaves
         // the command out. A new request TYPE, so this is the whole wire
         // gate -- and no app surface is greyed behind it: the app host
@@ -3563,6 +3631,17 @@ pub enum Response {
     CardSession { card_session: Option<CardSession> },
     CardRuns { runs: Vec<CardRun> },
     ActivityRuns { runs: Vec<ActivityRun> },
+    /// The answer to `WorkspaceLog` (v79). `more` is whether older
+    /// entries match beyond this page.
+    WorkspaceLog { entries: Vec<workspace_log::LogEntry>, more: bool },
+    /// The answer to `ClearWorkspaceLog`: how many entries went.
+    WorkspaceLogCleared { removed: u64 },
+    /// Push to the connection watching a workspace (v79), when that app
+    /// speaks `WORKSPACE_LOG_MIN_VERSION`: entries this daemon just
+    /// appended, oldest first. Only this daemon's: a second daemon
+    /// sharing `kanban.sqlite` pushes its own to its own app, and either
+    /// app's next page read sees both.
+    WorkspaceLogAppended { workspace_id: String, entries: Vec<workspace_log::LogEntry> },
     /// The answer to `ShellWrites` (v72).
     ShellWrites { writes: shell_writes::ShellWrites },
     /// The answer to `ListScheduledTasks` (v77).
@@ -8596,7 +8675,10 @@ mod tests {
         // v78: Request::ActivityRuns + Response::ActivityRuns -- a
         // workspace's card and tool runs inside a time window, for the
         // activity calendar. One new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 78);
+        // v79: WorkspaceLog + ClearWorkspaceLog + RecordBranchDeleted and
+        // the WorkspaceLogAppended push -- the Workspace log. Three new
+        // TYPES.
+        assert_eq!(PROTOCOL_VERSION, 79);
     }
 
     #[test]
@@ -9016,6 +9098,15 @@ mod tests {
             Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
             Request::ActivityRuns { workspace_id: "w".into(), since: 0, until: 1 },
+            Request::WorkspaceLog {
+                workspace_id: "w".into(),
+                before: None,
+                limit: 50,
+                categories: vec![],
+                search: None,
+            },
+            Request::ClearWorkspaceLog { workspace_id: "w".into(), older_than: None },
+            Request::RecordBranchDeleted { cwd: "/r".into(), branch: "feat/x".into() },
             // v72: what a shell call wrote.
             Request::RecordShellWrites {
                 conversation_id: "c".into(),
@@ -9379,6 +9470,9 @@ mod tests {
         expected.insert(77, 8);
         // ActivityRuns -- a workspace's runs inside a time window.
         expected.insert(78, 1);
+        // WorkspaceLog, ClearWorkspaceLog, RecordBranchDeleted -- the
+        // Workspace log.
+        expected.insert(79, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -9488,6 +9582,67 @@ mod tests {
         match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
             Response::ActivityRuns { runs } => assert_eq!(runs, vec![run, tool]),
             other => panic!("expected ActivityRuns, got {other:?}"),
+        }
+    }
+
+    /// The Workspace log crosses to the frontend, so the entry's shape is
+    /// pinned, and a request from an app that sends neither filter still
+    /// parses: both are `serde(default)`.
+    #[test]
+    fn workspace_log_entries_and_requests_have_the_shape_the_frontend_expects() {
+        use workspace_log::{LogCategory, LogCursor, LogEntry, LogKind, LogPayload};
+        let entry = LogEntry {
+            id: 7,
+            workspace_id: "ws".into(),
+            at: 1_790_000_000,
+            kind: LogKind::CardMoved,
+            payload: LogPayload {
+                card_file: Some("a.md".into()),
+                from_column: Some("To Do".into()),
+                to_column: Some("Done".into()),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({ "id": 7, "workspaceId": "ws", "at": 1_790_000_000i64,
+                                "kind": "card_moved",
+                                "payload": { "cardFile": "a.md", "fromColumn": "To Do", "toColumn": "Done" } })
+        );
+
+        let bare: Request =
+            serde_json::from_str(r#"{"type":"WorkspaceLog","workspace_id":"ws","limit":20}"#).unwrap();
+        match bare {
+            Request::WorkspaceLog { before, categories, search, limit, .. } => {
+                assert_eq!((before, categories.len(), search, limit), (None, 0, None, 20));
+            }
+            other => panic!("expected WorkspaceLog, got {other:?}"),
+        }
+
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::WorkspaceLog {
+            workspace_id: "ws".into(),
+            before: Some(LogCursor { at: 5, id: 2 }),
+            limit: 50,
+            categories: vec![LogCategory::Cards, LogCategory::Git],
+            search: Some("feat/x".into()),
+        }).unwrap();
+        write_message(&mut buf, &Response::WorkspaceLogAppended {
+            workspace_id: "ws".into(),
+            entries: vec![entry.clone()],
+        }).unwrap();
+        let mut reader = &buf[..];
+        match read_message::<_, Request>(&mut reader).unwrap().unwrap() {
+            Request::WorkspaceLog { before, categories, search, .. } => {
+                assert_eq!(before, Some(LogCursor { at: 5, id: 2 }));
+                assert_eq!(categories, vec![LogCategory::Cards, LogCategory::Git]);
+                assert_eq!(search.as_deref(), Some("feat/x"));
+            }
+            other => panic!("expected WorkspaceLog, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::WorkspaceLogAppended { entries, .. } => assert_eq!(entries, vec![entry]),
+            other => panic!("expected WorkspaceLogAppended, got {other:?}"),
         }
     }
 

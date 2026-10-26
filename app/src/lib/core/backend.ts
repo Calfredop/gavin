@@ -33,6 +33,7 @@ import type {
 import type { ApplyMode, CommitDetail, CompareSummary, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
+import type { LogCategory, LogCursor, WorkspaceLogPage } from "$lib/log/workspaceLog";
 import type { ToolRun } from "$lib/workspace/workspaceTools";
 import type { GroupTemplateRecord } from "$lib/orchestration/orchestrationGroups";
 import type { DaemonCompat } from "$lib/core/daemonCompat";
@@ -1535,6 +1536,26 @@ export function cardRuns(workspaceId: string, path: string): Promise<CardRun[]> 
 /// workspace) before calling: an older daemon refuses the request.
 export function activityRuns(workspaceId: string, since: number, until: number): Promise<ActivityRun[]> {
   return invoke("activity_runs", { workspaceId, since, until });
+}
+
+/// A page of a workspace's log (v79), newest first, strictly older than
+/// `before`. `categories` empty means every family. Gate on
+/// FEATURE_MIN_VERSION.workspaceLog before calling: an older daemon
+/// refuses the request.
+export function workspaceLog(
+  workspaceId: string,
+  before: LogCursor | null,
+  limit: number,
+  categories: LogCategory[],
+  search: string | null
+): Promise<WorkspaceLogPage> {
+  return invoke("workspace_log", { workspaceId, before, limit, categories, search });
+}
+
+/// Deletes a workspace's log entries older than `olderThan` (UTC unix
+/// seconds), or every one for null. Resolves to how many went.
+export function clearWorkspaceLog(workspaceId: string, olderThan: number | null): Promise<number> {
+  return invoke("clear_workspace_log", { workspaceId, olderThan });
 }
 
 /// What one run cost, read out of the agent CLI's own transcript by the

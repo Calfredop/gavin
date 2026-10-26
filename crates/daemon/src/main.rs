@@ -26,6 +26,7 @@ mod pty;
 mod notify_crypto;
 mod notify_display;
 mod companion_push;
+mod reflog;
 mod registry;
 mod remote;
 mod scheduled;
@@ -40,6 +41,7 @@ mod testing;
 mod trash;
 mod trust;
 mod unlock;
+mod workspace_log;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};

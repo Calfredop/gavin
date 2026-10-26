@@ -3063,6 +3063,12 @@ pub struct GavinWatcher {
     /// `Response` has no catch-all, so an older app would lose the
     /// connection to a push it has no arm for.
     scheduled_pushes: std::sync::atomic::AtomicBool,
+    /// Whether the app on `writer` speaks `WORKSPACE_LOG_MIN_VERSION` and
+    /// is pushed `WorkspaceLogAppended`, for `scheduled_pushes`' reason.
+    log_pushes: std::sync::atomic::AtomicBool,
+    /// What else lives exactly as long as this watch -- the workspace's
+    /// reflog watch (v79). Dropped with it.
+    attached: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
 }
 
 impl GavinWatcher {
@@ -3099,6 +3105,8 @@ impl GavinWatcher {
             debouncer: Mutex::new(None),
             on_scan,
             scheduled_pushes: std::sync::atomic::AtomicBool::new(false),
+            log_pushes: std::sync::atomic::AtomicBool::new(false),
+            attached: Mutex::new(Vec::new()),
         });
 
         // Arm the watch BEFORE the initial scan+push -- the daemon-side
@@ -3323,6 +3331,21 @@ impl GavinWatcher {
     /// writer speaks v77.
     pub fn enable_scheduled_pushes(&self) {
         self.scheduled_pushes.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Turns on `WorkspaceLogAppended` for this watch: the app on its
+    /// writer speaks v79.
+    pub fn enable_log_pushes(&self) {
+        self.log_pushes.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Keeps `thing` alive for as long as this watch.
+    pub fn attach(&self, thing: Box<dyn std::any::Any + Send>) {
+        self.attached.lock().unwrap().push(thing);
+    }
+
+    pub fn log_pushes_enabled(&self) -> bool {
+        self.log_pushes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn push_scheduled_changed(&self) {

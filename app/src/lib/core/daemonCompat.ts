@@ -756,6 +756,13 @@ export const FEATURE_MIN_VERSION = {
   // Its ssh twin: the same read against an ssh workspace's HOST daemon
   // (`sshActivityBlocked` in sshWorkspace.ts), never the local one's.
   sshActivityCalendar: 78,
+  // The Workspace log (v79, ADR 0011): `WorkspaceLog` and
+  // `ClearWorkspaceLog` are new request TYPES, so `min_version_for` keeps
+  // both from an older daemon. The entry is for what the Log tab shows
+  // INSTEAD: refused, the tab would read as a workspace where nothing ever
+  // happened, when the truth is a daemon that keeps no log and has to be
+  // restarted. The consumer is the Log tab (`log/WorkspaceLogHubView`).
+  workspaceLog: 79,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

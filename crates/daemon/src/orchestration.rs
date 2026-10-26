@@ -2,7 +2,7 @@ use protocol::{
     default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
     ActivityRun, ActivityRunKind, RailRun, RailTrigger, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
 /// The orchestration plan (rails → stages → steps, plus the agent's
@@ -622,6 +622,22 @@ impl OrchestrationStore {
         }
         tx.commit()?;
         Ok(removed)
+    }
+
+    /// A rail's run state, None for no row (idle).
+    pub fn rail_state(&self, rail_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT state FROM orch_rail_runs WHERE rail_id = ?1", params![rail_id], |row| row.get(0))
+            .optional()?)
+    }
+
+    /// The workspace a rail belongs to, None for a rail no arrangement has.
+    pub fn rail_workspace(&self, rail_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT workspace_id FROM orch_rails WHERE id = ?1", params![rail_id], |row| row.get(0))
+            .optional()?)
     }
 
     pub fn set_rail_run(

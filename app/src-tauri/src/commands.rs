@@ -96,6 +96,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "card_session",
     "card_runs",
     "activity_runs",
+    "workspace_log",
+    "clear_workspace_log",
     "shell_writes",
     "list_scheduled_tasks",
     "create_scheduled_task",

@@ -151,6 +151,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("card_session", RemoteAllowance::Allowed),
     ("card_runs", RemoteAllowance::Allowed),
     ("activity_runs", RemoteAllowance::Allowed),
+    // The Workspace log (v79). A read a Device may make; clearing it is
+    // the desk's, where the confirmation is drawn.
+    ("workspace_log", RemoteAllowance::Allowed),
+    ("clear_workspace_log", RemoteAllowance::Refused),
     ("shell_writes", RemoteAllowance::Allowed),
     // Scheduled tasks (v77). A Device reads the list and its reports,
     // and edits, pauses, duplicates and deletes them on the desk. It

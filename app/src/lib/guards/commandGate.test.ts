@@ -264,6 +264,12 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   card_session: ["ordinary"],
   card_runs: ["ordinary"],
   activity_runs: ["ordinary"],
+  // A page of the Workspace log. Writes nothing.
+  workspace_log: ["ordinary"],
+  clear_workspace_log: [
+    "destructive",
+    "deletes Workspace log rows, which nothing can write back -- the events they record are over. The Log tab asks first with askConfirm; card_runs and every other record stay.",
+  ],
   // A read: what the shell-write hook recorded of one run's shell calls,
   // for the Review tab. Writes nothing.
   shell_writes: ["ordinary"],

@@ -736,8 +736,21 @@ pub async fn git_create_branch(cwd: String, name: String, from: Option<String>, 
 }
 
 #[tauri::command]
-pub async fn git_delete_branch(cwd: String, name: String, force: bool) -> Result<(), String> {
-    off_main_thread(move || delete_branch(&cwd, &name, force)).await
+pub async fn git_delete_branch(
+    cwd: String,
+    name: String,
+    force: bool,
+    state: State<'_, crate::session::CommandConnection>,
+    compat: State<'_, crate::session::DaemonCompatState>,
+) -> Result<(), String> {
+    let (at, branch) = (cwd.clone(), name.clone());
+    off_main_thread(move || delete_branch(&cwd, &name, force)).await?;
+    // A deletion leaves no reflog line, so the Workspace log (v79) hears of
+    // it from here. Best effort: an older daemon is refused before the
+    // wire, and the branch is gone whether or not the log says so.
+    let lanes = crate::session::lanes_for(crate::remote::Route::Local, &state, &compat);
+    let _ = crate::session::record_branch_deleted(&lanes, at, branch).await;
+    Ok(())
 }
 
 #[tauri::command]

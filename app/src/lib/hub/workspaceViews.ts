@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye, Gavel, CalendarClock } from "@lucide/svelte";
+import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye, Gavel, CalendarClock, ScrollText } from "@lucide/svelte";
 import HomeHubView from "$lib/hub/HomeHubView.svelte";
 import GitHubView from "$lib/git/GitHubView.svelte";
 import SettingsHubView from "$lib/core/SettingsHubView.svelte";
@@ -9,6 +9,7 @@ import WorkspaceToolsHubView from "$lib/workspace/WorkspaceToolsHubView.svelte";
 import DecisionsHubView from "$lib/decisions/DecisionsHubView.svelte";
 import ReviewHubView from "$lib/review/ReviewHubView.svelte";
 import ScheduledHubView from "$lib/scheduling/ScheduledHubView.svelte";
+import WorkspaceLogHubView from "$lib/log/WorkspaceLogHubView.svelte";
 import PrdHubView from "$lib/files/PrdHubView.svelte";
 import AgentFileHubView from "$lib/files/AgentFileHubView.svelte";
 import PlanExplorerHubView from "$lib/files/PlanExplorerHubView.svelte";
@@ -44,6 +45,7 @@ const COMPONENTS: Record<HubViewId, { icon: Component; component: Component<{ wo
   decisions: { icon: Gavel, component: DecisionsHubView },
   review: { icon: ScanEye, component: ReviewHubView },
   scheduled: { icon: CalendarClock, component: ScheduledHubView },
+  log: { icon: ScrollText, component: WorkspaceLogHubView },
   prd: { icon: FileText, component: PrdHubView },
   "agent-file": { icon: Bot, component: AgentFileHubView },
   plans: { icon: FolderTree, component: PlanExplorerHubView },

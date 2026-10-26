@@ -1,6 +1,7 @@
 use protocol::shell_writes::{RootFiles, ShellWrites};
 use protocol::{ActivityRun, ActivityRunKind, Board, CardRun, CardSession, Column, Label, RunSavings};
 use protocol::scheduled::{FireClaim, ScheduledFire};
+use protocol::workspace_log::{LogCategory, LogCursor, LogEntry, LogKind, LogPayload};
 use rusqlite::{params, Connection};
 
 /// The three canonical statuses (D6's vocabulary). Permanent: the board
@@ -45,6 +46,10 @@ fn column_slug(name: &str) -> String {
 
 pub struct KanbanStore {
     conn: Connection,
+    /// Workspace log entries written since the server last took them, so
+    /// it can push them to the app watching each workspace (v79). Filled
+    /// by every write that journals, drained by `take_log_appended`.
+    log_appended: Vec<LogEntry>,
 }
 
 /// How long a claimed fire may wait for its launch to be recorded before
@@ -90,7 +95,7 @@ fn fire_from_row(row: &rusqlite::Row) -> rusqlite::Result<ScheduledFire> {
 
 impl KanbanStore {
     pub fn open(path: &std::path::Path) -> anyhow::Result<Self> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         // The dev and release daemons share this file, and a Scheduled
         // task's fire claim takes a write lock across both: the loser of
         // that race has to wait its turn, not fail with SQLITE_BUSY.
@@ -260,6 +265,10 @@ impl KanbanStore {
         ] {
             let _ = conn.execute(stmt, []);
         }
+        // v79: the Workspace log, and its one-time copy of `card_runs`.
+        // After the ALTERs: the copy reads the table they widen.
+        crate::workspace_log::migrate(&mut conn)?;
+        conn.execute_batch(crate::reflog::SCHEMA)?;
         // Every run still open belongs to a daemon that is gone: this
         // runs once per process, before any launch of this lifetime has
         // reached the store, so an open row here is by construction one
@@ -274,7 +283,7 @@ impl KanbanStore {
             "DELETE FROM shell_writes WHERE recorded_at < ?1",
             params![now_secs() - SHELL_WRITES_KEPT_SECS],
         )?;
-        Ok(Self { conn })
+        Ok(Self { conn, log_appended: Vec::new() })
     }
 
     /// If this workspace has never had a board (no `kanban_boards` row),
@@ -558,6 +567,7 @@ impl KanbanStore {
                      WHERE workspace_id = ?1 AND path = ?2 AND outcome = 'running'",
                     params![workspace_id, path, now_secs()],
                 )?;
+                let started_at = now_secs();
                 tx.execute(
                     "INSERT INTO card_runs (workspace_id, path, session_id, command, conversation_id,
                        launch_cwd, base_sha, started_at, outcome, resume_attempts)
@@ -570,10 +580,22 @@ impl KanbanStore {
                         conversation_id,
                         launch_cwd,
                         base_sha,
-                        now_secs(),
+                        started_at,
                         resume_attempts.map(i64::from)
                     ],
                 )?;
+                // A new row is a new run, and only a new row: the
+                // re-statement above is the same run said again.
+                let payload = crate::workspace_log::run_payload(
+                    path,
+                    crate::workspace_log::card_title_on_disk(path),
+                    command,
+                    session_id,
+                );
+                let entry = crate::workspace_log::append(&tx, workspace_id, started_at, LogKind::RunStarted, &payload)?;
+                tx.commit()?;
+                self.log_appended.push(entry);
+                return Ok(());
             }
         }
         tx.commit()?;
@@ -709,12 +731,93 @@ impl KanbanStore {
     /// which session it was and nothing about which card, and a session
     /// bound to two cards ended for both of them.
     pub fn finish_runs_for_session(&mut self, session_id: &str, exit_code: Option<i32>) -> anyhow::Result<()> {
-        self.conn.execute(
+        let ended_at = now_secs();
+        let tx = self.conn.transaction()?;
+        let closing: Vec<(String, String, Option<String>)> = tx
+            .prepare(
+                "SELECT workspace_id, path, command FROM card_runs
+                 WHERE session_id = ?1 AND outcome = 'running' ORDER BY id",
+            )?
+            .query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        tx.execute(
             "UPDATE card_runs SET outcome = 'exited', ended_at = ?2, exit_code = ?3
              WHERE session_id = ?1 AND outcome = 'running'",
-            params![session_id, now_secs(), exit_code],
+            params![session_id, ended_at, exit_code],
         )?;
+        let mut entries = Vec::new();
+        for (workspace_id, path, command) in closing {
+            let payload = LogPayload {
+                exit_code,
+                ..crate::workspace_log::run_payload(
+                    &path,
+                    crate::workspace_log::card_title_on_disk(&path),
+                    command.as_deref(),
+                    session_id,
+                )
+            };
+            entries.push(crate::workspace_log::append(&tx, &workspace_id, ended_at, LogKind::RunFinished, &payload)?);
+        }
+        tx.commit()?;
+        self.log_appended.extend(entries);
         Ok(())
+    }
+
+    // ---- The Workspace log (v79) ------------------------------------------
+
+    /// Appends one entry, to be pushed with the rest.
+    pub fn append_log(
+        &mut self,
+        workspace_id: &str,
+        at: i64,
+        kind: LogKind,
+        payload: &LogPayload,
+    ) -> anyhow::Result<LogEntry> {
+        let entry = crate::workspace_log::append(&self.conn, workspace_id, at, kind, payload)?;
+        self.log_appended.push(entry.clone());
+        Ok(entry)
+    }
+
+    /// Diffs one scan of a workspace's cards against the last and appends
+    /// what changed. See `workspace_log::journal_cards`.
+    pub fn journal_cards(
+        &mut self,
+        workspace_id: &str,
+        scan: &crate::workspace_log::CardScan,
+        noticed_on_start: bool,
+    ) -> anyhow::Result<()> {
+        let entries =
+            crate::workspace_log::journal_cards(&mut self.conn, workspace_id, scan, now_secs(), noticed_on_start)?;
+        self.log_appended.extend(entries);
+        Ok(())
+    }
+
+    /// Reads a workspace's new reflog lines into its log. See
+    /// `reflog::sync`.
+    pub fn sync_reflogs(&mut self, workspace_id: &str, sources: &[crate::reflog::Source]) -> anyhow::Result<()> {
+        let entries = crate::reflog::sync(&mut self.conn, workspace_id, sources)?;
+        self.log_appended.extend(entries);
+        Ok(())
+    }
+
+    /// Entries written since the last call, oldest first.
+    pub fn take_log_appended(&mut self) -> Vec<LogEntry> {
+        std::mem::take(&mut self.log_appended)
+    }
+
+    pub fn workspace_log(
+        &self,
+        workspace_id: &str,
+        before: Option<LogCursor>,
+        limit: u32,
+        categories: &[LogCategory],
+        search: Option<&str>,
+    ) -> anyhow::Result<(Vec<LogEntry>, bool)> {
+        crate::workspace_log::page(&self.conn, workspace_id, before, limit, categories, search)
+    }
+
+    pub fn clear_workspace_log(&mut self, workspace_id: &str, older_than: Option<i64>) -> anyhow::Result<u64> {
+        crate::workspace_log::clear(&self.conn, workspace_id, older_than)
     }
 
     /// Writes what Headroom saved a session onto every run it was the
@@ -1534,6 +1637,121 @@ mod tests {
         drop(store);
         let reopened = KanbanStore::open(&path).unwrap();
         assert_eq!(reopened.shell_writes("c-new").unwrap().calls, paths(&["t-1"]), "pruned on open");
+    }
+
+    // --- the Workspace log (v79) ----------------------------------------
+
+    fn log_kinds(store: &KanbanStore, workspace: &str) -> Vec<(LogKind, i64)> {
+        let (entries, _) = store.workspace_log(workspace, None, 500, &[], None).unwrap();
+        entries.into_iter().rev().map(|e| (e.kind, e.at)).collect()
+    }
+
+    /// The log is a new TABLE, which reaches an old file by itself; what
+    /// has to be proved is the one-time copy. Against the v78 schema with
+    /// runs in it: each run becomes a started entry and each watched exit
+    /// a finished one, at their own times, a card on disk lends its title
+    /// -- and a reopen copies nothing again, even after a clear.
+    #[test]
+    fn opening_a_pre_v79_database_copies_card_runs_into_the_log_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        let card = dir.path().join("t.md");
+        std::fs::write(&card, "---\ntitle: [feat] On disk\n---\n").unwrap();
+        let card = card.to_string_lossy().to_string();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 CREATE TABLE card_runs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     command TEXT,
+                     conversation_id TEXT,
+                     launch_cwd TEXT,
+                     base_sha TEXT,
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER,
+                     exit_code INTEGER,
+                     outcome TEXT NOT NULL,
+                     resume_attempts INTEGER,
+                     headroom_tokens_saved INTEGER,
+                     headroom_requests INTEGER
+                 );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO card_runs (workspace_id, path, session_id, command, started_at, ended_at, exit_code, outcome)
+                 VALUES ('ws-1', ?1, 's-1', 'claude x', 10, 20, 0, 'exited'),
+                        ('ws-1', '/gone/u.md', 's-2', NULL, 30, 40, NULL, 'replaced'),
+                        ('ws-2', '/gone/v.md', 's-3', 'codex', 50, NULL, NULL, 'running')",
+                params![card],
+            )
+            .unwrap();
+        }
+
+        let mut store = KanbanStore::open(&path).unwrap();
+        assert_eq!(
+            log_kinds(&store, "ws-1"),
+            vec![(LogKind::RunStarted, 10), (LogKind::RunFinished, 20), (LogKind::RunStarted, 30)],
+            "a replaced run's end is not an exit"
+        );
+        assert_eq!(log_kinds(&store, "ws-2"), vec![(LogKind::RunStarted, 50)]);
+        let (entries, _) = store.workspace_log("ws-1", None, 10, &[], None).unwrap();
+        let finished = entries.iter().find(|e| e.kind == LogKind::RunFinished).unwrap();
+        assert_eq!(finished.payload.card_title.as_deref(), Some("[feat] On disk"));
+        assert_eq!(finished.payload.agent.as_deref(), Some("claude"));
+        assert_eq!(finished.payload.exit_code, Some(0));
+        let gone = entries.iter().find(|e| e.at == 30).unwrap();
+        assert_eq!((gone.payload.card_title.as_deref(), gone.payload.card_file.as_deref()), (None, Some("u.md")));
+        assert!(store.take_log_appended().is_empty(), "a copy is history, not news to push");
+
+        assert_eq!(store.clear_workspace_log("ws-1", None).unwrap(), 3);
+        drop(store);
+        let reopened = KanbanStore::open(&path).unwrap();
+        assert!(log_kinds(&reopened, "ws-1").is_empty(), "never copied twice");
+        assert_eq!(log_kinds(&reopened, "ws-2").len(), 1);
+    }
+
+    #[test]
+    fn a_run_is_journaled_when_it_starts_and_when_it_exits_and_a_restatement_is_not() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+        // The same session linked again: a resume budget spent, not a run.
+        link(&mut store, "/p/t.md", "s-1");
+        store.finish_runs_for_session("s-1", Some(3)).unwrap();
+        let kinds: Vec<LogKind> = log_kinds(&store, "ws-1").into_iter().map(|(k, _)| k).collect();
+        assert_eq!(kinds, vec![LogKind::RunStarted, LogKind::RunFinished]);
+        let pushed = store.take_log_appended();
+        assert_eq!(pushed.len(), 2);
+        assert_eq!(pushed[1].payload.exit_code, Some(3));
+        assert_eq!(pushed[1].payload.agent.as_deref(), Some("claude"));
+        assert_eq!(pushed[1].payload.card_file.as_deref(), Some("t.md"));
+        assert!(store.take_log_appended().is_empty());
+        // A session that ends with no run open logs nothing.
+        store.finish_runs_for_session("s-1", Some(0)).unwrap();
+        assert!(store.take_log_appended().is_empty());
+    }
+
+    #[test]
+    fn clearing_older_than_keeps_newer_entries_and_every_card_run() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+        store.finish_runs_for_session("s-1", Some(0)).unwrap();
+        let now = now_secs();
+        store.append_log("ws-1", now - 400 * 86_400, LogKind::CardCreated, &LogPayload::default()).unwrap();
+        store.append_log("ws-1", now - 40 * 86_400, LogKind::CardMoved, &LogPayload::default()).unwrap();
+        store.append_log("ws-2", now - 400 * 86_400, LogKind::CardCreated, &LogPayload::default()).unwrap();
+
+        assert_eq!(store.clear_workspace_log("ws-1", Some(now - 30 * 86_400)).unwrap(), 2);
+        let left: Vec<LogKind> = log_kinds(&store, "ws-1").into_iter().map(|(k, _)| k).collect();
+        assert_eq!(left, vec![LogKind::RunStarted, LogKind::RunFinished]);
+        assert_eq!(log_kinds(&store, "ws-2").len(), 1, "another workspace's log is its own");
+
+        assert_eq!(store.clear_workspace_log("ws-1", None).unwrap(), 2);
+        assert!(log_kinds(&store, "ws-1").is_empty());
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 1, "card_runs is never touched");
     }
 
     // --- savings (v49) -------------------------------------------------

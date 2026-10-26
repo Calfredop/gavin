@@ -5983,6 +5983,23 @@ pub(crate) fn attach_and_relay(
                     }
                     let _ = crate::forwarding::emit(&reader_app_handle, "tools-changed", (workspace_id, tools));
                 }
+                // New Workspace log entries (v79). A remote push has to
+                // name this host's own ssh workspace, like ToolsChanged's.
+                Response::WorkspaceLogAppended { workspace_id, entries } => {
+                    if matches!(&owner, RelayOwner::Remote { .. }) {
+                        let workspaces = reader_app_handle
+                            .state::<WorkspacesState>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .workspaces
+                            .clone();
+                        if !accept_host_workspace_push(&owner, &workspaces, &workspace_id) {
+                            continue;
+                        }
+                    }
+                    let _ = crate::forwarding::emit(&reader_app_handle, "workspace-log-appended", (workspace_id, entries));
+                }
                 // A Scheduled task's copy or report changed (v77). Local
                 // only: ssh workspaces have no Scheduled tab.
                 Response::ScheduledTasksChanged { workspace_id } => {
@@ -7406,6 +7423,83 @@ async fn activity_runs_impl(
     match lanes.request(Request::ActivityRuns { workspace_id, since, until }).await? {
         Response::ActivityRuns { runs } => Ok(runs),
         other => anyhow::bail!("expected ActivityRuns, got {other:?}"),
+    }
+}
+
+/// One page of a Workspace log, as the Log tab reads it.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLogPage {
+    pub entries: Vec<protocol::workspace_log::LogEntry>,
+    pub more: bool,
+}
+
+async fn workspace_log_impl(
+    lanes: &DaemonLanes,
+    workspace_id: String,
+    before: Option<protocol::workspace_log::LogCursor>,
+    limit: u32,
+    categories: Vec<protocol::workspace_log::LogCategory>,
+    search: Option<String>,
+) -> anyhow::Result<WorkspaceLogPage> {
+    match lanes.request(Request::WorkspaceLog { workspace_id, before, limit, categories, search }).await? {
+        Response::WorkspaceLog { entries, more } => Ok(WorkspaceLogPage { entries, more }),
+        other => anyhow::bail!("expected WorkspaceLog, got {other:?}"),
+    }
+}
+
+/// A page of one workspace's log, newest first (v79). Routed by the
+/// workspace like `activity_runs`: an ssh workspace's log is kept by its
+/// host's daemon. The Log tab checks FEATURE_MIN_VERSION.workspaceLog
+/// first; an older daemon is refused here before anything is sent.
+#[tauri::command]
+pub async fn workspace_log(
+    workspace_id: String,
+    before: Option<protocol::workspace_log::LogCursor>,
+    limit: u32,
+    categories: Vec<protocol::workspace_log::LogCategory>,
+    search: Option<String>,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<WorkspaceLogPage, String> {
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    workspace_log_impl(&lanes_for(route, &state, &compat), workspace_id, before, limit, categories, search)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn clear_workspace_log_impl(lanes: &DaemonLanes, workspace_id: String, older_than: Option<i64>) -> anyhow::Result<u64> {
+    match lanes.request(Request::ClearWorkspaceLog { workspace_id, older_than }).await? {
+        Response::WorkspaceLogCleared { removed } => Ok(removed),
+        other => anyhow::bail!("expected WorkspaceLogCleared, got {other:?}"),
+    }
+}
+
+/// Deletes a workspace's log entries older than `older_than` (UTC unix
+/// seconds), or all of them; answers how many went. Log rows only -- the
+/// daemon never touches `card_runs` for it.
+#[tauri::command]
+pub async fn clear_workspace_log(
+    workspace_id: String,
+    older_than: Option<i64>,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<u64, String> {
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    clear_workspace_log_impl(&lanes_for(route, &state, &compat), workspace_id, older_than)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tells the daemon the desktop deleted `branch` in the checkout at `cwd`,
+/// for the Workspace log (v79): the one git act no reflog records. The
+/// daemon logs it in the watched workspace holding `cwd`, if any.
+pub(crate) async fn record_branch_deleted(lanes: &DaemonLanes, cwd: String, branch: String) -> anyhow::Result<()> {
+    match lanes.request(Request::RecordBranchDeleted { cwd, branch }).await? {
+        Response::Ok => Ok(()),
+        other => anyhow::bail!("expected Ok, got {other:?}"),
     }
 }
 
@@ -9215,6 +9309,37 @@ mod kanban_command_tests {
         let got = block_on(activity_runs_impl(&lanes_over(client), "ws-1".to_string(), 0, 100)).unwrap();
 
         assert_eq!(got, runs);
+    }
+
+    #[test]
+    fn workspace_log_impl_returns_the_page_and_clear_the_count() {
+        use protocol::workspace_log::{LogEntry, LogKind, LogPayload};
+        let entry = LogEntry {
+            id: 3,
+            workspace_id: "ws-1".to_string(),
+            at: 50,
+            kind: LogKind::RailPaused,
+            payload: LogPayload { rail_name: Some("api".into()), ..Default::default() },
+        };
+        let (client, _dir) =
+            fake_daemon_replying_with(vec![Response::WorkspaceLog { entries: vec![entry.clone()], more: true }]);
+        let page = block_on(workspace_log_impl(&lanes_over(client), "ws-1".into(), None, 50, vec![], None)).unwrap();
+        assert_eq!(page, WorkspaceLogPage { entries: vec![entry], more: true });
+        assert_eq!(
+            serde_json::to_value(&page).unwrap()["entries"][0]["payload"],
+            serde_json::json!({ "railName": "api" })
+        );
+
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::WorkspaceLogCleared { removed: 4 }]);
+        assert_eq!(block_on(clear_workspace_log_impl(&lanes_over(client), "ws-1".into(), Some(10))).unwrap(), 4);
+    }
+
+    #[test]
+    fn record_branch_deleted_sends_the_checkout_and_the_branch() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Ok]);
+        block_on(record_branch_deleted(&lanes_over(client), "/r".to_string(), "feat/x".to_string())).unwrap();
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Error { message: "no".into() }]);
+        assert!(block_on(record_branch_deleted(&lanes_over(client), "/r".to_string(), "b".to_string())).is_err());
     }
 
     #[test]

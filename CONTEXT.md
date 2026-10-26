@@ -133,3 +133,11 @@ _Avoid_: usage (that is a subscription's limits), history (that is one card's ru
 **Activity calendar**:
 Activity drawn over time, for one workspace or for every workspace on a Workstation, which zooms from a year down to a single hour.
 _Avoid_: heatmap (that is only its year view), contribution graph, timeline
+
+**Workspace log**:
+Everything that happened in one workspace, one entry per thing, written down as it happens and kept until someone clears it. Unlike Activity, it is a record of its own: most of what it holds (a card deleted, a rail paused, a decision answered) leaves no other trace.
+_Avoid_: backlog (that is work not yet started), activity (that is counted from records that already exist), history, audit log
+
+**Log entry**:
+One thing that happened, in the Workspace log: what it was, when, and the card or rail it was about.
+_Avoid_: event (too wide: pushes, watcher wake-ups and PTY output are events too)
