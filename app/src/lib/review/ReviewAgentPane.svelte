@@ -14,11 +14,13 @@
   // The terminal is the card's OWN session -- the agent that did the
   // work, still running -- mounted here rather than mirrored. There is
   // one xterm per session in the registry and its container is moved by
-  // appendChild, so this pane borrows it while the hub is on screen and
-  // TerminalPane's onMount hands it back the moment the human returns to
-  // the terminal view. That is also why the mount is keyed on the
-  // session id: a TerminalPane binds its session once and never re-reads
-  // it, so selecting a different card has to REBUILD this rather than
+  // appendChild, so this pane borrows it while the hub is on screen. It
+  // goes back when this pane goes: a page's pane that mounts afresh takes
+  // it in its onMount, and one that stayed mounted under a navigator
+  // overlay is handed it by terminalHolders.ts. That is also why the
+  // mount is keyed on the session id: a TerminalPane binds its session
+  // once and never re-reads it, so selecting a different card has to
+  // REBUILD this rather than
   // update a prop, or fit() would report this terminal's geometry to
   // that card's agent (the contract terminalPaneSession.test.ts holds
   // every call site to).

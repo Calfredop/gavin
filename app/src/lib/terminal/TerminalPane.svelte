@@ -8,6 +8,7 @@
   import { BORROW_ACTION, BORROW_DETAIL, borrowTitle } from "$lib/terminal/ptyBorrow";
   import { borrowBySessionId, returnPtySize } from "$lib/terminal/ptyBorrowState";
   import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "$lib/terminal/terminalRegistry";
+  import { holdTerminal } from "$lib/terminal/terminalHolders";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
@@ -96,6 +97,14 @@
     term = entry.term;
     fitAddon = entry.fitAddon;
     mountPoint.appendChild(entry.container);
+    // Taken, and handed back when the pane that takes it next goes away:
+    // a hub section over a page borrows the terminal from the page's pane,
+    // which stays mounted and would otherwise be left blank (see
+    // terminalHolders.ts). The refit gives the PTY back this pane's size.
+    const release = holdTerminal(sessionId, () => {
+      mountPoint.appendChild(entry.container);
+      void fit();
+    });
 
     ready = true;
     // Awaited, not fired and forgotten: the daemon renders a snapshot at the
@@ -105,6 +114,7 @@
     // the snapshot once the resize is queued is enough to sequence them.
     void fit().then(() => restoreScreen(sessionId));
     if (focused) term.focus();
+    return release;
   });
 
   // The settings panels write a size; this is what carries it to the
