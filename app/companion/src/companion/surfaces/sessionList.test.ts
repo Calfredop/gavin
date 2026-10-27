@@ -5,7 +5,9 @@ import { DEMO, sampleState } from "$companion/demo/sampleData";
 import {
   DESK_PLACES_WITHIN_MS,
   detailOf,
+  phoneSessionLabel,
   sessionGroups,
+  UNREAD_LABEL,
   workspaceSessionIds,
   type SessionListInput,
 } from "$companion/surfaces/sessionList";
@@ -58,6 +60,23 @@ describe("a workspace's sessions", () => {
     expect(page.rows[0]).toMatchObject({ name: "demo", folder: null });
     const [, auth] = sessionGroups(input(atlas()));
     expect(auth.rows[0].folder).toBe("atlas-api");
+  });
+
+  it("do not show a session's id as its name before its name and folder have been read", () => {
+    const [, auth] = sessionGroups(
+      input(atlas(), {
+        sessionNames: { "s-atlas-auth": "token refresh" },
+        cwdBySessionId: {},
+        labelsRead: false,
+      })
+    );
+    expect(auth.rows.map((r) => r.name)).toEqual(["token refresh", UNREAD_LABEL]);
+  });
+
+  it("show the id the desk's tab shows once the reads are in and a session has neither", () => {
+    expect(phoneSessionLabel({}, {}, "0123456789abcdef", true)).toBe("01234567");
+    expect(phoneSessionLabel({}, {}, "0123456789abcdef", false)).toBe(UNREAD_LABEL);
+    expect(phoneSessionLabel({}, { "0123456789abcdef": "/a/b/notes" }, "0123456789abcdef", false)).toBe("notes");
   });
 
   it("say why an agent stopped, and that one was interrupted", () => {

@@ -20,7 +20,7 @@
     startSession,
     type SessionKind,
   } from "$companion/state/sessions";
-  import { openTerminal } from "$companion/state/workstation";
+  import { openTerminal, sessionLabelsRead } from "$companion/state/workstation";
   import { sessionGroups } from "$companion/surfaces/sessionList";
 
   interface Props {
@@ -52,6 +52,7 @@
       startedAt: $startedAt,
       now,
       lockedBy: Object.fromEntries(Object.entries($lockBySessionId).map(([id, owner]) => [id, owner.name])),
+      labelsRead: $sessionLabelsRead,
     })
   );
 

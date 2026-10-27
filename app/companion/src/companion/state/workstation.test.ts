@@ -22,6 +22,7 @@ import {
   openWorkspace,
   placeFiles,
   returnToHub,
+  sessionLabelsRead,
   showSurface,
   showWorkspaces,
   view,
@@ -202,6 +203,43 @@ describe("what it keeps current", () => {
     expect(layout.failureReasonById["s-atlas-auth"]).toBe("API Error: Connection dropped");
     // The desk's own handler for a name saves it; the phone's does not.
     expect(demo.commands()).not.toContain("set_session_name");
+  });
+
+  it("asks for the sessions' names before any workspace's board or tree, and the names first", async () => {
+    // Every read is answered in the order it is asked, so a name asked
+    // after three reads per workspace is a row showing an id for as long.
+    const demo = createDemoWorkstation();
+    await connect(demo);
+    const asked = demo.commands();
+    const names = asked.indexOf("get_session_names");
+    const firstCards = Math.min(asked.indexOf("get_board"), asked.indexOf("get_gavin_tree"));
+    expect(names).toBeGreaterThan(-1);
+    expect(names).toBeLessThan(asked.indexOf("get_session_baselines"));
+    expect(asked.indexOf("get_session_baselines")).toBeLessThan(firstCards);
+  });
+
+  it("reads the open workspace's board and tree before the others'", async () => {
+    const storage = deviceStorage({
+      [viewKey("demo")]: JSON.stringify({ workspaceId: DEMO.notes, surface: "sessions" }),
+    });
+    const demo = createDemoWorkstation();
+    await connect(demo, storage);
+    const workspacesOf = (cmd: string) =>
+      demo.received().flatMap((m) => (m.type === "invoke" && m.cmd === cmd ? [m.args.workspaceId] : []));
+    expect(workspacesOf("get_gavin_tree")).toEqual([DEMO.notes, DEMO.atlas]);
+    expect(workspacesOf("get_board")).toEqual([DEMO.notes, DEMO.atlas]);
+  });
+
+  it("says when the sessions' labels have been read, and reads them again on each connection", async () => {
+    const storage = await connect(createDemoWorkstation());
+    expect(get(sessionLabelsRead)).toBe(true);
+    disconnect!();
+    resetDesktopStores();
+    const pending = connectWorkstation(loopback(createDemoWorkstation()), storage);
+    expect(get(sessionLabelsRead)).toBe(false);
+    disconnect = await pending;
+    await settle();
+    expect(get(sessionLabelsRead)).toBe(true);
   });
 
   it("knows where each session is from the moment it connects", async () => {

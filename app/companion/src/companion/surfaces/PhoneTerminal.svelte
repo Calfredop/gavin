@@ -36,7 +36,6 @@
     sessionOwners,
     takeOver,
   } from "$lib/core/sessionOwnershipState";
-  import { sessionLabel } from "$lib/core/paths";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { DEFAULT_TERMINAL_FONT_SIZE } from "$lib/terminal/terminalFont";
   import { destroyTerminal, getTerminal, setInputTransform } from "$lib/terminal/terminalRegistry";
@@ -48,12 +47,13 @@
   import { endSession } from "$companion/state/sessions";
   import { watchTurn } from "$companion/state/turn";
   import { sendAsOwner, sendKey, sendLine, sendReply, sendTyped } from "$companion/state/typing";
-  import { closeTerminal } from "$companion/state/workstation";
+  import { closeTerminal, sessionLabelsRead } from "$companion/state/workstation";
   import PhoneBrowser from "$companion/surfaces/PhoneBrowser.svelte";
   import { browserButton } from "$companion/surfaces/phoneBrowser";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import { press, tap } from "$companion/surfaces/press";
   import { logicalRows, quickReplies, type QuickReply } from "$companion/surfaces/quickReplies";
+  import { phoneSessionLabel } from "$companion/surfaces/sessionList";
   import {
     ARROW_KEYS,
     LEAD_KEYS,
@@ -97,7 +97,9 @@
   let frame = $state<HTMLDivElement | undefined>();
   let field = $state<HTMLTextAreaElement | undefined>();
 
-  const name = $derived(sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId));
+  const name = $derived(
+    phoneSessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId, $sessionLabelsRead)
+  );
   const sessionStatus = $derived($layoutState.sessionStatusById[sessionId]);
   const badge = $derived(
     tabAgentIndicator($verdictAttentionStatusById[sessionId], $layoutState.failureReasonById[sessionId])

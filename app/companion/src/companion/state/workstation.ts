@@ -386,8 +386,14 @@ function rooted(workspaces: Workspace[]): Workspace[] {
 /// armed: the desk already watches every root it has open, and its
 /// pushes reach a Device that listens for them. A board or a tree
 /// already in hand is left alone -- a push is newer than a read.
+///
+/// The open workspace's first: the reads are answered in the order they
+/// are asked (`loadSessions`), and the others only count on a list
+/// nobody is looking at yet.
 function loadCards(workspaces: Workspace[]): void {
-  for (const ws of rooted(workspaces)) {
+  const open = get(viewStore).workspaceId;
+  const ordered = [...rooted(workspaces)].sort((a, b) => Number(b.id === open) - Number(a.id === open));
+  for (const ws of ordered) {
     void fetchBoard(ws.id);
     if (!(ws.id in get(gavinTrees))) void refreshGavinTree(ws.id);
   }
@@ -424,6 +430,37 @@ function sessionEnded(sessionId: string): void {
   toolSessionEnded();
 }
 
+/// Whether this connection has read what a session's label is made of --
+/// its name and its folder -- whether or not either read succeeded. Until
+/// it has, a session the phone knows only by id is not yet known to be
+/// unnamed, and a list of ids would be a list of placeholders anyway.
+const sessionLabelsReadStore = writable(false);
+export const sessionLabelsRead: Readable<boolean> = { subscribe: sessionLabelsReadStore.subscribe };
+
+/// Bumped by each connection, so a read the last one sent cannot mark
+/// this one's labels read.
+let labelsEpoch = 0;
+
+/// Every session's name and baseline, read again.
+///
+/// The names go first and land on their own. Everything a phone asks is
+/// answered one at a time and in order -- the shell keeps one request in
+/// flight and the desk runs forwarded commands on one thread -- and the
+/// baselines read waits on every linked ssh host for up to its budget, so
+/// a name awaited alongside it would wait out the slowest host too.
+async function loadSessions(afterGap = false): Promise<void> {
+  const epoch = labelsEpoch;
+  await Promise.all([loadSessionNames(), loadBaselines(afterGap)]);
+  if (epoch === labelsEpoch) sessionLabelsReadStore.set(true);
+}
+
+/// The names the desk holds. A name already heard is newer than the read.
+async function loadSessionNames(): Promise<void> {
+  const sessionNames = await backend.getSessionNames().catch(() => null);
+  if (!sessionNames) return;
+  layoutState.update((s) => ({ ...s, sessionNames: { ...sessionNames, ...s.sessionNames } }));
+}
+
 /// Every session's status as the Workstation holds it now. Written
 /// straight into the map rather than through the desktop's change
 /// handler: a status that was already in place is not a transition.
@@ -431,11 +468,8 @@ function sessionEnded(sessionId: string): void {
 /// `afterGap`: read again once the connection is back. The pushes sent
 /// while it was down never arrived, so the Workstation's status is taken
 /// over the one heard before the gap, rather than only where none was.
-async function loadSessions(afterGap = false): Promise<void> {
-  const [baselines, sessionNames] = await Promise.all([
-    backend.getSessionBaselines().catch(() => null),
-    backend.getSessionNames().catch(() => null),
-  ]);
+async function loadBaselines(afterGap: boolean): Promise<void> {
+  const baselines = await backend.getSessionBaselines().catch(() => null);
   layoutState.update((s) => {
     const sessionStatusById = { ...s.sessionStatusById };
     const statusSinceById = { ...s.statusSinceById };
@@ -465,7 +499,6 @@ async function loadSessions(afterGap = false): Promise<void> {
       failureReasonById,
       interruptedSessionIds,
       cwdBySessionId,
-      sessionNames: sessionNames ? { ...sessionNames, ...s.sessionNames } : s.sessionNames,
     };
   });
 }
@@ -478,6 +511,8 @@ export async function connectWorkstation(
   storage: ViewStorage | null
 ): Promise<() => void> {
   connectionStore.set({ status: "connecting" });
+  labelsEpoch += 1;
+  sessionLabelsReadStore.set(false);
   resetReachability();
   const client = connectChannel(port);
   const stops: UnlistenFn[] = [client.onConnection(connectionChanged)];
@@ -605,6 +640,14 @@ export async function connectWorkstation(
     );
     layoutState.update((s) => ({ ...s, activeWorkspaceId: get(viewStore).workspaceId }));
     remember = (next) => saveView(storage, workstationId, next);
+    // Asked before the workspaces are adopted, which asks for every
+    // workspace's board and tree: what is asked first is answered first,
+    // and a sessions list waiting behind three reads per workspace is a
+    // list of ids for as long. Not awaited: a row draws its name, and its
+    // agent, when they land. The theme next, which every screen is drawn
+    // in; it repaints when it arrives.
+    void loadSessions();
+    void themeState.init();
     adoptWorkspaces(data);
     landingStore.set(null);
     if (capabilities.landing) land(capabilities.landing);
@@ -635,9 +678,5 @@ export async function connectWorkstation(
     })
   );
 
-  // Not awaited: neither holds up the list. The theme repaints when it
-  // arrives, and a row draws its agents when their statuses do.
-  void themeState.init();
-  void loadSessions();
   return disconnect;
 }

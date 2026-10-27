@@ -3,7 +3,8 @@
 //
 // Which tabs are sessions, what each is called and what its badge says
 // are the desktop's rules, read through the desktop's functions -- the
-// tab strip's label (`sessionLabel`), the page recap's projection
+// tab strip's label (`sessionLabel`, through `phoneSessionLabel`), the
+// page recap's projection
 // (`sessionTabsOnly`), the badge vocabulary (`indicators.ts`) -- so a
 // session cannot go by one name on the phone and another at the desk.
 import type { SessionStatus } from "$lib/core/notifications";
@@ -76,6 +77,26 @@ export interface SessionListInput {
   /// Who each session is locked by for this Device, by name
   /// (`lockBySessionId`). Absent: nothing is locked.
   lockedBy?: Record<string, string>;
+  /// Whether the names and folders labels are made of have been read
+  /// (`sessionLabelsRead`). Absent: they have.
+  labelsRead?: boolean;
+}
+
+/// What a session is called before its name and folder have been read.
+export const UNREAD_LABEL = "Reading its name…";
+
+/// A session's label as the desk's tab strip has it (`sessionLabel`) --
+/// except that, while the reads it is made of are still out, a session
+/// known only by its id is not yet known to have no name, and says so
+/// rather than show the id as though it were one.
+export function phoneSessionLabel(
+  sessionNames: Record<string, string>,
+  cwdBySessionId: Record<string, string>,
+  sessionId: string,
+  labelsRead: boolean
+): string {
+  if (!labelsRead && !sessionNames[sessionId] && !cwdBySessionId[sessionId]) return UNREAD_LABEL;
+  return sessionLabel(sessionNames, cwdBySessionId, sessionId);
 }
 
 /// An indicator's words after its axis ("Agent · working" → "working").
@@ -87,7 +108,7 @@ export function detailOf(indicator: Indicator): string {
 }
 
 function row(input: SessionListInput, id: string): SessionRow {
-  const name = sessionLabel(input.sessionNames, input.cwdBySessionId, id);
+  const name = phoneSessionLabel(input.sessionNames, input.cwdBySessionId, id, input.labelsRead ?? true);
   const cwd = input.cwdBySessionId[id];
   const folder = cwd ? folderName(cwd) : null;
   const status = input.statusById[id] ?? "idle";
