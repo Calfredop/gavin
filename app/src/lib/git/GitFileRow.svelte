@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Trash2 } from "@lucide/svelte";
   import { splitPath, type Area, type FileEntry } from "$lib/git/git";
-  import { tooltip } from "$lib/core/tooltip";
+  import { overflowTooltip, tooltip } from "$lib/core/tooltip";
   import IconButton from "$lib/ui/IconButton.svelte";
 
   interface Props {
@@ -27,6 +27,10 @@
   let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, onContextMenu, readonly = false, note = null }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
+  // A narrow list ellipsizes the path from the right, which cuts the
+  // file NAME first -- the part a row exists to show. Hovering a cut row
+  // shows it whole; an uncut one shows nothing.
+  const fullPath = $derived(entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path);
   const toggleLabel = $derived(entry.status === "U" ? "Mark resolved" : area === "unstaged" ? "Stage" : "Unstage");
 </script>
 
@@ -36,7 +40,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="row" class:selected role="option" aria-selected={selected} tabindex="-1" onclick={onSelect} ondblclick={onToggle} oncontextmenu={onContextMenu}>
   <span class="badge s-{entry.status === '?' ? 'untracked' : entry.status}">{entry.status}</span>
-  <span class="path">
+  <span class="path" use:overflowTooltip={fullPath}>
     {#if entry.oldPath}<span class="dir">{entry.oldPath} → </span>{/if}
     <span class="dir">{parts.dir}</span><span class="name">{parts.name}</span>
   </span>

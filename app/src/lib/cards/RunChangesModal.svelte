@@ -26,6 +26,7 @@
   import { attributionKey, attributionStore } from "$lib/cards/changeAttributionState";
   import { askConfirm } from "$lib/core/dialog";
   import { tooltip } from "$lib/core/tooltip";
+  import { DEFAULT_LIST_SHARE, listShareFromWidth, loadListShare, saveListShare } from "$lib/cards/runChangesSplit";
 
   interface Props {
     /// The card whose run this is. Also the store key: one view per card,
@@ -108,6 +109,46 @@
 
   let outcome = $state<string | null>(null);
 
+  // The list/diff divider, as the list's share of the pair (see
+  // runChangesSplit.ts). Window-level listeners with a buttons===0
+  // bail-out, like the Git tab's splitters: WKWebView drops pointerup
+  // when the pointerdown target leaves the DOM, and the rows beside this
+  // one are replaced on every refresh.
+  let listShare = $state(loadListShare());
+  function startResize(e: PointerEvent): void {
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement | null;
+    const list = el?.previousElementSibling as HTMLElement | null;
+    const detail = el?.nextElementSibling as HTMLElement | null;
+    if (!list || !detail) return;
+    const startX = e.clientX;
+    const startW = list.offsetWidth;
+    const total = startW + detail.offsetWidth;
+    const startShare = listShare;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      listShare = listShareFromWidth(startW + ev.clientX - startX, total);
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      // A click that never moved writes nothing, which keeps the two
+      // clicks of a double-click from racing the reset below.
+      if (listShare !== startShare) saveListShare(listShare);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+  function resetSplit(): void {
+    listShare = DEFAULT_LIST_SHARE;
+    saveListShare(null);
+  }
+
   function close(): void {
     closeRunChanges(path);
     onClose();
@@ -167,7 +208,7 @@
     {#if sourceStrip && changes && !problem}<p class="strip quiet">{sourceStrip}</p>{/if}
 
     <div class="body">
-      <div class="files" role="listbox" aria-label="Files this run changed">
+      <div class="files" role="listbox" aria-label="Files this run changed" style:flex-grow={listShare}>
         {#if view?.loading && !changes}
           <div class="none">Reading the checkout…</div>
         {:else if !changes || problem}
@@ -195,7 +236,15 @@
           {/each}
         {/if}
       </div>
-      <div class="diff">
+      <div
+        class="vsplit"
+        role="separator"
+        aria-orientation="vertical"
+        use:tooltip={"Drag to resize \u00b7 double-click to reset"}
+        onpointerdown={startResize}
+        ondblclick={resetSplit}
+      ></div>
+      <div class="diff" style:flex-grow={1 - listShare}>
         {#if !view?.selected}
           <div class="none">Select a file</div>
         {:else if view.diffLoading && !diff}
@@ -301,18 +350,38 @@
     min-height: 0;
     flex: 1;
     margin-top: 10px;
-    gap: 10px;
   }
+  /* Both sides grow by their share from a zero basis, so the split holds
+     at any width and neither side's content can push the other. */
   .files {
-    width: 260px;
-    flex: none;
+    flex: 0 1 0;
+    min-width: 0;
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--surface-sunken);
   }
+  /* The 10px gap the two boxes always had, now the handle that moves it;
+     the line down its middle shows on hover. */
+  .vsplit {
+    flex: 0 0 10px;
+    cursor: col-resize;
+    position: relative;
+  }
+  .vsplit::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 4px;
+    width: 2px;
+    border-radius: 1px;
+  }
+  .vsplit:hover::after {
+    background: var(--surface-selected);
+  }
   .diff {
-    flex: 1;
+    flex: 0 1 0;
     min-width: 0;
     overflow: auto;
     border: 1px solid var(--border);

@@ -73,7 +73,26 @@ function hide(host?: Element): void {
 }
 
 // use:tooltip={"the text"} — empty/null text disables it.
-export const tooltip: Action<Element, string | null | undefined> = (node, text) => {
+export const tooltip: Action<Element, string | null | undefined> = (node, text) =>
+  attach(node, text, () => true);
+
+/// Whether a box is cutting its own content off -- an ellipsis, or a
+/// plain overflow clip. Wider content than box is the only signal the
+/// DOM gives for `text-overflow: ellipsis`; there is no "is truncated".
+export function isClipped(box: { scrollWidth: number; clientWidth: number }): boolean {
+  return box.scrollWidth > box.clientWidth;
+}
+
+// use:overflowTooltip={"the full text"} — the same bubble, but only while
+// the host is truncating what it shows. For a label whose whole content
+// IS the tooltip (a file path in a narrow list): repeating text that is
+// already fully on screen is noise, so the check runs at hover time,
+// against the width the host has right then -- a splitter or a window
+// resize changes the answer without anything re-rendering.
+export const overflowTooltip: Action<Element, string | null | undefined> = (node, text) =>
+  attach(node, text, () => isClipped(node));
+
+function attach(node: Element, text: string | null | undefined, wanted: () => boolean) {
   let current = text ?? "";
   // Per-node timer: cancel must ALWAYS clear it, even when the bubble
   // never showed -- a shared/module timer let a pending show fire after
@@ -81,7 +100,7 @@ export const tooltip: Action<Element, string | null | undefined> = (node, text) 
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   function schedule(): void {
-    if (!current) return;
+    if (!current || !wanted()) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -90,7 +109,7 @@ export const tooltip: Action<Element, string | null | undefined> = (node, text) 
   }
 
   function showNow(): void {
-    if (current) show(node, current);
+    if (current && wanted()) show(node, current);
   }
 
   function cancel(): void {
@@ -125,4 +144,4 @@ export const tooltip: Action<Element, string | null | undefined> = (node, text) 
       node.removeEventListener("pointerdown", cancel);
     },
   };
-};
+}
