@@ -13,8 +13,8 @@
 //    other Workstation's connection -- go through without a prompt
 //    (ADR 0004).
 // 4. The Workstation verifies the proof and says `connected`, or refuses.
-// 5. Then the daemon's own protocol, a JSON message a line, one request
-//    at a time.
+// 5. Then the daemon's own protocol, a JSON message a line, each request
+//    sent at once and answered in order.
 //
 // Every byte of the wire is the core's; this module sequences it, and
 // names each way it can end for the hub to show.
@@ -88,8 +88,11 @@ export interface ConnectDeps {
 export interface Connection {
   /// Sends one message of the daemon's protocol and resolves with the
   /// first message back that `answers` accepts; anything before it that
-  /// it does not accept is passed over. One request at a time: a second
-  /// waits for the first.
+  /// it does not accept is passed over. Sent at once, without waiting for
+  /// the requests before it to be answered: the daemon answers them in
+  /// order, and each is handed the answer that is its own. `timeoutMs`
+  /// counts from when the daemon reaches it -- once the requests before it
+  /// are answered or have timed out.
   request(message: unknown, answers: (reply: unknown) => boolean, timeoutMs: number): Promise<unknown>;
   /// Hears every message the Workstation sends that no request was
   /// waiting for: its pushes (`DesktopEvent` for a listened event, and
@@ -295,53 +298,85 @@ function keysProblem(e: unknown): string {
     : `This phone could not sign the connection: ${messageOf(e)}`;
 }
 
+/// A request sent and not yet answered.
+interface Waiting {
+  answers(reply: unknown): boolean;
+  /// Hands it its answer, unless its caller already has a result.
+  resolve(reply: unknown): void;
+  /// Rejects it, unless its caller already has a result.
+  fail(why: string): void;
+  /// Starts its clock, once.
+  arm(): void;
+  /// Its caller already has a result -- it timed out, or was answered by
+  /// something that arrived before it was sent -- and it waits only to
+  /// take its own answer off the wire, so that answer is not taken for
+  /// the next request's.
+  settled: boolean;
+}
+
 /// The stream after `connected`: a pump that reads it for as long as it
-/// lasts, and requests answered one at a time.
+/// lasts, and requests sent as they come and answered in order.
+///
+/// The daemon serves a Device's requests one after another and answers
+/// each with exactly one message, in the order they were sent
+/// (`serve_connection`; `a_great_many_requests_in_one_frame_are_each_answered`
+/// in crates/daemon/tests/device_wire.rs). So a request does not wait for
+/// the one before it to be answered before it is sent: each goes at once,
+/// and an answer goes to the oldest request still waiting. A burst of
+/// them -- everything a bundle reads as it opens -- costs one round trip
+/// over the Relay rather than one each.
 function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: string[]): Connection {
+  /// What arrived while no request was waiting and nobody listened, for
+  /// the next request to look at.
   const inbox: string[] = [...early];
-  /// The request waiting for its answer, if one is.
-  let waiter: { answers(reply: unknown): boolean; resolve(reply: unknown): void } | null = null;
+  /// The requests sent and not yet answered, oldest first.
+  const waiting: Waiting[] = [];
   const pushHandlers = new Set<(message: unknown) => void>();
   const admissionHandlers = new Set<(token: string) => void>();
   let isClosed = false;
   let settle!: (why: string) => void;
   const closed = new Promise<string>((resolve) => (settle = resolve));
-  /// Rejects whoever is waiting when the stream ends.
-  let failWaiter: ((why: string) => void) | null = null;
-  let queue: Promise<unknown> = Promise.resolve();
 
   const end = (why: string): void => {
     if (isClosed) return;
     isClosed = true;
     socket.close();
-    failWaiter?.(why);
+    for (const w of waiting.splice(0)) w.fail(why);
     settle(why);
   };
 
-  /// A message from the Workstation: the answer the waiting request
-  /// wants, else a push for whoever listens, else kept for the next
-  /// request to look at.
+  /// Starts the clock of the oldest request still owed a result. The time
+  /// a request is given is the daemon's for it alone, and the daemon
+  /// reaches it only once it has answered every request before it -- so
+  /// its clock starts then, or once those have been given up on, as it did
+  /// when a request was only sent then.
+  const arm = (): void => {
+    waiting.find((w) => !w.settled)?.arm();
+  };
+
+  /// A message from the Workstation: the answer the oldest request
+  /// waiting wants, else a push for whoever listens, else kept for the
+  /// next request to look at while none waits.
   const deliver = (text: string): void => {
-    let reply: unknown;
-    try {
-      reply = JSON.parse(text);
-    } catch {
-      return;
-    }
+    const reply = parsed(text);
+    if (reply === undefined) return;
     const token = refreshedAdmission(reply);
     if (token !== null) {
       for (const handler of [...admissionHandlers]) handler(token);
       return;
     }
-    if (waiter?.answers(reply)) {
-      waiter.resolve(reply);
+    const oldest = waiting[0];
+    if (oldest?.answers(reply)) {
+      waiting.shift();
+      oldest.resolve(reply);
+      arm();
       return;
     }
     if (pushHandlers.size > 0) {
       for (const handler of [...pushHandlers]) handler(reply);
       return;
     }
-    inbox.push(text);
+    if (waiting.length === 0) inbox.push(text);
   };
 
   void (async () => {
@@ -375,63 +410,64 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
     }
   })();
 
-  const once = (message: unknown, answers: (reply: unknown) => boolean, timeoutMs: number): Promise<unknown> =>
+  const request = (message: unknown, answers: (reply: unknown) => boolean, timeoutMs: number): Promise<unknown> =>
     new Promise((resolve, reject) => {
       if (isClosed) {
         reject(new Error("the connection is closed"));
         return;
       }
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const finish = (): void => {
-        if (timer !== null) clearTimeout(timer);
-        waiter = null;
-        failWaiter = null;
-      };
-      const offer = (text: string): boolean => {
-        let reply: unknown;
-        try {
-          reply = JSON.parse(text);
-        } catch {
-          return false;
-        }
-        if (!answers(reply)) return false;
-        finish();
-        resolve(reply);
-        return true;
-      };
-      failWaiter = (why) => {
-        finish();
-        reject(new Error(why));
-      };
       try {
         socket.send(exchange.connectSend(JSON.stringify(message)));
       } catch (e) {
-        finish();
         end(`The connection broke: ${messageOf(e)}`);
         reject(e);
         return;
       }
-      // What arrived before this request, then whatever arrives next.
-      while (inbox.length > 0) if (offer(inbox.shift()!)) return;
-      waiter = {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const entry: Waiting = {
         answers,
+        settled: false,
         resolve: (reply) => {
-          finish();
+          if (timer !== null) clearTimeout(timer);
+          if (entry.settled) return;
+          entry.settled = true;
           resolve(reply);
         },
+        fail: (why) => {
+          if (timer !== null) clearTimeout(timer);
+          if (entry.settled) return;
+          entry.settled = true;
+          reject(new Error(why));
+        },
+        arm: () => {
+          if (timer !== null || entry.settled) return;
+          timer = setTimeout(() => {
+            entry.settled = true;
+            reject(new Error("the Workstation did not answer in time"));
+            arm();
+          }, timeoutMs);
+        },
       };
-      timer = setTimeout(() => {
-        finish();
-        reject(new Error("the Workstation did not answer in time"));
-      }, timeoutMs);
+      // What arrived while nothing waited, offered to the first request
+      // after it: the lines that came with the verdict, or a push nobody
+      // listened for. The daemon answers this request all the same, so
+      // one answered here still waits for that answer.
+      if (waiting.length === 0) {
+        while (inbox.length > 0) {
+          const reply = parsed(inbox.shift()!);
+          if (reply !== undefined && answers(reply)) {
+            entry.settled = true;
+            resolve(reply);
+            break;
+          }
+        }
+      }
+      waiting.push(entry);
+      arm();
     });
 
   return {
-    request(message, answers, timeoutMs) {
-      const run = queue.then(() => once(message, answers, timeoutMs));
-      queue = run.catch(() => {});
-      return run;
-    },
+    request,
     onPush(handler) {
       pushHandlers.add(handler);
       return () => {
@@ -450,6 +486,15 @@ function liveConnection(exchange: CoreExchange, socket: RelaySocket, early: stri
       return isClosed;
     },
   };
+}
+
+/// A line of the daemon's protocol, or undefined for one that is not JSON.
+function parsed(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function checkAborted(signal: AbortSignal | undefined): void {

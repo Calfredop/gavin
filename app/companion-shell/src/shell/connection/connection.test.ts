@@ -349,24 +349,70 @@ describe("a live connection", () => {
     });
   });
 
-  it("answers requests one at a time", async () => {
+  it("sends each request at once, and hands each the answer that is its own", async () => {
+    // The daemon answers a Device's requests in the order they were sent,
+    // so a burst need not wait a round trip per request.
     const { connection, relay, sent, lines } = await connected();
     const first = connection.request({ n: 1 }, () => true, 1000);
     const second = connection.request({ n: 2 }, () => true, 1000);
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
-    lines.push('{"answer":1}');
+    const third = connection.request({ n: 3 }, () => true, 1000);
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent.map((m) => JSON.parse(m).n)).toEqual([1, 2, 3]);
+    lines.push('{"answer":1}', '{"answer":2}', '{"answer":3}');
     relay.push(byte(7));
-    expect(await first).toEqual({ answer: 1 });
-    await vi.waitFor(() => expect(sent).toHaveLength(2));
-    lines.push('{"answer":2}');
     relay.push(byte(7));
-    expect(await second).toEqual({ answer: 2 });
+    relay.push(byte(7));
+    expect(await Promise.all([first, second, third])).toEqual([{ answer: 1 }, { answer: 2 }, { answer: 3 }]);
   });
 
   it("times a request out, and leaves the connection open", async () => {
     const { connection } = await connected();
     await expect(connection.request({}, () => true, 5)).rejects.toThrow("did not answer in time");
     expect(connection.isClosed).toBe(false);
+  });
+
+  it("takes a timed-out request's late answer off the wire, rather than for the next request's", async () => {
+    const { connection, relay, sent, lines } = await connected();
+    const slow = connection.request({ n: 1 }, () => true, 5);
+    const next = connection.request({ n: 2 }, () => true, 1000);
+    await expect(slow).rejects.toThrow("did not answer in time");
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    lines.push('{"answer":1}', '{"answer":2}');
+    relay.push(byte(7));
+    relay.push(byte(7));
+    expect(await next).toEqual({ answer: 2 });
+  });
+
+  it("gives a request its time once the daemon reaches it, not from when it was sent", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { connection, relay, lines } = await connected();
+      const first = connection.request({ n: 1 }, () => true, 1000);
+      const second = connection.request({ n: 2 }, () => true, 1000);
+      let secondFailed = false;
+      second.catch(() => (secondFailed = true));
+      // The first takes most of its time; the second has waited as long
+      // behind it, and is not yet out of its own.
+      vi.advanceTimersByTime(900);
+      lines.push('{"answer":1}');
+      relay.push(byte(7));
+      await vi.waitFor(() => expect(first).resolves.toEqual({ answer: 1 }));
+      await vi.advanceTimersByTimeAsync(900);
+      expect(secondFailed).toBe(false);
+      vi.advanceTimersByTime(200);
+      await expect(second).rejects.toThrow("did not answer in time");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails every request waiting when the Workstation hangs up", async () => {
+    const { connection, relay } = await connected();
+    const one = connection.request({ n: 1 }, () => true, 10_000);
+    const two = connection.request({ n: 2 }, () => true, 10_000);
+    relay.hangUp();
+    await expect(one).rejects.toThrow("The Workstation ended the connection.");
+    await expect(two).rejects.toThrow("The Workstation ended the connection.");
   });
 
   it("settles `closed` when the Workstation hangs up, and fails the request waiting", async () => {

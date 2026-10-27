@@ -36,6 +36,7 @@ import type { Connection } from "$shell/connection/connection";
 import type { LiveState } from "$shell/hub/live";
 import { connectionStateOf, sameConnectionState, UP } from "$shell/visit/connectionState";
 import type { VisitEndpoint } from "$shell/visit/visit";
+import { describeBurst, wireTiming } from "$shell/visit/wireTiming";
 
 /// Where a visit gets its Workstation's connection: the live hub.
 export interface ConnectionSource {
@@ -72,6 +73,8 @@ const DESK_UNREACHABLE = new Set([
 
 interface Options {
   log?(line: string): void;
+  /// The clock calls are timed by (`wireTiming`).
+  now?(): number;
   invokeTimeoutMs?: number;
   listenTimeoutMs?: number;
 }
@@ -90,6 +93,15 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
   const log = options.log ?? (() => {});
   const invokeTimeoutMs = options.invokeTimeoutMs ?? INVOKE_TIMEOUT_MS;
   const listenTimeoutMs = options.listenTimeoutMs ?? LISTEN_TIMEOUT_MS;
+  /// Every call this end sends for the bundle, timed: a burst of them is
+  /// said as one line in the log (`wireTiming`).
+  const startCall = wireTiming(options.now ?? (() => performance.now()), (burst) => log(describeBurst(burst)));
+  const timed = (connection: Connection, what: string, message: unknown, timeoutMs: number): Promise<unknown> => {
+    const done = startCall(what);
+    const request = connection.request(message, isAnswer, timeoutMs);
+    request.then(done, done);
+    return request;
+  };
   /// The bundle's listeners: the `listen`'s id, and the event it named.
   const listeners = new Map<number, string>();
   /// How to reach the bundle: the reply of the last message received.
@@ -153,7 +165,7 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
   };
 
   const listenOn = (connection: Connection, event: string): Promise<unknown> =>
-    connection.request({ type: "ListenDesktop", event }, isAnswer, listenTimeoutMs);
+    timed(connection, `listen ${event}`, { type: "ListenDesktop", event }, listenTimeoutMs);
 
   const hear = (connection: Connection | null): void => {
     stopPushes?.();
@@ -177,9 +189,7 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
           fail(message.id, NOT_CONNECTED, "unreachable");
           return;
         }
-        connection
-          .request({ type: "InvokeDesktop", command: message.cmd, args: message.args }, isAnswer, invokeTimeoutMs)
-          .then(
+        timed(connection, message.cmd, { type: "InvokeDesktop", command: message.cmd, args: message.args }, invokeTimeoutMs).then(
             (answer) => {
               if (isObject(answer) && answer.type === "DesktopResult") {
                 if (typeof answer.error === "string") fail(message.id, answer.error);
@@ -221,7 +231,7 @@ export function workstationEndpoint(source: ConnectionSource, options: Options =
           ok(message.id);
           return;
         }
-        settled(message.id, connection.request({ type: "UnlistenDesktop", event }, isAnswer, listenTimeoutMs));
+        settled(message.id, timed(connection, `unlisten ${event}`, { type: "UnlistenDesktop", event }, listenTimeoutMs));
         return;
       }
       default:

@@ -88,6 +88,23 @@ function bench(initial: Connection | null, live?: LiveState | null) {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe("a paired Workstation's end of the channel", () => {
+  it("says how long a burst of calls took, and the slowest, in its log", async () => {
+    const s = scripted();
+    s.answers.set("InvokeDesktop", () => ({ type: "DesktopResult", value: null }));
+    s.answers.set("ListenDesktop", () => ({ type: "Ok" }));
+    let t = 0;
+    const lines: string[] = [];
+    const endpoint = workstationEndpoint(source(s.connection), { log: (l) => lines.push(l), now: () => (t += 10) });
+    const reply = () => {};
+    endpoint.endpoint.receive(message({ type: "listen", id: 1, event: "session-status-changed" }), reply);
+    for (const [id, cmd] of [[2, "get_workspaces_state"], [3, "get_session_names"], [4, "get_session_baselines"], [5, "get_board"]] as const) {
+      endpoint.endpoint.receive(message({ type: "invoke", id, cmd, args: {} }), reply);
+    }
+    await flush();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[gavin-visit\] 5 calls in \d+ ms; slowest listen session-status-changed \(\d+ ms\)$/);
+  });
+
   it("invokes: a DesktopResult's value comes back as the result, its error as a failure", async () => {
     const s = scripted();
     s.answers.set("InvokeDesktop", (m) =>
