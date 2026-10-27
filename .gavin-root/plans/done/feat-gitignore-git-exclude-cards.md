@@ -2,7 +2,7 @@
 order: 16384
 kind: task
 title: [feat] gitignore/git exclude cards
-status: In Progress
+status: Done
 ---
 add a flag for a card to be gitignored/excluded
 

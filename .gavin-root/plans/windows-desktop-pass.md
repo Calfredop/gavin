@@ -1,5 +1,5 @@
 ---
-order: 5120
+order: 3072
 kind: plan
 title: "[owner] the Windows desktop pass — nine rendered checks in the running app"
 status: In Progress

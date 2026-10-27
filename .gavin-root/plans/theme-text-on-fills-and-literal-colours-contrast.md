@@ -1,5 +1,5 @@
 ---
-order: 24576
+order: 13312
 kind: task
 title: Theme: white on the accent fills, and 127 desktop text colours outside the text roles, are unmeasured for contrast
 status: In Progress

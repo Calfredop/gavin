@@ -1,4 +1,5 @@
 ---
+order: 14336
 labels: bug
 title: [bug] Cursor usage shows empty after usage-summary went stale
 status: In Progress

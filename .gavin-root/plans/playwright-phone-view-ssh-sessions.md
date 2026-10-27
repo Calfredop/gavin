@@ -1,5 +1,5 @@
 ---
-order: 22528
+order: 12288
 kind: task
 title: Phone live view of an agent's browser in an ssh workspace
 status: In Progress

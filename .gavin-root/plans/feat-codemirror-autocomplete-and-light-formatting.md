@@ -1,5 +1,5 @@
 ---
-order: 14336
+order: 5120
 kind: plan
 title: CodeMirror: autocomplete + light formatting
 status: In Progress

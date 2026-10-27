@@ -1,4 +1,5 @@
 ---
+order: 15360
 labels: memory
 kind: note
 title: The daemon's git_watch.rs watches only for an ssh desk

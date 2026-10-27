@@ -1,6 +1,6 @@
 ---
 complexity: moderate
-order: 14336
+order: 6144
 kind: plan
 title: [feat] scheduled tasks/plans
 status: In Progress

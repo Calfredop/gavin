@@ -1,5 +1,5 @@
 ---
-order: 13312
+order: 4096
 kind: task
 title: Companion iOS: push notifications cannot arrive, the APNs entitlement and the extension are not wired
 status: In Progress

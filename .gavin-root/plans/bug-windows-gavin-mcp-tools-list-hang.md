@@ -1,5 +1,5 @@
 ---
-order: 18432
+order: 11264
 kind: task
 title: [bug] Windows gavin-mcp hangs on tools/list (Cursor MCP)
 status: In Progress
