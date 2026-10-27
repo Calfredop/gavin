@@ -8,7 +8,7 @@ import type { EffectiveTheme } from "$lib/ui/theme";
 import {
   cursorMcpApproval,
   type McpForeignChoice,
-} from "$lib/workspace/mcpServerTrust";
+} from "$lib/workspace/mcpForeignChoice";
 
 export type { CustomProfile };
 
