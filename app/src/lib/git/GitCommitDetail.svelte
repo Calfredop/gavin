@@ -14,6 +14,7 @@
   import { shortSha, LARGE_HUNK_LINES, type DiffLayout } from "$lib/git/git";
   import { toUnifiedRows, toSplitRows } from "$lib/git/diffRows";
   import { tooltip } from "$lib/core/tooltip";
+  import { detailGrow, detailSplitFromDrag, type CommitDetailSplit, type DetailBar } from "$lib/git/gitCommitSplit";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import GitDiffUnified from "$lib/git/GitDiffUnified.svelte";
   import GitDiffSplit from "$lib/git/GitDiffSplit.svelte";
@@ -44,6 +45,62 @@
   };
   const noop = (): void => {};
   const nullLabel = (): null => null;
+
+  // The two bars, message | files and files | diff (gitCommitSplit.ts).
+  // Nothing is stored until one is dragged: before that the message and
+  // the file list take their content's height under their caps, and the
+  // first drag measures what is on screen. A drag of either bar stores
+  // both shares, since each is a share of all three blocks.
+  const prefSplit = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.commitDetailSplit ?? null);
+  let split = $state<CommitDetailSplit | null>(null);
+  $effect(() => {
+    split = prefSplit;
+  });
+  const grow = $derived(split ? detailGrow(split) : null);
+  let messageEl = $state<HTMLElement | null>(null);
+  let filesEl = $state<HTMLElement | null>(null);
+  let diffEl = $state<HTMLElement | null>(null);
+
+  // Window-level listeners with a buttons===0 bail-out, as in
+  // GitChanges: WKWebView drops pointerup when the pointerdown target
+  // leaves the DOM, and the diff below re-renders as it loads.
+  function startDetailResize(e: PointerEvent, bar: DetailBar): void {
+    e.preventDefault();
+    if (!messageEl || !filesEl || !diffEl) return;
+    const heights = { message: messageEl.offsetHeight, files: filesEl.offsetHeight, diff: diffEl.offsetHeight };
+    const startY = e.clientY;
+    const startH = bar === 0 ? heights.message : heights.files;
+    // Compared by a flag, not by identity: `split` is a $state proxy.
+    let dragged: CommitDetailSplit | null = null;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      const next = detailSplitFromDrag(bar, startH + ev.clientY - startY, heights);
+      if (!next) return;
+      dragged = next;
+      split = next;
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      // A click that never moved writes nothing, so the two clicks of a
+      // double-click cannot race the reset below.
+      if (dragged) void setGitViewPrefs(workspaceId, { commitDetailSplit: dragged });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  // Double-click on either bar returns all three blocks to their content
+  // heights -- the layout the detail had before the bars.
+  function fitDetail(): void {
+    split = null;
+    void setGitViewPrefs(workspaceId, { commitDetailSplit: undefined });
+  }
 
   let copied = $state(false);
   async function copySha(): Promise<void> {
@@ -116,7 +173,19 @@
         {#each commit.refs as r (r.kind + r.name)}<span class="chip {r.kind}">{r.name}</span>{/each}
       </div>
     {/if}
-    <pre class="message">{detail?.body ?? commit.subject}</pre>
+    <!-- The pane is what the bars size; the padding lives on the <pre>
+         inside it, so a share is the pane's whole height. -->
+    <div class="message-pane" class:sized={grow !== null} style:flex-grow={grow?.[0]} bind:this={messageEl}>
+      <pre class="message">{detail?.body ?? commit.subject}</pre>
+    </div>
+    <div
+      class="hsplit"
+      role="separator"
+      aria-orientation="horizontal"
+      use:tooltip={"Drag to resize · double-click to fit"}
+      onpointerdown={(e) => startDetailResize(e, 0)}
+      ondblclick={fitDetail}
+    ></div>
     {#if linkCards.length > 0}
       <!-- A suggestion, never a record: nothing here is written to the
            card or the commit, and closing the tab forgets it. -->
@@ -136,7 +205,7 @@
         {/each}
       </div>
     {/if}
-    <div class="files" role="listbox" aria-label="Changed files">
+    <div class="files" class:sized={grow !== null} style:flex-grow={grow?.[1]} role="listbox" aria-label="Changed files" bind:this={filesEl}>
       {#if !detail}
         <div class="none">Loading…</div>
       {:else if detail.files.length === 0}
@@ -155,7 +224,15 @@
         {/each}
       {/if}
     </div>
-    <div class="diff">
+    <div
+      class="hsplit"
+      role="separator"
+      aria-orientation="horizontal"
+      use:tooltip={"Drag to resize · double-click to fit"}
+      onpointerdown={(e) => startDetailResize(e, 1)}
+      ondblclick={fitDetail}
+    ></div>
+    <div class="diff" class:sized={grow !== null} style:flex-grow={grow?.[2]} bind:this={diffEl}>
       {#if !view?.detailFile}
         <div class="msg small">Select a file</div>
       {:else if !diff}
@@ -276,15 +353,35 @@
   .chip.remote { color: var(--accent-text); border-color: var(--border-accent); }
   .chip.tag { color: var(--warning-text); border-color: var(--border-warning); }
   .chip.stash, .chip.head { color: var(--text-muted); border-color: var(--border); }
+  .message-pane {
+    flex: 0 1 auto;
+    max-height: 30%;
+    overflow: auto;
+  }
   .message {
     margin: 0;
     padding: 8px 10px;
     white-space: pre-wrap;
     color: var(--text);
     font-size: 0.8em;
-    max-height: 30%;
-    overflow: auto;
-    border-bottom: 1px solid var(--border);
+  }
+  /* The bars are the separation between the three blocks. */
+  .hsplit {
+    flex: 0 0 4px;
+    cursor: row-resize;
+    background: var(--surface-raised);
+  }
+  .hsplit:hover {
+    background: var(--surface-selected);
+  }
+  /* Once a bar is dragged each block takes its share of the three
+     (applied inline as flex-grow), and the content caps no longer apply. */
+  .message-pane.sized,
+  .files.sized,
+  .diff.sized {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
   }
   .card-link {
     display: flex;
@@ -319,7 +416,6 @@
     flex: 0 1 auto;
     max-height: 35%;
     overflow: auto;
-    border-bottom: 1px solid var(--border);
   }
   .diff {
     flex: 1 1 auto;

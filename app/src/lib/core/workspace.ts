@@ -1,5 +1,6 @@
 import type { PauseCycle } from "$lib/agents/agentPause";
 import type { ComplexityTable, CustomProfile } from "$lib/cards/complexity";
+import type { CommitDetailSplit } from "$lib/git/gitCommitSplit";
 import type { LayoutNode } from "$lib/panes/layout";
 import { addTab, allSessionIds, findLeafPath } from "$lib/panes/layout";
 
@@ -20,6 +21,16 @@ export interface GitViewPrefs {
   /// The Unstaged block's share (0-1) of the two lists' height in the
   /// Changes column; Staged takes the rest. Absent = an even split.
   unstagedShare?: number;
+  /// The commit box's share (0-1) of the Changes column below the filter
+  /// bar; the two lists take the rest. Absent = the box sized to its
+  /// fields, as it was before the divider -- see gitCommitSplit.ts.
+  commitBoxShare?: number;
+  /// A selected commit's detail split as message | files | diff: the
+  /// first two blocks' shares (0-1) of the three's height, the diff the
+  /// rest. One field for both bars, since a drag of either is measured
+  /// against all three. Absent = the message and the file list sized to
+  /// their content, capped at 30% and 35%.
+  commitDetailSplit?: CommitDetailSplit;
   diffLayout?: "unified" | "split";
   skipHunkDiscardConfirm?: boolean;
   /// Collapsed sidebar sections of the Git tab, keyed by section id.

@@ -2,6 +2,7 @@
   import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges, addIgnorePattern } from "$lib/git/gitState";
   import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import { DEFAULT_SHARE, shareFromHeight } from "$lib/git/gitChangesSplit";
+  import { commitBoxShare } from "$lib/git/gitCommitSplit";
   import { tooltip } from "$lib/core/tooltip";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "$lib/git/git";
   import { describeFileDiscard, type FileDiscardPrompt } from "$lib/git/discardFlow";
@@ -89,6 +90,52 @@
   function evenOut(): void {
     share = DEFAULT_SHARE;
     void setGitViewPrefs(workspaceId, { unstagedShare: undefined });
+  }
+
+  // The divider above the commit box, the same way. Until it is dragged
+  // there is no share: the box is as tall as its fields and the lists
+  // take the rest, so the first drag starts from what is on screen.
+  const prefBoxShare = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.commitBoxShare ?? null);
+  let boxShare = $state<number | null>(null);
+  $effect(() => {
+    boxShare = prefBoxShare;
+  });
+
+  function startBoxResize(e: PointerEvent): void {
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement | null;
+    const lists = el?.previousElementSibling as HTMLElement | null;
+    const box = el?.nextElementSibling as HTMLElement | null;
+    if (!lists || !box) return;
+    const startY = e.clientY;
+    const startH = box.offsetHeight;
+    const total = lists.offsetHeight + startH;
+    const startShare = boxShare;
+    const measured = total > 0 ? startH / total : 0;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      // The box is BELOW the bar: dragging up makes it taller.
+      boxShare = commitBoxShare(startH - (ev.clientY - startY), total, startShare ?? measured);
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (boxShare !== startShare && boxShare !== null) void setGitViewPrefs(workspaceId, { commitBoxShare: boxShare });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  // Double-click returns the box to its own height, not to a 50/50 split:
+  // the layout the column had before the divider existed.
+  function fitBox(): void {
+    boxShare = null;
+    void setGitViewPrefs(workspaceId, { commitBoxShare: undefined });
   }
 
   // Stage/unstage all means all of WHAT IS LISTED. Unfiltered that is
@@ -220,62 +267,74 @@
       matches={filtering ? { shown, total: totalFiles } : null}
     />
   </div>
-  {#each sections as { area, items }, i (area)}
-    {#if i > 0}
-      <div
-        class="hsplit"
-        role="separator"
-        aria-orientation="horizontal"
-        use:tooltip={"Drag to resize \u00b7 double-click to even out"}
-        onpointerdown={startResize}
-        ondblclick={evenOut}
-      ></div>
-    {/if}
-    <section class="list" class:above-split={i === 0} style:flex-grow={i === 0 ? share : 1 - share}>
-      <header>
-        <span class="title">{area === "unstaged" ? "Unstaged" : "Staged"}</span>
-        <span class="count" class:filtered={filtering}>
-          {items.length}{filtering ? ` / ${(area === "unstaged" ? allUnstaged : allStaged).length}` : ""}
-        </span>
-        <span class="spacer"></span>
-        {#if items.length > 0}
-          <button
-            type="button"
-            class="all"
-            disabled={busy}
-            title={filtering ? `Applies to the ${items.length} shown` : ""}
-            onclick={() => bulk(area)}
-          >
-            {area === "unstaged" ? "Stage" : "Unstage"}
-            {filtering ? `${items.length} shown` : "all"}
-          </button>
-        {/if}
-      </header>
-      <div class="rows">
-        {#each items.slice(0, LIST_DISPLAY_CAP) as entry (area + ":" + entry.path)}
-          <GitFileRow
-            {entry}
-            {area}
-            selected={selected?.area === area && selected.path === entry.path}
-            disabled={busy}
-            onSelect={() => select(workspaceId, { path: entry.path, area })}
-            onToggle={() => toggle(entry, area)}
-            onDiscard={area === "unstaged" ? () => askDiscard(entry) : undefined}
-            onContextMenu={(e) => openIgnoreMenu(e, entry)}
-          />
-        {/each}
-        {#if items.length > LIST_DISPLAY_CAP}
-          <div class="more">… and {items.length - LIST_DISPLAY_CAP} more</div>
-        {/if}
-        {#if items.length === 0}
-          <div class="none">
-            {#if filtering}No match{:else}{area === "unstaged" ? "No unstaged changes" : "Nothing staged"}{/if}
-          </div>
-        {/if}
-      </div>
-    </section>
-  {/each}
-  <GitCommitBox {workspaceId} />
+  <div class="lists" style:flex-grow={boxShare === null ? null : 1 - boxShare}>
+    {#each sections as { area, items }, i (area)}
+      {#if i > 0}
+        <div
+          class="hsplit"
+          role="separator"
+          aria-orientation="horizontal"
+          use:tooltip={"Drag to resize \u00b7 double-click to even out"}
+          onpointerdown={startResize}
+          ondblclick={evenOut}
+        ></div>
+      {/if}
+      <section class="list" class:above-split={i === 0} style:flex-grow={i === 0 ? share : 1 - share}>
+        <header>
+          <span class="title">{area === "unstaged" ? "Unstaged" : "Staged"}</span>
+          <span class="count" class:filtered={filtering}>
+            {items.length}{filtering ? ` / ${(area === "unstaged" ? allUnstaged : allStaged).length}` : ""}
+          </span>
+          <span class="spacer"></span>
+          {#if items.length > 0}
+            <button
+              type="button"
+              class="all"
+              disabled={busy}
+              title={filtering ? `Applies to the ${items.length} shown` : ""}
+              onclick={() => bulk(area)}
+            >
+              {area === "unstaged" ? "Stage" : "Unstage"}
+              {filtering ? `${items.length} shown` : "all"}
+            </button>
+          {/if}
+        </header>
+        <div class="rows">
+          {#each items.slice(0, LIST_DISPLAY_CAP) as entry (area + ":" + entry.path)}
+            <GitFileRow
+              {entry}
+              {area}
+              selected={selected?.area === area && selected.path === entry.path}
+              disabled={busy}
+              onSelect={() => select(workspaceId, { path: entry.path, area })}
+              onToggle={() => toggle(entry, area)}
+              onDiscard={area === "unstaged" ? () => askDiscard(entry) : undefined}
+              onContextMenu={(e) => openIgnoreMenu(e, entry)}
+            />
+          {/each}
+          {#if items.length > LIST_DISPLAY_CAP}
+            <div class="more">… and {items.length - LIST_DISPLAY_CAP} more</div>
+          {/if}
+          {#if items.length === 0}
+            <div class="none">
+              {#if filtering}No match{:else}{area === "unstaged" ? "No unstaged changes" : "Nothing staged"}{/if}
+            </div>
+          {/if}
+        </div>
+      </section>
+    {/each}
+  </div>
+  <div
+    class="hsplit"
+    role="separator"
+    aria-orientation="horizontal"
+    use:tooltip={"Drag to resize the commit box \u00b7 double-click to fit it"}
+    onpointerdown={startBoxResize}
+    ondblclick={fitBox}
+  ></div>
+  <div class="commit-slot" class:sized={boxShare !== null} style:flex-grow={boxShare}>
+    <GitCommitBox {workspaceId} sizing={boxShare === null ? "content" : "fill"} />
+  </div>
 </div>
 {/if}
 
@@ -322,6 +381,26 @@
   .list.above-split {
     /* The divider is the separation; a border under it would double up. */
     border-bottom: 0;
+  }
+  /* The two lists and their divider, as one block against the commit box. */
+  .lists {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .lists .list:last-child {
+    border-bottom: 0;
+  }
+  /* Its own height until the bar above it is dragged; then a share. */
+  .commit-slot {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .commit-slot.sized {
+    flex: 1 1 0;
+    min-height: 0;
   }
   .hsplit {
     flex: 0 0 4px;

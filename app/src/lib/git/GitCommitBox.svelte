@@ -7,8 +7,15 @@
 
   interface Props {
     workspaceId: string;
+    /// Who decides the box's height. `grip` (the phone) leaves it to the
+    /// Description field's own resize grip. On the desk the divider above
+    /// the box owns it, so the grip goes: `content` until a split is
+    /// saved, the box as tall as its fields; `fill` after, the
+    /// Description growing into whatever height the divider gives it
+    /// while Summary, the Amend/Commit row and the author line keep theirs.
+    sizing?: "grip" | "content" | "fill";
   }
-  let { workspaceId }: Props = $props();
+  let { workspaceId, sizing = "grip" }: Props = $props();
 
   const view = $derived($gitStore[workspaceId]);
   const label = $derived(view ? commitButtonLabel(view) : "Commit (0)");
@@ -34,7 +41,7 @@
   }
 </script>
 
-<div class="box">
+<div class="box" class:no-grip={sizing !== "grip"} class:fill={sizing === "fill"}>
   <input
     class="summary"
     type="text"
@@ -104,6 +111,26 @@
   .description:focus {
     outline: none;
     border-color: var(--border-accent);
+  }
+  .no-grip .summary,
+  .no-grip .description {
+    resize: none;
+  }
+  /* The divider sized the box: the box fills the slot it was given, and
+     the Description takes whatever the fixed rows leave. The slot's floor
+     (gitCommitSplit.ts) is what keeps two lines of it; the scroll is for
+     the pushed-history warning arriving on top of that. */
+  .box.fill {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .box.fill > * {
+    flex: 0 0 auto;
+  }
+  .box.fill .description {
+    flex: 1 1 0;
+    min-height: 3em;
   }
   .foot {
     display: flex;

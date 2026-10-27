@@ -13,17 +13,19 @@
 // numbers over, which keeps the only decision here testable.
 
 /// The share of `total` the block BEFORE the divider should take, given
-/// a drag that wants it `desired` px. Clamped so neither block falls
-/// below `min`; when `total` cannot hold two minimums -- or is not yet
-/// measurable -- the pair falls back to `fallback` rather than pinning
-/// one block open and clipping the other out of existence.
+/// a drag that wants it `desired` px. Clamped so that block keeps `min`
+/// and the other keeps `minOther` (the same floor unless the two blocks
+/// differ); when `total` cannot hold both -- or is not yet measurable --
+/// the pair falls back to `fallback` rather than pinning one block open
+/// and clipping the other out of existence.
 export function shareFromSize(
   desired: number,
   total: number,
   min: number,
-  fallback: number
+  fallback: number,
+  minOther = min
 ): number {
-  if (!(total > 0) || total <= min * 2) return fallback;
-  const px = Math.min(Math.max(desired, min), total - min);
+  if (!(total > 0) || total <= min + minOther) return fallback;
+  const px = Math.min(Math.max(desired, min), total - minOther);
   return Math.round((px / total) * 1e4) / 1e4;
 }
