@@ -214,6 +214,8 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/runchanges.rs", "git_head_sha", "`git rev-parse HEAD`, on every card launch"],
   ["git/tracking.rs", "gavin_git_tracking", "`git check-ignore`, on every Settings visit"],
   ["git/tracking.rs", "set_gavin_git_tracking", "`git check-ignore`, and `git rm --cached` to untrack"],
+  ["git/card_ignore.rs", "card_git_ignore", "`git check-ignore`, on every card modal open"],
+  ["git/card_ignore.rs", "set_card_git_ignore", "two ignore-file writes, and `git rm --cached` to untrack"],
   ["git/ops.rs", "git_cancel_op", "an ssh round trip, for an op running on a host"],
 ];
 

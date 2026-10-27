@@ -231,6 +231,15 @@ describe("settingsSummary", () => {
     );
   });
 
+  it("says a card kept out of git, and nothing for a tracked one", () => {
+    expect(settingsSummary({ ...base, autoCommitApplies: false, gitIgnored: true })).toBe(
+      "no labels · no attachments · kept out of git"
+    );
+    expect(settingsSummary({ ...base, autoCommitApplies: false, gitIgnored: false })).toBe(
+      "no labels · no attachments"
+    );
+  });
+
   it("surfaces a missing attachment even folded, because it blocks every run", () => {
     const text = settingsSummary({ ...base, attachments: 2, brokenAttachments: 1 });
     expect(text).toContain("⚠ 1 missing attachment");

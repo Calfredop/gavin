@@ -436,6 +436,9 @@ export function settingsSummary(input: {
   /// sent, and a human wondering why the agent never moved the card looks
   /// here. Optional -- absent is an ordinary card.
   direct?: boolean;
+  /// An ignore rule keeps the card out of git. Said only when it does --
+  /// tracked is every other card's state, and silence is the default.
+  gitIgnored?: boolean;
 }): string {
   const parts: string[] = [];
   parts.push(input.labels === 0 ? "no labels" : `${input.labels} label${input.labels === 1 ? "" : "s"}`);
@@ -451,6 +454,7 @@ export function settingsSummary(input: {
   }
   if (input.autoCommitApplies) parts.push(input.autoCommit ? "auto commit on" : "auto commit off");
   if (input.direct) parts.push("direct prompt");
+  if (input.gitIgnored) parts.push("kept out of git");
   return parts.join(" · ");
 }
 

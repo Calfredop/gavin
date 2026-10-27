@@ -2,6 +2,7 @@
 //! docs/superpowers/specs/2026-08-20-git-tab-local-changes-design.md §2).
 pub mod activity;
 pub mod baseline;
+pub mod card_ignore;
 pub mod commands;
 pub mod compare;
 pub mod conflict;
@@ -15,6 +16,7 @@ pub mod types;
 pub mod watch;
 
 pub use activity::*;
+pub use card_ignore::*;
 pub use commands::*;
 pub use compare::*;
 pub use conflict::*;

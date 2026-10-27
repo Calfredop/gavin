@@ -22,6 +22,7 @@ import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
 import type { BrowserFrame, DeviceBrowserWatch, LiveBrowser } from "$lib/panes/browserView";
 import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
+import type { CardIgnore } from "$lib/git/cardIgnore";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
 import type {
   BoardTab,
@@ -619,6 +620,26 @@ export function setGavinGitTracking(
   untrack: boolean
 ): Promise<GavinTracking> {
   return invoke("set_gavin_git_tracking", { root, tracked, untrack });
+}
+
+/// What git says about ONE card (`card` absolute, under `root`): whether an
+/// ignore rule keeps it out, and whether that rule is gavin's own line for
+/// it in `.gitignore` or `.git/info/exclude`. Read fresh every time, like
+/// `gavinGitTracking`.
+export function cardGitIgnore(root: string, card: string): Promise<CardIgnore> {
+  return invoke("card_git_ignore", { root, card });
+}
+
+/// Puts gavin's rule for the card in `into`, or takes it out of both files
+/// for null. `untrack` stages the card's removal from the index and is the
+/// human's answer to a question asked by name, never implied by `into`.
+export function setCardGitIgnore(
+  root: string,
+  card: string,
+  into: IgnoreKind | null,
+  untrack: boolean
+): Promise<CardIgnore> {
+  return invoke("set_card_git_ignore", { root, card, into, untrack });
 }
 
 /// One reading of the machine's memory. Straight to Tauri, like the

@@ -47,8 +47,18 @@
     withheldAttachmentPaths,
     type AttachmentStatus,
   } from "$lib/cards/attachments";
-  import { askConfirm } from "$lib/core/dialog";
+  import { askConfirm, askConfirmChecked } from "$lib/core/dialog";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/git/autoCommit";
+  import {
+    CARD_GIT_CHOICES,
+    cardGitChoice,
+    cardGitLocked,
+    cardGitSummary,
+    cardUntrackConfirm,
+    needsCardUntrackConfirm,
+    type CardGitChoice,
+    type CardIgnore,
+  } from "$lib/git/cardIgnore";
   import { isViewableInApp } from "$lib/files/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -548,6 +558,67 @@
       await reloadContent();
     } finally {
       autoCommitBusy = false;
+    }
+  }
+
+  // --- git: keep this card out of the repo ----------------------------------
+  // The answer is an ignore rule git reads (card_ignore.rs), not a field on
+  // the card, so it is asked of git each time the modal points at a card --
+  // including after Done moves the file, which changes `card.id`. The rule
+  // names the card by file name, so the move does not change the answer.
+  let gitIgnore = $state<CardIgnore | null>(null);
+  let gitIgnoreBusy = $state(false);
+  let gitIgnoreError = $state<string | null>(null);
+  let gitIgnoreToken = 0;
+  const gitRoot = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath || null);
+  $effect(() => {
+    const path = card.id;
+    const root = gitRoot;
+    const mine = ++gitIgnoreToken;
+    gitIgnore = null;
+    gitIgnoreError = null;
+    if (root === null) return;
+    backend
+      .cardGitIgnore(root, path)
+      .then((s) => {
+        if (mine === gitIgnoreToken) gitIgnore = s;
+      })
+      .catch((e) => {
+        if (mine === gitIgnoreToken) gitIgnoreError = String(e instanceof Error ? e.message : e);
+      });
+  });
+
+  async function chooseGitIgnore(select: HTMLSelectElement): Promise<void> {
+    const choice = select.value as CardGitChoice;
+    const root = gitRoot;
+    const path = card.id;
+    const before = gitIgnore;
+    // The select has already moved. Its `value` is memoised on the STRING
+    // it was rendered with, so re-assigning `gitIgnore` to an equal answer
+    // would never move it back -- a refusal puts the element back by hand.
+    const moveBack = () => {
+      if (card.id === path) select.value = cardGitChoice(gitIgnore);
+    };
+    if (root === null || choice === cardGitChoice(before)) return;
+    let untrack = false;
+    if (choice !== "tracked" && needsCardUntrackConfirm(before, choice)) {
+      const answer = await askConfirmChecked(cardUntrackConfirm(choice));
+      if (!answer.confirmed) return moveBack();
+      untrack = answer.checked;
+    }
+    gitIgnoreError = null;
+    gitIgnoreBusy = true;
+    const mine = ++gitIgnoreToken;
+    try {
+      const next = await backend.setCardGitIgnore(root, path, choice === "tracked" ? null : choice, untrack);
+      if (mine === gitIgnoreToken) gitIgnore = next;
+    } catch (e) {
+      if (mine === gitIgnoreToken) {
+        gitIgnoreError = String(e instanceof Error ? e.message : e);
+        moveBack();
+      }
+    } finally {
+      gitIgnoreBusy = false;
     }
   }
 
@@ -1273,6 +1344,7 @@
       autoCommit: autoCommitOn,
       autoCommitApplies,
       direct: isDirectPrompt(card),
+      gitIgnored: gitIgnore?.ignored ?? false,
     })
   );
   const railLine = $derived(
@@ -1788,6 +1860,27 @@
                     : "gavin wraps the prompt with the card's path, its attachments and the status instructions."}
                 </span>
               </label>
+            {/if}
+            <!-- Hidden, not disabled, outside a repo: there is no ignore file
+                 to choose between. The hint rides the row so a locked select
+                 can still say whose rule locks it. -->
+            {#if gitRoot !== null && gitIgnore?.isRepo !== false}
+              <label class="row auto-commit" title={cardGitSummary(gitIgnore)}>
+                <span class="label">Git</span>
+                <select
+                  value={cardGitChoice(gitIgnore)}
+                  disabled={gitIgnoreBusy || cardGitLocked(gitIgnore)}
+                  onchange={(e) => void chooseGitIgnore(e.currentTarget)}
+                >
+                  {#each CARD_GIT_CHOICES as c (c.value)}
+                    <option value={c.value}>{c.label}</option>
+                  {/each}
+                </select>
+                <span class="auto-commit-hint">{cardGitSummary(gitIgnore)}</span>
+              </label>
+              {#if gitIgnoreError}
+                <p class="error">{gitIgnoreError}</p>
+              {/if}
             {/if}
             <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
                  binds mouseenter, which a disabled element never fires, so a

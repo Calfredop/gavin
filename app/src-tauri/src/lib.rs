@@ -352,6 +352,8 @@ pub fn run() {
             git::git_repo_info,
             git::gavin_git_tracking,
             git::set_gavin_git_tracking,
+            git::card_git_ignore,
+            git::set_card_git_ignore,
             git::git_status,
             git::get_git_baselines,
             git::git_diff,

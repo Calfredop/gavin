@@ -284,6 +284,8 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("git_repo_info", RemoteAllowance::Allowed),
     ("gavin_git_tracking", RemoteAllowance::Allowed),
     ("set_gavin_git_tracking", RemoteAllowance::Allowed),
+    ("card_git_ignore", RemoteAllowance::Allowed),
+    ("set_card_git_ignore", RemoteAllowance::Allowed),
     ("git_status", RemoteAllowance::Allowed),
     ("get_git_baselines", RemoteAllowance::Allowed),
     ("git_diff", RemoteAllowance::Allowed),

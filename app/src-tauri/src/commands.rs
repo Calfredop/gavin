@@ -212,6 +212,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "git_repo_info",
     "gavin_git_tracking",
     "set_gavin_git_tracking",
+    "card_git_ignore",
+    "set_card_git_ignore",
     "git_status",
     "get_git_baselines",
     "git_diff",

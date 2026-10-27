@@ -442,6 +442,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   git_repo_info: ["ordinary"],
   gavin_git_tracking: ["ordinary"],
   set_gavin_git_tracking: ["ordinary"],
+  card_git_ignore: ["ordinary"],
+  set_card_git_ignore: ["ordinary"],
   git_status: ["ordinary"],
   get_git_baselines: ["ordinary"],
   git_diff: ["ordinary"],
