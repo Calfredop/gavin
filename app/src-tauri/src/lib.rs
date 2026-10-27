@@ -120,6 +120,8 @@ pub fn run() {
                 mac_window::round_window_corners(&window, 10.0);
                 mac_window::install_edge_double_click(&window, 6.0);
             }
+            // Dock Quit and Cmd+Q ask first (keep_running.rs).
+            keep_running::ask_before_terminate(app.handle());
             // Its rails keep time with the window closed to the menu bar,
             // minimized, or on another Space (keep_running.rs).
             if let Some(window) = app.get_webview_window("main") {

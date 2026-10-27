@@ -24,7 +24,7 @@
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::workspace_window::MAIN_WINDOW_LABEL;
 
@@ -80,7 +80,91 @@ pub fn reopen_main_window(app: &AppHandle) {
     let _ = app.remove_tray_by_id(TRAY_ID);
 }
 
-// ---- The menu-bar glyph -----------------------------------------------------
+/// The event the main window's page answers by running the close prompt's
+/// ladder (`+page.svelte`).
+pub const QUIT_REQUESTED_EVENT: &str = "quit-requested";
+
+/// Hands a quit the OS started (Dock menu, Cmd+Q) to the main window, which
+/// asks how far it should reach. Returns whether the quit should be held
+/// back: false when there is no main window left to ask.
+///
+/// The window is shown first: in keep-running mode it is hidden, and a
+/// prompt drawn in a hidden webview is a quit that silently did nothing.
+#[cfg(target_os = "macos")]
+fn ask_before_quit(app: &AppHandle) -> bool {
+    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+        return false;
+    }
+    reopen_main_window(app);
+    app.emit_to(MAIN_WINDOW_LABEL, QUIT_REQUESTED_EVENT, ()).is_ok()
+}
+
+/// Makes the Dock menu's Quit and Cmd+Q ask first.
+///
+/// Both call `[NSApp terminate:]`, which asks the app delegate
+/// `applicationShouldTerminate:` and otherwise exits. tao's delegate has no
+/// such method -- only `applicationWillTerminate:` -- so the process went
+/// away with no CloseRequested and no tauri `ExitRequested` either, and
+/// the close prompt (the only way to stop the daemon and its sessions)
+/// never appeared. This adds the method to tao's own delegate class at
+/// runtime, answering "cancel" and handing the question to the main
+/// window; the ladder's own `destroy()` and `app.exit()` never go through
+/// `terminate:`, so they are unaffected.
+#[cfg(target_os = "macos")]
+pub fn ask_before_terminate(app: &AppHandle) {
+    use std::sync::OnceLock;
+
+    use objc2::ffi::class_addMethod;
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::{class, msg_send, sel};
+
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+    if APP.set(app.clone()).is_err() {
+        return;
+    }
+
+    /// `NSTerminateCancel` / `NSTerminateNow`.
+    const TERMINATE_CANCEL: usize = 0;
+    const TERMINATE_NOW: usize = 1;
+
+    extern "C" fn should_terminate(_this: *mut AnyObject, _sel: Sel, _sender: *mut AnyObject) -> usize {
+        match APP.get() {
+            Some(app) if ask_before_quit(app) => TERMINATE_CANCEL,
+            _ => TERMINATE_NOW,
+        }
+    }
+
+    // SAFETY: the NSApplication singleton and its delegate are live for the
+    // process, and this runs from tauri's setup on the main thread, after
+    // tao installed its delegate. `class_addMethod` adds to that delegate's
+    // class (it refuses, returning NO, if the class already answers the
+    // selector); the type encoding "Q@:@" is NSUInteger (id, SEL, id),
+    // which is `should_terminate`'s signature.
+    unsafe {
+        let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if ns_app.is_null() {
+            return;
+        }
+        let delegate: *mut AnyObject = msg_send![ns_app, delegate];
+        if delegate.is_null() {
+            return;
+        }
+        let cls = (*delegate).class() as *const _ as *mut _;
+        let imp: unsafe extern "C-unwind" fn() = std::mem::transmute(
+            should_terminate as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
+        );
+        let added = class_addMethod(cls, sel!(applicationShouldTerminate:), imp, c"Q@:@".as_ptr());
+        if !added.as_bool() {
+            eprintln!("keep_running: could not add applicationShouldTerminate: to the app delegate");
+            return;
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ask_before_terminate(_app: &AppHandle) {}
+
+// ---- The menu-bar glyph-----------------------------------------------------
 
 /// The app icon's ">G", cell for cell: `icons/icon.svg` draws both glyphs
 /// on a 32 px grid, and these are its rects divided by 32 and moved to the

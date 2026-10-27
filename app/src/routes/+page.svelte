@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { listen } from "@tauri-apps/api/event";
   import {
     layoutState,
     bootstrap,
@@ -112,6 +113,7 @@
   let uninstallHints: (() => void) | null = null;
   let uninstallLineClipboard: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
+  let unlistenQuit: (() => void) | null = null;
   let stopFindingsRailAutoBuild: (() => void) | null = null;
   let stopCompanionAttention: (() => void) | null = null;
   let stopDeviceCommits: (() => void) | null = null;
@@ -342,6 +344,24 @@
     await getCurrentWindow().destroy();
   }
 
+  async function askAndQuit(): Promise<void> {
+    if (closePromptOpen) return;
+    closePromptOpen = true;
+    let shouldClose = false;
+    try {
+      // Asks, and does everything the rung the human picked reaches
+      // -- closing the other windows, sweeping the sessions, stopping
+      // the daemon -- BEFORE returning, because a destroyed window has
+      // no frontend left to await any of it with.
+      shouldClose = await confirmWindowClose();
+    } finally {
+      closePromptOpen = false;
+    }
+    if (shouldClose) {
+      await quitApp();
+    }
+  }
+
   async function createFirstWorkspace(): Promise<void> {
     await createWorkspace("Workspace 1");
   }
@@ -370,22 +390,14 @@
           // ladder below is what closing did before, and still works.
         }
       }
-      if (closePromptOpen) return;
-      closePromptOpen = true;
-      let shouldClose = false;
-      try {
-        // Asks, and does everything the rung the human picked reaches
-        // -- closing the other windows, sweeping the sessions, stopping
-        // the daemon -- BEFORE returning, because a destroyed window has
-        // no frontend left to await any of it with.
-        shouldClose = await confirmWindowClose();
-      } finally {
-        closePromptOpen = false;
-      }
-      if (shouldClose) {
-        await quitApp();
-      }
+      await askAndQuit();
     });
+    // Quit from the Dock menu or ⌘Q never raises CloseRequested; the host
+    // holds that exit back and sends it here instead (keep_running.rs).
+    // Always the ladder, never the menu-bar hide: the human said quit.
+    if (isMainWindow()) {
+      unlistenQuit = await listen("quit-requested", () => void askAndQuit());
+    }
 
     try {
       await bootstrap();
@@ -411,6 +423,7 @@
 
   onDestroy(() => {
     unlistenClose?.();
+    unlistenQuit?.();
     uninstallShortcuts?.();
     uninstallHints?.();
     uninstallLineClipboard?.();

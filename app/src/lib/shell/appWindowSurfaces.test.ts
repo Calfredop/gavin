@@ -118,7 +118,7 @@ describe("closing a workspace window", () => {
     expect(closeDecision({ mainWindow: false, remoteAccess: false })).toBe("close");
     expect(PAGE).toContain("closeDecision({ mainWindow: isMainWindow(),");
     const guard = PAGE.indexOf('if (decision === "close") return;');
-    const prompt = PAGE.indexOf("confirmWindowClose()");
+    const prompt = PAGE.indexOf("await askAndQuit();");
     expect(guard).toBeGreaterThan(-1);
     expect(prompt).toBeGreaterThan(guard);
     expect(closeWindowPrompt().title).toBe("Close gavin?");
@@ -132,9 +132,22 @@ describe("closing the main window with remote access on", () => {
   it("hides it before the prompt could be raised", () => {
     expect(closeDecision({ mainWindow: true, remoteAccess: true })).toBe("hide");
     const hide = PAGE.indexOf("await hideToMenuBar();");
-    const prompt = PAGE.indexOf("confirmWindowClose()");
+    const prompt = PAGE.indexOf("await askAndQuit();");
     expect(hide).toBeGreaterThan(-1);
     expect(prompt).toBeGreaterThan(hide);
     expect(PAGE.slice(hide, prompt)).toContain("return;");
+  });
+});
+
+describe("quitting from the Dock menu or Cmd+Q", () => {
+  // The OS quit never raises CloseRequested, so the host holds the exit
+  // back and sends the main window this event (keep_running.rs). The
+  // page must answer with the ladder itself, not closeDecision's hide:
+  // the human said quit, not close.
+  it("runs the close prompt in the main window only", () => {
+    expect(PAGE).toContain('listen("quit-requested", () => void askAndQuit())');
+    const guard = PAGE.indexOf("if (isMainWindow()) {\n      unlistenQuit");
+    expect(guard).toBeGreaterThan(-1);
+    expect(PAGE.slice(PAGE.indexOf("async function askAndQuit"), PAGE.indexOf("async function createFirstWorkspace"))).not.toContain("hideToMenuBar");
   });
 });
