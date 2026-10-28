@@ -344,9 +344,25 @@ describe("realignComplexityTable", () => {
 
   it("remap retargets rows that named the old profile and leaves the rest", () => {
     expect(realignComplexityTable(table, "remap", "claude-code", "cursor")).toEqual({
-      trivial: { profile: "cursor", model: "haiku" },
+      trivial: { profile: "cursor", model: "" },
       simple: { profile: "", model: "sonnet" },
       intricate: { profile: "codex", model: "gpt-5.1" },
+    });
+  });
+
+  it("remap never carries one agent's model, effort or advisor onto another", () => {
+    // `{cursor, auto}` retargeted whole became `claude --model auto`.
+    const pinned: ComplexityTable = {
+      complex: { profile: "cursor", model: "auto" },
+      intricate: { profile: "claude-code", model: "opus", effort: "max", advisor: "fable" },
+    };
+    expect(realignComplexityTable(pinned, "remap", "cursor", "claude-code").complex).toEqual({
+      profile: "claude-code",
+      model: "",
+    });
+    expect(realignComplexityTable(pinned, "remap", "claude-code", "codex").intricate).toEqual({
+      profile: "codex",
+      model: "",
     });
   });
 

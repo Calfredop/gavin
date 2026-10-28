@@ -60,7 +60,7 @@ import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/core/gavin";
 import { themeState } from "$lib/ui/themeState.svelte";
-import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "$lib/core/daemonCompat";
+import { featureBlockedReason, restartConfirmLines, type DaemonCompat, type Feature } from "$lib/core/daemonCompat";
 import { confirmDestructive, DAEMON_SUBJECT } from "$lib/core/confirmGate";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { StatusSince } from "$lib/agents/attentionInbox";
@@ -2921,10 +2921,12 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
 /// Agent settings live in config.toml (D35/D41), so this goes through the
 /// daemon rather than persistWorkspaces. The value comes back on the next
 /// watcher push -- no optimistic local copy to fall out of sync.
+///
+/// Not `profile`: changing the agent is `switchWorkspaceAgentProfile` or
+/// `setWorkspaceAgentProfile`, which take the old agent's model with it.
 export async function setAgentField(
   workspaceId: string,
   key:
-    | "profile"
     | "file"
     | "command"
     | "mcp_file"
@@ -2943,7 +2945,7 @@ export async function setAgentField(
     setError(String(e));
     return;
   }
-  // Two of the nine keys are the ones workspace trust gates, so writing
+  // Two of the eight keys are the ones workspace trust gates, so writing
   // one through gavin's own Settings panel or setup wizard would
   // otherwise revoke the human's trust the instant they exercised it --
   // they would type a command, save, and be asked to approve what they
@@ -2964,6 +2966,53 @@ export async function setAgentField(
   }
 }
 
+/// The `[agent]` keys that mean something to ONE agent only: a model
+/// name, an effort level, and the flags that put them on its command
+/// line. config.toml holds a single copy of each for whichever agent the
+/// workspace is on, so they go whenever the agent does -- the new one
+/// then inherits its own app-wide defaults.
+///
+/// Left behind, they are not a preference but a broken argv: Cursor's
+/// `model = "auto"` under `profile = "claude-code"` launched `claude
+/// --model auto`, which refuses to start, on every route.
+///
+/// Each beside the feature that taught the daemon its key. A daemon older
+/// than that neither writes nor parses the key, so there is nothing of the
+/// old agent's to clear -- and it would refuse the attempt, sinking the
+/// switch with it.
+const AGENT_BOUND_KEYS = [
+  ["model", "agentModel"],
+  ["effort", "agentEffort"],
+  ["model_flag", "agentModelFlag"],
+  ["effort_flag", "agentEffort"],
+] as const satisfies ReadonlyArray<readonly [string, Feature]>;
+
+/// Points `[agent] profile` at another agent, clearing the keys that
+/// belonged to the one it replaces. Cleared FIRST: if the profile write is
+/// then refused, the workspace is left on its old agent at that agent's
+/// defaults -- still a working launch -- never on the new agent with the
+/// old one's model.
+async function writeAgentProfile(root: string, profileId: string): Promise<void> {
+  const compat = get(daemonCompat);
+  for (const [key, feature] of AGENT_BOUND_KEYS) {
+    if (featureBlockedReason(compat, feature)) continue;
+    await backend.setRootConfigField(root, key, "");
+  }
+  await backend.setRootConfigField(root, "profile", profileId);
+}
+
+/// The setup wizard's profile write: the agent alone, its command chosen
+/// on the same step. Reports a refusal the way `setAgentField` does.
+export async function setWorkspaceAgentProfile(workspaceId: string, profileId: string): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath) return;
+  try {
+    await writeAgentProfile(ws.rootPath, profileId);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
 /// Writes a new workspace agent profile together with that profile's
 /// default command and instructions file, and stamps trust once for both
 /// execution keys.
@@ -2971,7 +3020,8 @@ export async function setAgentField(
 /// Writing only `profile` leaves a leftover `[agent] command` from the
 /// previous CLI in place — `resolveAgentConfig` prefers the explicit
 /// command, so the switch appeared to do nothing. The defaults are
-/// applied in one go here so the new profile actually launches. Throws on
+/// applied in one go here so the new profile actually launches, and the
+/// old agent's model and effort go with it (`AGENT_BOUND_KEYS`). Throws on
 /// a refused write (unlike `setAgentField`) so a confirm wizard can show
 /// the error in place.
 export async function switchWorkspaceAgentProfile(
@@ -2984,7 +3034,7 @@ export async function switchWorkspaceAgentProfile(
   const root = ws.rootPath;
   const command = defaults.command.trim();
   const file = defaults.file.trim();
-  await backend.setRootConfigField(root, "profile", profileId);
+  await writeAgentProfile(root, profileId);
   if (command) await backend.setRootConfigField(root, "command", command);
   if (file) await backend.setRootConfigField(root, "file", file);
   const trust = configTrustFor(workspaceId);

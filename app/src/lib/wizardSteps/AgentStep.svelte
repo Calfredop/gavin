@@ -18,6 +18,7 @@
     agentDefaultsStore,
     setAgentDefaults,
     setAgentField,
+    setWorkspaceAgentProfile,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
@@ -121,7 +122,7 @@
     appliedSweep = true;
     if (!commandAlreadySet && main && main !== agentCfg.profileId) {
       const profile = $agentProfilesStore.find((p) => p.id === main);
-      void setAgentField(workspaceId, "profile", main).then(() => {
+      void setWorkspaceAgentProfile(workspaceId, main).then(() => {
         if (profile?.command) {
           commandDraft = profile.command;
           seeded = true;
@@ -177,7 +178,7 @@
   }
 
   async function onProfileChange(profileId: string): Promise<void> {
-    await setAgentField(workspaceId, "profile", profileId);
+    await setWorkspaceAgentProfile(workspaceId, profileId);
     const profile = $agentProfilesStore.find((p) => p.id === profileId);
     if (profile?.command) {
       commandDraft = profile.command;

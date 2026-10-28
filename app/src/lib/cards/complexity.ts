@@ -439,8 +439,10 @@ export type ComplexityRealignAction = "keep" | "remap" | "clear";
 ///
 /// - `keep` — leave the table as it is.
 /// - `remap` — rows whose profile names `oldProfile` are retargeted to
-///   `newProfile`; models and other rows stay. (Written into the workspace
-///   as a table of its own for the new agent.)
+///   `newProfile` at ITS defaults: their model, effort and advisor were
+///   names `oldProfile`'s CLI understands, and `{cursor, auto}` carried
+///   over whole was `claude --model auto`. Other rows stay as they are.
+///   (Written into the workspace as a table of its own for the new agent.)
 /// - `clear` — empty the table. The caller turns that into "this
 ///   workspace keeps no table of its own for the new agent", which hands
 ///   it back to the app-wide one.
@@ -458,7 +460,7 @@ export function realignComplexityTable(
     const entry = table[level];
     if (!entry) continue;
     if (entry.profile.trim() === old) {
-      next[level] = { ...entry, profile: newProfile };
+      next[level] = { profile: newProfile, model: "" };
     } else {
       next[level] = { ...entry };
     }

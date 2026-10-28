@@ -1464,7 +1464,7 @@
           card={agentFields}
           blocked={cardAgentBlocked}
           effortBlocked={cardEffortBlocked}
-          onChange={(key, value) => void writeField(key, value)}
+          onChange={(key, value) => writeField(key, value)}
         />
         {#if card.parent}
           <div class="field">

@@ -19,6 +19,7 @@
   import {
     NO_CARD_AGENT,
     cardEffortUnreachable,
+    changeCardAgent,
     cardModelUnreachable,
     type CardAgentFields,
   } from "$lib/cards/cardAgent";
@@ -40,8 +41,10 @@
     /// agent and model lines and refuses -- and never parses -- this one.
     effortBlocked?: string | null;
     /// An empty value CLEARS the line, which is how a card goes back to
-    /// inheriting. Callers must not treat it as a no-op.
-    onChange: (key: "agent" | "model" | "effort", value: string) => void;
+    /// inheriting. Callers must not treat it as a no-op. Resolves to
+    /// whether the write landed: an agent change is several writes to one
+    /// file, made in order (`changeCardAgent`).
+    onChange: (key: "agent" | "model" | "effort", value: string) => Promise<boolean>;
   }
   let { workspaceId, profiles, card, blocked = null, effortBlocked = null, onChange }: Props = $props();
 
@@ -134,8 +137,13 @@
     onChange("effort", trimmed);
   }
 
+  /// The card's own model and effort go with the agent they were chosen
+  /// for: the profile it lands on after the change is asked of the same
+  /// resolver, so a pick that resolves to the agent it already ran is no
+  /// switch and keeps them.
   function pickProfile(value: string): void {
-    onChange("agent", value);
+    const after = $cardAgents(workspaceId, { ...card, agent: value }).profileId;
+    void changeCardAgent(onChange, card, value, resolved.profileId, after);
   }
 
   function pickModel(value: string): void {

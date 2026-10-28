@@ -194,3 +194,32 @@ export function cardEffortUnreachable(
 ): boolean {
   return Boolean((card?.effort ?? "").trim()) && !resolvedEffortFlag.trim();
 }
+
+/// Writes a card's new `agent:` line, then clears the lines it left
+/// stale: the card's OWN `model:` and `effort:`, when the agent the card
+/// lands on actually changed. Both are names one CLI understands --
+/// `model: auto` picked for Cursor is `claude --model auto` on Claude
+/// Code, which does not start -- so they go with the agent they were
+/// chosen for, and the new one inherits its level's or its own defaults.
+///
+/// `profileBefore`/`profileAfter` are the RESOLVED profiles, not the raw
+/// lines: naming the workspace's own agent outright, or clearing the line
+/// back to follow it, is no switch, and the model stays.
+///
+/// In order, and stopping at the first refused write: the writes go to
+/// one file, and a switch that never landed has made nothing stale.
+export async function changeCardAgent(
+  write: (key: "agent" | "model" | "effort", value: string) => Promise<boolean>,
+  card: CardAgentFields,
+  agent: string,
+  profileBefore: string,
+  profileAfter: string
+): Promise<boolean> {
+  if (!(await write("agent", agent))) return false;
+  if (profileBefore.trim() === profileAfter.trim()) return true;
+  for (const key of ["model", "effort"] as const) {
+    if (!(card[key] ?? "").trim()) continue;
+    if (!(await write(key, ""))) return false;
+  }
+  return true;
+}

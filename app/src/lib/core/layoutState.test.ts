@@ -286,6 +286,8 @@ import {
   autoCommitDefault,
   newCardAutoCommit,
   setAgentField,
+  switchWorkspaceAgentProfile,
+  setWorkspaceAgentProfile,
   setGitViewPrefs,
   startMainAgentWithPrompt,
   runningSessionCount,
@@ -4579,6 +4581,57 @@ describe("workspace settings", () => {
     // config.toml never took -- and the NEXT thing to land in that key
     // would arrive pre-approved.
     expect(get(layoutState).workspaces[0].trustedConfigHash).toBeUndefined();
+  });
+
+  // Grimoria: `profile = "claude-code"` beside Cursor's `model = "auto"`,
+  // left by a switch that rewrote profile/command/file and nothing else,
+  // launched `claude --model auto` and failed on start every time.
+  it("switchWorkspaceAgentProfile clears the old agent's model, effort and flags", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.setRootConfigField).mockClear();
+
+    await switchWorkspaceAgentProfile("ws-1", "claude-code", { command: "claude", file: "CLAUDE.md" });
+
+    const calls = vi.mocked(backend.setRootConfigField).mock.calls;
+    for (const key of ["model", "effort", "model_flag", "effort_flag"]) {
+      expect(calls).toContainEqual(["/tmp/ws", key, ""]);
+    }
+    expect(calls).toContainEqual(["/tmp/ws", "profile", "claude-code"]);
+    // Cleared BEFORE the profile lands: a refused profile write must leave
+    // the old agent at its defaults, never the new one on the old model.
+    const profileAt = calls.findIndex(([, key]) => key === "profile");
+    const modelAt = calls.findIndex(([, key]) => key === "model");
+    expect(modelAt).toBeLessThan(profileAt);
+  });
+
+  it("setWorkspaceAgentProfile (the setup wizard's write) clears them too", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.setRootConfigField).mockClear();
+
+    await setWorkspaceAgentProfile("ws-1", "codex");
+
+    const calls = vi.mocked(backend.setRootConfigField).mock.calls;
+    expect(calls).toContainEqual(["/tmp/ws", "model", ""]);
+    expect(calls).toContainEqual(["/tmp/ws", "effort", ""]);
+    expect(calls.at(-1)).toEqual(["/tmp/ws", "profile", "codex"]);
+  });
+
+  it("clears only the keys the running daemon knows, so an old one still switches", async () => {
+    // v40 has `model` (14) and `model_flag` (31) but not `effort` (56): it
+    // would refuse the clear, and with it the whole switch.
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    daemonCompat.set({ daemonVersion: 40, appVersion: 79, degraded: true });
+    vi.mocked(backend.setRootConfigField).mockClear();
+
+    await switchWorkspaceAgentProfile("ws-1", "claude-code", { command: "claude", file: "CLAUDE.md" });
+
+    const keys = vi.mocked(backend.setRootConfigField).mock.calls.map(([, key]) => key);
+    expect(keys).toContain("model");
+    expect(keys).toContain("model_flag");
+    expect(keys).not.toContain("effort");
+    expect(keys).not.toContain("effort_flag");
+    expect(keys).toContain("profile");
+    daemonCompat.set(null);
   });
 
   // The first-Run review's marker, one level down from the config gate

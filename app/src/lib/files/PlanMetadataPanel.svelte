@@ -174,7 +174,7 @@
     card={plan}
     blocked={cardAgentBlocked}
     effortBlocked={cardEffortBlocked}
-    onChange={(key, value) => void commit(key, value)}
+    onChange={(key, value) => commit(key, value)}
   />
   {#if plan.labels.length > 0}
     <span class="labels" title="labels: {plan.labels.join(', ')}">{plan.labels.join(" · ")}</span>

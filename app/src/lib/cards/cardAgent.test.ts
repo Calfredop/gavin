@@ -6,6 +6,7 @@ import {
   cardEffortUnreachable,
   cardModelUnreachable,
   cardOverrideNote,
+  changeCardAgent,
 } from "$lib/cards/cardAgent";
 import type { ComplexityTable } from "$lib/cards/complexity";
 
@@ -199,5 +200,53 @@ describe("cardEffortUnreachable", () => {
     expect(cardEffortUnreachable({ effort: "high" }, "")).toBe(true);
     expect(cardEffortUnreachable({ effort: "high" }, "--effort")).toBe(false);
     expect(cardEffortUnreachable({}, "")).toBe(false);
+  });
+});
+
+describe("changeCardAgent", () => {
+  function recorder(fail?: string) {
+    const writes: Array<[string, string]> = [];
+    const write = async (key: "agent" | "model" | "effort", value: string): Promise<boolean> => {
+      writes.push([key, value]);
+      return key !== fail;
+    };
+    return { writes, write };
+  }
+
+  it("clears the card's own model and effort when the agent it lands on changes", async () => {
+    // `model: auto` was chosen for Cursor; on Claude Code it is
+    // `claude --model auto`, which does not start.
+    const { writes, write } = recorder();
+    const card = { agent: "cursor", model: "auto", effort: "high" };
+    expect(await changeCardAgent(write, card, "claude-code", "cursor", "claude-code")).toBe(true);
+    expect(writes).toEqual([
+      ["agent", "claude-code"],
+      ["model", ""],
+      ["effort", ""],
+    ]);
+  });
+
+  it("keeps them when the card still lands on the same agent", async () => {
+    // Pinning the workspace's own agent explicitly is not a switch.
+    const { writes, write } = recorder();
+    const card = { agent: "", model: "sonnet", effort: "max" };
+    await changeCardAgent(write, card, "claude-code", "claude-code", "claude-code");
+    expect(writes).toEqual([["agent", "claude-code"]]);
+  });
+
+  it("writes only the lines the card actually carries", async () => {
+    const { writes, write } = recorder();
+    await changeCardAgent(write, { agent: "codex", model: "gpt-5.1" }, "", "codex", "claude-code");
+    expect(writes).toEqual([
+      ["agent", ""],
+      ["model", ""],
+    ]);
+  });
+
+  it("stops at a refused write rather than clearing lines for a switch that never landed", async () => {
+    const { writes, write } = recorder("agent");
+    const card = { agent: "cursor", model: "auto" };
+    expect(await changeCardAgent(write, card, "claude-code", "cursor", "claude-code")).toBe(false);
+    expect(writes).toEqual([["agent", "claude-code"]]);
   });
 });

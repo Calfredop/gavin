@@ -206,8 +206,8 @@
         <h2>Switch agent to {toLabel}</h2>
         <p class="hint">
           From {fromLabel}. Complexity is realigned first; the new profile's default command and
-          agent file replace leftovers so the switch actually launches; then gavin checks MCP,
-          skills and Matt Pocock's skills.
+          agent file replace leftovers, and {fromLabel}'s model and effort are cleared, so the
+          switch actually launches; then gavin checks MCP, skills and Matt Pocock's skills.
         </p>
       {/if}
     </header>
@@ -248,8 +248,8 @@
             />
             <span>
               <strong>Remap</strong> — rows in {toLabel}'s table that named {fromLabel} now name
-              {toLabel}. Other rows stay. This workspace then keeps a table of its own for
-              {toLabel}.
+              {toLabel}, at its own default model and effort. Other rows stay. This workspace then
+              keeps a table of its own for {toLabel}.
               {#if defaultAction === "remap"}
                 <em class="rec">Recommended</em>
               {/if}
