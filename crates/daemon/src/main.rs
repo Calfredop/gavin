@@ -41,6 +41,7 @@ mod testing;
 mod trash;
 mod trust;
 mod unlock;
+mod watch_canary;
 mod workspace_log;
 
 use kanban::KanbanStore;
@@ -194,6 +195,13 @@ fn serve() -> anyhow::Result<()> {
     // Hands a pocketed phone's sessions back to the desk once its grace
     // runs out (v68, `ownership.rs`).
     server::spawn_owner_lapse(&manager);
+    // Re-arms the `.gavin*` watchers when a restarted fseventsd has left
+    // them deaf (`watch_canary.rs`). macOS only; a no-op elsewhere.
+    watch_canary::spawn(
+        Arc::downgrade(&manager),
+        dir.join(format!("watch-canary{}", protocol::BuildProfile::current().suffix())),
+        SessionManager::rewatch_gavin_roots,
+    );
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

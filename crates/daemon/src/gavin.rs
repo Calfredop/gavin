@@ -3069,6 +3069,9 @@ pub struct GavinWatcher {
     /// What else lives exactly as long as this watch -- the workspace's
     /// reflog watch (v79). Dropped with it.
     attached: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
+    /// The version the app on `writer` said it speaks, kept so this watch
+    /// can be made again exactly as it was asked for (`watch_canary.rs`).
+    speaks: std::sync::atomic::AtomicU32,
 }
 
 impl GavinWatcher {
@@ -3107,6 +3110,7 @@ impl GavinWatcher {
             scheduled_pushes: std::sync::atomic::AtomicBool::new(false),
             log_pushes: std::sync::atomic::AtomicBool::new(false),
             attached: Mutex::new(Vec::new()),
+            speaks: std::sync::atomic::AtomicU32::new(0),
         });
 
         // Arm the watch BEFORE the initial scan+push -- the daemon-side
@@ -3337,6 +3341,17 @@ impl GavinWatcher {
     /// writer speaks v79.
     pub fn enable_log_pushes(&self) {
         self.log_pushes.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Records what the app on this watch's writer speaks.
+    pub fn set_speaks(&self, speaks: u32) {
+        self.speaks.store(speaks, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The connection and version this watch was asked for on -- what
+    /// making it again needs.
+    pub fn asked_on(&self) -> (Arc<Mutex<Stream>>, u32) {
+        (Arc::clone(&self.writer), self.speaks.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Keeps `thing` alive for as long as this watch.

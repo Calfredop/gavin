@@ -4127,6 +4127,45 @@ impl SessionManager {
         speaks: u32,
     ) {
         let generation = manager.begin_gavin_watch(workspace_id);
+        Self::start_gavin_watch(manager, workspace_id, root_path, writer, speaks, generation);
+    }
+
+    /// Makes every gavin watch again, on the connection it was asked for
+    /// on -- for when the OS has stopped delivering the old ones' events
+    /// (`watch_canary.rs`). The fresh watch scans and pushes the tree as
+    /// it is now, and that first push is the whole repair: whatever
+    /// changed while the old one was deaf reaches the app with it.
+    ///
+    /// A watch the app replaced or dropped meanwhile is left to the app:
+    /// only the generation seen here may be re-armed, so a re-arm can
+    /// neither undo an unwatch nor beat a newer watch of another root.
+    pub fn rewatch_gavin_roots(manager: &Arc<Self>) {
+        let watches: Vec<(String, u64, Arc<crate::gavin::GavinWatcher>)> = {
+            let generations = manager.gavin_watch_generation.lock().unwrap();
+            let watchers = manager.gavin_watchers.lock().unwrap();
+            watchers
+                .iter()
+                .filter_map(|(id, w)| Some((id.clone(), *generations.get(id)?, Arc::clone(w))))
+                .collect()
+        };
+        for (workspace_id, seen, watcher) in watches {
+            let Some(generation) = manager.begin_gavin_rewatch(&workspace_id, seen) else { continue };
+            let (writer, speaks) = watcher.asked_on();
+            let root_path = watcher.root_path.to_string_lossy().to_string();
+            drop(watcher);
+            Self::start_gavin_watch(manager, &workspace_id, &root_path, writer, speaks, generation);
+        }
+    }
+
+    /// Starts and installs one watch under a generation already claimed.
+    fn start_gavin_watch(
+        manager: &Arc<Self>,
+        workspace_id: &str,
+        root_path: &str,
+        writer: Arc<Mutex<Stream>>,
+        speaks: u32,
+        generation: u64,
+    ) {
         let weak = Arc::downgrade(manager);
         // The Workspace log's card diff (v79). Its first look of this
         // watch stamps what it finds "noticed on start": anything it sees
@@ -4160,6 +4199,7 @@ impl SessionManager {
             writer,
             Some(hook),
         );
+        watcher.set_speaks(speaks);
         if speaks >= protocol::SCHEDULED_TASKS_MIN_VERSION {
             watcher.enable_scheduled_pushes();
         }
@@ -4193,6 +4233,19 @@ impl SessionManager {
         let next = generations.get(workspace_id).copied().unwrap_or(0) + 1;
         generations.insert(workspace_id.to_string(), next);
         next
+    }
+
+    /// `begin_gavin_watch` for a re-arm: claims the next watch only while
+    /// the workspace is still at `seen`, the generation of the watch being
+    /// made again.
+    fn begin_gavin_rewatch(&self, workspace_id: &str, seen: u64) -> Option<u64> {
+        let mut generations = self.gavin_watch_generation.lock().unwrap();
+        let current = generations.get_mut(workspace_id)?;
+        if *current != seen {
+            return None;
+        }
+        *current += 1;
+        Some(*current)
     }
 
     /// Installs a started watcher, replacing the workspace's previous one,
@@ -11030,6 +11083,58 @@ mod tests {
             .collect();
         out.sort();
         out
+    }
+
+    /// What the watch canary does once fseventsd has restarted under the
+    /// daemon: every watch is made again on the connection that asked for
+    /// it, speaking what that app speaks, and its first push carries the
+    /// card filed meanwhile. A workspace unwatched since is left alone, and
+    /// so is one the app has watched again since the re-arm looked.
+    #[test]
+    fn a_rewatch_rearms_every_watch_on_the_connection_that_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let manager = test_manager(&dir);
+        let (ours, theirs) = Stream::pair().unwrap();
+        let writer = Arc::new(Mutex::new(theirs));
+        let root = ws.path().to_string_lossy().to_string();
+        SessionManager::watch_gavin_root_speaking(&manager, "ws-1", &root, Arc::clone(&writer), 79);
+        let (_gone, gone) = Stream::pair().unwrap();
+        SessionManager::watch_gavin_root_speaking(&manager, "ws-2", &root, Arc::new(Mutex::new(gone)), 79);
+        manager.unwatch_gavin_root("ws-2");
+        let deaf = manager.gavin_watchers.lock().unwrap().get("ws-1").cloned().unwrap();
+
+        place_card(&ws.path().join(".gavin-root/plans"), "filed.md", "---\ntitle: Filed\nstatus: To Do\n---\n");
+        SessionManager::rewatch_gavin_roots(&manager);
+
+        let fresh = manager.gavin_watchers.lock().unwrap().get("ws-1").cloned().unwrap();
+        assert!(!Arc::ptr_eq(&deaf, &fresh), "the watch was made again");
+        let (fresh_writer, speaks) = fresh.asked_on();
+        assert!(Arc::ptr_eq(&fresh_writer, &writer), "on the connection that asked for it");
+        assert_eq!(speaks, 79);
+        assert!(fresh.log_pushes_enabled(), "with the pushes that app speaks");
+        assert!(manager.gavin_tree_snapshot("ws-2").is_none(), "an unwatch stays an unwatch");
+
+        let mut reader = line_reader(ours);
+        loop {
+            match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+                Response::GavinTreeChanged { workspace_id, tree }
+                    if tree.contexts.iter().any(|c| c.plans.iter().any(|p| p.path.ends_with("filed.md"))) =>
+                {
+                    assert_eq!(workspace_id, "ws-1");
+                    break;
+                }
+                _ => continue,
+            }
+        }
+
+        // The app watched again after the re-arm read the generation:
+        // the re-arm must not claim over it.
+        let seen = *manager.gavin_watch_generation.lock().unwrap().get("ws-1").unwrap();
+        let _newer = manager.begin_gavin_watch("ws-1");
+        assert!(manager.begin_gavin_rewatch("ws-1", seen).is_none());
+        assert!(manager.begin_gavin_rewatch("ws-never", 0).is_none());
     }
 
     /// The card diff end to end: a real watch over real files, with the
