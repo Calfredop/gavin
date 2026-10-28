@@ -1445,6 +1445,20 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     *poller.debouncer.lock().unwrap() = Some(debouncer);
 }
 
+/// Makes every repo poller's filesystem watch again, and checks each root
+/// once, since what changed while the old watch was deaf is unknown. The
+/// checks run off this thread, like a new poller's first: each can wait
+/// out MIN_RECHECK_INTERVAL and a `git status`.
+fn rewatch_repo_pollers(manager: &Arc<SessionManager>) {
+    let pollers: Vec<(String, Arc<RepoPoller>)> =
+        manager.repo_pollers.lock().unwrap().iter().map(|(root, p)| (root.clone(), Arc::clone(p))).collect();
+    for (root, poller) in pollers {
+        setup_filesystem_watch(manager, &root, &poller);
+        let manager = Arc::clone(manager);
+        std::thread::spawn(move || trigger_recheck(&manager, &root, &poller));
+    }
+}
+
 /// Shared by all three trigger sources (filesystem watch, backstop timer,
 /// and the reactive OSC-133-idle hook in `spawn_pump`). Runs at most one
 /// `git status` at a time per repo root (via `checking`) and no more often
@@ -4128,6 +4142,17 @@ impl SessionManager {
     ) {
         let generation = manager.begin_gavin_watch(workspace_id);
         Self::start_gavin_watch(manager, workspace_id, root_path, writer, speaks, generation);
+    }
+
+    /// Makes every file watch this daemon holds again -- what the watch
+    /// canary calls once the OS has stopped delivering the old ones'
+    /// events (`watch_canary.rs`): the `.gavin*` watchers, each repo
+    /// poller's watch (the session git chips), and the worktree watches
+    /// a desktop's Git tab holds over an ssh link.
+    pub fn rewatch_all(manager: &Arc<Self>) {
+        Self::rewatch_gavin_roots(manager);
+        rewatch_repo_pollers(manager);
+        crate::git_watch::rearm_all();
     }
 
     /// Makes every gavin watch again, on the connection it was asked for
@@ -20415,6 +20440,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         assert!(poller.inner.lock().unwrap().last_checked.is_some(), "a new file must still recheck");
+    }
+
+    /// The watch canary's re-arm, for a repo poller: a new OS watch, and a
+    /// check at once for whatever changed while the old one was deaf.
+    #[test]
+    fn a_rewatched_repo_poller_checks_at_once_and_has_a_new_watch() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_root = repo_dir.path().to_str().unwrap().to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let poller = bare_poller();
+        poller.inner.lock().unwrap().mapped_sessions.insert("s".into());
+        manager.repo_pollers.lock().unwrap().insert(repo_root.clone(), Arc::clone(&poller));
+        assert!(poller.debouncer.lock().unwrap().is_none());
+
+        rewatch_repo_pollers(&manager);
+        assert!(poller.debouncer.lock().unwrap().is_some(), "the poller has a watch again");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while poller.inner.lock().unwrap().last_checked.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(poller.inner.lock().unwrap().last_checked.is_some(), "a re-arm checks the repo");
     }
 
     #[test]

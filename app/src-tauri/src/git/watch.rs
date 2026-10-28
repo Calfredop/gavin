@@ -149,7 +149,7 @@ fn is_recursive_top_level_entry(entry: &std::fs::DirEntry) -> bool {
 ///
 /// That reach-back is a `Weak` self-reference, mirroring the daemon's own
 /// `GavinWatcher::start` (`crates/daemon/src/gavin.rs`): `debouncer` starts
-/// `None` and is only ever populated by `spawn_worktree_watcher` itself, so
+/// `None` and is only ever populated by `spawn_worktree_watcher` (or replaced by `rearm`), so
 /// a strong reference captured by the callback (rather than a `Weak` one)
 /// would keep this struct -- and the OS watch inside it -- alive for as
 /// long as the debouncer's background thread runs, which is until `Drop`
@@ -159,11 +159,48 @@ fn is_recursive_top_level_entry(entry: &std::fs::DirEntry) -> bool {
 /// running anyway.
 pub struct WorktreeWatch {
     root: PathBuf,
+    /// Kept for `rearm`, which registers the same watch set again.
+    gitdir: Option<PathBuf>,
     debouncer: Mutex<Option<Debouncer<ChangesOnly>>>,
     armed: Mutex<HashSet<PathBuf>>,
+    /// Out here rather than captured by the debouncer's callback, so a
+    /// debouncer made by `rearm` goes through the same filter and reports
+    /// to the same listener as the first one did.
+    filter: Mutex<IgnoreFilter>,
+    on_change: Mutex<Box<dyn Fn() + Send>>,
+}
+
+/// Every watch alive in this process, for `rearm_all`. Weak: a watch ends
+/// when its owner drops it, never because this list remembers it.
+static LIVE: Mutex<Vec<Weak<WorktreeWatch>>> = Mutex::new(Vec::new());
+
+/// Re-arms every live worktree watch -- what the watch canary calls once
+/// fseventsd has restarted under them (`watch_canary.rs`).
+pub fn rearm_all() {
+    let live: Vec<Arc<WorktreeWatch>> = {
+        let mut list = LIVE.lock().unwrap();
+        list.retain(|w| w.strong_count() > 0);
+        list.iter().filter_map(Weak::upgrade).collect()
+    };
+    for watch in live {
+        watch.rearm();
+    }
 }
 
 impl WorktreeWatch {
+    /// Makes the OS watch again, on a new debouncer, and reports a change:
+    /// whatever moved while the old one was deaf is unknown, and the
+    /// listener's refresh is what finds it. The old debouncer drops after
+    /// every lock here is released, because its callback takes them.
+    pub fn rearm(self: &Arc<Self>) {
+        let Ok(debouncer) = start_debouncer(self) else { return };
+        let old = self.debouncer.lock().unwrap().replace(debouncer);
+        self.armed.lock().unwrap().clear();
+        let _ = self.arm_initial(self.gitdir.as_deref());
+        drop(old);
+        (self.on_change.lock().unwrap())();
+    }
+
     /// Registers the platform's watch set on the debouncer this instance
     /// already owns. Split out of `spawn_worktree_watcher` so every
     /// `watch()` call happens AFTER `self.debouncer` holds the debouncer:
@@ -536,6 +573,25 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     (out.code == 0).then_some(out.stdout)
 }
 
+/// A debouncer feeding `watch`. Holds it Weak -- see the struct doc.
+fn start_debouncer(watch: &Arc<WorktreeWatch>) -> notify::Result<Debouncer<ChangesOnly>> {
+    let weak: Weak<WorktreeWatch> = Arc::downgrade(watch);
+    new_debouncer(move |res: notify_debouncer_mini::DebounceEventResult| {
+        let Ok(events) = res else { return };
+        // After the last strong Arc<WorktreeWatch> is dropped, upgrade()
+        // returns None and this is a silent no-op -- correct, since
+        // whoever owned this watch has already given it up.
+        let Some(watch) = weak.upgrade() else { return };
+        if !ONE_RECURSIVE_WATCH {
+            watch.rearm_new_top_level_dirs(&events);
+        }
+        let relevant = watch.filter.lock().unwrap().any_relevant(events.iter().map(|e| e.path.as_path()));
+        if relevant {
+            (watch.on_change.lock().unwrap())();
+        }
+    })
+}
+
 fn new_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(on_batch: F) -> notify::Result<Debouncer<ChangesOnly>> {
     crate::changes_only::new_debouncer(GIT_WATCH_DEBOUNCE, on_batch)
 }
@@ -551,34 +607,21 @@ where
     // included.
     let root_path = protocol::canonical_path(Path::new(root)).unwrap_or_else(|_| PathBuf::from(root));
     let gitdir = gitdir_for(root).map(|gd| protocol::canonical_path(&gd).unwrap_or(gd));
-    let mut filter = IgnoreFilter::new(&root_path, gitdir.as_deref());
-
     let watch = Arc::new(WorktreeWatch {
+        filter: Mutex::new(IgnoreFilter::new(&root_path, gitdir.as_deref())),
         root: root_path,
+        gitdir,
         debouncer: Mutex::new(None),
         armed: Mutex::new(HashSet::new()),
+        on_change: Mutex::new(Box::new(on_change)),
     });
-    let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
-
-    let debouncer = new_debouncer(
-        move |res: notify_debouncer_mini::DebounceEventResult| {
-            let Ok(events) = res else { return };
-            // After the last strong Arc<WorktreeWatch> is dropped,
-            // upgrade() returns None and this is a silent no-op --
-            // correct, since whoever owned this watch has already given
-            // it up.
-            let Some(watch) = weak.upgrade() else { return };
-            if !ONE_RECURSIVE_WATCH {
-                watch.rearm_new_top_level_dirs(&events);
-            }
-            if filter.any_relevant(events.iter().map(|e| e.path.as_path())) {
-                on_change();
-            }
-        },
-    )?;
-
+    let debouncer = start_debouncer(&watch)?;
     *watch.debouncer.lock().unwrap() = Some(debouncer);
-    watch.arm_initial(gitdir.as_deref())?;
+    watch.arm_initial(watch.gitdir.as_deref())?;
+    let mut live = LIVE.lock().unwrap();
+    live.retain(|w| w.strong_count() > 0);
+    live.push(Arc::downgrade(&watch));
+    drop(live);
     Ok(watch)
 }
 
@@ -844,6 +887,39 @@ mod tests {
         assert!(!counts(&mut filter, &root, "node_modules/p/index.js"));
     }
 
+    /// What the watch canary does for a watch fseventsd has gone deaf
+    /// under: a new OS watch on the same root, one change reported at once
+    /// for whatever moved meanwhile, and writes heard again after it.
+    /// `rearm` rather than `rearm_all`, which would wake every other
+    /// test's watcher in this process.
+    #[test]
+    fn a_rearmed_watch_reports_once_and_keeps_hearing() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let (dir, root) = repo(&[(".gitignore", "node_modules/\n")]);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let watch = spawn_worktree_watcher(dir.path().to_str().unwrap(), move || {
+            counter.fetch_add(1, SeqCst);
+        })
+        .unwrap();
+        assert!(
+            LIVE.lock().unwrap().iter().any(|w| w.as_ptr() == Arc::as_ptr(&watch)),
+            "rearm_all has to be able to find it"
+        );
+        std::thread::sleep(GIT_WATCH_DEBOUNCE * 3);
+        let before = hits.load(SeqCst);
+        watch.rearm();
+        assert!(hits.load(SeqCst) > before, "a re-arm reports a change: what moved meanwhile is unknown");
+        std::thread::sleep(GIT_WATCH_DEBOUNCE * 3);
+        let rearmed = hits.load(SeqCst);
+        put(&root, "src/a.rs", "x");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(SeqCst) == rearmed && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(hits.load(SeqCst) > rearmed, "the new watch hears writes");
+    }
+
     /// The real watch, pointed at a tempdir the way the tab hands one over
     /// -- unresolved, so on macOS under `/var` while events arrive under
     /// `/private/var`.
@@ -911,6 +987,9 @@ mod tests {
             root: root.clone(),
             debouncer: Mutex::new(None),
             armed: Mutex::new(HashSet::new()),
+            gitdir: None,
+            filter: Mutex::new(IgnoreFilter::new(&root, None)),
+            on_change: Mutex::new(Box::new(|| {})),
         });
         let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
         let filter_root = root.clone();
@@ -1006,6 +1085,9 @@ mod tests {
             root: root.clone(),
             debouncer: Mutex::new(None),
             armed: Mutex::new(HashSet::new()),
+            gitdir: None,
+            filter: Mutex::new(IgnoreFilter::new(&root, None)),
+            on_change: Mutex::new(Box::new(|| {})),
         });
         let weak: Weak<WorktreeWatch> = Arc::downgrade(&watch);
         let debouncer = new_debouncer(move |res: notify_debouncer_mini::DebounceEventResult| {

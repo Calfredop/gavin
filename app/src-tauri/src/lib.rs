@@ -35,6 +35,7 @@ mod agent_skills;
 mod trash;
 mod typesafe;
 mod updater;
+mod watch_canary;
 mod workspace_delete;
 mod workspace_settings;
 mod workspace_window;
@@ -126,6 +127,20 @@ pub fn run() {
             // minimized, or on another Space (keep_running.rs).
             if let Some(window) = app.get_webview_window("main") {
                 keep_running::keep_timers_on_time(&window);
+            }
+
+            // Re-arms the Git tab's worktree watches when a restarted
+            // fseventsd has left them deaf (watch_canary.rs). Its own
+            // folder, apart from the daemon's. macOS only.
+            if let Ok(dir) = protocol::app_support_dir() {
+                watch_canary::spawn(
+                    "gavin",
+                    dir.join(format!("watch-canary-app{}", protocol::BuildProfile::current().suffix())),
+                    || {
+                        git::watch::rearm_all();
+                        true
+                    },
+                );
             }
 
             let handle = app.handle().clone();
