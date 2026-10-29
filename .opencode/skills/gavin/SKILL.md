@@ -35,12 +35,16 @@ every piece of work should trace back to it.
 ## 2. Cards: note, task, plan
 
 Create cards with `gavin_create_plan` (`context_folder`, kebab-case
-`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`) or
+`file_name`, `title`, optional `status`/`priority`/`body`/`kind`/`parent`/`labels`) or
 author the file directly. `kind` picks what the card IS:
 
 - **note** — a reminder; title (+ optional body).
 - **task** — one unit of agent work; **the body is the prompt**. A human may
   run your card with the workspace agent at any time.
+  Add `direct: true` (or pass `direct` to `gavin_create_plan`) and the body
+  is sent to the agent **exactly as written** — no card path, no status
+  instructions, no attachment list around it. That agent is never told
+  which card it is working, so nothing moves the card when it finishes.
 - **plan** (the default) — multi-step work; the body holds ordinary markdown
   checklists (`- [ ] step`).
 
@@ -75,6 +79,14 @@ be a parent, and `parent:` is a file name in the same context folder; a
 `parent:` that resolves to anything else leaves the card loose on the board
 with a broken mark rather than erroring.
 
+**An Orchestrated plan's nested tasks finish by a tick, never by a status.**
+A plan carrying `children: sequence | parallel` runs each nested task as its
+own session before the plan's own. If you are one of those tasks, finish by
+ticking your own line in the plan with `gavin_tick_item(plan, child)` once
+the work is done and verified — and never set your card's status: a status
+would pull you out of the plan, and the plan reads you as finished only by
+that tick.
+
 ## 4. Keep status current
 
 The board's COLUMN NAMES are the status vocabulary — check them with
@@ -83,8 +95,10 @@ The board's COLUMN NAMES are the status vocabulary — check them with
 case/spacing-insensitive; an empty value removes the line — that is how a
 task returns to nesting). Do this when you start, finish, or get blocked. If
 a human ran your card, the app already set it In Progress — you set the done
-column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
-ui")` referencing the board's label names.
+column when finished. Labels: pass `labels` to `gavin_create_plan` when you
+file a card, and `gavin_set_plan_field(path, "labels", "bug, ui")` while you
+work, using the board's label names. That write replaces the whole list, so
+keep the labels the card already carries (`gavin_find_cards` shows them).
 
 **In Progress claims the card for your tab.** A card in that column belongs
 to the session that put it there: the board shows your session instead of a
@@ -97,19 +111,52 @@ folder to the work still in flight — and taking it off Done brings it back.
 The reply names the card's path after the write, so when it moved, use the
 new path from then on. Nested children travel with their parent.
 
-## 5. New feature or library? New context
+## 5. When only a person can answer
+
+Some work stops on a human, not on a command: a choice that is not yours
+to make, or a check no suite can run. File it on the card with
+`gavin_request_human(card, kind, text, options?)`, then carry on with
+everything that does not depend on it — the tool returns as soon as the
+line is written, and the answer arrives on the card later.
+
+- **`kind: "decision"`** — a question whose answer is words: which
+  approach, which name, whether to go ahead. Pass `options` when there is
+  a shortlist; each becomes a button the human can press.
+- **`kind: "test"`** — a check only a person can run: another machine, a
+  real install, whether the rendered surface actually looks right.
+
+It writes `- [ ] Decision: <question>` or `- [ ] Human test: <what to
+check>` into the card's checklist — with an indented `Options: A) … B) …`
+line when you passed options — and the item appears under that card in
+the workspace's **Decisions** tab (a decision) or **Review** tab (a test).
+Filing one claims the card for your session, exactly like setting it In
+Progress.
+
+The answer comes back **under the item, on the card**: `Answer (date): …`
+for a decision, `Result (date): passed` or `Result (date): failed —
+<what went wrong>` for a test. A failed test keeps its box unticked and
+is yours again. Once you have fixed what they found, ask for it again
+with **word-for-word the same text**: an identical re-file re-arms that
+item rather than filing a second one.
+
+Do not use it for anything you could settle by reading the repo or
+running a command, and never sit waiting on it — there is no blocking
+form. If the work genuinely cannot go on without the answer, file the
+question, say so, and stop.
+
+## 6. New feature or library? New context
 
 `gavin_create_context(parent_folder)` scaffolds `.gavin/` there; its cards
 get their own board for anyone working in that folder.
 
-## 6. Parallel work: spawn visible sessions
+## 7. Parallel work: spawn visible sessions
 
 `gavin_spawn_session(command, cwd?)` opens a terminal in the gavin app,
 visible to the human on the Agents page. Never run long-lived background
 agents any other way — visibility is the contract. (If a tool says the
 workspace isn't open in gavin, ask the human to open it.)
 
-## 7. Proposing a memory
+## 8. Proposing a memory
 
 Learned something durable about this repo that no card records — a trap, a
 convention, a command that only works one particular way? File it as a
@@ -143,6 +190,21 @@ keep each memory to one fact worth carrying.
 Looking for something a past session learned? `gavin_search_memories(query,
 topics?, limit?)` searches the adopted memories by meaning, not by words —
 ask in your own phrasing, and narrow by topic when you know one.
+
+## 9. Checking what a page does: the browser
+
+If this workspace has Playwright installed (gavin's setup has a Playwright
+step), you have `browser_*` tools: `browser_navigate`, `browser_snapshot`,
+`browser_click`, `browser_type`, `browser_console_messages`,
+`browser_take_screenshot` and the rest. They drive a headless browser that
+belongs to your session alone, and the human can watch it live beside your
+tab; it ends when your session does.
+
+When you change something a person sees in a page, use them to check it
+before you call the work done: open the page, do what a user would, and read
+the snapshot and the console. Report what you saw, not what you expected. If
+the tools are not there, Playwright is not installed for this workspace — say
+you could not check in a browser rather than implying you did.
 
 ## Notes
 

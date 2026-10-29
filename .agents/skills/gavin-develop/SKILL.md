@@ -197,6 +197,36 @@ draws the card loose with a broken-parent mark, and the orchestrator
 offers it as work of its own. Which is exactly the mess this section
 exists to avoid.
 
+### How the children run: `children:`
+
+A plan with nested tasks can run them two ways. Without the line, Run
+starts ONE agent on the plan, which works the children itself, inline. With
+`children: sequence` (or `parallel`) the plan is an **Orchestrated plan**:
+Run puts it on a rail of its own, each nested task runs as **its own
+session** — one at a time in tree order, or all at once in one checkout —
+and the plan's own session runs last, to integrate and verify.
+
+So whenever developing gives a card nested tasks, propose the line with
+them:
+
+- **`children: sequence`** — the default. The tasks build on each other,
+  or nobody has shown they do not.
+- **`children: parallel`** — only when the tasks are genuinely independent
+  of each other: different files, no task reading another's output. They
+  share one checkout at the same time, so two that touch the same files
+  collide.
+- **No line** — only when the human wants one agent doing it all, or the
+  children are too small to deserve a session each.
+
+`gavin_promote_task` never sets it: promoting an item makes a nested task
+and nothing more. If the plan should orchestrate its children, the line is
+a write of its own.
+
+A nested task of an Orchestrated plan finishes by **ticking its own line**
+in the plan (`gavin_tick_item`), never by a status — so write each child's
+prompt about the work, and leave the finishing to the prompt gavin wraps
+around it.
+
 ### Rate it: `complexity:`
 
 Every card you develop gets a `complexity:` line, and every child card
@@ -236,7 +266,8 @@ the work to the wrong model silently.
 Put the whole thing on screen exactly as you intend to write it — every
 checklist item, every child card with its title and its prompt, the
 `kind:` the card ends as when that changes, and the `complexity:` you
-are giving the card and each child. A type switch is one word to
+are giving the card and each child — and, when it has nested tasks, the
+`children:` mode they run in. A type switch is one word to
 overrule and invisible to catch later, so it is proposed, never assumed;
 a level is one word to overrule and spends the human's model budget, so
 it is proposed too.
@@ -272,10 +303,14 @@ In this order, because the `kind:` decides what the rest of it means:
   instruction, not as a note. Rate it in the same call — a child filed
   unrated and rated afterwards can be run in between, at the wrong
   agent.
+- **How the children run**, when it has any and the human approved a
+  mode: `gavin_set_plan_field(path, "children", "sequence")` (or
+  `"parallel"`), after the children exist. Nothing else writes it —
+  `gavin_promote_task` does not.
 - **Then read it back** from the canonical parse: `gavin_find_cards` with
   this card's file name as `parent` lists its children, and `gavin_get_tree`
   shows the card itself. The card must come back the kind you meant,
-  carrying the level you meant, and every child `kind: task` with this
+  carrying the level and the `children:` mode you meant, and every child `kind: task` with this
   card's file name as its `parent`, no status, and its own level — a child
   missing from that list is a `parent:` that does not say what you meant.
   Nothing here fails loudly — a
