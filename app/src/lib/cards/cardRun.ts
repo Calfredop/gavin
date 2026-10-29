@@ -17,6 +17,7 @@ import {
   DEFAULT_RESUME_TASK,
   DEFAULT_REVIEW_LAUNCH,
   DEFAULT_RUN_PLAN,
+  DEFAULT_RUN_NESTED_TASK,
   DEFAULT_RUN_TASK,
   fillTemplate,
 } from "$lib/agents/actionPromptDefaults";
@@ -148,6 +149,34 @@ export function composeTaskPrompt(
     name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
     path,
     title,
+    attachments: attachmentPromptBlock(attachments, withheld),
+    body,
+    card_home_note: cardHomeNote(path, cwd),
+  });
+}
+
+// A Nested task run by its Orchestrated plan (v80, ADR 0012): the task
+// prompt's shape, naming the plan it belongs to, and telling the agent to
+// finish by ticking its own line in that plan rather than by a status --
+// a status would un-nest it. `file_name` is what gavin_tick_item takes.
+export function composeNestedTaskPrompt(
+  path: string,
+  title: string,
+  body: string,
+  plan: { path: string; title: string },
+  attachments: string[] = [],
+  cwd: string | null = null,
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
+): string {
+  return fillTemplate(options?.template ?? DEFAULT_RUN_NESTED_TASK, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    title,
+    file_name: path.split(/[\\/]/).pop() ?? path,
+    plan_path: plan.path,
+    plan_title: plan.title,
     attachments: attachmentPromptBlock(attachments, withheld),
     body,
     card_home_note: cardHomeNote(path, cwd),

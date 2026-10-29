@@ -512,6 +512,24 @@ export function stepIndicator(state: StepState): Indicator {
 
 export const STEP_STATES = ["pending", "running", "done", "skipped", "stalled"] as const;
 
+/// One Nested task of an Orchestrated plan (v80, ADR 0012), drawn in its
+/// row inside the plan's card. The same squares, in the same tones, as the
+/// step it rides inside: a child is a unit of that step's work, and its
+/// `done` is the tick on its line in the plan -- not a column, which a
+/// nested task never has. Only the words differ, naming what is being
+/// counted.
+const NESTED_TASK: Record<StepState, Indicator> = {
+  pending: make("step", "pending", Square, "neutral", "nested task not run yet"),
+  running: make("step", "running", SquareDot, "accent", "nested task running in its own session"),
+  done: make("step", "done", SquareCheck, "success", "nested task finished — its line in the plan is ticked"),
+  skipped: make("step", "skipped", SquareSlash, "neutral", "nested task skipped — the plan's step was moved past it"),
+  stalled: make("step", "stalled", SquareX, "danger", "nested task stalled"),
+};
+
+export function nestedTaskIndicator(state: StepState): Indicator {
+  return NESTED_TASK[state];
+}
+
 /// A step the rail was TOLD to stop at until a human has looked -- the
 /// `review` kind (orchestrationTools.ts). Drawn beside the state badge,
 /// never instead of it: the step really is `running`, and the rail

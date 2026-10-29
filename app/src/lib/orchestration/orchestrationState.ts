@@ -57,10 +57,20 @@ import {
   startRailTargetWorkspace,
   conflictCheckout,
   railRunsDiffer,
+  orchestratedChildren,
+  orchestratedRunTarget,
+  placedCardPaths,
+  childHasLine,
+  childTicked,
+  nestedRunOf,
+  nestedStallReason,
+  effectiveStatus,
+  planIndex,
 } from "$lib/orchestration/orchestration";
 import type {
   Action,
   CardEntry,
+  NestedRunState,
   Orchestration,
   Rail,
   RailState,
@@ -101,6 +111,7 @@ import {
 import {
   agentProfilesStore,
   layoutState,
+  daemonCompat,
   agentForCard,
   agentForProfile,
   resolvedAgentFor,
@@ -145,6 +156,7 @@ import { decoyEditedSteps } from "$lib/git/worktreeCards";
 import { allSessionIds } from "$lib/panes/layout";
 import {
   composeTaskPrompt,
+  composeNestedTaskPrompt,
   composePlanPrompt,
   isDirectPrompt,
   EMPTY_DIRECT_PROMPT,
@@ -161,6 +173,7 @@ import {
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { slugStatus } from "$lib/core/planBoard";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import {
   maybeNotifyReviewWait,
   setRailNotificationVoice,
@@ -688,6 +701,68 @@ export function setStepRunAction(
   );
 }
 
+/// One Nested task's run under its Orchestrated plan's step (v80):
+/// `setStepRunAction` for a unit with no step id, optimistic the same way
+/// and mirroring the daemon's COALESCE the same way, so a stall does not
+/// blank the conversation or the budget a resume of that child needs.
+export function setNestedRunAction(
+  workspaceId: string,
+  stepId: string,
+  childPath: string,
+  state: NestedRunState,
+  sessionId: string | null,
+  reason: string | null,
+  conversationId: string | null = null,
+  launchCwd: string | null = null,
+  resumeAttempts: number | null = null
+): Promise<void> {
+  return mutateRunState(
+    workspaceId,
+    (orch) => {
+      const runs = orch.nestedRuns ?? [];
+      const previous = runs.find((r) => r.stepId === stepId && r.childPath === childPath);
+      return {
+        ...orch,
+        nestedRuns: [
+          ...runs.filter((r) => !(r.stepId === stepId && r.childPath === childPath)),
+          {
+            stepId,
+            childPath,
+            state,
+            sessionId,
+            reason,
+            conversationId: conversationId ?? previous?.conversationId ?? null,
+            launchCwd: launchCwd ?? previous?.launchCwd ?? null,
+            resumeAttempts: resumeAttempts ?? previous?.resumeAttempts ?? null,
+          },
+        ],
+      };
+    },
+    () =>
+      backend.setNestedRun(
+        stepId,
+        childPath,
+        state,
+        sessionId,
+        reason,
+        conversationId,
+        launchCwd,
+        resumeAttempts,
+        workspaceId
+      )
+  );
+}
+
+/// Forgets every Nested task run under one step (v80). Which children are
+/// finished survives -- that is their ticks, in the plan.
+function clearNestedRunsAction(workspaceId: string, stepId: string): Promise<void> {
+  return mutateRunState(
+    workspaceId,
+    (orch) => ({ ...orch, nestedRuns: (orch.nestedRuns ?? []).filter((r) => r.stepId !== stepId) }),
+    () => backend.clearNestedRuns(stepId, workspaceId)
+  );
+}
+
 function railOwning(orch: Orchestration, stepId: string): Rail | null {
   return orch.rails.find((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))) ?? null;
 }
@@ -856,6 +931,48 @@ export async function startRail(workspaceId: string, railId: string): Promise<vo
   await tick(workspaceId);
 }
 
+/// The board's Run on an Orchestrated plan (v80): the plan goes on a rail
+/// of its own -- created, or the one already named after it -- and that
+/// rail starts, so each Nested task runs as its own session on the rail's
+/// page before the plan's own session. Returns an error for the surface
+/// that pressed Run, or null.
+export async function runOrchestratedPlan(workspaceId: string, planPath: string): Promise<string | null> {
+  const blocked = featureBlockedReason(get(daemonCompat), "orchestratedPlans");
+  if (blocked) return blocked;
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
+  if (!get(orchestrations)[workspaceId]) await fetchOrchestration(workspaceId);
+  const orch = get(orchestrations)[workspaceId];
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const entry = cards.get(planPath);
+  if (!orch || !entry) return "This plan's card is no longer on the board";
+  const board = get(kanbanState)[workspaceId];
+  const done = board ? doneColumn(board) : null;
+  const status = effectiveStatus(entry, planIndex(cards));
+  const planIsDone = done !== null && status !== null && slugStatus(status) === slugStatus(done.name);
+
+  const target = orchestratedRunTarget(orch, planPath, entry.plan.title, planIsDone);
+  if (target.kind === "refuse") return target.reason;
+  if (target.kind === "create") {
+    const railId = await addRailAction(workspaceId, target.name);
+    const error = await addStepAsStageAction(workspaceId, railId, planPath);
+    if (error) return error;
+    await startRail(workspaceId, railId);
+    return null;
+  }
+  if (target.rerunStepId) {
+    await setStepRunAction(workspaceId, target.rerunStepId, "pending", null, null, null, null, 0);
+  }
+  const state = railStateOf(get(orchestrations)[workspaceId], target.railId);
+  if (state === "running") {
+    await tick(workspaceId);
+    return null;
+  }
+  if (state === "paused") await resumeRail(workspaceId, target.railId);
+  else await startRail(workspaceId, target.railId);
+  return null;
+}
+
 export async function pauseRail(workspaceId: string, railId: string): Promise<void> {
   const orch = get(orchestrations)[workspaceId];
   const current = orch?.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
@@ -947,6 +1064,21 @@ export async function resumeStep(
   const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
   const run = orch?.stepRuns.find((r) => r.stepId === stepId);
   if (!orch || !rail || !step || !run) return "This step is no longer on any rail";
+
+  // An Orchestrated plan's step that stalled in its children phase (v80):
+  // the conversation to reopen is the stalled child's -- the plan's own
+  // session never started. Each stalled child is reopened; one that
+  // cannot be says why, and the rest wait for the next press.
+  const stalledChildren = (orch.nestedRuns ?? []).filter(
+    (r) => r.stepId === stepId && r.state === "stalled"
+  );
+  if (!isToolStep(step) && stalledChildren.length > 0) {
+    for (const child of stalledChildren) {
+      const error = await resumeNestedChild(workspaceId, stepId, child.childPath, options);
+      if (error) return error;
+    }
+    return null;
+  }
 
   // Through the CARD's own agent where there is a card -- its
   // `agent:`/`model:` if it names either, else its complexity level --
@@ -1075,7 +1207,118 @@ export async function markStepDone(workspaceId: string, stepId: string): Promise
   const sessionId =
     get(orchestrations)[workspaceId]?.stepRuns.find((r) => r.stepId === stepId)?.sessionId ?? null;
   await setStepRunAction(workspaceId, stepId, "done", sessionId, null);
+  await skipLeftoverChildren(workspaceId, stepId);
   await tick(workspaceId);
+}
+
+/// Mark done (or Skip) on an Orchestrated plan's step skips what is left
+/// of its children (v80): each unticked child's run says `skipped`, so no
+/// surface reads it as work still to come. Nothing is killed, for the
+/// reason markStepDone gives, and no line is ticked -- the child did not
+/// finish, the human moved past it.
+async function skipLeftoverChildren(workspaceId: string, stepId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const step = orch ? railOwning(orch, stepId)?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId) : null;
+  if (!orch || !step) return;
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const entry = cards.get(step.cardPath);
+  const phase = orchestratedChildren(step, cards, placedCardPaths(orch));
+  if (!entry || !phase) return;
+  for (const child of phase.children) {
+    if (childTicked(entry.plan, child.plan)) continue;
+    const row = nestedRunOf(orch, stepId, child.plan.path);
+    await setNestedRunAction(workspaceId, stepId, child.plan.path, "skipped", row?.sessionId ?? null, null);
+  }
+}
+
+/// Reopen one stalled Nested task's own conversation, in place (v80) --
+/// `resumeStep` for a child of an Orchestrated plan's step, on the child's
+/// own run row: its conversation, its launch cwd, and its own auto-resume
+/// budget, so one flaky child cannot spend its siblings' recoveries. The
+/// plan's step goes back to its children phase and a rail a stall paused
+/// runs again, so the next pass waits on the reopened child.
+///
+/// Returns an error string, or null, like resumeStep; a refusal leaves the
+/// child's row as it was.
+export async function resumeNestedChild(
+  workspaceId: string,
+  stepId: string,
+  childPath: string,
+  options: { automatic?: boolean; withoutHeadroom?: boolean } = {}
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch ? railOwning(orch, stepId) : null;
+  const run = orch ? nestedRunOf(orch, stepId, childPath) : undefined;
+  if (!orch || !rail || !run) return "This nested task is no longer under a step on any rail";
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(childPath);
+  if (!entry) return "This nested task's card file is gone";
+
+  const agent = agentForCard(workspaceId, entry.plan);
+  const log = await conversationLogFor(agent, run.conversationId, workspaceId);
+  const unresumable = unresumableConversationReason(log, "Use Retry on the plan's step to start it again.");
+  if (unresumable) return unresumable;
+  const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId, log);
+  if (!command) {
+    return "This nested task's run has no conversation to reopen — use Retry on the plan's step to start it again";
+  }
+  const cwd = run.launchCwd ?? rail.worktreePath ?? null;
+  if (!cwd) return "Nothing recorded where this nested task was launched, so it cannot be reopened there";
+
+  const profileId = profileIdForLaunch(agent);
+  const profileIdToSend = options.withoutHeadroom ? withoutHeadroom(profileId) : profileId;
+  let sessionId: string | null;
+  try {
+    sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command, profileIdToSend);
+  } catch (e) {
+    return `Couldn't reopen the conversation: ${e instanceof Error ? e.message : e}`;
+  }
+  if (!sessionId) return "Couldn't reopen the conversation";
+  noteReopenedConversation(sessionId);
+  void armFailureDetection(sessionId, agent.failurePatterns, agent.untrustedOsc133);
+  const provisional = provisionalSessionName(entry.plan.title);
+  if (provisional) {
+    try {
+      await setSessionName(sessionId, provisional);
+    } catch {
+      // Cosmetic only; the agent is already running.
+    }
+  }
+  // The child's binding follows, as a step's does in resumeStep, with the
+  // same conversation and the baseline carried rather than re-resolved.
+  await linkCardSessionAction(workspaceId, {
+    path: childPath,
+    sessionId,
+    cwd,
+    command,
+    conversationId: run.conversationId ?? null,
+    launchCwd: cwd,
+    resumeAttempts: options.automatic ? (run.resumeAttempts ?? 0) + 1 : (run.resumeAttempts ?? null),
+    baseSha: cardSessionFor(get(kanbanState)[workspaceId], childPath)?.baseSha ?? null,
+  });
+  await setNestedRunAction(
+    workspaceId,
+    stepId,
+    childPath,
+    "running",
+    sessionId,
+    null,
+    run.conversationId ?? null,
+    cwd,
+    options.automatic ? (run.resumeAttempts ?? 0) + 1 : null
+  );
+
+  // Back into the children phase: running, with no session of its own.
+  if (stepStateOf(get(orchestrations)[workspaceId], stepId) !== "running") {
+    await setStepRunAction(workspaceId, stepId, "running", null, null);
+  }
+  // Rule 5 paused the rail when the child stalled; see resumeStep.
+  if (railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+    const current = get(orchestrations)[workspaceId].railRuns.find((r) => r.railId === rail.id)?.currentStageId;
+    const owning = rail.stages.find((g) => g.steps.some((t) => t.id === stepId))?.id ?? null;
+    await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+  }
+  await tick(workspaceId);
+  return null;
 }
 
 /// "Skip and proceed" -- the OTHER honest answer to a step that is not
@@ -1109,6 +1352,7 @@ export async function skipStep(workspaceId: string, stepId: string): Promise<voi
   // reason the rail is where it is, and a bubble still quoting it would
   // describe a decision nobody made.
   await setStepRunAction(workspaceId, stepId, "skipped", sessionId, null);
+  await skipLeftoverChildren(workspaceId, stepId);
 
   if (rail && railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
     const current = get(orchestrations)[workspaceId].railRuns.find(
@@ -1555,11 +1799,79 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return await executeToolLaunch(workspaceId, rail, step);
   }
 
-  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
-  if (!entry) {
-    await stallLaunch(workspaceId, stepId, "card file is missing");
+  const outcome = await launchCardOnRail(workspaceId, rail, step.cardPath, { kind: "step", stepId });
+  if (outcome.kind === "held") return false;
+  if (outcome.kind === "developing") {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, DEVELOPING_STALL);
     return false;
   }
+  if (outcome.kind === "stall") {
+    await stallLaunch(workspaceId, stepId, outcome.reason);
+    return false;
+  }
+  // See executeToolLaunch: a fresh conversation is a fresh budget.
+  await setStepRunAction(
+    workspaceId,
+    stepId,
+    "running",
+    outcome.sessionId,
+    null,
+    outcome.conversationId,
+    outcome.cwd,
+    0
+  );
+  await markCardInProgress(workspaceId, step.cardPath);
+  return false;
+}
+
+/// The step's own card goes In Progress as its run starts (spec §3) --
+/// never a Nested task's, which has no status of its own and would leave
+/// its plan if it gained one (ADR 0012).
+async function markCardInProgress(workspaceId: string, cardPath: string): Promise<void> {
+  const status = cardIndex(get(gavinTrees)[workspaceId]).get(cardPath)?.plan.status ?? null;
+  if (!runStatusNeeded(status)) return;
+  try {
+    await backend.setPlanFrontmatterField(cardPath, "status", "In Progress");
+    patchPlanField(workspaceId, cardPath, "status", "In Progress");
+  } catch {
+    // The agent is running; a failed status write is not worth
+    // stalling the step over. The card's own agent will set it.
+  }
+}
+
+/// What launching a card on a rail came to. `held` is the pause or the
+/// launch wall saying not now -- nothing is written, and the pass that
+/// runs when it lifts asks again; `developing` is the develop lock;
+/// `stall` says why the card cannot start.
+type CardLaunchOutcome =
+  | { kind: "launched"; sessionId: string; conversationId: string | null; cwd: string }
+  | { kind: "stall"; reason: string }
+  | { kind: "developing" }
+  | { kind: "held" };
+
+/// Whose launch it is: a card step's own card, or one Nested task of an
+/// Orchestrated plan's step (v80), which gets the nested-task prompt and
+/// no retry prefix -- a loop re-runs the plan, not one of its children.
+type CardLaunchFor =
+  | { kind: "step"; stepId: string }
+  | { kind: "child"; stepId: string; plan: CardEntry };
+
+/// The card-run path every card a rail launches goes through: the develop
+/// lock, the attachment gate, the first-Run review, the card's own agent,
+/// the launch wall, the prompt, the session on the rail's page, failure
+/// detection and the card's binding with its baseline -- everything a
+/// board Run does, minus the run-row and status writes, which are the
+/// caller's because a step and a Nested task keep them in different
+/// places (and a Nested task must never get a status).
+async function launchCardOnRail(
+  workspaceId: string,
+  rail: Rail,
+  cardPath: string,
+  launchFor: CardLaunchFor
+): Promise<CardLaunchOutcome> {
+  const stepId = launchFor.stepId;
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(cardPath);
+  if (!entry) return { kind: "stall", reason: "card file is missing" };
 
   // A card being developed stalls its step rather than running it: the
   // develop agent is rewriting the card file, so the prompt this step
@@ -1569,11 +1881,8 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // asked for. Which is why this is the one launch stall that leaves its
   // rail running rather than going through stallLaunch: paused, the rail
   // would wait on a human for a lock nobody has to lift.
-  const developing = developingBlocker(workspaceId, step.cardPath);
-  if (developing) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, DEVELOPING_STALL);
-    return false;
-  }
+  const developing = developingBlocker(workspaceId, cardPath);
+  if (developing) return { kind: "developing" };
 
   // The rail's own checkout, decided ONCE and read twice: the attachment
   // gate resolves against it, and the launch cwd below is it. One value
@@ -1593,10 +1902,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? [], {
     root: worktree,
   });
-  if ("error" in resolved) {
-    await stallLaunch(workspaceId, stepId, resolved.error);
-    return false;
-  }
+  if ("error" in resolved) return { kind: "stall", reason: resolved.error };
 
   // Resolved BEFORE the prompt, which is a change of order with a
   // reason: a bound rail launches its agent in a checkout that carries
@@ -1608,11 +1914,8 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // the file, but the body is still what its agent goes on to execute --
   // and it is still what the human has to have read before a rail hands
   // it over unattended.
-  const file = await backend.readFileForViewer(step.cardPath);
-  if (!file.exists) {
-    await stallLaunch(workspaceId, stepId, "card file is missing");
-    return false;
-  }
+  const file = await backend.readFileForViewer(cardPath);
+  if (!file.exists) return { kind: "stall", reason: "card file is missing" };
   const body = stripFrontmatter(file.content).trim();
   // The first-Run review (AG-01), as a rail can ask it: it cannot. A
   // scheduler tick runs with nobody necessarily watching this window, and
@@ -1627,7 +1930,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   if (
     !cardReviewed(
       workspaceId,
-      step.cardPath,
+      cardPath,
       cardContentOf({
         title: entry.plan.title,
         body,
@@ -1638,8 +1941,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       })
     )
   ) {
-    await stallLaunch(workspaceId, stepId, unreviewedStallReason(entry.plan.title));
-    return false;
+    return { kind: "stall", reason: unreviewedStallReason(entry.plan.title) };
   }
   // The card picks its own agent, exactly as it does for a board Run: a
   // rail is a different way to schedule the same card, not a different
@@ -1655,24 +1957,16 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const decision = launchDecision(workspaceId, agent.profileId, false);
   if (decision.kind === "arm") {
     requestArm(workspaceId, decision.profileId);
-    await stallLaunch(
-      workspaceId,
-      stepId,
-      fallbackBlockedReason(decision) ?? "fallback agent is not set up"
-    );
-    return false;
+    return { kind: "stall", reason: fallbackBlockedReason(decision) ?? "fallback agent is not set up" };
   }
   if (decision.kind === "pause") {
-    return false;
+    return { kind: "held" };
   }
   let launchAgent =
     decision.viaFallback ? agentForProfile(workspaceId, decision.profileId, entry.plan) : agent;
   {
     const prepared = await prepareCursorAgentLaunch(workspaceId, cwd, launchAgent, "unattended");
-    if (typeof prepared === "string") {
-      await stallLaunch(workspaceId, stepId, prepared);
-      return false;
-    }
+    if (typeof prepared === "string") return { kind: "stall", reason: prepared };
     launchAgent = prepared;
   }
   let prompt: string;
@@ -1683,14 +1977,26 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // turn-ended when the agent goes quiet, for a human to Mark done.
   const verbatim = isDirectPrompt(entry.plan);
   if (verbatim) {
-    if (body === "") {
-      await stallLaunch(workspaceId, stepId, EMPTY_DIRECT_PROMPT);
-      return false;
-    }
+    if (body === "") return { kind: "stall", reason: EMPTY_DIRECT_PROMPT };
     prompt = body;
+  } else if (launchFor.kind === "child") {
+    prompt = composeNestedTaskPrompt(
+      cardPath,
+      entry.plan.title,
+      body,
+      { path: launchFor.plan.plan.path, title: launchFor.plan.plan.title },
+      resolved.paths,
+      cwd,
+      resolved.withheld,
+      launchAgent.sessionIdDiscovery,
+      {
+        template: mustPromptBody("action:run-nested-task", workspaceId),
+        nameTabBase,
+      }
+    );
   } else if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
-      step.cardPath,
+      cardPath,
       entry.plan.title,
       body,
       resolved.paths,
@@ -1703,14 +2009,23 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       }
     );
   } else {
+    // An Orchestrated plan's own session runs after its children have,
+    // so it is told so (v80). A plan with the line and no children has
+    // nothing to integrate, and runs as any plan does.
+    const orchestrated =
+      entry.plan.children != null &&
+      nestedChildrenOf(cardPath, cardIndex(get(gavinTrees)[workspaceId])).length > 0;
     prompt = composePlanPrompt(
-      step.cardPath,
+      cardPath,
       resolved.paths,
       cwd,
       resolved.withheld,
       launchAgent.sessionIdDiscovery,
       {
-        template: mustPromptBody("action:run-plan", workspaceId),
+        template: mustPromptBody(
+          orchestrated ? "action:run-orchestrated-plan" : "action:run-plan",
+          workspaceId
+        ),
         nameTabBase,
       }
     );
@@ -1719,11 +2034,13 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
   if (!verbatim) {
-    prompt = withRetryPrefix(
-      prompt,
-      await retryNoteFor(workspaceId, rail, stepId),
-      mustPromptBody("action:until-retry-prefix", workspaceId)
-    );
+    if (launchFor.kind === "step") {
+      prompt = withRetryPrefix(
+        prompt,
+        await retryNoteFor(workspaceId, rail, stepId),
+        mustPromptBody("action:until-retry-prefix", workspaceId)
+      );
+    }
     // The agent that actually launches (a fallback's, not the card's
     // primary): the lines are instructions to THAT agent.
     prompt = withPromptExtras(prompt, promptExtrasFor(workspaceId, launchAgent.profileId));
@@ -1748,8 +2065,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
         conversationId
       );
   if (command === null) {
-    await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label, launchAgent.profileId));
-    return false;
+    return { kind: "stall", reason: noPromptReason(launchAgent.label, launchAgent.profileId) };
   }
   const baseSha = await baseShaForLaunch(cwd);
   // The agent actually launching, which is the fallback's when the
@@ -1761,10 +2077,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     command,
     profileIdForLaunch(launchAgent)
   );
-  if (!sessionId) {
-    await stallLaunch(workspaceId, stepId, "could not start the agent");
-    return false;
-  }
+  if (!sessionId) return { kind: "stall", reason: "could not start the agent" };
   if (inject) {
     // Queued before anything else is awaited, so a fast MCP handshake
     // can never find the queue empty. A session that never gets its
@@ -1773,12 +2086,10 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     try {
       await backend.queueInput(sessionId, prompt);
     } catch (e) {
-      await stallLaunch(
-        workspaceId,
-        stepId,
-        `couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`
-      );
-      return false;
+      return {
+        kind: "stall",
+        reason: `couldn't hand the agent its prompt: ${e instanceof Error ? e.message : e}`,
+      };
     }
   }
   void armFailureDetection(sessionId, launchAgent.failurePatterns, launchAgent.untrustedOsc133);
@@ -1797,7 +2108,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     }
   }
   await linkCardSessionAction(workspaceId, {
-    path: step.cardPath,
+    path: cardPath,
     sessionId,
     cwd,
     command,
@@ -1808,18 +2119,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     // documents: a step that has started cannot be asked where it began.
     baseSha,
   });
-  // See executeToolLaunch: a fresh conversation is a fresh budget.
-  await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd, 0);
-  if (runStatusNeeded(entry.plan.status)) {
-    try {
-      await backend.setPlanFrontmatterField(step.cardPath, "status", "In Progress");
-      patchPlanField(workspaceId, step.cardPath, "status", "In Progress");
-    } catch {
-      // The agent is running; a failed status write is not worth
-      // stalling the step over. The card's own agent will set it.
-    }
-  }
-  return false;
+  return { kind: "launched", sessionId, conversationId, cwd };
 }
 
 /// Put a rail's checkout on its branch (spec O15). Three steps, and the
@@ -2168,6 +2468,19 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // nothing else of it, so without another pass the rail would sit
       // armed and empty until some unrelated event ticked.
       again = true;
+    } else if (action.kind === "beginChildren") {
+      again = (await executeBeginChildren(workspaceId, action.stepId, action.fresh)) || again;
+    } else if (action.kind === "launchChild") {
+      // A child is a launch like any other: the pause and the launch wall
+      // hold it, and the pass that runs when they lift asks again.
+      if (!mayStartWork(workspaceId)) continue;
+      if (!mayLaunch()) continue;
+      again = (await executeLaunchChild(workspaceId, action.stepId, action.childPath, action.resume)) || again;
+    } else if (action.kind === "stallChild") {
+      await executeStallChild(workspaceId, orch, action.stepId, action.childPath, action.reason);
+    } else if (action.kind === "childDone") {
+      const row = nestedRunOf(orch, action.stepId, action.childPath);
+      await setNestedRunAction(workspaceId, action.stepId, action.childPath, "done", row?.sessionId ?? null, null);
     } else if (action.kind === "complete") {
       await setRailRunAction(workspaceId, action.railId, "idle", null);
       // A rail finishing is the event a TRIGGER waits for, and
@@ -2182,6 +2495,123 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
     }
   }
   return again;
+}
+
+/// Every session id with a tab in some page's layout -- what the tick
+/// calls live (see runTick).
+function layoutSessionIds(): Set<string> {
+  const live = new Set<string>();
+  for (const ws of get(layoutState).workspaces) {
+    for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
+  }
+  return live;
+}
+
+/// An Orchestrated plan's step reached with children unticked (v80):
+/// append the lines the plan is missing for its children, put the step in
+/// its children phase -- running, no session of its own -- and file the
+/// plan In Progress as its own launch would. Returns true: the children
+/// launch on the pass after this one.
+///
+/// A FRESH start (the step was pending: a Retry, a reset rail) forgets the
+/// last pass's child runs, or a stalled row would be reopened and a dead
+/// one stall the step again at once. Except a child still LIVE from that
+/// pass, whose row is kept -- forgetting it would launch a second agent on
+/// its card -- while every other row is marked `skipped`, which the
+/// children phase reads as "launch again".
+async function executeBeginChildren(workspaceId: string, stepId: string, fresh: boolean): Promise<boolean> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch ? railOwning(orch, stepId) : null;
+  const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const entry = step ? cards.get(step.cardPath) : undefined;
+  const phase = step ? orchestratedChildren(step, cards, placedCardPaths(orch)) : null;
+  if (!orch || !rail || !step || !entry || !phase) return false;
+
+  const rows = fresh ? (orch.nestedRuns ?? []).filter((r) => r.stepId === stepId) : [];
+  if (rows.length > 0) {
+    const live = layoutSessionIds();
+    const busy = (r: (typeof rows)[number]) => r.state === "running" && r.sessionId !== null && live.has(r.sessionId);
+    if (!rows.some(busy)) {
+      await clearNestedRunsAction(workspaceId, stepId);
+    } else {
+      for (const row of rows.filter((r) => !busy(r))) {
+        await setNestedRunAction(workspaceId, stepId, row.childPath, "skipped", row.sessionId, null);
+      }
+    }
+  }
+  // The line is the record a child finishes by (ADR 0012), so a child
+  // made with `parent:` alone gets one before it runs. A failed append is
+  // not a stall: the child's own tick appends it too.
+  for (const child of phase.children) {
+    if (childHasLine(entry.plan, child.plan)) continue;
+    try {
+      await backend.tickChecklistLink(entry.plan.path, child.plan.fileName, false);
+    } catch {
+      // See above.
+    }
+  }
+  await setStepRunAction(workspaceId, stepId, "running", null, null);
+  await markCardInProgress(workspaceId, step.cardPath);
+  return true;
+}
+
+/// Launch one Nested task of an Orchestrated plan's step (v80) through the
+/// card-run path every rail card takes, minus the In Progress write -- a
+/// status would pull the child out of its plan. A STALLED child is
+/// reopened instead (its conversation, in place); one that cannot be
+/// stalls again with the reason, and Retry is the way to a fresh start.
+async function executeLaunchChild(
+  workspaceId: string,
+  stepId: string,
+  childPath: string,
+  resume: boolean
+): Promise<boolean> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch ? railOwning(orch, stepId) : null;
+  const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
+  const plan = step ? cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath) : undefined;
+  if (!orch || !rail || !step || !plan) return false;
+  if (resume) {
+    const error = await resumeNestedChild(workspaceId, stepId, childPath);
+    if (error) await executeStallChild(workspaceId, get(orchestrations)[workspaceId], stepId, childPath, error);
+    return false;
+  }
+  const outcome = await launchCardOnRail(workspaceId, rail, childPath, { kind: "child", stepId, plan });
+  if (outcome.kind === "held" || outcome.kind === "developing") return false;
+  if (outcome.kind === "stall") {
+    await executeStallChild(workspaceId, get(orchestrations)[workspaceId], stepId, childPath, outcome.reason);
+    return false;
+  }
+  await setNestedRunAction(
+    workspaceId,
+    stepId,
+    childPath,
+    "running",
+    outcome.sessionId,
+    null,
+    outcome.conversationId,
+    outcome.cwd,
+    0
+  );
+  return false;
+}
+
+/// A Nested task stalled (v80): its row says why, and its plan's step
+/// stalls naming it, which pauses an advancing rail as any stall does.
+/// The child's session stays on its row -- auto-resume finds the child by
+/// it when it fires, and the card shows it as the run that stalled.
+async function executeStallChild(
+  workspaceId: string,
+  orch: Orchestration,
+  stepId: string,
+  childPath: string,
+  reason: string
+): Promise<void> {
+  const row = nestedRunOf(orch, stepId, childPath);
+  await setNestedRunAction(workspaceId, stepId, childPath, "stalled", row?.sessionId ?? null, reason);
+  const fileName = childPath.split(/[\\/]/).pop() ?? childPath;
+  await stallStep(workspaceId, get(orchestrations)[workspaceId] ?? orch, stepId, nestedStallReason(fileName, reason));
 }
 
 /// Whether any rail here starts itself, i.e. whether the pass that just

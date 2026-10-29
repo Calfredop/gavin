@@ -13,26 +13,39 @@
 // rails hold -- card steps, sequential stages and groups, the done
 // column -- read through the desktop's own joins (`cardIndex`,
 // `effectiveStatus`, `doneColumn`). A tool step has nothing to run on a
-// machine that runs nothing, and stalls saying so.
+// machine that runs nothing, and stalls saying so. An Orchestrated plan's
+// step (v80) runs its Nested tasks first, by the desk's own rules
+// (`childrenPhaseActions`) played over the demo's sessions.
 import type { Board } from "$lib/board/kanban";
 import { slugStatus } from "$lib/core/planBoard";
 import * as workspace from "$lib/core/workspace";
 import {
   cardIndex,
+  childHasLine,
+  childrenPhaseActions,
+  childTicked,
   doneColumn,
   effectiveStatus,
   firstUnfinishedStageId,
+  inChildrenPhase,
   isStepFinished,
   isToolStep,
+  nestedRunOf,
+  nestedStallReason,
+  orchestratedChildren,
+  placedCardPaths,
   planIndex,
   stageMode,
   stepStateOf,
   type CardEntry,
+  type NestedRun,
+  type NestedRunState,
   type Orchestration,
   type Rail,
   type RailRun,
   type RailState,
   type Stage,
+  type Step,
   type StepRun,
   type StepState,
 } from "$lib/orchestration/orchestration";
@@ -47,6 +60,7 @@ export const DEVICE_ORIGIN = "companion";
 
 const RAIL_STATES: readonly RailState[] = ["idle", "running", "paused"];
 const STEP_STATES: readonly StepState[] = ["pending", "running", "done", "skipped", "stalled"];
+const NESTED_STATES: readonly NestedRunState[] = ["running", "done", "stalled", "skipped"];
 
 /// A workspace's plan, by the id a command names.
 function planOf(demo: DemoContext, workspaceId: unknown): Orchestration {
@@ -110,6 +124,21 @@ function writeStepRun(plan: Orchestration, run: StepRun): void {
   ];
 }
 
+/// The same COALESCE for a Nested task's run (`set_nested_run`).
+function writeNestedRun(plan: Orchestration, run: NestedRun): void {
+  const runs = plan.nestedRuns ?? [];
+  const before = runs.find((r) => r.stepId === run.stepId && r.childPath === run.childPath);
+  plan.nestedRuns = [
+    ...runs.filter((r) => !(r.stepId === run.stepId && r.childPath === run.childPath)),
+    {
+      ...run,
+      conversationId: run.conversationId ?? before?.conversationId ?? null,
+      launchCwd: run.launchCwd ?? before?.launchCwd ?? null,
+      resumeAttempts: run.resumeAttempts ?? before?.resumeAttempts ?? null,
+    },
+  ];
+}
+
 // ---- The desk -------------------------------------------------------
 
 /// Where a rail's step runs: the rail's checkout, else the card's context.
@@ -153,6 +182,84 @@ function launchStep(demo: DemoContext, workspaceId: string, rail: Rail, stepId: 
   CARD_COMMANDS.link_card_session({ workspaceId, path: entry.plan.path, sessionId, cwd }, demo);
   CARD_COMMANDS.set_plan_frontmatter_field({ path: entry.plan.path, key: "status", value: "In Progress" }, demo);
   writeStepRun(plan, { stepId, state: "running", sessionId, reason: null, launchCwd: cwd, resumeAttempts: 0 });
+}
+
+/// One Nested task's launch: an agent on the rail's page bound to its
+/// card -- and, unlike a step's, NO status write, which would pull the
+/// child out of its plan (ADR 0012). The demo keeps no conversations, so
+/// reopening a stalled child is a fresh session too.
+function launchChild(demo: DemoContext, workspaceId: string, rail: Rail, stepId: string, child: CardEntry): void {
+  const plan = demo.state.orchestrations[workspaceId];
+  const cwd = cwdFor(rail, child);
+  const sessionId = launch(demo, {
+    cwd,
+    command: `claude "Work the nested task ${child.plan.path}, then tick its line"`,
+    place: (id) => placeOnRailPage(demo, workspaceId, rail, id),
+  });
+  demo.state.sessionNames[sessionId] = child.plan.title;
+  demo.emit("session-named", [sessionId, child.plan.title]);
+  CARD_COMMANDS.link_card_session({ workspaceId, path: child.plan.path, sessionId, cwd }, demo);
+  writeNestedRun(plan, {
+    stepId,
+    childPath: child.plan.path,
+    state: "running",
+    sessionId,
+    reason: null,
+    launchCwd: cwd,
+    resumeAttempts: 0,
+  });
+}
+
+/// An Orchestrated plan's step reached with children unticked: the lines
+/// it is missing appended, the plan In Progress, the step running with no
+/// session of its own -- its children phase.
+function beginChildren(demo: DemoContext, plan: Orchestration, step: Step, entry: CardEntry, children: CardEntry[]): void {
+  for (const child of children) {
+    if (childHasLine(entry.plan, child.plan)) continue;
+    CARD_COMMANDS.tick_checklist_link({ plan: entry.plan.path, childFile: child.plan.fileName, checked: false }, demo);
+  }
+  if (entry.plan.status !== "In Progress") {
+    CARD_COMMANDS.set_plan_frontmatter_field({ path: entry.plan.path, key: "status", value: "In Progress" }, demo);
+  }
+  writeStepRun(plan, { stepId: step.id, state: "running", sessionId: null, reason: null });
+}
+
+/// One pass of a children phase, as the desk decides it.
+function runChildren(demo: DemoContext, workspaceId: string, rail: Rail, stage: Stage): boolean {
+  const plan = demo.state.orchestrations[workspaceId];
+  const cards = cardIndex(demo.state.trees[workspaceId]);
+  const placed = placedCardPaths(plan);
+  const live = new Set(demo.state.sessions.map((s) => s.id));
+  let wrote = false;
+  for (const step of stage.steps) {
+    const entry = cards.get(step.cardPath);
+    const phase = orchestratedChildren(step, cards, placed);
+    if (!entry || !phase || !inChildrenPhase(plan, step, phase)) continue;
+    for (const action of childrenPhaseActions(step.id, entry.plan, phase, plan, true, live, new Set(), new Map())) {
+      wrote = true;
+      if (action.kind === "launch") {
+        launchStep(demo, workspaceId, rail, step.id, entry);
+      } else if (action.kind === "launchChild") {
+        const child = cards.get(action.childPath);
+        if (child) launchChild(demo, workspaceId, rail, step.id, child);
+      } else if (action.kind === "childDone" || action.kind === "stallChild") {
+        const row = nestedRunOf(plan, step.id, action.childPath);
+        const reason = action.kind === "stallChild" ? action.reason : null;
+        writeNestedRun(plan, {
+          stepId: step.id,
+          childPath: action.childPath,
+          state: action.kind === "childDone" ? "done" : "stalled",
+          sessionId: row?.sessionId ?? null,
+          reason,
+        });
+        if (reason !== null) {
+          const fileName = action.childPath.slice(action.childPath.lastIndexOf("/") + 1);
+          writeStepRun(plan, { stepId: step.id, state: "stalled", sessionId: null, reason: nestedStallReason(fileName, reason) });
+        }
+      }
+    }
+  }
+  return wrote;
 }
 
 /// The steps of a stage the rail may launch now: all of a parallel
@@ -203,10 +310,14 @@ function runRail(demo: DemoContext, workspaceId: string, rail: Rail): boolean {
           // Rule 1: a card already done is not run again.
           writeStepRun(plan, { stepId, state: "done", sessionId: null, reason: null });
         } else {
-          launchStep(demo, workspaceId, rail, stepId, entry);
+          const phase = orchestratedChildren(step, cards, placedCardPaths(plan));
+          const unticked = phase?.children.filter((c) => !childTicked(entry.plan, c.plan)) ?? [];
+          if (phase && unticked.length > 0) beginChildren(demo, plan, step, entry, phase.children);
+          else launchStep(demo, workspaceId, rail, stepId, entry);
         }
         wrote = true;
       }
+      if (runChildren(demo, workspaceId, rail, stage)) wrote = true;
       // A stalled step pauses its rail, for a human to look at.
       if (stage.steps.some((s) => stepStateOf(plan, s.id) === "stalled")) {
         writeRailRun(plan, { railId: rail.id, state: "paused", currentStageId: stage.id });
@@ -262,6 +373,7 @@ export const RAIL_COMMANDS: Record<string, DemoCommand> = {
     plan.conflictNotes = Array.isArray(args.conflictNotes) ? args.conflictNotes : [];
     plan.railRuns = plan.railRuns.filter((r) => railIds.has(r.railId));
     plan.stepRuns = plan.stepRuns.filter((r) => stepIds.has(r.stepId));
+    plan.nestedRuns = (plan.nestedRuns ?? []).filter((r) => stepIds.has(r.stepId));
     taken(demo, workspaceId);
   },
 
@@ -293,6 +405,38 @@ export const RAIL_COMMANDS: Record<string, DemoCommand> = {
       launchCwd: optional(args.launchCwd),
       resumeAttempts: typeof args.resumeAttempts === "number" ? args.resumeAttempts : null,
     });
+    taken(demo, workspaceId);
+  },
+
+  set_nested_run: (args, demo): Answer<"setNestedRun"> => {
+    const stepId = text(args, "stepId");
+    const state = text(args, "stateValue") as NestedRunState;
+    if (!NESTED_STATES.includes(state)) throw new DemoFailure(`unknown nested run state: ${state}`);
+    const workspaceId =
+      optional(args.workspaceId) ??
+      workspaceHolding(demo, (p) => p.rails.some((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))));
+    if (!workspaceId) throw new DemoFailure(`no step ${stepId}`);
+    writeNestedRun(planOf(demo, workspaceId), {
+      stepId,
+      childPath: text(args, "childPath"),
+      state,
+      sessionId: optional(args.sessionId),
+      reason: optional(args.reason),
+      conversationId: optional(args.conversationId),
+      launchCwd: optional(args.launchCwd),
+      resumeAttempts: typeof args.resumeAttempts === "number" ? args.resumeAttempts : null,
+    });
+    taken(demo, workspaceId);
+  },
+
+  clear_nested_runs: (args, demo): Answer<"clearNestedRuns"> => {
+    const stepId = text(args, "stepId");
+    const workspaceId =
+      optional(args.workspaceId) ??
+      workspaceHolding(demo, (p) => p.rails.some((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))));
+    if (!workspaceId) throw new DemoFailure(`no step ${stepId}`);
+    const plan = planOf(demo, workspaceId);
+    plan.nestedRuns = (plan.nestedRuns ?? []).filter((r) => r.stepId !== stepId);
     taken(demo, workspaceId);
   },
 };

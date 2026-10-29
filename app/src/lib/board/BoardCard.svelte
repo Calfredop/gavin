@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import { canReplay, type Label } from "$lib/board/kanban";
   import { slugStatus, type CardView } from "$lib/core/planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Send, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Send, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown, ListTree } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/cards/complexity";
   import { cardOverrideNote } from "$lib/cards/cardAgent";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -15,13 +15,15 @@
     agentQueuedIndicator,
     queuedBadgeText,
     agentInterruptedIndicator,
+    nestedTaskIndicator,
     priorityIndicator,
   } from "$lib/ui/indicators";
   import { dragState, dropHold, buildNestedSlots } from "$lib/board/kanbanDrag";
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { cancelLaunch, launchQueue, queuedForCard, startHoldFor } from "$lib/agents/launchQueue";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
-  import { cardRailBadge } from "$lib/orchestration/orchestration";
+  import { cardRailBadge, type StepState } from "$lib/orchestration/orchestration";
+  import { childrenMarkTip, nestedChildState, nestedRunsOfPlan } from "$lib/orchestration/orchestratedPlanView";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { boardSelection } from "$lib/board/boardSelection";
   import { tooltip } from "$lib/core/tooltip";
@@ -65,6 +67,12 @@
     // badges and its rail buttons here without this component having to
     // learn any of those words.
     adornment?: Snippet;
+    // This card's run as a Nested task of an Orchestrated plan (v80),
+    // worked out by the plan's card that draws it: whether it ran, is
+    // running, stalled -- and `done` when its line in the plan is ticked,
+    // which is the only "finished" a nested task has. Null everywhere
+    // else.
+    nestedState?: StepState | null;
   }
   let {
     card,
@@ -80,6 +88,7 @@
     columnName = null,
     showRailBadge = true,
     adornment,
+    nestedState = null,
   }: Props = $props();
 
   // Why this workspace's agent cannot start a card at all, or null.
@@ -208,6 +217,14 @@
   const effectiveExpanded = $derived(expanded || nestTargeted);
   const nestedSlots = $derived(
     card.kind === "plan" ? buildNestedSlots(card.nestedChildren, (c) => c.id, slotDrag, card.id) : []
+  );
+  // The runs an Orchestrated plan's rail steps keep for its children,
+  // read from the store like the rail glyph -- each child row below is
+  // handed its own state from them (orchestratedPlanView.ts).
+  const planRuns = $derived(
+    card.kind === "plan" && card.children && workspaceId !== null
+      ? nestedRunsOfPlan($orchestrations[workspaceId], card.id)
+      : []
   );
 
   // Count only, from the parsed frontmatter alone: the daemon never
@@ -344,6 +361,11 @@
         <Bot size={11} />
       </span>
     {/if}
+    {#if card.kind === "plan" && card.children}
+      <span class="orchestrated" use:tooltip={childrenMarkTip(card.children)}>
+        <ListTree size={11} />
+      </span>
+    {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
       <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
     {/if}
@@ -389,6 +411,9 @@
           tip={`${agentQueuedIndicator(queuedHold, hold.why).tip} — click to cancel`}
         />
       </button>
+    {/if}
+    {#if nestedState}
+      <StatusBadge indicator={nestedTaskIndicator(nestedState)} size={12} />
     {/if}
     {#if sessionBadge}
       <button
@@ -503,7 +528,7 @@
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} {showRailBadge} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} {showRailBadge} nestedState={nestedChildState(card, slot.item, planRuns)} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -641,6 +666,14 @@
     color: var(--text-muted);
   }
   .card:hover .agent-override {
+    color: var(--text);
+  }
+  .orchestrated {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+  .card:hover .orchestrated {
     color: var(--text);
   }
   .progress {

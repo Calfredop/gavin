@@ -383,6 +383,9 @@
                             {:else if step.column}
                               <span class="step-said">{step.column}</span>
                             {/if}
+                            {#if step.nested}
+                              <span class="step-said">{step.nested}</span>
+                            {/if}
                           </span>
                         </button>
                         {#if open}

@@ -290,6 +290,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_orchestration: ["ordinary"],
   set_rail_run: ["ordinary"],
   set_step_run: ["ordinary"],
+  set_nested_run: ["ordinary"],
+  clear_nested_runs: ["ordinary"],
   get_tools: ["ordinary"],
   save_tool: ["ordinary"],
   start_tool_run: ["ordinary"],
@@ -329,6 +331,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_plan_frontmatter_field: ["ordinary"],
   create_plan: ["ordinary"],
   set_checklist_item: ["ordinary"],
+  tick_checklist_link: ["ordinary"],
   // Filing a question or a hands-on check on a card, and writing the
   // human's answer back under it. Both are ordinary card writes: one
   // appends a checklist line, the other adds a line beneath one and

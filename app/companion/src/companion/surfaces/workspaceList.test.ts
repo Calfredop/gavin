@@ -16,6 +16,8 @@ function demoInput(): WorkspaceListInput {
         "s-atlas-store": "waiting_for_input",
         "s-atlas-billing": "idle",
         "s-notes-sync": "working",
+        // A nested task of "Notebook search", running on its rail's page.
+        "s-notes-search": "working",
         "s-scratch": "idle",
       },
       fileTabsById: {},
@@ -49,7 +51,7 @@ describe("the workspace list", () => {
   it("says what each workspace's agents are doing, in the desk's words", () => {
     const input = demoInput();
     expect(row(input, DEMO.atlas).agents).toBe("1 running · 1 waiting · 2 pages");
-    expect(row(input, DEMO.notes).agents).toBe("1 running · 1 page");
+    expect(row(input, DEMO.notes).agents).toBe("2 running · 2 pages");
     expect(row(input, DEMO.scratch).agents).toBe("1 page");
   });
 
@@ -79,8 +81,9 @@ describe("the workspace list", () => {
   });
 
   it("does not count a task nested in a plan as a card of its own", () => {
-    // field-notes has four card files; one is a task inside "Offline sync".
-    expect(row(demoInput(), DEMO.notes).cards).toBe(3);
+    // field-notes has eight card files; one is a task inside "Offline sync"
+    // and three are inside "Notebook search".
+    expect(row(demoInput(), DEMO.notes).cards).toBe(4);
   });
 
   it("names the folder a workspace is bound to", () => {

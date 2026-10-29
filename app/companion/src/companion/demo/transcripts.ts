@@ -289,6 +289,29 @@ function notesSync(): DemoTerminal {
   );
 }
 
+/// A Nested task of the Orchestrated "Notebook search" plan, at work in
+/// its own session on the plan's rail page (v80).
+function notesSearch(): DemoTerminal {
+  return agent(
+    rows(
+      `${DIM}> Rank results by recency${OFF}`,
+      "",
+      ...ran("Read(src/search/index.ts)", "Read 142 lines"),
+      "",
+      ...said(
+        "The index already stores each note's last edit, so ranking is a",
+        "score of term hits decayed by age. I'll tick my line in the plan",
+        "with gavin_tick_item once the ranking tests pass."
+      ),
+      "",
+      ...ran("Write(src/search/rank.ts)", "Wrote 61 lines"),
+      "",
+      working("Ranking results by recency", "0m 48s")
+    ),
+    { kind: "working" }
+  );
+}
+
 /// The permission the offline-sync agent stops to ask for, in the
 /// project at `root`.
 export function notesPermission(root: string): string {
@@ -353,6 +376,7 @@ export function sampleTerminals(home: string): Record<string, DemoTerminal> {
     "s-atlas-store": atlasStore(),
     "s-atlas-billing": atlasBilling(),
     "s-notes-sync": notesSync(),
+    "s-notes-search": notesSearch(),
     "s-scratch": scratchShell(home),
   };
 }

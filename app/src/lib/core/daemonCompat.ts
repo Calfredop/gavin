@@ -763,6 +763,18 @@ export const FEATURE_MIN_VERSION = {
   // happened, when the truth is a daemon that keeps no log and has to be
   // restarted. The consumer is the Log tab (`log/WorkspaceLogHubView`).
   workspaceLog: 79,
+  // The Orchestrated plan (v80, ADR 0012): a plan's `children:` line runs
+  // each Nested task as its own session before the plan's. The three new
+  // request TYPES are `min_version_for`'s, but what makes a plan
+  // orchestrated is `PlanFileInfo.children` -- a widened field a v79
+  // daemon never parses, so the plan would read as un-orchestrated and run
+  // as one session with nothing on screen to say why. And the nested runs
+  // ride in a widened `Orchestration`.
+  //
+  // Consumers: the rail scheduler, which expands an orchestrated plan's
+  // step only against a v80 daemon; the board's Run, which puts such a
+  // plan on a rail of its own; and the Children control on the card.
+  orchestratedPlans: 80,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -1,5 +1,5 @@
 use protocol::{
-    default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
+    default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, NestedRun, Orchestration, Rail,
     ActivityRun, ActivityRunKind, RailRun, RailTrigger, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -62,6 +62,24 @@ impl OrchestrationStore {
                 state TEXT NOT NULL,
                 session_id TEXT,
                 reason TEXT
+            );
+            -- v80: each Nested task's run under an Orchestrated plan's
+            -- card step. Not in orch_step_runs: that table is keyed by,
+            -- and pruned to, the ids in orch_steps, and a child has none.
+            -- A table of its own rather than columns on an old one, so
+            -- the CREATE above reaches every existing file as written.
+            -- Whether a child is FINISHED is not here at all: that is its
+            -- tick in the plan (ADR 0012).
+            CREATE TABLE IF NOT EXISTS orch_nested_runs (
+                step_id TEXT NOT NULL,
+                child_path TEXT NOT NULL,
+                state TEXT NOT NULL,
+                session_id TEXT,
+                reason TEXT,
+                conversation_id TEXT,
+                launch_cwd TEXT,
+                resume_attempts INTEGER,
+                PRIMARY KEY (step_id, child_path)
             );
             -- The tool library (tools spec T4). workspace_id NULL means
             -- GLOBAL: every workspace on this machine sees it. Built-in
@@ -343,7 +361,31 @@ impl OrchestrationStore {
             .filter(|r| step_ids.contains(&r.step_id))
             .collect();
 
-        Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
+        let nested_runs: Vec<NestedRun> = self
+            .conn
+            .prepare(
+                "SELECT step_id, child_path, state, session_id, reason, conversation_id, launch_cwd, \
+                        resume_attempts \
+                 FROM orch_nested_runs ORDER BY step_id, child_path",
+            )?
+            .query_map([], |row| {
+                Ok(NestedRun {
+                    step_id: row.get(0)?,
+                    child_path: row.get(1)?,
+                    state: row.get(2)?,
+                    session_id: row.get(3)?,
+                    reason: row.get(4)?,
+                    conversation_id: row.get(5)?,
+                    launch_cwd: row.get(6)?,
+                    resume_attempts: row.get::<_, Option<i64>>(7)?.map(|v| v.max(0) as u32),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|r| step_ids.contains(&r.step_id))
+            .collect();
+
+        Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs, nested_runs })
     }
 
     /// Wholesale replace (spec O11), in one transaction. Validates
@@ -521,6 +563,7 @@ impl OrchestrationStore {
         // Orphan sweep: ids are UUIDs, so a global sweep is safe and
         // cheaper than scoping it back to this workspace.
         tx.execute("DELETE FROM orch_step_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
+        tx.execute("DELETE FROM orch_nested_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
         tx.execute("DELETE FROM orch_rail_runs WHERE rail_id NOT IN (SELECT id FROM orch_rails)", [])?;
         tx.commit()?;
         Ok(())
@@ -565,6 +608,13 @@ impl OrchestrationStore {
     pub fn rename_card_path(&mut self, old_path: &str, new_path: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE orch_steps SET card_path = ?2 WHERE card_path = ?1",
+            params![old_path, new_path],
+        )?;
+        // A Nested task's run follows its card the same way (v80): the
+        // child is keyed by its path, and a run left on the old spelling
+        // would read as a child that never started.
+        self.conn.execute(
+            "UPDATE orch_nested_runs SET child_path = ?2 WHERE child_path = ?1",
             params![old_path, new_path],
         )?;
         Ok(())
@@ -619,7 +669,12 @@ impl OrchestrationStore {
                 [],
             )?;
             tx.execute("DELETE FROM orch_step_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
+            tx.execute("DELETE FROM orch_nested_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
         }
+        // A deleted card that was some plan's Nested task takes its runs
+        // with it whether or not it was a step of its own (v80): there is
+        // no child left for them to describe.
+        tx.execute("DELETE FROM orch_nested_runs WHERE child_path = ?1", params![card_path])?;
         tx.commit()?;
         Ok(removed)
     }
@@ -689,6 +744,52 @@ impl OrchestrationStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// One Nested task's run under its plan's step (v80), with
+    /// `set_step_run`'s rule for the three fields a launch writes once:
+    /// None leaves the stored value alone, so a stall keeps what a resume
+    /// of that child needs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_nested_run(
+        &mut self,
+        step_id: &str,
+        child_path: &str,
+        state: &str,
+        session_id: Option<&str>,
+        reason: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO orch_nested_runs
+               (step_id, child_path, state, session_id, reason, conversation_id, launch_cwd, resume_attempts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(step_id, child_path) DO UPDATE SET
+               state = ?3, session_id = ?4, reason = ?5,
+               conversation_id = COALESCE(?6, orch_nested_runs.conversation_id),
+               launch_cwd = COALESCE(?7, orch_nested_runs.launch_cwd),
+               resume_attempts = COALESCE(?8, orch_nested_runs.resume_attempts)",
+            params![
+                step_id,
+                child_path,
+                state,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts.map(i64::from)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets every Nested task run under one step (v80). Answers how
+    /// many rows went. The children's ticks are in their plan and are not
+    /// touched: a step sent back to pending re-runs only what is unticked.
+    pub fn clear_nested_runs(&mut self, step_id: &str) -> anyhow::Result<usize> {
+        Ok(self.conn.execute("DELETE FROM orch_nested_runs WHERE step_id = ?1", params![step_id])?)
     }
 
     // ---- The tool library --------------------------------------------------
@@ -2410,6 +2511,132 @@ mod tests {
         // Idempotent: the ALTERs run on every open.
         drop(s);
         assert!(OrchestrationStore::open(&path).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A Nested task's run (v80) upserts on (step, child) and keeps
+    /// `set_step_run`'s rule: the launch writes the conversation, the cwd
+    /// and the budget once, and a later stall that omits them keeps them.
+    #[test]
+    fn nested_runs_upsert_per_child_and_keep_what_a_resume_needs() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/plan.md")])], &[], &none()).unwrap();
+        s.set_nested_run("t1", "/x/one.md", "running", Some("s-1"), None, Some("conv-1"), Some("/x/wt"), Some(0))
+            .unwrap();
+        s.set_nested_run("t1", "/x/two.md", "running", Some("s-2"), None, None, None, Some(0)).unwrap();
+        s.set_nested_run("t1", "/x/one.md", "stalled", None, Some("quiet"), None, None, None).unwrap();
+
+        let runs = s.get("ws-1").unwrap().nested_runs;
+        assert_eq!(runs.len(), 2);
+        let one = runs.iter().find(|r| r.child_path == "/x/one.md").unwrap();
+        assert_eq!(one.state, "stalled");
+        assert_eq!(one.session_id, None);
+        assert_eq!(one.reason.as_deref(), Some("quiet"));
+        assert_eq!(one.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(one.launch_cwd.as_deref(), Some("/x/wt"));
+        assert_eq!(one.resume_attempts, Some(0));
+        let two = runs.iter().find(|r| r.child_path == "/x/two.md").unwrap();
+        assert_eq!((two.state.as_str(), two.session_id.as_deref()), ("running", Some("s-2")));
+    }
+
+    #[test]
+    fn clearing_a_steps_nested_runs_leaves_every_other_steps_alone() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/plan.md"), ("t2", "/x/other.md")])], &[], &none())
+            .unwrap();
+        s.set_nested_run("t1", "/x/one.md", "stalled", None, Some("quiet"), None, None, None).unwrap();
+        s.set_nested_run("t1", "/x/two.md", "done", None, None, None, None, None).unwrap();
+        s.set_nested_run("t2", "/x/three.md", "running", Some("s-3"), None, None, None, None).unwrap();
+
+        assert_eq!(s.clear_nested_runs("t1").unwrap(), 2);
+        let runs = s.get("ws-1").unwrap().nested_runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].step_id, "t2");
+    }
+
+    /// Pruned with its step exactly as `orch_step_runs` is: by a replace
+    /// that drops the step, and by the delete of the step's card.
+    #[test]
+    fn nested_runs_go_with_their_step() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/plan.md"), ("t2", "/x/b.md")])], &[], &none()).unwrap();
+        s.set_nested_run("t1", "/x/one.md", "done", None, None, None, None, None).unwrap();
+        s.set_nested_run("t2", "/x/two.md", "done", None, None, None, None, None).unwrap();
+
+        s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &none()).unwrap();
+        let runs = s.get("ws-1").unwrap().nested_runs;
+        assert_eq!(runs.iter().map(|r| r.step_id.as_str()).collect::<Vec<_>>(), vec!["t2"]);
+        let left: i64 = s.conn.query_row("SELECT COUNT(*) FROM orch_nested_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1, "the dropped step's rows are swept from disk, not only filtered out");
+
+        s.remove_card_steps("/x/b.md").unwrap();
+        assert!(s.get("ws-1").unwrap().nested_runs.is_empty());
+    }
+
+    /// A child's card moving (filed under done/ with its plan) re-keys its
+    /// runs, and a child's card being deleted takes them, even though the
+    /// child was never a step of its own.
+    #[test]
+    fn a_nested_run_follows_its_childs_card() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/plan.md")])], &[], &none()).unwrap();
+        s.set_nested_run("t1", "/x/one.md", "done", None, None, None, None, None).unwrap();
+        s.set_nested_run("t1", "/x/two.md", "running", Some("s-2"), None, None, None, None).unwrap();
+
+        s.rename_card_path("/x/one.md", "/x/done/one.md").unwrap();
+        assert_eq!(s.remove_card_steps("/x/two.md").unwrap(), 0, "the child was no step");
+
+        let runs = s.get("ws-1").unwrap().nested_runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].child_path, "/x/done/one.md");
+    }
+
+    /// The v80 table reaches a file written by v79, which has every other
+    /// table and no `orch_nested_runs` -- and the rows already there read
+    /// back untouched.
+    #[test]
+    fn opening_a_pre_v80_database_adds_the_nested_runs_table() {
+        let dir = std::env::temp_dir().join(format!("gavin-orch-v80-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_rails (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+                    position INTEGER NOT NULL, worktree_path TEXT, branch TEXT, trigger_kind TEXT,
+                    trigger_rail TEXT, trigger_at INTEGER, page_id TEXT, auto_resume INTEGER);
+                 CREATE TABLE orch_stages (
+                    id TEXT PRIMARY KEY, rail_id TEXT NOT NULL, position INTEGER NOT NULL,
+                    mode TEXT, name TEXT);
+                 CREATE TABLE orch_steps (
+                    id TEXT PRIMARY KEY, stage_id TEXT NOT NULL, position INTEGER NOT NULL,
+                    card_path TEXT NOT NULL, tool_id TEXT, tool_params TEXT);
+                 CREATE TABLE orch_step_runs (
+                    step_id TEXT PRIMARY KEY, state TEXT NOT NULL, session_id TEXT, reason TEXT,
+                    conversation_id TEXT, launch_cwd TEXT, resume_attempts INTEGER);
+                 INSERT INTO orch_rails VALUES ('r1','ws-1','backend',0,NULL,NULL,NULL,NULL,NULL,NULL,1);
+                 INSERT INTO orch_stages VALUES ('g1','r1',0,'sequence',NULL);
+                 INSERT INTO orch_steps VALUES ('t1','g1',0,'/x/plan.md',NULL,NULL);
+                 INSERT INTO orch_step_runs VALUES ('t1','running','s-1',NULL,'conv-1','/x',0);",
+            )
+            .unwrap();
+        }
+        let mut s = OrchestrationStore::open(&path).unwrap();
+        let o = s.get("ws-1").unwrap();
+        assert!(o.nested_runs.is_empty());
+        assert_eq!(o.step_runs[0].conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(o.rails[0].stages[0].mode, "sequence");
+
+        s.set_nested_run("t1", "/x/one.md", "running", Some("s-2"), None, None, None, Some(0)).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().nested_runs[0].session_id.as_deref(), Some("s-2"));
+
+        // Idempotent: the CREATE runs on every open, and the row survives it.
+        drop(s);
+        let s = OrchestrationStore::open(&path).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().nested_runs.len(), 1);
+        drop(s);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -38,6 +38,7 @@ import {
   type OrchestrationAgentAction,
 } from "$lib/orchestration/orchestrationAgent";
 import { BUILTIN_TOOLS, findTool, type Tool } from "$lib/orchestration/orchestrationTools";
+import { nestedProgress, nestedProgressText } from "$lib/orchestration/orchestratedPlanView";
 import type { Workspace } from "$lib/core/workspace";
 
 /// The one press that moves a rail, as the desk's header offers it:
@@ -58,6 +59,9 @@ export interface StepRow {
   cardPath: string | null;
   /// The step's agent, while it runs.
   sessionId: string | null;
+  /// An Orchestrated plan's step (v80): "n/m nested", how many of the
+  /// nested tasks it runs are ticked. Null for every other step.
+  nested: string | null;
 }
 
 export interface StageRow {
@@ -146,6 +150,10 @@ export function railRows({ orch, tree, tools = BUILTIN_TOOLS }: RailsInput): Rai
                 reason: run?.reason ?? null,
                 cardPath: isToolStep(step) ? null : step.cardPath,
                 sessionId: run?.state === "running" ? run.sessionId : null,
+                nested: (() => {
+                  const progress = nestedProgress(step, orch, cards);
+                  return progress ? nestedProgressText(progress) : null;
+                })(),
               };
             }),
         })),

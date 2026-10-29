@@ -210,6 +210,13 @@ function workspaces(): Workspace[] {
           focusedSessionId: "s-notes-sync",
           layout: { type: "leaf", tabs: ["s-notes-sync"], activeTabIndex: 0 },
         },
+        {
+          // The "search" rail's own page, where its nested tasks run.
+          id: "p-notes-search",
+          name: "search",
+          focusedSessionId: "s-notes-search",
+          layout: { type: "leaf", tabs: ["s-notes-search"], activeTabIndex: 0 },
+        },
       ],
     },
     {
@@ -274,6 +281,12 @@ function boards(atlas: GavinTree): Record<string, Board> {
         {
           path: `${DEMO.notesRoot}/.gavin-root/plans/offline-sync.md`,
           sessionId: "s-notes-sync",
+          cwd: DEMO.notesRoot,
+        },
+        // A nested task's run is bound like any card run's (v80).
+        {
+          path: `${DEMO.notesRoot}/.gavin-root/plans/search-ranking.md`,
+          sessionId: "s-notes-search",
           cwd: DEMO.notesRoot,
         },
       ],
@@ -351,8 +364,55 @@ function orchestrations(): Record<string, Orchestration> {
         { stepId: "step-token-refresh", state: "running", sessionId: "s-atlas-auth", reason: null },
       ],
     },
-    [DEMO.notes]: { rails: [], conflictNotes: [], railRuns: [], stepRuns: [] },
+    [DEMO.notes]: notesOrchestration(),
     [DEMO.scratch]: { rails: [], conflictNotes: [], railRuns: [], stepRuns: [] },
+  };
+}
+
+/// field-notes' one rail: the Orchestrated "Notebook search" plan (v80),
+/// its children run in parallel -- the index ticked, the ranking running,
+/// the toolbar stalled, which stalled the step and paused the rail.
+function notesOrchestration(): Orchestration {
+  const plans = `${DEMO.notesRoot}/.gavin-root/plans`;
+  return {
+    rails: [
+      {
+        id: "rail-search",
+        name: "Notebook search",
+        position: 0,
+        worktreePath: null,
+        branch: null,
+        pageId: "p-notes-search",
+        stages: [
+          {
+            id: "stage-search-1",
+            position: 0,
+            steps: [{ id: "step-search", position: 0, cardPath: `${plans}/notebook-search.md` }],
+          },
+        ],
+      },
+    ],
+    conflictNotes: [],
+    railRuns: [{ railId: "rail-search", state: "paused", currentStageId: "stage-search-1" }],
+    stepRuns: [
+      {
+        stepId: "step-search",
+        state: "stalled",
+        sessionId: null,
+        reason: "nested task `search-toolbar.md` stalled: the agent stopped because something broke — API Error: Connection dropped (ECONNRESET)",
+      },
+    ],
+    nestedRuns: [
+      { stepId: "step-search", childPath: `${plans}/search-index.md`, state: "done", sessionId: null, reason: null },
+      { stepId: "step-search", childPath: `${plans}/search-ranking.md`, state: "running", sessionId: "s-notes-search", reason: null },
+      {
+        stepId: "step-search",
+        childPath: `${plans}/search-toolbar.md`,
+        state: "stalled",
+        sessionId: null,
+        reason: "the agent stopped because something broke — API Error: Connection dropped (ECONNRESET)",
+      },
+    ],
   };
 }
 
@@ -442,6 +502,7 @@ export function sampleState(): DemoState {
       session("s-atlas-store", DEMO.atlasRoot, "waiting_for_input"),
       session("s-atlas-billing", `${DEMO.atlasRoot}/services/billing`, "idle"),
       session("s-notes-sync", DEMO.notesRoot, "working"),
+      session("s-notes-search", DEMO.notesRoot, "working"),
       session("s-scratch", DEMO.home, "idle"),
     ],
     sessionNames: {
@@ -450,6 +511,7 @@ export function sampleState(): DemoState {
       "s-atlas-store": "session store",
       "s-atlas-billing": "invoice pdf",
       "s-notes-sync": "offline sync",
+      "s-notes-search": "search ranking",
     },
     files,
     repos: trackingCards(sampleRepos(roots), cards),

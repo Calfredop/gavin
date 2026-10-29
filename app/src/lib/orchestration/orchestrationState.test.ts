@@ -27,6 +27,10 @@ vi.mock("$lib/core/backend", () => ({
   // An injected-prompt launch (K3) hands its prompt to the daemon's
   // queue after the spawn instead of putting it on the command line.
   queueInput: vi.fn(),
+  // An Orchestrated plan's children (v80).
+  setNestedRun: vi.fn(),
+  clearNestedRuns: vi.fn(),
+  tickChecklistLink: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -352,6 +356,7 @@ import {
   refreshOrchestration,
   setRailRunAction,
   setStepRunAction,
+  setNestedRunAction,
   saveErrors,
   dismissSaveError,
   moveRailCardsAction,
@@ -1749,6 +1754,143 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
       ...pageArgs(`claude --resume ${shellQuote("conv-1")}`)
     );
+  });
+});
+
+describe("executeActions — an Orchestrated plan's children (v80)", () => {
+  const PLAN = "/x/big.md";
+  const CHILD = "/x/one.md";
+  beforeEach(async () => {
+    extraPlans.list = [
+      {
+        path: PLAN,
+        fileName: "big.md",
+        title: "Big plan",
+        status: "To Do",
+        priority: null,
+        order: null,
+        kind: "plan",
+        parent: null,
+        labels: [],
+        checklistDone: 0,
+        checklistTotal: 0,
+        parseWarning: false,
+        children: "sequence",
+        checklistLinks: [],
+      },
+      {
+        path: CHILD,
+        fileName: "one.md",
+        title: "Step one",
+        status: null,
+        priority: null,
+        order: null,
+        kind: "task",
+        parent: "big.md",
+        labels: [],
+        checklistDone: 0,
+        checklistTotal: 0,
+        parseWarning: false,
+      },
+    ];
+    const orch = boundRail();
+    orch.rails[0].stages[0].steps[0].cardPath = PLAN;
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...orch,
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setNestedRun).mockResolvedValue(undefined);
+    vi.mocked(backend.clearNestedRuns).mockResolvedValue(undefined);
+    vi.mocked(backend.tickChecklistLink).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    setRailPageLive();
+    await fetchOrchestration("ws-1");
+  });
+
+  it("begins the children phase: appends the child's missing line, runs the step with no session, files the plan In Progress", async () => {
+    await executeActions("ws-1", [{ kind: "beginChildren", stepId: "t1", fresh: true }]);
+    // Unticked: the line is appended to be ticked later, never ticked here.
+    expect(backend.tickChecklistLink).toHaveBeenCalledWith(PLAN, "one.md", false);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", null, null, null, null, null, "ws-1");
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith(PLAN, "status", "In Progress");
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalledWith(CHILD, "status", expect.anything());
+  });
+
+  it("launches a child through the card-run path and never gives it a status", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Step one\nparent: big.md\n---\nparse the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-c");
+    await setStepRunAction("ws-1", "t1", "running", null, null);
+
+    await executeActions("ws-1", [{ kind: "launchChild", stepId: "t1", childPath: CHILD, resume: false }]);
+
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("gavin_tick_item");
+    expect(command).toContain("a nested task of the plan at /x/big.md");
+    expect(kanbanStateModule.linkCardSessionAction).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ path: CHILD, sessionId: "sess-c", launchCwd: "/x/wt" })
+    );
+    expect(backend.setNestedRun).toHaveBeenCalledWith("t1", CHILD, "running", "sess-c", null, null, "/x/wt", 0, "ws-1");
+    // The step is untouched -- still in its children phase -- and nothing
+    // ever writes the child a status: that would pull it out of its plan.
+    expect(backend.setStepRun).not.toHaveBeenCalledWith("t1", "running", "sess-c", expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything());
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalledWith(CHILD, "status", expect.anything());
+  });
+
+  it("a stalled child keeps its session on its row, and stalls the plan's step naming it", async () => {
+    await setNestedRunAction("ws-1", "t1", CHILD, "running", "sess-c", null, "conv-1", "/x/wt", 0);
+    await executeActions("ws-1", [
+      { kind: "stallChild", stepId: "t1", childPath: CHILD, reason: "it broke" },
+    ]);
+    expect(backend.setNestedRun).toHaveBeenLastCalledWith("t1", CHILD, "stalled", "sess-c", "it broke", null, null, null, "ws-1");
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "t1",
+      "stalled",
+      null,
+      "nested task `one.md` stalled: it broke",
+      null,
+      null,
+      null,
+      "ws-1"
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1", "ws-1");
+    // The optimistic row kept what a resume of that child needs.
+    const row = get(orchestrations)["ws-1"].nestedRuns?.find((r) => r.childPath === CHILD);
+    expect(row).toMatchObject({ state: "stalled", conversationId: "conv-1", launchCwd: "/x/wt", resumeAttempts: 0 });
+  });
+
+  it("a fresh start forgets the last pass's child runs", async () => {
+    setLayoutState({
+      workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend", layout: { type: "leaf", tabs: [] } }] }],
+    });
+    await setNestedRunAction("ws-1", "t1", CHILD, "stalled", "sess-old", "it broke");
+    await executeActions("ws-1", [{ kind: "beginChildren", stepId: "t1", fresh: true }]);
+    expect(backend.clearNestedRuns).toHaveBeenCalledWith("t1", "ws-1");
+    expect(get(orchestrations)["ws-1"].nestedRuns ?? []).toEqual([]);
+  });
+
+  it("a fresh start keeps a child still live from the last pass, so it is never launched twice", async () => {
+    setLayoutState({
+      workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend", layout: { type: "leaf", tabs: ["sess-live"] } }] }],
+    });
+    await setNestedRunAction("ws-1", "t1", CHILD, "running", "sess-live", null);
+    await setNestedRunAction("ws-1", "t1", "/x/two.md", "stalled", "sess-old", "it broke");
+    await executeActions("ws-1", [{ kind: "beginChildren", stepId: "t1", fresh: true }]);
+    expect(backend.clearNestedRuns).not.toHaveBeenCalled();
+    expect(backend.setNestedRun).toHaveBeenLastCalledWith("t1", "/x/two.md", "skipped", "sess-old", null, null, null, null, "ws-1");
+    expect(get(orchestrations)["ws-1"].nestedRuns?.find((r) => r.childPath === CHILD)?.state).toBe("running");
+  });
+
+  it("Mark done on the plan's step skips what is left of its children", async () => {
+    await setStepRunAction("ws-1", "t1", "running", null, null);
+    await markStepDone("ws-1", "t1");
+    expect(backend.setNestedRun).toHaveBeenCalledWith("t1", CHILD, "skipped", null, null, null, null, null, "ws-1");
   });
 });
 

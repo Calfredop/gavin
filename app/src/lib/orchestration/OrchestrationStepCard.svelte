@@ -8,6 +8,12 @@
   import type { Label } from "$lib/board/kanban";
   import type { CardView, PlacedCardView } from "$lib/core/planBoard";
   import { attentionTip } from "$lib/orchestration/orchestration";
+  import {
+    nestedProgressText,
+    nestedProgressTip,
+    type NestedProgress,
+  } from "$lib/orchestration/orchestratedPlanView";
+  import { tooltip } from "$lib/core/tooltip";
   import type { StepAttention, StepState } from "$lib/orchestration/orchestration";
 
   interface Props {
@@ -58,6 +64,9 @@
     /// did not. A rail keeps its whole shape while filtered.
     hit?: boolean;
     dimmed?: boolean;
+    /// An Orchestrated plan's step (v80): how many of the Nested tasks it
+    /// runs are ticked. Null for every other step.
+    nested?: NestedProgress | null;
   }
   let {
     stepId,
@@ -82,6 +91,7 @@
     onContextMenu,
     hit = false,
     dimmed = false,
+    nested = null,
   }: Props = $props();
 
   const attentionTitle = $derived(
@@ -134,6 +144,9 @@
             text="needs you"
             tip={attentionTitle}
           />
+        {/if}
+        {#if nested}
+          <span class="nested" use:tooltip={nestedProgressTip(nested)}>{nestedProgressText(nested)}</span>
         {/if}
         {#each badges as n (n)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -234,6 +247,12 @@
      `.split` once dimmed LayoutTree. */
   .rail-strip :global(.state) {
     margin-right: auto;
+  }
+  .nested {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.85em;
+    white-space: nowrap;
   }
   .badge {
     flex: none;

@@ -226,6 +226,49 @@ function notesContexts(root: string): SampleContext[] {
           body: "Three-way merge each paragraph against the last synced version; keep both when both changed.",
         },
         {
+          // An Orchestrated plan (v80) part-way through: one nested task
+          // ticked, one running in its own session, one stalled -- which
+          // stalled the plan's step and paused its rail.
+          fileName: "notebook-search.md",
+          title: "Notebook search",
+          kind: "plan",
+          status: "In Progress",
+          children: "parallel",
+          complexity: "complex",
+          body: [
+            "Find any note by what it says, offline, ranked so the note you were just in comes first.",
+            "",
+            "- [x] [Build the search index](./search-index.md)",
+            "- [ ] [Rank results by recency](./search-ranking.md)",
+            "- [ ] [Search box in the toolbar](./search-toolbar.md)",
+            "- [ ] Search works with no connection",
+          ].join("\n"),
+        },
+        {
+          fileName: "search-index.md",
+          title: "Build the search index",
+          kind: "task",
+          status: null,
+          parent: "notebook-search.md",
+          body: "Index every note's words as it is saved, in a table beside the notes.",
+        },
+        {
+          fileName: "search-ranking.md",
+          title: "Rank results by recency",
+          kind: "task",
+          status: null,
+          parent: "notebook-search.md",
+          body: "Score each hit by its term matches, decayed by how long ago the note was edited.",
+        },
+        {
+          fileName: "search-toolbar.md",
+          title: "Search box in the toolbar",
+          kind: "task",
+          status: null,
+          parent: "notebook-search.md",
+          body: "A search box in the notebook toolbar that lists results as you type.",
+        },
+        {
           fileName: "photo-attachments.md",
           title: "Photo attachments",
           kind: "task",

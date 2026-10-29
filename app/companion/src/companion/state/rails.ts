@@ -74,6 +74,14 @@ export async function loadRails(workspaceId: string): Promise<void> {
   await Promise.all(reads);
 }
 
+/// The workspace's plan, read for an Orchestrated plan's CARD (v80): its
+/// nested tasks' runs are kept with the rails, and a card opened from the
+/// board has no Rails surface to have read them. The same read
+/// `loadRails` makes, so the pushes that follow keep it current.
+export function loadNestedRuns(workspaceId: string): Promise<void> {
+  return planOf(workspaceId) ? refreshOrchestration(workspaceId) : fetchOrchestration(workspaceId);
+}
+
 /// What the Rails surface does when the connection comes back: a save that
 /// failed only for want of a connection stops saying so, and the plan and
 /// its cards are read again -- what the desk ran meanwhile was pushed to

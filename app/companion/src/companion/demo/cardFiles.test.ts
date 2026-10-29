@@ -8,6 +8,7 @@ import {
   withChecklistItem,
   withField,
   withHumanOutcome,
+  withChecklistLink,
 } from "$companion/demo/cardFiles";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
 
@@ -128,5 +129,36 @@ describe("the demo's cards", () => {
     expect(files[`${DEMO.atlasRoot}/.gavin-root/PRD.md`]).toMatch(/^# atlas-api/);
     expect(files[`${DEMO.notesRoot}/.gavin-root/PRD.md`]).toMatch(/^# field-notes/);
     expect(files[`${DEMO.atlasRoot}/docs/rate-limits.md`]).toBeDefined();
+  });
+});
+
+describe("an Orchestrated plan's card (v80)", () => {
+  const plan = [
+    "---",
+    "title: Big",
+    "children: Parallel",
+    "---",
+    "- [x] [One](./one.md)",
+    "- [ ] [Two](two.md)",
+    "- [ ] Verify",
+    "",
+  ].join("\n");
+
+  it("reads the mode and each line linking a child, with its tick, only on a plan", () => {
+    const info = readCard("/r/.gavin-root/plans/big.md", plan);
+    expect(info.children).toBe("parallel");
+    expect(info.checklistLinks).toEqual([
+      { fileName: "one.md", done: true },
+      { fileName: "two.md", done: false },
+    ]);
+    const task = readCard("/r/.gavin-root/plans/t.md", plan.replace("title: Big", "kind: task\ntitle: T"));
+    expect(task.children).toBeNull();
+    expect(task.checklistLinks).toEqual([]);
+  });
+
+  it("ticks a child's own line, and appends one after the last item when it has none", () => {
+    expect(withChecklistLink(plan, "two.md", "Two", true)).toContain("- [x] [Two](two.md)");
+    const appended = withChecklistLink(plan, "three.md", "Three", false);
+    expect(appended).toContain("- [ ] Verify\n- [ ] [Three](./three.md)\n");
   });
 });

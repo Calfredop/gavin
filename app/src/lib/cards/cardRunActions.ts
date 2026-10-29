@@ -11,6 +11,7 @@ import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
 import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import type { ResolvedAgent } from "$lib/core/settings";
 import { gavinTrees } from "$lib/core/gavinState";
+import { cardIndex, runsAsOrchestratedPlan } from "$lib/orchestration/orchestration";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
@@ -327,11 +328,23 @@ export function sshLaunchBlocker(workspaceId: string): string | null {
   );
 }
 
-export function runCard(
+export async function runCard(
   workspaceId: string,
   card: CardView,
   host: CardLaunchHost = DESK_LAUNCH_HOST
 ): Promise<string | null> {
+  // An Orchestrated plan (v80) runs on a rail of its own: the rail is what
+  // runs each Nested task as its own session first, and launching the plan
+  // the old way would orchestrate nothing. Imported lazily -- the rail
+  // scheduler imports this module, and the route is the only way back.
+  if (card.kind === "plan" && card.children) {
+    const cards = cardIndex(get(gavinTrees)[workspaceId]);
+    const entry = cards.get(card.id);
+    if (entry && runsAsOrchestratedPlan(entry, cards)) {
+      const { runOrchestratedPlan } = await import("$lib/orchestration/orchestrationState");
+      return runOrchestratedPlan(workspaceId, card.id);
+    }
+  }
   return launchCard(workspaceId, card, "run", { host });
 }
 

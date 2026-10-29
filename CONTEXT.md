@@ -22,6 +22,16 @@ _Avoid_: proxy (on its own), the compressor, token saver
 A session whose agent sends its model traffic through Headroom. Whether a session is compressed is settled when its agent launches.
 _Avoid_: routed session, proxied session, headroom session
 
+### Board
+
+**Nested task**:
+A task card that belongs to a plan and has no status of its own: its status is its plan's, it is drawn inside the plan's card, and it goes wherever the plan goes. When it runs on its own, it is finished when its line in the plan is ticked.
+_Avoid_: subtask, child card (when meaning one that has its own status), promoted item
+
+**Orchestrated plan**:
+A plan whose Nested tasks each run as their own agent session, one after another or all at once, before the plan's own session runs to finish what is left.
+_Avoid_: auto-plan, plan rail, parent run
+
 ### Scheduling
 
 **Scheduled task**:

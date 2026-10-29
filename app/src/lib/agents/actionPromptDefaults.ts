@@ -32,6 +32,34 @@ export const DEFAULT_RUN_PLAN =
   "{{attachments}}" +
   "{{card_home_note}}";
 
+/// The plan's own session in an Orchestrated plan (v80, ADR 0012): it runs
+/// after every Nested task has run as its own session and ticked its line,
+/// so it is told the children are done and left the integration.
+export const DEFAULT_RUN_ORCHESTRATED_PLAN =
+  "{{name_tab_first}}\n\n" +
+  "Read {{path}} and finish that plan. Its nested tasks are finished: each ran as its own " +
+  "session and ticked its own line in the checklist. Work what is left of the checklist top " +
+  "to bottom, ticking items (- [x]) as you complete them; integrate what the nested tasks " +
+  "did and verify it works together; then set the plan's status to the board's done column " +
+  "with gavin_set_plan_field." +
+  "{{attachments}}" +
+  "{{card_home_note}}";
+
+/// A Nested task run by its Orchestrated plan (v80, ADR 0012). Not the
+/// task prompt with a line added: that one says to set the card's status,
+/// and a status would pull the child out of its plan. The child finishes by
+/// ticking its own line instead.
+export const DEFAULT_RUN_NESTED_TASK =
+  "{{name_tab_first}}\n\n" +
+  'You are executing the task card at {{path}} ("{{title}}"), a nested task of the plan at ' +
+  '{{plan_path}} ("{{plan_title}}").' +
+  "{{attachments}}\n\n" +
+  "{{body}}\n\n" +
+  "When you have finished and verified the work, tick your own line in that plan with " +
+  "gavin_tick_item (plan {{plan_path}}, child {{file_name}}). Never set this card's status: " +
+  "it has none of its own, and a status would pull it out of its plan." +
+  "{{card_home_note}}";
+
 export const DEFAULT_RESUME_TASK =
   "{{name_tab_first}}\n\n" +
   'Use the gavin-resume skill to resume the task card at {{path}} ("{{title}}"). ' +

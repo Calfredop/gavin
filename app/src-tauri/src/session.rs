@@ -7590,8 +7590,8 @@ async fn get_orchestration_impl(
 ) -> anyhow::Result<Orchestration> {
     let resp = lanes.request(Request::GetOrchestration { workspace_id }).await?;
     match resp {
-        Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
-            Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
+        Response::Orchestration { rails, conflict_notes, rail_runs, step_runs, nested_runs } => {
+            Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs, nested_runs })
         }
         other => anyhow::bail!("expected Orchestration, got {other:?}"),
     }
@@ -7716,6 +7716,70 @@ pub async fn set_step_run(
             launch_cwd,
             resume_attempts,
         })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)?;
+    announce_run_written(&app_handle, &origin, workspace_id.as_deref());
+    Ok(())
+}
+
+/// One Nested task's run under its Orchestrated plan's step (v80):
+/// `set_step_run` for a unit with no step id of its own, and announced the
+/// same way so a Device watching the rail hears of it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn set_nested_run(
+    step_id: String,
+    child_path: String,
+    state_value: String,
+    session_id: Option<String>,
+    reason: Option<String>,
+    conversation_id: Option<String>,
+    launch_cwd: Option<String>,
+    resume_attempts: Option<u32>,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let origin = crate::forwarding::origin(&window, &request);
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = lanes_for(route, &state, &compat)
+        .request(Request::SetNestedRun {
+            step_id,
+            child_path,
+            state: state_value,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_ok(resp)?;
+    announce_run_written(&app_handle, &origin, workspace_id.as_deref());
+    Ok(())
+}
+
+/// Forgets every Nested task run under one step (v80): the step went back
+/// to pending, and its children start over from whatever is unticked.
+#[tauri::command]
+pub async fn clear_nested_runs(
+    step_id: String,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let origin = crate::forwarding::origin(&window, &request);
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = lanes_for(route, &state, &compat)
+        .request(Request::ClearNestedRuns { step_id })
         .await
         .map_err(|e| e.to_string())?;
     expect_ok(resp)?;
@@ -8223,6 +8287,30 @@ pub async fn set_checklist_item(
     let route = crate::remote::route_for_path(&app_handle, &path)?;
     let resp = lanes_for(route, &state, &compat)
         .request(Request::SetChecklistItem { path, line_index, expected_text, checked })
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+/// Ticks or unticks a Nested task's link line in its plan (v80, ADR
+/// 0012) -- the human finishing or un-finishing a child by hand. Routed by
+/// the plan's path like `set_checklist_item`.
+#[tauri::command]
+pub async fn tick_checklist_link(
+    plan: String,
+    child_file: String,
+    checked: bool,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<(), String> {
+    let route = crate::remote::route_for_path(&app_handle, &plan)?;
+    let resp = lanes_for(route, &state, &compat)
+        .request(Request::TickChecklistLink { plan, child_file, checked })
         .await
         .map_err(|e| e.to_string())?;
     match resp {

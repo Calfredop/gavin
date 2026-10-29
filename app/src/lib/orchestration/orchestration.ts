@@ -4,7 +4,7 @@
 // crates/protocol's orchestration shapes (camelCase on the wire).
 
 import type { Board, Column } from "$lib/board/kanban";
-import type { GavinTree, PlanFileInfo } from "$lib/core/gavin";
+import type { ChildrenMode, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { WorktreeInfo } from "$lib/git/git";
 import type { SessionStatus } from "$lib/core/notifications";
 import { isArchivedCard, planKey, slugStatus } from "$lib/core/planBoard";
@@ -288,15 +288,38 @@ export interface StepRun {
   resumeAttempts?: number | null;
 }
 
+/// One Nested task's run under its Orchestrated plan's card step (v80):
+/// the StepRun of a unit that is not a step, keyed by the step AND the
+/// child's card path. It never says whether the child is FINISHED -- that
+/// is the child's tick in its plan (ADR 0012), read off the card.
+export interface NestedRun {
+  stepId: string;
+  childPath: string;
+  /// running | done | stalled | skipped, as the scheduler writes them.
+  state: NestedRunState;
+  sessionId: string | null;
+  reason: string | null;
+  conversationId?: string | null;
+  launchCwd?: string | null;
+  /// This child's own auto-resume budget; see StepRun.resumeAttempts.
+  resumeAttempts?: number | null;
+}
+
+export type NestedRunState = "running" | "done" | "stalled" | "skipped";
+
 export interface Orchestration {
   rails: Rail[];
   conflictNotes: ConflictNote[];
   railRuns: RailRun[];
   stepRuns: StepRun[];
+  /// Every Nested task run under a step still in the arrangement (v80).
+  /// Optional: a pre-v80 daemon keeps none, and fixtures written before
+  /// it carry none.
+  nestedRuns?: NestedRun[];
 }
 
 export function emptyOrchestration(): Orchestration {
-  return { rails: [], conflictNotes: [], railRuns: [], stepRuns: [] };
+  return { rails: [], conflictNotes: [], railRuns: [], stepRuns: [], nestedRuns: [] };
 }
 
 /// A card resolved out of the gavin tree, with the context folder that
@@ -407,6 +430,208 @@ export function effectiveStatus(entry: CardEntry, plans: ReadonlyMap<string, Car
 /// (spec O13). Keep the two apart.
 export function effectiveWorktree(rail: Rail, entry: CardEntry | undefined): string | null {
   return rail.worktreePath ?? entry?.contextFolder ?? null;
+}
+
+// ---- Orchestrated plans (v80, ADR 0012) -------------------------------------
+// A plan whose `children:` line runs each of its Nested tasks as its own
+// session before the plan's own session runs. Its card step goes through a
+// CHILDREN PHASE first: the step is `running` with no session of its own
+// while the children run, and the plan's session launches once every
+// child's line in the plan is ticked. A child is finished by that tick and
+// by nothing else -- it never has a status, so it never leaves the plan.
+
+/// An Orchestrated plan's step, as the scheduler runs it: the mode, and
+/// the Nested tasks it runs, in tree order. A child placed as a step of its
+/// own on any rail is left out -- that step runs it, and running it here
+/// as well would put two agents on one card.
+export interface PlanChildren {
+  mode: ChildrenMode;
+  children: CardEntry[];
+}
+
+/// Every card path some rail places as a step of its own.
+export function placedCardPaths(orch: Orchestration): Set<string> {
+  const placed = new Set<string>();
+  for (const rail of orch.rails) {
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) if (!isToolStep(step)) placed.add(step.cardPath);
+    }
+  }
+  return placed;
+}
+
+/// The children an Orchestrated plan's card step runs, or null for any
+/// other step -- a tool step, a task, a plan with no `children:` line. A
+/// plan without the line is exactly the plan it always was.
+export function orchestratedChildren(
+  step: Step,
+  cards: ReadonlyMap<string, CardEntry>,
+  placed: ReadonlySet<string>,
+  plans: ReadonlyMap<string, CardEntry> = planIndex(cards)
+): PlanChildren | null {
+  if (isToolStep(step)) return null;
+  const entry = cards.get(step.cardPath);
+  const mode = entry?.plan.kind === "plan" ? (entry.plan.children ?? null) : null;
+  if (!entry || !mode) return null;
+  const children = [...cards.values()].filter(
+    (e) => nestedParent(e, plans)?.plan.path === entry.plan.path && !placed.has(e.plan.path)
+  );
+  return { mode, children };
+}
+
+/// Whether a Nested task is finished: its line in the plan, `- [x]
+/// [title](./child.md)`, is ticked (ADR 0012). Every line naming it has
+/// to be, and a plan with no line for it has not finished it -- the line
+/// is appended when the plan starts.
+export function childTicked(
+  plan: Pick<PlanFileInfo, "checklistLinks">,
+  child: Pick<PlanFileInfo, "fileName">
+): boolean {
+  const lines = (plan.checklistLinks ?? []).filter((l) => l.fileName === child.fileName);
+  return lines.length > 0 && lines.every((l) => l.done);
+}
+
+/// Whether a plan has a line for this child at all -- the one the start
+/// of an Orchestrated plan's step appends when it is missing.
+export function childHasLine(plan: PlanFileInfo, child: PlanFileInfo): boolean {
+  return (plan.checklistLinks ?? []).some((l) => l.fileName === child.fileName);
+}
+
+export function nestedRunOf(orch: Orchestration, stepId: string, childPath: string): NestedRun | undefined {
+  return orch.nestedRuns?.find((r) => r.stepId === stepId && r.childPath === childPath);
+}
+
+/// Whether a running card step is in its CHILDREN PHASE: an Orchestrated
+/// plan's step with no session of its own yet. Once the plan's session
+/// launches, every ordinary rule speaks for the step again.
+export function inChildrenPhase(orch: Orchestration, step: Step, pc: PlanChildren | null): boolean {
+  if (!pc || stepStateOf(orch, step.id) !== "running") return false;
+  return (orch.stepRuns.find((r) => r.stepId === step.id)?.sessionId ?? null) === null;
+}
+
+/// The plan step's stall reason when one of its children stalls. Names the
+/// child, because which one broke is the first thing the human needs and
+/// the step's chip is the plan's.
+export function nestedStallReason(childFileName: string, reason: string): string {
+  return `nested task \`${childFileName}\` stalled: ${reason}`;
+}
+
+/// A child whose session is gone while its line is still unticked. Not a
+/// finish: a child is finished by its tick, and an agent that exited
+/// without ticking left the plan unable to tell what it did.
+export const CHILD_ENDED_UNTICKED = "its session ended without ticking its line in the plan";
+
+/// What the children phase of one Orchestrated plan's step does this
+/// tick. `advancing` is whether its rail is running: on an idle or paused
+/// rail only the truth about dead children is written -- nothing is
+/// launched, the same posture the reconciling pass takes for every step.
+///
+/// `sequence` looks only at the first unticked child, in tree order;
+/// `parallel` at every one. A child's running row with a live session is
+/// a wait; a failed, interrupted or dead one stalls it (and so the step).
+/// On an advancing rail a child with no run, or one whose run finished
+/// without its tick being kept, is launched, and a STALLED one is
+/// reopened -- the step only runs again with a stalled child in it when
+/// someone resumed it. Once every child is ticked, the plan's own
+/// session launches.
+export function childrenPhaseActions(
+  stepId: string,
+  plan: PlanFileInfo,
+  pc: PlanChildren,
+  orch: Orchestration,
+  advancing: boolean,
+  liveSessionIds: ReadonlySet<string>,
+  interruptedSessionIds: ReadonlySet<string>,
+  failureReasonById: ReadonlyMap<string, string>
+): Action[] {
+  const actions: Action[] = [];
+  // A ticked child's run says so, for the card and the chip: a row left
+  // `running` under a finished child would read as work still going.
+  for (const child of pc.children) {
+    if (!childTicked(plan, child.plan)) continue;
+    const row = nestedRunOf(orch, stepId, child.plan.path);
+    if (row && (row.state === "running" || row.state === "stalled")) {
+      actions.push({ kind: "childDone", stepId, childPath: child.plan.path });
+    }
+  }
+  const unticked = pc.children.filter((c) => !childTicked(plan, c.plan));
+  if (unticked.length === 0) {
+    if (advancing) actions.push({ kind: "launch", stepId });
+    return actions;
+  }
+  const considered = pc.mode === "sequence" ? unticked.slice(0, 1) : unticked;
+  for (const child of considered) {
+    const childPath = child.plan.path;
+    const row = nestedRunOf(orch, stepId, childPath);
+    const sessionId = row?.sessionId ?? null;
+    if (row?.state === "running" && sessionId !== null) {
+      const failed = failureReasonById.get(sessionId);
+      if (failed !== undefined) {
+        actions.push({ kind: "stallChild", stepId, childPath, reason: failedStepReason(failed) });
+      } else if (interruptedSessionIds.has(sessionId)) {
+        actions.push({ kind: "stallChild", stepId, childPath, reason: INTERRUPTED_STEP_REASON });
+      } else if (!liveSessionIds.has(sessionId)) {
+        actions.push({ kind: "stallChild", stepId, childPath, reason: CHILD_ENDED_UNTICKED });
+      }
+      continue;
+    }
+    if (!advancing) continue;
+    actions.push({ kind: "launchChild", stepId, childPath, resume: row?.state === "stalled" });
+  }
+  return actions;
+}
+
+/// Whether the board's Run sends this card to a rail of its own: an
+/// Orchestrated plan with at least one Nested task to run. A plan with
+/// the line and no children has nothing to orchestrate, and Run launches
+/// it the way it launches any plan.
+export function runsAsOrchestratedPlan(entry: CardEntry, cards: ReadonlyMap<string, CardEntry>): boolean {
+  if (entry.plan.kind !== "plan" || !entry.plan.children) return false;
+  const plans = planIndex(cards);
+  return [...cards.values()].some((e) => nestedParent(e, plans)?.plan.path === entry.plan.path);
+}
+
+export type OrchestratedRunTarget =
+  /// No rail runs the plan yet: make one named after it, the plan its one
+  /// step, and start it.
+  | { kind: "create"; name: string }
+  /// The plan's own rail exists: start it -- or resume it when paused,
+  /// or leave it when already running. `rerunStepId` re-arms a step that
+  /// finished while the plan itself is not done (someone took it back
+  /// out of the done column), or Start would find nothing to run.
+  | { kind: "start"; railId: string; rerunStepId: string | null }
+  | { kind: "refuse"; reason: string };
+
+/// Where the board's Run puts an Orchestrated plan (v80): on a rail of its
+/// own, named after the plan, holding it as its one step -- the rail is
+/// what runs the children in their own sessions, so a Run that launched
+/// one session the old way would quietly not orchestrate anything.
+///
+/// A rail named after the plan (case- and space-insensitively, as
+/// startRailVerdict matches names) that already holds it is reused. A plan
+/// placed on any OTHER rail is that rail's to run: a second rail running
+/// the same card would put two agents on it.
+export function orchestratedRunTarget(
+  orch: Orchestration,
+  planPath: string,
+  planTitle: string,
+  planIsDone: boolean
+): OrchestratedRunTarget {
+  const holding = orch.rails.filter((r) =>
+    r.stages.some((s) => s.steps.some((t) => !isToolStep(t) && t.cardPath === planPath))
+  );
+  const wanted = planTitle.trim().toLowerCase();
+  const own = holding.find((r) => r.name.trim().toLowerCase() === wanted);
+  if (own) {
+    const step = own.stages.flatMap((s) => s.steps).find((t) => !isToolStep(t) && t.cardPath === planPath);
+    const state = step ? stepStateOf(orch, step.id) : "pending";
+    const rerun = step && !planIsDone && (state === "done" || state === "skipped") ? step.id : null;
+    return { kind: "start", railId: own.id, rerunStepId: rerun };
+  }
+  if (holding.length > 0) {
+    return { kind: "refuse", reason: `This plan is a step of “${holding[0].name}” — start that rail to run it` };
+  }
+  return { kind: "create", name: planTitle.trim() || "Orchestrated plan" };
 }
 
 export function stepStateOf(orch: Orchestration, stepId: string): StepState {
@@ -894,7 +1119,22 @@ export type Action =
   /// read GitHub to reach this verdict, so the failing checks are in
   /// hand. Absent for an `until` step, whose check tee'd its output to a
   /// file this module cannot read; the executor reads it there.
-  | { kind: "loopExhausted"; stepId: string; max: number; note?: string };
+  | { kind: "loopExhausted"; stepId: string; max: number; note?: string }
+  /// An Orchestrated plan's step was reached with children still
+  /// unticked (v80): it goes `running` with no session of its own, its
+  /// missing child lines are appended, and the children phase begins.
+  /// `fresh` when it starts over from pending, which forgets the last
+  /// pass's child runs; a stalled step keeps them, so its stalled child
+  /// is reopened rather than started again.
+  | { kind: "beginChildren"; stepId: string; fresh: boolean }
+  /// Launch one Nested task of an Orchestrated plan's step as its own
+  /// card run, or reopen its conversation when `resume`.
+  | { kind: "launchChild"; stepId: string; childPath: string; resume: boolean }
+  /// A Nested task broke, was interrupted, or ended without its tick: its
+  /// run stalls and so does the plan's step, naming it.
+  | { kind: "stallChild"; stepId: string; childPath: string; reason: string }
+  /// A Nested task's line is ticked: its run says it is done.
+  | { kind: "childDone"; stepId: string; childPath: string };
 
 /// Why a pending step cannot be launched right now, or null.
 /// `knownWorktrees` is null when the worktree list has not loaded yet --
@@ -1319,6 +1559,7 @@ export function stepAttentions(
   const doneSlug = done ? slugStatus(done.name) : null;
   const toolKind = new Map((tools ?? []).map((t) => [t.id, t.kind]));
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
+  const placed = placedCardPaths(orch);
 
   for (const rail of orch.rails) {
     // Every rail, not only a running one. The mark describes the STEP:
@@ -1341,6 +1582,33 @@ export function stepAttentions(
           continue;
         }
         if (state !== "running") continue;
+        // An Orchestrated plan's step in its children phase (v80) has no
+        // session of its own to read, so it wears the most urgent mark of
+        // the children it is running. A child whose turn ended without
+        // ticking its line is the case worth catching: nothing will ever
+        // finish it, and the step would otherwise look merely busy.
+        const phase = orchestratedChildren(step, cards, placed, plans);
+        const phaseEntry = cards.get(step.cardPath);
+        if (phase && phaseEntry && inChildrenPhase(orch, step, phase)) {
+          const childMarks: StepAttention[] = [];
+          for (const child of phase.children) {
+            if (childTicked(phaseEntry.plan, child.plan)) continue;
+            const row = nestedRunOf(orch, step.id, child.plan.path);
+            if (row?.state !== "running" || !row.sessionId) continue;
+            const status = sessionStatuses.get(row.sessionId);
+            const verdict = verdicts.get(row.sessionId);
+            if (status === "failed") childMarks.push("failed");
+            else if (status === "waiting_for_input") childMarks.push("asking");
+            else if (verdictAsksQuietly(status, verdict)) childMarks.push("asking");
+            else if (status === "idle") {
+              const since = statusSince.get(row.sessionId);
+              childMarks.push(since !== undefined && now - since >= STALE_AFTER_MS ? "stale" : "turn-ended");
+            }
+          }
+          const best = highestAttention(childMarks);
+          if (best) marks.set(step.id, best);
+          continue;
+        }
         // Gathered rather than returned at the first hit, so the winner
         // is ATTENTION_RANK's decision and not the order these tests
         // happen to be written in. A step can genuinely be two of these
@@ -1616,6 +1884,11 @@ export function nextActions(
   // `until` step's budget.
   const toolSummary = new Map((tools ?? []).map((t) => [t.id, t]));
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
+  // Orchestrated plans (v80): which children a plan's step runs leaves
+  // out every card some rail runs as a step of its own.
+  const placed = placedCardPaths(orch);
+  const childrenOf = (step: Step): PlanChildren | null =>
+    orchestratedChildren(step, cards, placed, plans);
 
   for (const rail of orch.rails) {
     if (railStateOf(orch, rail.id) !== "running") {
@@ -1656,6 +1929,27 @@ export function nextActions(
             }
           }
           if (state !== "running") continue;
+          // An Orchestrated plan's step in its children phase has no
+          // session of its own, so every rule below would read it as one
+          // that died. Its children are what is true: a dead child stalls
+          // it, a live one is left working, and nothing launches.
+          const phase = childrenOf(step);
+          const phaseEntry = cards.get(step.cardPath);
+          if (phase && phaseEntry && inChildrenPhase(orch, step, phase)) {
+            actions.push(
+              ...childrenPhaseActions(
+                step.id,
+                phaseEntry.plan,
+                phase,
+                orch,
+                false,
+                liveSessionIds,
+                interruptedSessionIds,
+                failureReasonById
+              )
+            );
+            continue;
+          }
           // A `pr` step has NO session, so every rule below -- all of
           // which ask what a session did -- would speak for it wrongly,
           // and `deadSessionAction` would report a session that ended
@@ -1926,7 +2220,15 @@ export function nextActions(
             simulated.set(step.id, "stalled");
             stalled = true;
           } else {
-            actions.push({ kind: "launch", stepId: step.id });
+            // An Orchestrated plan (v80) runs its unticked children
+            // first. With none left -- all ticked, or none to run -- its
+            // own session launches straight away, as any plan's does.
+            const phase = childrenOf(step);
+            if (phase && entry && phase.children.some((c) => !childTicked(entry.plan, c.plan))) {
+              actions.push({ kind: "beginChildren", stepId: step.id, fresh: state === "pending" });
+            } else {
+              actions.push({ kind: "launch", stepId: step.id });
+            }
             simulated.set(step.id, "running");
           }
           break stepBody;
@@ -1937,6 +2239,38 @@ export function nextActions(
         // chance to call it done. For a TOOL step the exit code is the
         // whole verdict (tools spec T5).
         if (state === "running") {
+          // Rule 3i -- an Orchestrated plan's step in its children phase
+          // (v80): it has no session of its own yet, so every rule below
+          // would be about nothing. Its children decide: one stalled
+          // stalls the step (and rule 5 pauses the rail), and once every
+          // one is ticked the plan's own session launches.
+          //
+          // A card step running with no session that is NOT orchestrated
+          // is a plan whose `children:` line was taken away mid-phase. It
+          // gets the plan's own session, which is what it now is.
+          if (!isToolStep(step) && entry && (runByStep.get(step.id)?.sessionId ?? null) === null) {
+            const phase = childrenOf(step);
+            if (!phase) {
+              actions.push({ kind: "launch", stepId: step.id });
+              break stepBody;
+            }
+            const phaseActions = childrenPhaseActions(
+              step.id,
+              entry.plan,
+              phase,
+              orch,
+              true,
+              liveSessionIds,
+              interruptedSessionIds,
+              failureReasonById
+            );
+            actions.push(...phaseActions);
+            if (phaseActions.some((a) => a.kind === "stallChild")) {
+              simulated.set(step.id, "stalled");
+              stalled = true;
+            }
+            break stepBody;
+          }
           // Rule 3g -- a `review` step, waiting on a HUMAN. Checked
           // before everything below for the reason 3f is: all of that
           // asks what a SESSION did, and this step has none. Nothing is
@@ -2341,6 +2675,7 @@ function sweepOrphans(orch: Orchestration): Orchestration {
     ...orch,
     railRuns: orch.railRuns.filter((r) => railIds.has(r.railId)),
     stepRuns: orch.stepRuns.filter((r) => stepIds.has(r.stepId)),
+    ...(orch.nestedRuns ? { nestedRuns: orch.nestedRuns.filter((r) => stepIds.has(r.stepId)) } : {}),
     conflictNotes: orch.conflictNotes.filter((n) => n.stepIds.every((id) => stepIds.has(id))),
   };
 }
@@ -3352,8 +3687,11 @@ export type Conflict =
       kind: "same-worktree";
       /// "stage" -- a parallel stage, two agents deliberately put in one
       /// checkout. "rails" -- two or more rails bound to one checkout,
-      /// which have no ordering guarantee between them.
-      scope: "stage" | "rails";
+      /// which have no ordering guarantee between them. "children" -- an
+      /// Orchestrated plan whose `children: parallel` runs its Nested
+      /// tasks in its rail's one checkout at once (v80); `stepIds` is the
+      /// plan's step alone.
+      scope: "stage" | "rails" | "children";
       /// The stage to split, for the box's "Make sequential" repair.
       /// Null for scope "rails", which no single stage can fix.
       stageId: string | null;
@@ -3368,7 +3706,8 @@ export type Conflict =
   /// parent's, so both ends of the pair wear the badge.
   | {
       kind: "nested-with-parent";
-      severity: "potential";
+      /// `live` when the parent is an Orchestrated plan (v80).
+      severity: ConflictSeverity;
       stepIds: string[];
       cardPath: string;
       parentPath: string;
@@ -3510,6 +3849,31 @@ export function detectConflicts(
     });
   }
 
+  // 1b. An Orchestrated plan whose children run `parallel` (v80) is the
+  // parallel stage's story told inside one step: its Nested tasks share
+  // the rail's checkout at the same time. Only while two or more are left
+  // to run, and live once two are running.
+  const conflictCards = cardIndex(tree);
+  const placedPaths = placedCardPaths(orch);
+  for (const s of steps) {
+    if (s.toolId || !s.checkout) continue;
+    const plan = conflictCards.get(s.cardPath)?.plan;
+    if (plan?.kind !== "plan" || plan.children !== "parallel") continue;
+    const left = nestedChildrenOf(s.cardPath, conflictCards).filter(
+      (c) => !placedPaths.has(c.plan.path) && !childTicked(plan, c.plan)
+    );
+    if (left.length < 2) continue;
+    const running = (orch.nestedRuns ?? []).filter((r) => r.stepId === s.stepId && r.state === "running");
+    conflicts.push({
+      kind: "same-worktree",
+      scope: "children",
+      stageId: null,
+      severity: running.length >= 2 ? "live" : "potential",
+      stepIds: [s.stepId],
+      worktreePath: s.checkout,
+    });
+  }
+
   // 2. Across rails there is NO ordering guarantee, so every not-done
   // step in a shared checkout is a potential collision with every other.
   // Reported once per checkout rather than as a pair explosion. Rails on
@@ -3575,7 +3939,11 @@ export function detectConflicts(
     if (!parentSteps) continue;
     conflicts.push({
       kind: "nested-with-parent",
-      severity: "potential",
+      // LIVE under an Orchestrated plan (v80): the plan's step would run
+      // the child too, were it not placed here -- so the expansion skips
+      // it, and the plan's own session then integrates work it never
+      // saw run. Worth saying as plainly as any shared checkout.
+      severity: parent.plan.children ? "live" : "potential",
       stepIds: [...group.map((s) => s.stepId), ...parentSteps.map((s) => s.stepId)],
       cardPath,
       parentPath: parent.plan.path,
@@ -3737,6 +4105,9 @@ export function describeConflict(
 
   switch (c.kind) {
     case "same-worktree": {
+      if (c.scope === "children") {
+        return `${list(c.stepIds)} runs its nested tasks in parallel in one checkout (${c.worktreePath}) — set its Children to sequence to run them one after another`;
+      }
       if (c.scope === "stage") {
         return `${list(c.stepIds)} run in parallel in one checkout (${c.worktreePath}) — run them one after another, or move one to a rail with its own worktree`;
       }

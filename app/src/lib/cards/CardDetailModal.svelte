@@ -117,6 +117,14 @@
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import {
+    CHILDREN_CHOICES,
+    childrenChoiceOf,
+    childrenControlShown,
+    childrenFieldValue,
+    childrenHint,
+    type ChildrenChoice,
+  } from "$lib/orchestration/orchestratedPlanView";
   import { scheduleCardBlocker } from "$lib/scheduling/scheduleDialog";
   import { requestScheduleCard } from "$lib/scheduling/scheduledActions";
   import { scheduledBlockedReason } from "$lib/scheduling/scheduledState";
@@ -337,7 +345,8 @@
       | "agent"
       | "model"
       | "effort"
-      | "direct",
+      | "direct"
+      | "children",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -636,6 +645,22 @@
       await writeField("direct", on ? "true" : "");
     } finally {
       directBusy = false;
+    }
+  }
+
+  // --- children (an Orchestrated plan, v80) -----------------------------
+  // A plan with nested tasks only. The line changes what Run does -- the
+  // plan goes on a rail of its own and each child runs as its own session
+  // -- so it waits on a daemon that parses it: an older one would never
+  // read the line back, and the plan would run as one session.
+  const childrenBlocked = $derived(featureBlockedReason($daemonCompat, "orchestratedPlans"));
+  let childrenBusy = $state(false);
+  async function chooseChildren(choice: ChildrenChoice): Promise<void> {
+    childrenBusy = true;
+    try {
+      await writeField("children", childrenFieldValue(choice));
+    } finally {
+      childrenBusy = false;
     }
   }
 
@@ -1859,6 +1884,22 @@
                     ? "The prompt is sent exactly as written — no card path, no status instructions, no attachments. The agent will not move this card."
                     : "gavin wraps the prompt with the card's path, its attachments and the status instructions."}
                 </span>
+              </label>
+            {/if}
+            {#if childrenControlShown(card)}
+              <!-- The reason rides the row, like Direct prompt's above. -->
+              <label class="row auto-commit" title={childrenBlocked ?? undefined}>
+                <span class="label">Children</span>
+                <select
+                  value={childrenChoiceOf(card.children)}
+                  disabled={childrenBusy || childrenBlocked !== null}
+                  onchange={(e) => void chooseChildren(e.currentTarget.value as ChildrenChoice)}
+                >
+                  {#each CHILDREN_CHOICES as c (c.value)}
+                    <option value={c.value}>{c.label}</option>
+                  {/each}
+                </select>
+                <span class="auto-commit-hint">{childrenHint(childrenChoiceOf(card.children))}</span>
               </label>
             {/if}
             <!-- Hidden, not disabled, outside a repo: there is no ignore file

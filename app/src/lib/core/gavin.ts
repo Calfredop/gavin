@@ -50,6 +50,16 @@ export interface HumanItem {
   lineIndex: number;
 }
 
+/// How an Orchestrated plan runs its Nested tasks (v80): the plan's
+/// `children:` line, in a stage's `mode` words.
+export type ChildrenMode = "sequence" | "parallel";
+
+/// One checklist line of a plan that links a card (v80).
+export interface ChecklistLink {
+  fileName: string;
+  done: boolean;
+}
+
 export interface PlanFileInfo {
   path: string;
   fileName: string;
@@ -98,6 +108,18 @@ export interface PlanFileInfo {
   // and false. A pre-v75 daemon never sends it, and its absence reads as
   // an ordinary task, which is how that daemon would have run it.
   direct?: boolean;
+  // The card's `children:` line (v80): on a plan, how its Nested tasks run
+  // when it starts -- one at a time or all at once, each as its own
+  // session, before the plan's own. Null is a plan run as one session.
+  // Only a plan carries it (on any other kind the daemon reads a warning
+  // and null), and a pre-v80 daemon never sends it --
+  // FEATURE_MIN_VERSION.orchestratedPlans is what tells the two apart.
+  children?: ChildrenMode | null;
+  // A plan's checklist lines that link a card, `- [x] [title](./c.md)`
+  // (v80), in body order with their ticks -- how a Nested task of an
+  // Orchestrated plan is read as finished (ADR 0012). Only on a plan, and
+  // absent when it has none or the daemon predates v80.
+  checklistLinks?: ChecklistLink[];
   // The card's `Decision:` / `Human test:` lines, parsed -- everything on
   // this card waiting on a person.
   //

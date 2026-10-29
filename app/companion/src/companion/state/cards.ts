@@ -11,6 +11,11 @@
 // a launch in a queue only the desk's window drains -- so each of those
 // steps is handed in here as the phone's own.
 import { get } from "svelte/store";
+import {
+  childrenChoiceOf,
+  childrenFieldValue,
+  type ChildrenChoice,
+} from "$lib/orchestration/orchestratedPlanView";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { nowStore } from "$lib/agents/agentPauseState";
 import { deviceLaunchRefusal, type NewLaunchIntent } from "$lib/agents/launchQueue";
@@ -173,6 +178,22 @@ export async function renameCard(workspaceId: string, card: CardView, title: str
     return null;
   } catch (e) {
     return `Couldn't rename the card: ${message(e)}`;
+  }
+}
+
+/// Sets how an Orchestrated plan runs its nested tasks (v80) -- off,
+/// one at a time, or all at once -- the line the desk's Children control
+/// writes, written the same way.
+export async function setChildren(workspaceId: string, card: CardView, choice: ChildrenChoice): Promise<string | null> {
+  if (choice === childrenChoiceOf(card.children)) return null;
+  const value = childrenFieldValue(choice);
+  try {
+    const moved = await backend.setPlanFrontmatterField(card.id, "children", value);
+    patchPlanField(workspaceId, card.id, "children", value);
+    landed(workspaceId, card.id, moved);
+    return null;
+  } catch (e) {
+    return `Couldn't set how its nested tasks run: ${message(e)}`;
   }
 }
 

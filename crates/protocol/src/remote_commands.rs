@@ -177,6 +177,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_orchestration", RemoteAllowance::Allowed),
     ("set_rail_run", RemoteAllowance::Allowed),
     ("set_step_run", RemoteAllowance::Allowed),
+    // An Orchestrated plan's children (v80): the rail scheduler a Device
+    // drives writes them beside the step's own run.
+    ("set_nested_run", RemoteAllowance::Allowed),
+    ("clear_nested_runs", RemoteAllowance::Allowed),
     ("get_tools", RemoteAllowance::Allowed),
     ("save_tool", RemoteAllowance::Allowed),
     ("delete_tool", RemoteAllowance::Allowed),
@@ -210,6 +214,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_plan_frontmatter_field", RemoteAllowance::Allowed),
     ("create_plan", RemoteAllowance::Allowed),
     ("set_checklist_item", RemoteAllowance::Allowed),
+    ("tick_checklist_link", RemoteAllowance::Allowed),
     ("file_human_item", RemoteAllowance::Allowed),
     ("resolve_human_item", RemoteAllowance::Allowed),
     ("delete_card_file", RemoteAllowance::Allowed),

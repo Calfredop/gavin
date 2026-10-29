@@ -22,6 +22,7 @@ import {
   priorityIndicator,
   railIndicator,
   stepIndicator,
+  nestedTaskIndicator,
   shellOrphanIndicator,
   shellRestartedIndicator,
   unsavedEditsIndicator,
@@ -185,6 +186,23 @@ describe("deviceTypingIndicator", () => {
   it("is drawn apart from both refusals", () => {
     const icons = new Set([deviceIndicator("proof_failed").icon, deviceIndicator("refused").icon]);
     expect(icons.has(deviceTypingIndicator().icon)).toBe(false);
+  });
+});
+
+describe("nestedTaskIndicator", () => {
+  // A child is a unit of its plan's step, so it draws the step's own
+  // squares in the step's own tones -- only the words name a nested task.
+  it("draws each state as the step does, naming a nested task", () => {
+    for (const state of STEP_STATES) {
+      const child = nestedTaskIndicator(state);
+      expect(child.axis).toBe("step");
+      expect(glyphClass(child)).toBe(glyphClass(stepIndicator(state)));
+      expect(child.tone).toBe(stepIndicator(state).tone);
+      expect(child.tip).toMatch(/^Step · nested task /);
+      expect(child.label).toBe(child.tip);
+      expect(child.spin).toBeFalsy();
+    }
+    expect(nestedTaskIndicator("done").tip).toContain("ticked");
   });
 });
 

@@ -79,6 +79,14 @@ be a parent, and `parent:` is a file name in the same context folder; a
 `parent:` that resolves to anything else leaves the card loose on the board
 with a broken mark rather than erroring.
 
+**An Orchestrated plan's nested tasks finish by a tick, never by a status.**
+A plan carrying `children: sequence | parallel` runs each nested task as its
+own session before the plan's own. If you are one of those tasks, finish by
+ticking your own line in the plan with `gavin_tick_item(plan, child)` once
+the work is done and verified — and never set your card's status: a status
+would pull you out of the plan, and the plan reads you as finished only by
+that tick.
+
 ## 4. Keep status current
 
 The board's COLUMN NAMES are the status vocabulary — check them with

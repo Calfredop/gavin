@@ -121,6 +121,25 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v80 is the Orchestrated plan (`feat-plan-orchestrates-nested-tasks.md`,
+/// ADR 0012): a plan whose `children: sequence | parallel` line runs each
+/// of its Nested tasks as its own session before the plan's own.
+/// `PlanFileInfo` gains `children`, and `checklist_links` -- each
+/// `[…](./child.md)` line with its tick, which is how the app reads that a
+/// child is finished -- and `SetPlanFrontmatterField` accepts the key; `CreatePlan` does NOT widen, so gavin-mcp files the line as a
+/// second field write that an older daemon refuses loudly rather than
+/// dropping. Three new request TYPES, gated by `min_version_for`:
+/// `TickChecklistLink`, which ticks a child's `[…](./child.md)` line in
+/// its plan -- a Nested task is finished by that tick, never by a status
+/// of its own -- and `SetNestedRun` / `ClearNestedRuns`, the run state of
+/// each child under the plan's step, kept in their own rows because
+/// `orch_step_runs` is keyed by a step id a child does not have.
+/// `Orchestration` and its `Response` gain `nested_runs`, `serde(default)`
+/// both ways. The widened field and payload are invisible to
+/// `min_version_for`, so the app owes `FEATURE_MIN_VERSION.orchestratedPlans`:
+/// a v79 daemon never parses `children:` and the plan would run as one
+/// session. `MIN_COMPATIBLE_VERSION` stands.
+///
 /// v79 is the Workspace log (`feat-backlog.md`, ADR 0011): one entry per
 /// thing that happened in a workspace -- a card created, moved, archived
 /// or deleted, a run, a rail's transitions, a human item filed or
@@ -1042,7 +1061,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 79;
+pub const PROTOCOL_VERSION: u32 = 80;
 
 /// The first version that keeps the Workspace log and pushes
 /// `WorkspaceLogAppended` (v79). The daemon compares the watching app's
@@ -1760,6 +1779,20 @@ pub enum Request {
         expected_text: String,
         checked: bool,
     },
+    /// Ticks or unticks a Nested task's link line in its plan,
+    /// `- [x] [title](./child_file)` (v80, ADR 0012) -- the record that
+    /// the child is finished. Addressed by the child's FILE NAME rather
+    /// than a line index, unlike `SetChecklistItem`: the writer is the
+    /// child's own agent, which knows which card it is and not where its
+    /// line sits. A plan with no line for the child gets
+    /// `- [ ] [title](./child_file)` appended first, so a child made with
+    /// `parent:` alone can be finished too. Refused for a `child_file`
+    /// that is not a Nested task of this plan.
+    TickChecklistLink {
+        plan: String,
+        child_file: String,
+        checked: bool,
+    },
     /// Promotes a plan's checklist item into a nested task card and
     /// rewrites the item line into a link to it.
     PromoteChecklistItem {
@@ -2086,6 +2119,32 @@ pub enum Request {
         /// conversation is a new run and its budget is fresh.
         #[serde(default)]
         resume_attempts: Option<u32>,
+    },
+    /// One Nested task's run under its Orchestrated plan's step (v80):
+    /// `SetStepRun` for a unit that has no step id of its own. Upserted on
+    /// (step_id, child_path), and `conversation_id`, `launch_cwd` and
+    /// `resume_attempts` keep `SetStepRun`'s rule -- None leaves the stored
+    /// value alone, so a stall does not erase what a resume needs.
+    SetNestedRun {
+        step_id: String,
+        child_path: String,
+        state: String,
+        session_id: Option<String>,
+        reason: Option<String>,
+        #[serde(default)]
+        conversation_id: Option<String>,
+        #[serde(default)]
+        launch_cwd: Option<String>,
+        #[serde(default)]
+        resume_attempts: Option<u32>,
+    },
+    /// Forgets every Nested task run under one step (v80): a step sent
+    /// back to pending starts its children's runs over, and a stalled row
+    /// left from the last pass would stall it again at once. Which
+    /// children are finished is not stored here and survives -- that is
+    /// each child's tick in the plan.
+    ClearNestedRuns {
+        step_id: String,
     },
     /// Paths with uncommitted changes in `cwd`, capped at `limit` --
     /// evidence for the reorganize skill (spec §8.1), never used by the
@@ -2806,6 +2865,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         // (v79). A new TYPE: against an older daemon the host's lanes
         // refuse it before the wire, and the deletion simply goes unlogged.
         Request::RecordBranchDeleted { .. } => 79,
+        // The Orchestrated plan (v80). Three new TYPES, so these arms are
+        // their wire gate: an older daemon never receives a tick it would
+        // answer `Unsupported`, nor a nested run it has no table for. The
+        // widened `PlanFileInfo.children` and `Orchestration.nested_runs`
+        // are invisible here; FEATURE_MIN_VERSION.orchestratedPlans gates
+        // them.
+        Request::TickChecklistLink { .. }
+        | Request::SetNestedRun { .. }
+        | Request::ClearNestedRuns { .. } => 80,
 
         // One binding, command included (v43), now the board read leaves
         // the command out. A new request TYPE, so this is the whole wire
@@ -3669,6 +3737,10 @@ pub enum Response {
         conflict_notes: Vec<ConflictNote>,
         rail_runs: Vec<RailRun>,
         step_runs: Vec<StepRun>,
+        /// See `Orchestration::nested_runs` (v80). Empty from an older
+        /// daemon, which kept none.
+        #[serde(default)]
+        nested_runs: Vec<NestedRun>,
     },
     Tools { tools: Vec<ToolDef> },
     /// Push: this workspace's tool library changed under the app's feet
@@ -4844,6 +4916,47 @@ impl Complexity {
     }
 }
 
+/// One checklist line of a plan that links a card (v80): see
+/// `PlanFileInfo::checklist_links`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecklistLink {
+    /// The linked card's file name, `./` stripped.
+    pub file_name: String,
+    /// Whether the line is ticked, `- [x]`.
+    pub done: bool,
+}
+
+/// How an Orchestrated plan runs its Nested tasks (v80): the plan's
+/// `children:` line. The words are a stage's `mode` words on purpose --
+/// the scheduler already means exactly these two things by them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChildrenMode {
+    Sequence,
+    Parallel,
+}
+
+impl ChildrenMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChildrenMode::Sequence => "sequence",
+            ChildrenMode::Parallel => "parallel",
+        }
+    }
+
+    /// One written mode, or None -- `Complexity::parse`'s posture: a
+    /// misspelling degrades to "not orchestrated" and a warning, never to
+    /// a mode.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "sequence" => Some(ChildrenMode::Sequence),
+            "parallel" => Some(ChildrenMode::Parallel),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Label {
@@ -5360,6 +5473,37 @@ pub struct StepRun {
     pub resume_attempts: Option<u32>,
 }
 
+/// One Nested task's run under its Orchestrated plan's card step (v80):
+/// the `StepRun` of a unit that is not a step. Keyed by the step AND the
+/// child's card path, because one plan can sit on more than one rail and
+/// each of its steps runs the children on its own.
+///
+/// What it does NOT say is whether the child is finished: that is the
+/// child's tick in its plan (ADR 0012), read off the card, so a row here
+/// that says `done` and a link that was unticked since reads as
+/// unfinished. `state` is opaque for `StepRun::state`'s reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedRun {
+    pub step_id: String,
+    pub child_path: String,
+    /// running | done | stalled | skipped, as the app writes them.
+    pub state: String,
+    pub session_id: Option<String>,
+    /// Human-readable stall cause; None otherwise.
+    pub reason: Option<String>,
+    /// See `StepRun::conversation_id`: a stalled child resumes as the
+    /// conversation it was.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub launch_cwd: Option<String>,
+    /// See `StepRun::resume_attempts`: each child spends its OWN budget,
+    /// so one flaky child cannot use up its siblings' recoveries.
+    #[serde(default)]
+    pub resume_attempts: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Orchestration {
@@ -5367,6 +5511,11 @@ pub struct Orchestration {
     pub conflict_notes: Vec<ConflictNote>,
     pub rail_runs: Vec<RailRun>,
     pub step_runs: Vec<StepRun>,
+    /// Every Nested task run under a step still in the arrangement (v80),
+    /// pruned with its step the way `step_runs` are. `serde(default)` so
+    /// an older daemon's orchestration still parses, as no runs at all.
+    #[serde(default)]
+    pub nested_runs: Vec<NestedRun>,
 }
 
 /// What a card file IS (card-model spec §1): a reminder, a single agent
@@ -5573,6 +5722,33 @@ pub struct PlanFileInfo {
     /// `FEATURE_MIN_VERSION.directPrompt` is what says so.
     #[serde(default)]
     pub direct: bool,
+    /// The card's `children:` line (v80): on a plan, how its Nested
+    /// tasks run when it starts -- one at a time or all at once, each as
+    /// its own session, before the plan's own session runs. None is
+    /// today's plan, which runs as one session and leaves its children to
+    /// that session.
+    ///
+    /// Read only on a plan, `direct`'s posture: no other kind has
+    /// children. An unreadable value is a `parse_warning` and None, never
+    /// a guessed mode -- which one is picked decides whether two agents
+    /// share a checkout at once.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses; from one,
+    /// None means "never looked", and FEATURE_MIN_VERSION.orchestratedPlans
+    /// is what says so.
+    #[serde(default)]
+    pub children: Option<ChildrenMode>,
+    /// A plan's checklist lines that link a card, `- [x] [title](./child.md)`
+    /// (v80), in body order, with whether each is ticked -- how the app
+    /// knows which Nested tasks are finished (ADR 0012) without reading
+    /// the file. Only on a plan: no other kind has children. Lines inside
+    /// a fenced block are examples, not links, and are left out.
+    ///
+    /// Left off the wire when empty, and `serde(default)` both ways, so
+    /// every other card costs nothing and an older daemon's tree parses as
+    /// "no links"; FEATURE_MIN_VERSION.orchestratedPlans says which.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checklist_links: Vec<ChecklistLink>,
     /// The card's `Decision:` / `Human test:` checklist lines, parsed
     /// (v42) -- everything on this card that is waiting on a person.
     ///
@@ -8133,6 +8309,8 @@ mod tests {
                     model: Some("gpt-5.1".to_string()),
                     effort: Some("xhigh".to_string()),
                     direct: false,
+                    children: Some(ChildrenMode::Sequence),
+                    checklist_links: vec![],
                     human_items: Some(vec![HumanItem {
                         kind: HumanItemKind::Decision,
                         text: "Which serializer?".to_string(),
@@ -8190,6 +8368,7 @@ mod tests {
                         "model": "gpt-5.1",
                         "effort": "xhigh",
                         "direct": false,
+                        "children": "sequence",
                         "humanItems": [{
                             "kind": "decision",
                             "text": "Which serializer?",
@@ -8678,7 +8857,11 @@ mod tests {
         // v79: WorkspaceLog + ClearWorkspaceLog + RecordBranchDeleted and
         // the WorkspaceLogAppended push -- the Workspace log. Three new
         // TYPES.
-        assert_eq!(PROTOCOL_VERSION, 79);
+        // v80: TickChecklistLink + SetNestedRun + ClearNestedRuns -- the
+        // Orchestrated plan. Three new TYPES; PlanFileInfo.children and
+        // Orchestration.nested_runs widen behind
+        // FEATURE_MIN_VERSION.orchestratedPlans.
+        assert_eq!(PROTOCOL_VERSION, 80);
     }
 
     #[test]
@@ -9083,6 +9266,18 @@ mod tests {
                 checked: true,
             },
             Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::TickChecklistLink { plan: "p".into(), child_file: "c.md".into(), checked: true },
+            Request::SetNestedRun {
+                step_id: "s".into(),
+                child_path: "c".into(),
+                state: "running".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            },
+            Request::ClearNestedRuns { step_id: "s".into() },
             Request::LinkCardSession {
                 workspace_id: "w".into(),
                 path: "p".into(),
@@ -9473,6 +9668,9 @@ mod tests {
         // WorkspaceLog, ClearWorkspaceLog, RecordBranchDeleted -- the
         // Workspace log.
         expected.insert(79, 3);
+        // TickChecklistLink, SetNestedRun, ClearNestedRuns -- the
+        // Orchestrated plan.
+        expected.insert(80, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -9481,6 +9679,63 @@ mod tests {
              Request variant, make sure you also considered whether \
              PROTOCOL_VERSION needs bumping (see this test's doc comment)"
         );
+    }
+
+    /// A plan's link lines cross in camelCase, and an empty list stays
+    /// off the wire so every other card costs nothing (v80).
+    #[test]
+    fn checklist_links_cross_in_camel_case_and_only_when_present() {
+        let json = r#"{"path":"/p/big.md","fileName":"big.md","title":"Big","status":null,"priority":null,
+            "order":null,"kind":"plan","parent":null,"labels":[],"checklistDone":1,"checklistTotal":1,
+            "parseWarning":false}"#;
+        let mut info: PlanFileInfo = serde_json::from_str(json).unwrap();
+        assert!(info.checklist_links.is_empty(), "an older daemon's card reads as no links");
+        assert!(serde_json::to_value(&info).unwrap().get("checklistLinks").is_none());
+        info.checklist_links = vec![ChecklistLink { file_name: "one.md".into(), done: true }];
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["checklistLinks"],
+            serde_json::json!([{ "fileName": "one.md", "done": true }])
+        );
+    }
+
+    /// v80's two widened shapes: an older daemon's orchestration has no
+    /// `nestedRuns` and still parses, as no runs; a nested run crosses to
+    /// the frontend in camelCase like `StepRun`. And the `children:` mode
+    /// reads only its two words.
+    #[test]
+    fn nested_runs_default_from_an_older_daemon_and_cross_in_camel_case() {
+        let old = r#"{"type":"Orchestration","rails":[],"conflict_notes":[],"rail_runs":[],"step_runs":[]}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Orchestration { nested_runs, .. } => assert!(nested_runs.is_empty()),
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        let run = NestedRun {
+            step_id: "s".into(),
+            child_path: "/p/c.md".into(),
+            state: "stalled".into(),
+            session_id: None,
+            reason: Some("quiet".into()),
+            conversation_id: Some("conv".into()),
+            launch_cwd: None,
+            resume_attempts: Some(1),
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            serde_json::json!({
+                "stepId": "s",
+                "childPath": "/p/c.md",
+                "state": "stalled",
+                "sessionId": null,
+                "reason": "quiet",
+                "conversationId": "conv",
+                "launchCwd": null,
+                "resumeAttempts": 1,
+            })
+        );
+        assert_eq!(ChildrenMode::parse(" Sequence "), Some(ChildrenMode::Sequence));
+        assert_eq!(ChildrenMode::parse("parallel"), Some(ChildrenMode::Parallel));
+        assert_eq!(ChildrenMode::parse("serial"), None);
+        assert_eq!(serde_json::to_value(ChildrenMode::Parallel).unwrap(), "parallel");
     }
 
     /// The run history crosses to the frontend, so its field names are

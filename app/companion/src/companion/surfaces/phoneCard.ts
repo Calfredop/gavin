@@ -13,6 +13,44 @@ import type { GavinTree, HumanItem, PlanFileInfo } from "$lib/core/gavin";
 import type { CardView, DisplayColumn } from "$lib/core/planBoard";
 import { resolvePrdPath } from "$lib/core/settings";
 import { humanItemWaiting, pendingItems } from "$lib/decisions/decisions";
+import type { Orchestration, StepState } from "$lib/orchestration/orchestration";
+import { nestedChildState, nestedRunsOfPlan } from "$lib/orchestration/orchestratedPlanView";
+
+/// One of a plan's tasks, as the card lists it.
+export interface ChildRow {
+  id: string;
+  title: string;
+  /// Its run as a Nested task of an Orchestrated plan (v80) -- `done`
+  /// meaning its line in the plan is ticked -- or null: a plan that runs
+  /// as one session, or a child with a column of its own.
+  state: StepState | null;
+  /// The words beside it.
+  said: string;
+}
+
+const NESTED_SAID: Record<StepState, string> = {
+  pending: "not run yet",
+  running: "running",
+  done: "ticked",
+  skipped: "skipped",
+  stalled: "stalled",
+};
+
+/// A plan's tasks with what each is doing: under an Orchestrated plan,
+/// each nested task's own run, read through the desk's
+/// `nestedChildState`; otherwise its column, or "nested".
+export function childRows(card: CardView, children: CardView[], orch: Orchestration | undefined): ChildRow[] {
+  const runs = nestedRunsOfPlan(orch, card.id);
+  return children.map((child) => {
+    const state = child.status === null ? nestedChildState(card, child, runs) : null;
+    return {
+      id: child.id,
+      title: child.title,
+      state,
+      said: state ? NESTED_SAID[state] : (child.status ?? "nested"),
+    };
+  });
+}
 
 /// What `mergePlanCards` hands back: every card on the board, and the
 /// archived ones beside it.

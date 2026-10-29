@@ -206,7 +206,8 @@ export function patchPlanField(
     | "agent"
     | "model"
     | "effort"
-    | "direct",
+    | "direct"
+    | "children",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -241,6 +242,13 @@ export function patchPlanField(
         // Empty clears the line, which reads as false -- the daemon's
         // own default for a card that says nothing.
         if (key === "direct") return { ...p, direct: value.trim().toLowerCase() === "true" };
+        // An Orchestrated plan's mode (v80), read the daemon's way: one of
+        // its two words, anything else -- the empty clear included -- none.
+        if (key === "children") {
+          const mode = value.trim().toLowerCase();
+          const children: PlanFileInfo["children"] = mode === "sequence" || mode === "parallel" ? mode : null;
+          return { ...p, children };
+        }
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

@@ -5280,6 +5280,34 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn set_nested_run(
+        &self,
+        step_id: &str,
+        child_path: &str,
+        state: &str,
+        session_id: Option<String>,
+        reason: Option<String>,
+        conversation_id: Option<String>,
+        launch_cwd: Option<String>,
+        resume_attempts: Option<u32>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().set_nested_run(
+            step_id,
+            child_path,
+            state,
+            session_id.as_deref(),
+            reason.as_deref(),
+            conversation_id.as_deref(),
+            launch_cwd.as_deref(),
+            resume_attempts,
+        )
+    }
+
+    pub fn clear_nested_runs(&self, step_id: &str) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().clear_nested_runs(step_id).map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn link_card_session(
         &self,
         workspace_id: &str,
@@ -7180,6 +7208,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 conflict_notes: o.conflict_notes,
                 rail_runs: o.rail_runs,
                 step_runs: o.step_runs,
+                nested_runs: o.nested_runs,
             })
         }
         Request::SetOrchestrationByRoot { root_path, rails, conflict_notes } => manager
@@ -7200,6 +7229,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 conflict_notes: o.conflict_notes,
                 rail_runs: o.rail_runs,
                 step_runs: o.step_runs,
+                nested_runs: o.nested_runs,
             })
         }
         Request::SetOrchestration { workspace_id, rails, conflict_notes } => manager
@@ -7234,6 +7264,28 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 resume_attempts,
             )
             .map(|_| Response::Ok),
+        Request::SetNestedRun {
+            step_id,
+            child_path,
+            state,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        } => manager
+            .set_nested_run(
+                &step_id,
+                &child_path,
+                &state,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts,
+            )
+            .map(|_| Response::Ok),
+        Request::ClearNestedRuns { step_id } => manager.clear_nested_runs(&step_id).map(|_| Response::Ok),
         Request::GetTools { workspace_id } => {
             manager.tools(&workspace_id).map(|tools| Response::Tools { tools })
         }
@@ -7644,6 +7696,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::PromoteChecklistItem { plan_path, item } => {
             crate::gavin::promote_checklist_item(std::path::Path::new(&plan_path), &item)
                 .map(|p| Response::TaskPromoted { path: p.to_string_lossy().to_string() })
+        }
+        Request::TickChecklistLink { plan, child_file, checked } => {
+            crate::gavin::tick_checklist_link(std::path::Path::new(&plan), &child_file, checked)
+                .map(|_| Response::Ok)
         }
         // The date is stamped HERE, off this machine's clock, and is not
         // a field either request carries: two clients writing to one
@@ -8087,6 +8143,12 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // question. It falls through to the denied list below.
         Request::FileHumanItem { path, .. } => agent_path_in_scope(id, path),
         Request::PromoteChecklistItem { plan_path, .. } => agent_path_in_scope(id, plan_path),
+        // A Nested task's agent ticking its own line when it finishes
+        // (v80, ADR 0012) -- the one write that says it is done, since it
+        // is told never to set a status. Scoped by path like every other
+        // card write; which line it may tick is `tick_checklist_link`'s
+        // guard, which refuses a card that is not that plan's child.
+        Request::TickChecklistLink { plan, .. } => agent_path_in_scope(id, plan),
         Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
         Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
         Request::GitDirtyPaths { cwd, .. } => agent_path_in_scope(id, cwd),
@@ -8209,6 +8271,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::SetOrchestration { .. }
         | Request::SetRailRun { .. }
         | Request::SetStepRun { .. }
+        // A Nested task's run state (v80) is the scheduler's, like the
+        // step's: an agent that could write it could mark itself done.
+        | Request::SetNestedRun { .. }
+        | Request::ClearNestedRuns { .. }
         | Request::GetTools { .. }
         | Request::SaveTool { .. }
         | Request::DeleteTool { .. }
@@ -9443,6 +9509,52 @@ mod tests {
         }
     }
 
+    /// A Nested task's run (v80) comes back with the orchestration it is
+    /// under, and a step's clear forgets it.
+    #[test]
+    fn nested_run_writes_come_back_on_the_next_get_until_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        let resp = handle_request(
+            &manager,
+            Request::SetNestedRun {
+                step_id: "t1".into(),
+                child_path: "/x/child.md".into(),
+                state: "running".into(),
+                session_id: Some("sess-2".into()),
+                reason: None,
+                conversation_id: Some("conv-2".into()),
+                launch_cwd: Some("/x".into()),
+                resume_attempts: Some(0),
+            },
+        );
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        match handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { nested_runs, .. } => {
+                assert_eq!(nested_runs.len(), 1);
+                assert_eq!(nested_runs[0].child_path, "/x/child.md");
+                assert_eq!(nested_runs[0].session_id.as_deref(), Some("sess-2"));
+            }
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        assert!(matches!(
+            handle_request(&manager, Request::ClearNestedRuns { step_id: "t1".into() }),
+            Response::Ok
+        ));
+        match handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { nested_runs, .. } => assert!(nested_runs.is_empty()),
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+    }
+
     fn a_tool(id: &str, workspace_id: Option<&str>) -> protocol::ToolDef {
         protocol::ToolDef {
             id: id.into(),
@@ -10297,6 +10409,44 @@ mod tests {
     /// never answer. Filing is the whole point of `gavin_request_human`;
     /// resolving is the human's press in the app, and an agent that
     /// could send it would be signing off on its own work.
+    /// A Nested task's agent finishes by ticking its own line (v80), so
+    /// the tick is open to an agent in its own workspace like every card
+    /// write -- and the run state the scheduler keeps about that child is
+    /// not, or the agent could write itself done without the tick.
+    #[test]
+    fn an_agent_may_tick_its_plans_line_and_never_write_a_nested_run() {
+        let (_ws, root, card) = workspace_with_card();
+        let (_other, _other_root, other_card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+
+        let tick = |plan: &str| Request::TickChecklistLink {
+            plan: plan.to_string(),
+            child_file: "child.md".into(),
+            checked: true,
+        };
+        assert!(authorize(&id, &tick(&card), false).is_ok());
+        assert!(matches!(authorize(&id, &tick(&other_card), false), Err(Response::Forbidden { .. })));
+        for req in [
+            Request::SetNestedRun {
+                step_id: "s".into(),
+                child_path: card.clone(),
+                state: "done".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            },
+            Request::ClearNestedRuns { step_id: "s".into() },
+        ] {
+            assert!(
+                matches!(authorize(&id, &req, false), Err(Response::Forbidden { role, .. }) if role == "agent"),
+                "agent should be refused {}",
+                request_type_name(&req)
+            );
+        }
+    }
+
     #[test]
     fn an_agent_may_file_a_human_item_and_never_resolve_one() {
         let (_ws, root, card) = workspace_with_card();
@@ -10595,6 +10745,18 @@ mod tests {
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },
+            Request::TickChecklistLink { plan: "/x/a.md".into(), child_file: "c.md".into(), checked: true },
+            Request::SetNestedRun {
+                step_id: "s".into(),
+                child_path: "/x/c.md".into(),
+                state: "x".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            },
+            Request::ClearNestedRuns { step_id: "s".into() },
             Request::FileHumanItem {
                 path: "/x/a.md".into(),
                 kind: protocol::HumanItemKind::Decision,

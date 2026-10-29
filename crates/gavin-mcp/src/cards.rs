@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 
 use protocol::{
-    AgentConfig, CardKind, Complexity, GavinContext, GavinContextKind, GavinTree, HumanItem, HumanItemKind,
+    AgentConfig, CardKind, ChildrenMode, Complexity, GavinContext, GavinContextKind, GavinTree, HumanItem, HumanItemKind,
     HumanItemState, MdFileInfo, PlanFileInfo, Priority,
 };
 use serde::Serialize;
@@ -64,6 +64,10 @@ struct CardView<'a> {
     /// agent reads verbatim, with no card path or status line around it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     direct: bool,
+    /// An Orchestrated plan's mode (v80): its Nested tasks run as their
+    /// own sessions, and each finishes by ticking its line in this plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children: Option<ChildrenMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,6 +151,7 @@ impl<'a> CardView<'a> {
             title: &plan.title,
             kind: plan.kind,
             direct: plan.direct,
+            children: plan.children,
             status: plan.status.as_deref(),
             parent: plan.parent.as_deref(),
             priority: plan.priority.as_ref(),
@@ -643,6 +648,8 @@ mod tests {
             model: None,
             effort: None,
             direct: false,
+            children: None,
+            checklist_links: vec![],
             human_items: Some(vec![]),
         }
     }

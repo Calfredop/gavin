@@ -15,7 +15,17 @@
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/cards/planChecklist";
   import type { HumanItem, HumanItemOutcome } from "$lib/core/gavin";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { attentionStatusById, layoutState } from "$lib/core/layoutState";
+  import { attentionStatusById, daemonCompat, layoutState } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { orchestrations } from "$lib/orchestration/orchestrationState";
+  import {
+    CHILDREN_CHOICES,
+    childrenChoiceOf,
+    childrenControlShown,
+    childrenHint,
+    type ChildrenChoice,
+  } from "$lib/orchestration/orchestratedPlanView";
+  import { nestedTaskIndicator } from "$lib/ui/indicators";
   import { isArchivedCard, mergePlanCards, slugStatus } from "$lib/core/planBoard";
   import type { Workspace } from "$lib/core/workspace";
   import DecisionsItemRow from "$lib/decisions/DecisionsItemRow.svelte";
@@ -28,14 +38,16 @@
     launch,
     moveCard,
     renameCard,
+    setChildren,
     tickItem,
   } from "$companion/state/cards";
   import { onReconnect } from "$companion/state/reachability";
+  import { loadNestedRuns } from "$companion/state/rails";
   import { closePage, followCard, openCard } from "$companion/state/workstation";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import PhoneMarkdown from "$companion/surfaces/PhoneMarkdown.svelte";
   import { cardAgent, recoverBoard } from "$companion/surfaces/phoneBoard";
-  import { allCards, deviceBar, findCard, owedItems, tickableItems } from "$companion/surfaces/phoneCard";
+  import { allCards, childRows, deviceBar, findCard, owedItems, tickableItems } from "$companion/surfaces/phoneCard";
 
   interface Props {
     workspace: Workspace;
@@ -55,6 +67,16 @@
   const cardPath = $derived(card?.id ?? null);
   const everyCard = $derived(allCards(projection));
   const children = $derived(card ? childCards(card, everyCard) : []);
+  /// Each task with what it is doing -- under an Orchestrated plan, its
+  /// own run and its tick (phoneCard.ts).
+  const childList = $derived(card ? childRows(card, children, $orchestrations[workspace.id]) : []);
+  const childrenBlocked = $derived(featureBlockedReason($daemonCompat, "orchestratedPlans"));
+  // An Orchestrated plan's children run on its rail, and their runs are
+  // kept with it -- read them, once per card, for the list below.
+  const orchestrated = $derived(card?.kind === "plan" && card.children != null);
+  $effect(() => {
+    if (orchestrated) untrack(() => void loadNestedRuns(workspace.id));
+  });
   const partOf = $derived(card ? parentCard(card, everyCard) : null);
   const archived = $derived(cardPath !== null && isArchivedCard(cardPath));
   const nested = $derived(card !== null && card.parent !== null && card.status === null && !card.parentBroken);
@@ -214,6 +236,17 @@
     return result.wrote;
   }
 
+  function chooseChildren(event: Event & { currentTarget: HTMLSelectElement }): void {
+    const current = card;
+    const select = event.currentTarget;
+    if (!current) return;
+    void act("children", async () => {
+      const error = await setChildren(workspace.id, current, select.value as ChildrenChoice);
+      select.value = childrenChoiceOf(card?.children);
+      return error;
+    });
+  }
+
   function toggleArchive(): void {
     const current = card;
     if (!current) return;
@@ -271,6 +304,22 @@
               <option value={column.name}>{column.name}</option>
             {/each}
           </select>
+        </label>
+      {/if}
+
+      {#if !archived && childrenControlShown(card)}
+        <label class="field">
+          <span class="label">Children</span>
+          <select
+            value={childrenChoiceOf(card.children)}
+            disabled={busy === "children" || childrenBlocked !== null}
+            onchange={chooseChildren}
+          >
+            {#each CHILDREN_CHOICES as choice (choice.value)}
+              <option value={choice.value}>{choice.label}</option>
+            {/each}
+          </select>
+          <span class="hint">{childrenBlocked ?? childrenHint(childrenChoiceOf(card.children))}</span>
         </label>
       {/if}
 
@@ -352,15 +401,18 @@
         </section>
       {/if}
 
-      {#if children.length > 0}
+      {#if childList.length > 0}
         <section class="section" aria-label="Tasks">
           <h2 class="section-title">Tasks</h2>
           <ul class="links">
-            {#each children as child (child.id)}
+            {#each childList as child (child.id)}
               <li>
                 <button type="button" class="link" onclick={() => openCard(child.id)}>
+                  {#if child.state}
+                    <StatusBadge indicator={nestedTaskIndicator(child.state)} size={14} tip={null} />
+                  {/if}
                   <span class="link-title">{child.title}</span>
-                  <span class="link-status">{child.status ?? "nested"}</span>
+                  <span class="link-status">{child.said}</span>
                   <ChevronRight size={16} />
                 </button>
               </li>
@@ -466,6 +518,11 @@
   }
   .title {
     font-weight: 600;
+  }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    line-height: 1.4;
   }
   .title:focus-visible,
   select:focus-visible {

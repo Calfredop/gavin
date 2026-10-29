@@ -433,6 +433,18 @@ re-read (`rereadAfterOtherWindowWrote`), so the phone watches the desk run
 what it armed. A card added into the stage a rail is running is started the
 same way: by the desk.
 
+**An Orchestrated plan (v80, ADR 0012)** runs each nested task as its own
+session before the plan's own. Its card lists each task with its run and its
+tick (`childRows` in `surfaces/phoneCard.ts`, over the desk's
+`orchestratedPlanView.ts`) and carries the Children select the desk's card
+does; opening one reads the workspace's plan (`loadNestedRuns`), since the
+runs are kept with the rails. Its step says "n/m nested". Run on one is the
+desk's `runCard`, which puts the plan on a rail of its own and starts it --
+and the Demo Workstation's desk then plays the scheduler's own children
+phase (`childrenPhaseActions`) over its sessions. field-notes' "Notebook
+search" is the sample: one task ticked, one running, one stalled.
+`seam/orchestratedPlans.test.ts` holds all of it at the wire.
+
 **Organize and Reorganize start an agent, not a rail.** Organize with agent
 sits beside New rail, and a rail's editor offers Reorganize with agent: each
 is the desk's own request (`requestOrganize`, `requestRailReorganize`), the

@@ -56,6 +56,7 @@ vi.mock("$lib/orchestration/orchestrationState", async () => {
   return {
     orchestrations: w({} as Record<string, unknown>),
     resumeStep: vi.fn().mockResolvedValue(null),
+    resumeNestedChild: vi.fn().mockResolvedValue(null),
   };
 });
 
@@ -94,7 +95,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventM
 import { layoutState, daemonCompat } from "$lib/core/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
-import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
+import { orchestrations, resumeNestedChild, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/agents/autoResumeNotify";
 import {
@@ -427,6 +428,97 @@ describe("a standalone card run", () => {
     // An hour on: still the one call. The refusal re-armed nothing.
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
     expect(resumeCard).toHaveBeenCalledTimes(1);
+  });
+});
+
+/// An Orchestrated plan on a rail, its step in the children phase with one
+/// Nested task running on `sess-c1` -- whose card is ALSO bound to that
+/// session, as every child run's is.
+function nestedRun(over: { autoResume?: boolean; ticked?: boolean; attempts?: number } = {}) {
+  const plan = {
+    path: "/ws/.gavin-root/plans/big.md",
+    fileName: "big.md",
+    title: "Big plan",
+    status: "In Progress",
+    priority: null,
+    order: null,
+    kind: "plan",
+    parent: null,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 1,
+    parseWarning: false,
+    children: "sequence",
+    checklistLinks: [{ fileName: "one.md", done: over.ticked ?? false }],
+  };
+  const child = { ...plan, path: "/ws/.gavin-root/plans/one.md", fileName: "one.md", title: "Step one",
+    status: null, kind: "task", parent: "big.md", children: null, checklistLinks: [] };
+  orchestrations.set({
+    "ws-1": {
+      rails: [
+        {
+          id: "r1",
+          name: "big",
+          position: 0,
+          worktreePath: "/ws",
+          branch: null,
+          autoResume: over.autoResume ?? true,
+          pageId: null,
+          stages: [{ id: "g1", position: 0, mode: "parallel", name: null,
+            steps: [{ id: "t1", position: 0, cardPath: plan.path, toolId: null, toolParams: {} }] }],
+        },
+      ],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "g1" }],
+      stepRuns: [{ stepId: "t1", state: "stalled", sessionId: null, reason: "nested task `one.md` stalled: x" }],
+      nestedRuns: [{ stepId: "t1", childPath: child.path, state: "stalled", sessionId: "sess-c1", reason: "x",
+        conversationId: "conv-c1", launchCwd: "/ws", resumeAttempts: over.attempts ?? 0 }],
+    },
+  } as never);
+  layoutState.set({
+    workspaces: [{ id: "ws-1", autoResumeRuns: true }],
+    failureReasonById: { "sess-c1": NETWORK },
+    sessionNames: {},
+    cwdBySessionId: {},
+  } as never);
+  gavinTrees.set({ "ws-1": { rootPath: "/ws", contexts: [{ name: "root", folderPath: "/ws/.gavin-root", plans: [plan, child] }] } } as never);
+  kanbanState.set({
+    "ws-1": { ...BOARD, cardSessions: [{ path: child.path, sessionId: "sess-c1", cwd: "/ws", command: null,
+      conversationId: "conv-c1", launchCwd: "/ws", resumeAttempts: 0 }] },
+  } as never);
+}
+
+describe("a Nested task of an Orchestrated plan (v80)", () => {
+  // Found by its own run row before its card binding: a board-style resume
+  // of the card would write In Progress and pull it out of its plan.
+  it("is reopened on its own row, under the rail's consent, never as a card", async () => {
+    nestedRun();
+    fail("sess-c1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeNestedChild).toHaveBeenCalledWith("ws-1", "t1", "/ws/.gavin-root/plans/one.md", { automatic: true });
+    expect(resumeCard).not.toHaveBeenCalled();
+  });
+
+  it("takes its consent from the rail its plan rides", async () => {
+    nestedRun({ autoResume: false });
+    fail("sess-c1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeNestedChild).not.toHaveBeenCalled();
+    expect(resumeCard).not.toHaveBeenCalled();
+  });
+
+  it("spends its own row's budget", async () => {
+    nestedRun({ attempts: 1 });
+    fail("sess-c1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeNestedChild).not.toHaveBeenCalled();
+  });
+
+  it("is left alone once its line is ticked -- it finished", async () => {
+    nestedRun({ ticked: true });
+    fail("sess-c1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeNestedChild).not.toHaveBeenCalled();
   });
 });
 

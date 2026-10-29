@@ -31,6 +31,7 @@
   import { startHoldFor } from "$lib/agents/launchQueue";
   import OrchestrationStepChip from "$lib/orchestration/OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "$lib/orchestration/OrchestrationStepCard.svelte";
+  import { nestedProgress } from "$lib/orchestration/orchestratedPlanView";
   import type { Label } from "$lib/board/kanban";
   import type { CardView, PlacedCardView } from "$lib/core/planBoard";
   import type {
@@ -772,6 +773,7 @@
               onContextMenu={onCardContextMenu}
               dimmed={filtering && !stepLit(step.id)}
               hit={filtering && stepLit(step.id)}
+              nested={nestedProgress(step, orch, cards)}
             />
           {:else}
             <OrchestrationStepChip

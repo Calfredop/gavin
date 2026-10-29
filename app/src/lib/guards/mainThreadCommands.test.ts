@@ -157,6 +157,8 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["session.rs", "set_orchestration", "a daemon round trip that pushes the whole plan first"],
   ["session.rs", "set_rail_run", "a daemon round trip, every scheduler pass"],
   ["session.rs", "set_step_run", "a daemon round trip, every scheduler pass"],
+  ["session.rs", "set_nested_run", "a daemon round trip, every scheduler pass over an orchestrated plan"],
+  ["session.rs", "clear_nested_runs", "a daemon round trip"],
   ["session.rs", "get_gavin_tree", "a tree read that can wait on a rescan"],
   ["session.rs", "list_managed_sessions", "two daemon round trips, polled every 2-5 s"],
   ["session.rs", "get_session_baselines", "a round trip to every daemon, on every load"],

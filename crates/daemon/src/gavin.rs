@@ -1,5 +1,5 @@
 use protocol::{
-    AgentConfig, CardKind, Complexity, GavinContext, GavinContextKind, GavinTree, HumanItem,
+    AgentConfig, CardKind, ChecklistLink, ChildrenMode, Complexity, GavinContext, GavinContextKind, GavinTree, HumanItem,
     HumanItemKind, HumanItemOutcome, HumanItemState, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -275,7 +275,25 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
             }
         },
     };
+    // An Orchestrated plan (v80): how its Nested tasks run when it
+    // starts. Only on a plan, `direct`'s posture -- nothing else has
+    // children, so the line anywhere else describes a run that cannot
+    // happen -- and an unreadable mode is a warning and None, never a
+    // guess: the mode decides whether two agents share a checkout at once.
+    let children = match get("children") {
+        None => None,
+        Some(raw) => match ChildrenMode::parse(&raw) {
+            Some(mode) if kind == CardKind::Plan => Some(mode),
+            _ => {
+                warning = true;
+                None
+            }
+        },
+    };
     let (checklist_done, checklist_total) = checklist_counts(content);
+    // Only a plan's links are read: they are how the app tells which of
+    // its Nested tasks are finished, and nothing else has any.
+    let checklist_links = if kind == CardKind::Plan { checklist_links(content) } else { Vec::new() };
     let title = match get("title") {
         Some(raw) => {
             let (title, clamped) = clamp_frontmatter_value(&raw);
@@ -303,6 +321,8 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         model,
         effort,
         direct,
+        children,
+        checklist_links,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -384,6 +404,25 @@ const OPTIONS_PREFIX: &str = "Options:";
 const ANSWER_PREFIX: &str = "Answer (";
 const RESULT_PREFIX: &str = "Result (";
 const REARM_PREFIX: &str = "Ready for re-test (";
+
+/// Every body checklist line that links a card, `- [ ] [title](./x.md)`,
+/// with its tick (v80) -- the same reading `tick_checklist_link` writes
+/// back: body lines only, and none from inside a fence.
+fn checklist_links(content: &str) -> Vec<ChecklistLink> {
+    let Some(body) = body_start(content) else { return Vec::new() };
+    let fenced = fenced_lines(content);
+    content
+        .lines()
+        .enumerate()
+        .skip(body)
+        .filter(|(i, _)| !fenced.get(*i).copied().unwrap_or(false))
+        .filter_map(|(_, line)| {
+            let (_indent, mark, rest) = split_checklist_line(line)?;
+            let file_name = checklist_link_target(rest)?;
+            Some(ChecklistLink { file_name: file_name.to_string(), done: mark == 'x' })
+        })
+        .collect()
+}
 
 /// Which lines of `content` sit inside a fenced code block, indexed like
 /// `content.lines()`.
@@ -1677,7 +1716,7 @@ pub fn set_plan_field(
     if value.is_empty() {
         match key {
             "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
-            | "model" | "effort" | "direct" => {
+            | "model" | "effort" | "direct" | "children" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path, index);
             }
@@ -1763,6 +1802,17 @@ pub fn set_plan_field(
             let direct = parse_direct(value)
                 .ok_or_else(|| anyhow::anyhow!("direct must be true or false, got: {value}"))?;
             write_plan_field(path, key, if direct { "true" } else { "false" })?;
+            return relocate_for_status(path, index);
+        }
+        // An Orchestrated plan's mode (v80), in `ChildrenMode`'s own
+        // spelling for `complexity`'s reason. Not checked against the
+        // card's kind, for `direct`'s: the scan already shows the line on
+        // a task or a note as a warning, and an empty value still clears it.
+        "children" => {
+            let mode = ChildrenMode::parse(value).ok_or_else(|| {
+                anyhow::anyhow!("children must be sequence or parallel, got: {value}")
+            })?;
+            write_plan_field(path, key, mode.as_str())?;
             return relocate_for_status(path, index);
         }
         other => anyhow::bail!("field not allowed: {other}"),
@@ -1941,6 +1991,87 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     }
     std::fs::write(plan_path, rebuilt)?;
     Ok(created)
+}
+
+/// Ticks (or unticks) a Nested task's link line in its plan -- the record
+/// that the child is finished (ADR 0012). Every `[…](./child_file)` line
+/// in the plan's body takes the mark; a plan with none gets
+/// `- [ ] [title](./child_file)` first, after its last checklist line (or
+/// at the end), which is how a child made with `parent:` alone becomes
+/// one the plan can count. Returns whether the line was appended.
+///
+/// The child must be a Nested task of THIS plan -- a task, `parent:`
+/// naming the plan, no status of its own -- found beside it under the
+/// same `plans/` root. Anything else is refused rather than ticked: the
+/// tool is an agent's, and a line for a card that is not the plan's child
+/// would make the plan's progress count something it does not own.
+/// `plan_path` is confined by `confine_card_path` first (DP-03).
+pub fn tick_checklist_link(plan_path: &Path, child_file: &str, checked: bool) -> anyhow::Result<bool> {
+    let confined = confine_card_path(plan_path)?;
+    let plan_path = confined.as_path();
+    let valid_name = child_file.len() > ".md".len()
+        && child_file.ends_with(".md")
+        && child_file.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !valid_name {
+        anyhow::bail!("child must be a card file name matching [A-Za-z0-9._-]+.md, got: {child_file}");
+    }
+    let plan_file_name = plan_path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow::anyhow!("plan path has no file name"))?;
+    let plans_root = owning_plans_root(plan_path)
+        .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", plan_path.display()))?;
+    let not_nested = || anyhow::anyhow!("{child_file} is not a nested task of {plan_file_name}");
+    let child_path = find_in_plans_tree(&plans_root, child_file).ok_or_else(not_nested)?;
+    let child = plan_file_info(&child_path, &std::fs::read_to_string(&child_path)?);
+    if nested_under(&child) != Some(plan_file_name.as_str()) {
+        return Err(not_nested());
+    }
+
+    let content = std::fs::read_to_string(plan_path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let body = body_start(&content)
+        .ok_or_else(|| anyhow::anyhow!("{plan_file_name} has an unterminated frontmatter block"))?;
+    let fenced = fenced_lines(&content);
+    let mark = if checked { 'x' } else { ' ' };
+    let mut found = false;
+    let mut last_item: Option<usize> = None;
+    for i in body..lines.len() {
+        if fenced.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some((indent, _mark, rest)) = split_checklist_line(&lines[i]) else { continue };
+        last_item = Some(i);
+        if checklist_link_target(rest) == Some(child_file) {
+            lines[i] = format!("{}- [{}] {}", &lines[i][..indent], mark, rest);
+            found = true;
+        }
+    }
+    if !found {
+        // `](` would end the link text early, so it is the one sequence a
+        // title cannot carry into the line verbatim.
+        let title = child.title.replace("](", "] (");
+        let line = format!("- [{mark}] [{title}](./{child_file})");
+        match last_item {
+            Some(i) => lines.insert(i + 1, line),
+            None => {
+                while lines.len() > body && lines.last().is_some_and(|l| l.trim().is_empty()) {
+                    lines.pop();
+                }
+                if lines.len() > body {
+                    lines.push(String::new());
+                }
+                lines.push(line);
+            }
+        }
+    }
+    let mut rebuilt = lines.join("\n");
+    if had_trailing_newline || !found || content.is_empty() {
+        rebuilt.push('\n');
+    }
+    std::fs::write(plan_path, rebuilt)?;
+    Ok(!found)
 }
 
 /// The one gate every card-shaped write in this module passes through
@@ -2414,6 +2545,8 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         model: None,
         effort: None,
         direct: false,
+        children: None,
+        checklist_links: Vec::new(),
         // None, not an empty list: the body was never read, so "this
         // card has nothing waiting on you" is a claim nothing here can
         // make. It rides out with `parse_warning: true` beside it.
@@ -4402,6 +4535,171 @@ mod tests {
         set_plan_field(&path, "direct", "").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\nkind: task\ntitle: T\n---\nbody\n");
         assert!(set_plan_field(&path, "direct", "yes").is_err());
+    }
+
+    /// An Orchestrated plan's `children:` (v80): read only on a plan, and
+    /// only as one of its two words. Anything else is a warning and None,
+    /// never a guessed mode.
+    #[test]
+    fn children_parses_on_a_plan_only_and_warns_rather_than_guessing() {
+        let p = plan("---\ntitle: P\nchildren: sequence\n---\nbody\n");
+        assert_eq!(p.children, Some(ChildrenMode::Sequence));
+        assert!(!p.parse_warning);
+        let p = plan("---\ntitle: P\nchildren: Parallel\n---\nbody\n");
+        assert_eq!(p.children, Some(ChildrenMode::Parallel));
+        assert!(!p.parse_warning);
+        let p = plan("---\ntitle: P\n---\nbody\n");
+        assert_eq!(p.children, None);
+        assert!(!p.parse_warning);
+        let p = plan("---\ntitle: P\nchildren: serial\n---\nbody\n");
+        assert_eq!(p.children, None);
+        assert!(p.parse_warning);
+        for kind in ["task", "note"] {
+            let p = plan(&format!("---\nkind: {kind}\ntitle: T\nchildren: sequence\n---\nbody\n"));
+            assert_eq!(p.children, None, "{kind}");
+            assert!(p.parse_warning, "{kind}");
+        }
+    }
+
+    /// A plan's link lines, ticked or not, in body order; prose links,
+    /// fenced examples and a task's links are not read.
+    #[test]
+    fn checklist_links_read_a_plans_child_lines_and_their_ticks() {
+        let p = plan(
+            "---\ntitle: P\n---\n- [x] [One](./one.md)\n  - [ ] [Two [b]](two.md)\n- [ ] plain item\n\
+             See [three](./three.md).\n```\n- [ ] [Four](./four.md)\n```\n",
+        );
+        assert_eq!(
+            p.checklist_links,
+            vec![
+                ChecklistLink { file_name: "one.md".into(), done: true },
+                ChecklistLink { file_name: "two.md".into(), done: false },
+            ]
+        );
+        let t = plan("---\nkind: task\ntitle: T\n---\n- [x] [One](./one.md)\n");
+        assert!(t.checklist_links.is_empty());
+    }
+
+    #[test]
+    fn set_plan_field_writes_clears_and_rejects_children() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: P\n---\nbody\n",
+        );
+
+        set_plan_field(&path, "children", "Parallel").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\nchildren: parallel\n"), "{content}");
+        assert_eq!(plan_file_info(&path, &content).children, Some(ChildrenMode::Parallel));
+
+        set_plan_field(&path, "children", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: P\n---\nbody\n");
+        assert!(set_plan_field(&path, "children", "serial").is_err());
+    }
+
+    /// The plan and two of its Nested tasks, for the tick tests.
+    fn orchestrated(plan_body: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", &format!("---\ntitle: Big\nchildren: sequence\n---\n{plan_body}"));
+        write_card(&plans, "one.md", "---\nkind: task\ntitle: Step one\nparent: big.md\n---\nDo one\n");
+        write_card(&plans, "two.md", "---\nkind: task\ntitle: Step [two]\nparent: big.md\n---\nDo two\n");
+        (dir, plan)
+    }
+
+    #[test]
+    fn tick_checklist_link_ticks_and_unticks_the_childs_own_line() {
+        let body = "Intro\n\n- [ ] [Step one](./one.md)\n- [ ] [Step two](./two.md)\n- [ ] Verify\n";
+        let (_dir, plan) = orchestrated(body);
+
+        assert!(!tick_checklist_link(&plan, "one.md", true).unwrap());
+        let content = std::fs::read_to_string(&plan).unwrap();
+        assert!(content.contains("- [x] [Step one](./one.md)\n- [ ] [Step two](./two.md)\n"), "{content}");
+        assert_eq!(checklist_counts(&content), (1, 3));
+
+        // Idempotent, and reversible with no other byte changing.
+        tick_checklist_link(&plan, "one.md", true).unwrap();
+        tick_checklist_link(&plan, "one.md", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            format!("---\ntitle: Big\nchildren: sequence\n---\n{body}")
+        );
+    }
+
+    #[test]
+    fn tick_checklist_link_appends_a_missing_line_after_the_last_item() {
+        let (_dir, plan) = orchestrated("Intro\n\n- [ ] Verify\n\n## Notes\n\nprose\n");
+        assert!(tick_checklist_link(&plan, "two.md", false).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\ntitle: Big\nchildren: sequence\n---\nIntro\n\n- [ ] Verify\n- [ ] [Step [two]](./two.md)\n\n## Notes\n\nprose\n"
+        );
+        // The appended line is the one the next tick finds.
+        assert!(!tick_checklist_link(&plan, "two.md", true).unwrap());
+        assert!(std::fs::read_to_string(&plan).unwrap().contains("- [x] [Step [two]](./two.md)\n"));
+    }
+
+    #[test]
+    fn tick_checklist_link_appends_at_the_end_of_a_plan_with_no_checklist() {
+        let (_dir, plan) = orchestrated("Just prose.\n\n");
+        assert!(tick_checklist_link(&plan, "one.md", true).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\ntitle: Big\nchildren: sequence\n---\nJust prose.\n\n- [x] [Step one](./one.md)\n"
+        );
+    }
+
+    /// A link quoted inside a fence is documentation, not the child's
+    /// line: it is neither ticked nor counted as the place to append.
+    #[test]
+    fn tick_checklist_link_leaves_a_fenced_example_alone() {
+        let (_dir, plan) = orchestrated("```\n- [ ] [Step one](./one.md)\n```\n");
+        assert!(tick_checklist_link(&plan, "one.md", true).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\ntitle: Big\nchildren: sequence\n---\n```\n- [ ] [Step one](./one.md)\n```\n\n- [x] [Step one](./one.md)\n"
+        );
+    }
+
+    #[test]
+    fn tick_checklist_link_refuses_a_card_that_is_not_this_plans_nested_task() {
+        let (dir, plan) = orchestrated("- [ ] Verify\n");
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        // A child with a status of its own has left the plan's card.
+        write_card(&plans, "loose.md", "---\nkind: task\ntitle: L\nparent: big.md\nstatus: To Do\n---\nx\n");
+        // Another plan's child.
+        write_card(&plans, "other.md", "---\nkind: task\ntitle: O\nparent: elsewhere.md\n---\nx\n");
+        // A plan is never anyone's child.
+        write_card(&plans, "sub.md", "---\ntitle: S\n---\nx\n");
+        for child in ["loose.md", "other.md", "sub.md", "missing.md"] {
+            let err = tick_checklist_link(&plan, child, true).unwrap_err();
+            assert!(err.to_string().contains("is not a nested task of big.md"), "{child}: {err}");
+        }
+        for bad in ["../one.md", "one", "sp ace.md"] {
+            assert!(tick_checklist_link(&plan, bad, true).is_err(), "{bad}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\ntitle: Big\nchildren: sequence\n---\n- [ ] Verify\n"
+        );
+    }
+
+    /// A Done plan's children are filed with it under `plans/done/`, and
+    /// unticking one there is still the same write.
+    #[test]
+    fn tick_checklist_link_finds_the_child_beside_a_plan_filed_under_done() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let done = dir.path().join(GAVIN_ROOT_DIR).join("plans").join("done");
+        std::fs::create_dir_all(&done).unwrap();
+        let plan = write_card(&done, "big.md", "---\ntitle: Big\nstatus: Done\n---\n- [x] [One](./one.md)\n");
+        write_card(&done, "one.md", "---\nkind: task\ntitle: One\nparent: big.md\n---\nx\n");
+        tick_checklist_link(&plan, "one.md", false).unwrap();
+        assert!(std::fs::read_to_string(&plan).unwrap().ends_with("- [ ] [One](./one.md)\n"));
     }
 
     #[test]

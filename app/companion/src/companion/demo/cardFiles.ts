@@ -180,8 +180,20 @@ export function readCard(path: string, content: string): PlanFileInfo {
     agent: field("agent"),
     model: field("model"),
     effort: field("effort"),
+    // An Orchestrated plan (v80): its mode, and each line linking a child
+    // with its tick -- read only on a plan, the daemon's way.
+    children: kind === "plan" ? childrenMode(field("children")) : null,
+    checklistLinks:
+      kind === "plan"
+        ? checklist.flatMap((item) => (item.promotedFile ? [{ fileName: item.promotedFile, done: item.checked }] : []))
+        : [],
     humanItems: humanItems(content),
   };
+}
+
+function childrenMode(value: string | null): PlanFileInfo["children"] {
+  const mode = value?.trim().toLowerCase();
+  return mode === "sequence" || mode === "parallel" ? mode : null;
 }
 
 // ---- Writing ---------------------------------------------------------
@@ -201,6 +213,32 @@ export function withField(content: string, key: string, value: string): string {
     lines[at + 1] = `${key}: ${value}`;
   } else {
     lines.splice(1, 0, `${key}: ${value}`);
+  }
+  return lines.join("\n");
+}
+
+/// Ticks or unticks every line of a plan that links `childFile`, or, when
+/// it has none, adds `- [ ] [title](./childFile)` after its last checklist
+/// line (or at the end) first (`tick_checklist_link`).
+export function withChecklistLink(content: string, childFile: string, title: string, checked: boolean): string {
+  const lines = content.split("\n");
+  const mark = checked ? "x" : " ";
+  const items = parseChecklist(content);
+  const linked = items.filter((item) => item.promotedFile === childFile);
+  if (linked.length > 0) {
+    for (const item of linked) {
+      const m = ITEM.exec(lines[item.lineIndex])!;
+      lines[item.lineIndex] = `${m[1]}- [${mark}] ${m[3]}`;
+    }
+    return lines.join("\n");
+  }
+  const line = `- [${mark}] [${title.replace("](", "] (")}](./${childFile})`;
+  const last = items.at(-1);
+  if (last) {
+    lines.splice(last.lineIndex + 1, 0, line);
+  } else {
+    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+    lines.push("", line, "");
   }
   return lines.join("\n");
 }
@@ -271,6 +309,8 @@ export interface NewCard {
   complexity?: string | null;
   labels?: string | null;
   order?: number | null;
+  /// An Orchestrated plan's mode (v80): `sequence` or `parallel`.
+  children?: string | null;
   body?: string | null;
 }
 
@@ -289,6 +329,7 @@ export function newCardText(card: NewCard): string {
   if (card.labels) lines.push(`labels: ${card.labels}`);
   if (card.attachments) lines.push(`attachments: ${card.attachments}`);
   if (card.complexity) lines.push(`complexity: ${card.complexity}`);
+  if (card.children) lines.push(`children: ${card.children}`);
   lines.push("---");
   const body = card.body?.trim();
   return `${lines.join("\n")}\n${body ? body : `# ${card.title}`}\n`;

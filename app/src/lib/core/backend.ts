@@ -32,7 +32,7 @@ import type {
   HumanItemOutcome,
 } from "$lib/core/gavin";
 import type { ApplyMode, CommitDetail, CompareSummary, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
-import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
+import type { ConflictNote, NestedRunState, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
 import type { LogCategory, LogCursor, WorkspaceLogPage } from "$lib/log/workspaceLog";
 import type { ToolRun } from "$lib/workspace/workspaceTools";
@@ -1420,7 +1420,10 @@ export function setPlanFrontmatterField(
     | "agent"
     | "model"
     | "effort"
-    | "direct",
+    | "direct"
+    // An Orchestrated plan's mode (v80): sequence | parallel, or empty
+    // to make it a plan run as one session again.
+    | "children",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });
@@ -1433,6 +1436,13 @@ export function setChecklistItem(
   checked: boolean
 ): Promise<void> {
   return invoke("set_checklist_item", { path, lineIndex, expectedText, checked });
+}
+
+/// Ticks or unticks a Nested task's link line in its plan (v80, ADR 0012)
+/// -- finishing or un-finishing the child -- appending the line first when
+/// the plan has none. `childFile` is the child's file name.
+export function tickChecklistLink(plan: string, childFile: string, checked: boolean): Promise<void> {
+  return invoke("tick_checklist_link", { plan, childFile, checked });
 }
 
 // Returns the created task card's path.
@@ -2253,6 +2263,39 @@ export function setStepRun(
     resumeAttempts,
     workspaceId,
   });
+}
+
+/// One Nested task's run under its Orchestrated plan's step (v80); the
+/// arguments mean what setStepRun's do, null again LEAVING the stored
+/// conversation, cwd and budget alone.
+export function setNestedRun(
+  stepId: string,
+  childPath: string,
+  state: NestedRunState,
+  sessionId: string | null,
+  reason: string | null,
+  conversationId: string | null = null,
+  launchCwd: string | null = null,
+  resumeAttempts: number | null = null,
+  workspaceId?: string
+): Promise<void> {
+  return invoke("set_nested_run", {
+    stepId,
+    childPath,
+    stateValue: state,
+    sessionId,
+    reason,
+    conversationId,
+    launchCwd,
+    resumeAttempts,
+    workspaceId,
+  });
+}
+
+/// Forgets every Nested task run under one step (v80): the step went back
+/// to pending, so its children start over from whatever is unticked.
+export function clearNestedRuns(stepId: string, workspaceId?: string): Promise<void> {
+  return invoke("clear_nested_runs", { stepId, workspaceId });
 }
 
 // --- The tool library -------------------------------------------------------

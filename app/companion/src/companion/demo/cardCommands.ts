@@ -24,6 +24,7 @@ import {
   plansRootOf,
   readCard,
   withChecklistItem,
+  withChecklistLink,
   withField,
   withHumanOutcome,
 } from "$companion/demo/cardFiles";
@@ -88,6 +89,8 @@ function move(demo: DemoContext, from: string, to: string): void {
         for (const step of stage.steps) if (step.cardPath === from) step.cardPath = to;
       }
     }
+    // A Nested task's runs follow its card too (v80).
+    for (const run of orchestration.nestedRuns ?? []) if (run.childPath === from) run.childPath = to;
   }
 }
 
@@ -154,7 +157,7 @@ export function cardNamed(demo: DemoContext, fileName: string): string | null {
 
 // ---- Fields ---------------------------------------------------------
 
-const CLEARABLE = ["status", "parent", "labels", "attachments", "complexity", "agent", "model", "effort"];
+const CLEARABLE = ["status", "parent", "labels", "attachments", "complexity", "agent", "model", "effort", "children"];
 const PRIORITIES = ["none", "low", "medium", "high", "urgent"];
 const LEVELS = ["trivial", "simple", "moderate", "complex", "intricate"];
 
@@ -193,6 +196,13 @@ function checkedValue(key: string, value: string): string {
       const level = value.trim().toLowerCase();
       if (!LEVELS.includes(level)) throw new DemoFailure(`invalid complexity value: ${value}`);
       return level;
+    }
+    case "children": {
+      const mode = value.trim().toLowerCase();
+      if (mode !== "sequence" && mode !== "parallel") {
+        throw new DemoFailure(`children must be sequence or parallel, got: ${value}`);
+      }
+      return mode;
     }
     default:
       throw new DemoFailure(`field not allowed: ${key}`);
@@ -268,6 +278,26 @@ export const CARD_COMMANDS: Record<string, DemoCommand> = {
     }
     change(demo, () => {
       demo.state.files[path] = next;
+    });
+  },
+
+  /// A Nested task finished, or un-finished, by its line in its plan
+  /// (v80, ADR 0012) -- refused for a card that is not that plan's child.
+  tick_checklist_link: (args, demo): Answer<"tickChecklistLink"> => {
+    const plan = text(args, "plan");
+    const childFile = text(args, "childFile");
+    const content = card(demo, plan);
+    const planFile = plan.slice(plan.lastIndexOf("/") + 1);
+    if (!FILE_NAME.test(childFile)) {
+      throw new DemoFailure(`child must be a card file name matching [A-Za-z0-9._-]+.md, got: ${childFile}`);
+    }
+    const childPath = plansUnder(demo, plansRootOf(plan)!).find((p) => p.endsWith(`/${childFile}`));
+    const child = childPath ? readCard(childPath, demo.state.files[childPath]) : null;
+    if (!child || child.kind !== "task" || child.parent !== planFile || child.status !== null) {
+      throw new DemoFailure(`${childFile} is not a nested task of ${planFile}`);
+    }
+    change(demo, () => {
+      demo.state.files[plan] = withChecklistLink(content, childFile, child.title, args.checked === true);
     });
   },
 

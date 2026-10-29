@@ -712,15 +712,16 @@ fn tool_definitions() -> Value {
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
             "body": { "type": "string", "description": "For kind task this IS the agent prompt" },
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
-            "direct": { "type": "boolean", "description": "Kind task only: the body goes to the agent exactly as written, with no gavin framing around it — no card path, no status instructions, no attachment list. Default false" },
+"direct": { "type": "boolean", "description": "Kind task only: the body goes to the agent exactly as written, with no gavin framing around it — no card path, no status instructions, no attachment list. Default false" },
+            "children": { "type": "string", "enum": ["sequence", "parallel"], "description": "Kind plan only: makes it an Orchestrated plan — starting it runs each of its nested tasks as its own session (one at a time in order, or all at once), then the plan's own session to integrate. Omit for a plan run as one session" },
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" },
             "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" },
             "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels the card carries, e.g. [\"bug\", \"ready-for-agent\"]; prefer the board's label names (gavin_get_board). A comma-separated string works too" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, labels, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `labels` is the card's WHOLE comma-separated list, so to add one keep the labels it already carries (gavin_find_cards shows them); an empty value removes them all. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, labels, children, or the agent/model/effort this card runs on) of a plan file, preserving every other byte. `labels` is the card's WHOLE comma-separated list, so to add one keep the labels it already carries (gavin_find_cards shows them); an empty value removes them all. `agent` is an agent profile id, `model` a model name and `effort` a thinking level (`high`, `max`); any of them overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. `children` (`sequence` or `parallel`, on a plan) makes it an Orchestrated plan whose nested tasks each run as their own session before the plan's; empty turns it back into a plan run as one session. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
-            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "labels", "agent", "model", "effort"] },
+            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "labels", "children", "agent", "model", "effort"] },
             "value": { "type": "string" }
         }, "required": ["path", "key", "value"] } },
         { "name": "gavin_create_context", "description": "Turn a folder into a gavin context (.gavin scaffold) for a feature/library.", "inputSchema": { "type": "object", "properties": {
@@ -730,6 +731,11 @@ fn tool_definitions() -> Value {
             "path": { "type": "string", "description": "Defaults to the current directory" }
         } } },
         { "name": "gavin_get_board", "description": "The workspace kanban board: columns (the status vocabulary) and the human's free-form cards. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_tick_item", "description": "Tick (or untick) a nested task's own line in its plan's checklist, `- [x] [title](./child.md)` — appending the line first if the plan has none. This is how a nested task of an Orchestrated plan says it is FINISHED: tick your line when your work is done and verified, and never set the nested task's status (a status would pull it out of its plan). Refused for a card that is not a nested task of that plan.", "inputSchema": { "type": "object", "properties": {
+            "plan": { "type": "string", "description": "Path to the plan card; relative resolves against the workspace root" },
+            "child": { "type": "string", "description": "The nested task's file name, e.g. \"add-parser.md\" (a path works too; only its file name is used)" },
+            "checked": { "type": "boolean", "description": "Default true; false unticks it" }
+        }, "required": ["plan", "child"] } },
         { "name": "gavin_promote_task", "description": "Promote a plan's checklist item into a nested task card (rewrites the item into a link to the new file).", "inputSchema": { "type": "object", "properties": {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
@@ -887,7 +893,14 @@ fn dispatch_tool(
     let req = match name {
         "gavin_get_tree" => Request::ScanGavinRoot { root_path: root_str },
         "gavin_read_prd" => Request::ReadPrd { root_path: root_str },
-        "gavin_create_plan" => Request::CreatePlan {
+        "gavin_create_plan" => {
+            // `children:` is a second write, like `labels:` below, and it is
+            // refused up front on anything but a plan: filed onto a task the
+            // line would only be a warning on a card that now exists.
+            if str_arg(args, "children").is_some() && str_arg(args, "kind").is_some_and(|k| k != "plan") {
+                anyhow::bail!("children requires kind plan");
+            }
+            Request::CreatePlan {
             context_folder: resolve_against_root(root, &require_arg(args, "context_folder")?)
                 .to_string_lossy()
                 .to_string(),
@@ -901,7 +914,8 @@ fn dispatch_tool(
             attachments: str_arg(args, "attachments"),
             complexity: str_arg(args, "complexity"),
             direct: args.get("direct").and_then(Value::as_bool).unwrap_or(false),
-        },
+            }
+        }
         "gavin_set_plan_field" => {
             let key = require_arg(args, "key")?;
             let value = if key == "labels" {
@@ -935,6 +949,22 @@ fn dispatch_tool(
             },
             limit: args.get("limit").and_then(Value::as_u64).map(|l| l.min(u32::MAX as u64) as u32),
         },
+        "gavin_tick_item" => {
+            let child = require_arg(args, "child")?;
+            // A path is the mistake an agent makes here, and its file name
+            // is what it meant: cards are named uniquely per context.
+            let child_file = Path::new(&child)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(child);
+            Request::TickChecklistLink {
+                plan: resolve_against_root(root, &require_arg(args, "plan")?)
+                    .to_string_lossy()
+                    .to_string(),
+                child_file,
+                checked: args.get("checked").and_then(Value::as_bool).unwrap_or(true),
+            }
+        }
         "gavin_promote_task" => Request::PromoteChecklistItem {
             plan_path: resolve_against_root(root, &require_arg(args, "plan_path")?)
                 .to_string_lossy()
@@ -1014,27 +1044,27 @@ fn dispatch_tool(
     // dropped silently by a daemon older than the field (the compat gate
     // is per request type, not per field). Written before the claim, so
     // the card the board shows as taken already carries them.
-    let labels_failure = match (&req, &resp) {
-        (Request::CreatePlan { .. }, Response::PlanCreated { path }) => {
-            let labels = labels_line(args.get("labels"));
-            if labels.is_empty() {
-                None
-            } else {
-                let write = Request::SetPlanFrontmatterField {
-                    path: path.clone(),
-                    key: "labels".into(),
-                    value: labels,
-                };
-                match transport.request(&write) {
-                    Ok(Response::PlanFieldSet { .. }) => None,
-                    Ok(Response::Error { message }) => Some(message),
-                    Ok(other) => Some(format!("unexpected response: {other:?}")),
-                    Err(e) => Some(e.to_string()),
-                }
+    // `children:` goes the same way (v80), and for the same reason: a v79
+    // daemon refuses the key loudly where it would drop a CreatePlan field.
+    let mut follow_up_failures: Vec<String> = Vec::new();
+    if let (Request::CreatePlan { .. }, Response::PlanCreated { path }) = (&req, &resp) {
+        let writes = [
+            ("children", str_arg(args, "children").unwrap_or_default()),
+            ("labels", labels_line(args.get("labels"))),
+        ];
+        for (key, value) in writes.into_iter().filter(|(_, v)| !v.is_empty()) {
+            let write = Request::SetPlanFrontmatterField { path: path.clone(), key: key.into(), value };
+            let failure = match transport.request(&write) {
+                Ok(Response::PlanFieldSet { .. }) => None,
+                Ok(Response::Error { message }) => Some(message),
+                Ok(other) => Some(format!("unexpected response: {other:?}")),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(why) = failure {
+                follow_up_failures.push(format!("{key} ({why})"));
             }
         }
-        _ => None,
-    };
+    }
     // Before the reply is shaped, and its outcome deliberately dropped:
     // see `claim_card`.
     if let Some(card) = claim_target(&req, &resp) {
@@ -1046,11 +1076,12 @@ fn dispatch_tool(
         // An error, so the agent sees it, but one that says the card
         // exists: retrying the create would only be refused as an
         // overwrite.
-        Response::PlanCreated { path } => match labels_failure {
-            None => Ok(format!("created plan: {path}")),
-            Some(why) => Err(anyhow::anyhow!(
-                "created plan: {path} — but its labels were not written ({why}); set them with \
-                 gavin_set_plan_field(path, \"labels\", ...) rather than creating it again"
+        Response::PlanCreated { path } => match follow_up_failures.as_slice() {
+            [] => Ok(format!("created plan: {path}")),
+            failed => Err(anyhow::anyhow!(
+                "created plan: {path} — but not all of its fields were written: {}; set them with \
+                 gavin_set_plan_field(path, <key>, ...) rather than creating it again",
+                failed.join(", ")
             )),
         },
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
@@ -1391,11 +1422,11 @@ fn kind_str(kind: &protocol::CardKind) -> &'static str {
 fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
     let root_str = root.to_string_lossy().to_string();
 
-    let (rails, conflict_notes, rail_runs, step_runs) = match transport
+    let (rails, conflict_notes, rail_runs, step_runs, nested_runs) = match transport
         .request(&Request::GetOrchestrationByRoot { root_path: root_str.clone() })?
     {
-        Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
-            (rails, conflict_notes, rail_runs, step_runs)
+        Response::Orchestration { rails, conflict_notes, rail_runs, step_runs, nested_runs } => {
+            (rails, conflict_notes, rail_runs, step_runs, nested_runs)
         }
         Response::Error { message } => return Err(anyhow::anyhow!(message)),
         other => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
@@ -1432,6 +1463,10 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
         step_runs.iter().map(|r| (r.step_id.as_str(), r)).collect();
     let rail_run_of: HashMap<&str, &protocol::RailRun> =
         rail_runs.iter().map(|r| (r.rail_id.as_str(), r)).collect();
+    let mut nested_of: HashMap<&str, Vec<&protocol::NestedRun>> = HashMap::new();
+    for run in &nested_runs {
+        nested_of.entry(run.step_id.as_str()).or_default().push(run);
+    }
 
     // One GitDirtyPaths per DISTINCT worktree: several rails may share
     // one, and re-running git per rail would be pure waste.
@@ -1500,14 +1535,28 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
                                 });
                             }
                             let card = cards.get(step.card_path.as_str());
-                            json!({
+                            let mut view = json!({
                                 "id": step.id,
                                 "cardPath": step.card_path,
                                 "title": card.map(|c| c.title.clone()),
                                 "kind": card.map(|c| kind_str(&c.kind)),
                                 "status": card.and_then(|c| c.status.clone()),
                                 "run": run,
-                            })
+                            });
+                            // An Orchestrated plan (v80): how its Nested
+                            // tasks run, and each one's run under this step.
+                            // Only said when there is something to say, so
+                            // every other step reads exactly as before.
+                            if let Some(mode) = card.and_then(|c| c.children) {
+                                view["children"] = json!(mode);
+                            }
+                            if let Some(runs) = nested_of.get(step.id.as_str()) {
+                                view["nested"] = json!(runs
+                                    .iter()
+                                    .map(|r| json!({ "childPath": r.child_path, "run": r.state, "reason": r.reason }))
+                                    .collect::<Vec<_>>());
+                            }
+                            view
                         })
                         .collect();
                     json!({
@@ -2998,6 +3047,8 @@ mod tests {
             model: None,
             effort: None,
             direct: false,
+            children: None,
+            checklist_links: vec![],
             human_items: Some(vec![]),
         };
         protocol::GavinTree {
@@ -3236,7 +3287,7 @@ mod tests {
         rail_runs: Vec<protocol::RailRun>,
         step_runs: Vec<protocol::StepRun>,
     ) -> Response {
-        Response::Orchestration { rails, conflict_notes: vec![], rail_runs, step_runs }
+        Response::Orchestration { rails, conflict_notes: vec![], rail_runs, step_runs, nested_runs: vec![] }
     }
 
     fn running(rail_id: &str, stage_id: &str) -> protocol::RailRun {
@@ -3463,6 +3514,16 @@ mod tests {
                 state: "running".into(),
                 session_id: Some("s-1".into()),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            }],
+            nested_runs: vec![protocol::NestedRun {
+                step_id: "t1".into(),
+                child_path: "/x/.gavin-root/plans/a-part.md".into(),
+                state: "stalled".into(),
+                session_id: None,
+                reason: Some("quiet".into()),
                 conversation_id: None,
                 launch_cwd: None,
                 resume_attempts: None,
@@ -3761,6 +3822,11 @@ mod tests {
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["title"], "Card A");
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["kind"], "task");
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["run"], "running");
+        // A Nested task's run rides under its plan's step (v80).
+        let nested = &text["rails"][0]["stages"][0]["steps"][0]["nested"];
+        assert_eq!(nested[0]["childPath"], "/x/.gavin-root/plans/a-part.md");
+        assert_eq!(nested[0]["run"], "stalled");
+        assert_eq!(nested[0]["reason"], "quiet");
         // b.md is not on a rail, so it is offered as unplaced. a.md is on
         // one, and filed.md is archived -- neither is on offer.
         let unplaced: Vec<&str> = text["unplacedCards"]
@@ -4326,6 +4392,75 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// An Orchestrated plan's mode (v80) is a second write like the labels,
+    /// and before them; on anything but a plan it is refused before the
+    /// card is filed at all.
+    #[test]
+    fn create_plan_writes_its_children_mode_after_the_card() {
+        let mut t = mock(vec![
+            Response::PlanCreated { path: "/ws/.gavin-root/plans/big.md".into() },
+            Response::PlanFieldSet { path: "/ws/.gavin-root/plans/big.md".into() },
+            Response::PlanFieldSet { path: "/ws/.gavin-root/plans/big.md".into() },
+        ]);
+        let text = call_with(
+            "gavin_create_plan",
+            json!({ "context_folder": ".", "file_name": "big.md", "title": "Big", "children": "sequence", "labels": "ui" }),
+            &mut t,
+        );
+        assert_eq!(text, "created plan: /ws/.gavin-root/plans/big.md");
+        let writes: Vec<(&str, &str)> = t
+            .requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::SetPlanFrontmatterField { key, value, .. } => Some((key.as_str(), value.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(writes, vec![("children", "sequence"), ("labels", "ui")]);
+
+        let mut t = mock(vec![]);
+        let reply = handle_line(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "gavin_create_plan", "arguments": {
+                    "context_folder": ".", "file_name": "t.md", "title": "T", "kind": "task", "children": "parallel"
+                } },
+            })
+            .to_string(),
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        assert!(reply.contains("children requires kind plan"), "{reply}");
+        assert!(!t.requests.iter().any(|r| matches!(r, Request::CreatePlan { .. })), "{:?}", t.requests);
+    }
+
+    #[test]
+    fn tick_item_sends_the_plan_path_and_the_childs_file_name() {
+        let mut t = mock(vec![Response::Ok]);
+        let text = call_with(
+            "gavin_tick_item",
+            json!({ "plan": ".gavin-root/plans/big.md", "child": ".gavin-root/plans/one.md" }),
+            &mut t,
+        );
+        assert_eq!(text, "ok");
+        match &t.requests[0] {
+            Request::TickChecklistLink { plan, child_file, checked } => {
+                assert_eq!(plan, "/ws/.gavin-root/plans/big.md");
+                assert_eq!(child_file, "one.md");
+                assert!(checked);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+        let mut t = mock(vec![Response::Ok]);
+        call_with(
+            "gavin_tick_item",
+            json!({ "plan": "/ws/.gavin-root/plans/big.md", "child": "one.md", "checked": false }),
+            &mut t,
+        );
+        assert!(matches!(&t.requests[0], Request::TickChecklistLink { checked: false, .. }), "{:?}", t.requests);
     }
 
     #[test]

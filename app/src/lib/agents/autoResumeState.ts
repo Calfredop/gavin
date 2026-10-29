@@ -44,10 +44,17 @@ import { kanbanState } from "$lib/board/kanbanState";
 import { refineCause } from "$lib/agents/turnVerdict";
 import { turnVerdictById, whenTurnVerdictSettles } from "$lib/agents/turnVerdictState";
 import { gavinTrees } from "$lib/core/gavinState";
-import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
+import { orchestrations, resumeNestedChild, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { cardViewForPath, slugStatus } from "$lib/core/planBoard";
-import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration/orchestration";
+import {
+  cardIndex,
+  childTicked,
+  doneColumn,
+  effectiveStatus,
+  planIndex,
+  stageMode,
+} from "$lib/orchestration/orchestration";
 import type { Rail, Step } from "$lib/orchestration/orchestration";
 import type { SessionStatus } from "$lib/core/notifications";
 import { listenToOtherWindows, runsRailsFor, tellOtherWindows } from "$lib/shell/appDuty";
@@ -101,6 +108,10 @@ export function __setAutoResumeClock(next: Partial<Clock>): void {
 
 type Owner =
   | { kind: "step"; workspaceId: string; rail: Rail; step: Step }
+  /// A Nested task an Orchestrated plan's step launched (v80): resumed on
+  /// its own run row -- its conversation, its budget -- under the consent
+  /// of the rail its plan rides.
+  | { kind: "nested"; workspaceId: string; rail: Rail; step: Step; childPath: string }
   | { kind: "card"; workspaceId: string; path: string }
   | null;
 
@@ -118,6 +129,19 @@ function ownerOf(sessionId: string): Owner {
       for (const stage of rail.stages) {
         const step = stage.steps.find((t) => t.id === run.stepId);
         if (step) return { kind: "step", workspaceId, rail, step };
+      }
+    }
+  }
+  // A Nested task's session, before its card binding: the child is bound
+  // like any card run, and resuming it through the board would write In
+  // Progress and pull it out of its plan (ADR 0012).
+  for (const [workspaceId, orch] of Object.entries(orchs)) {
+    const run = orch.nestedRuns?.find((r) => r.sessionId === sessionId);
+    if (!run) continue;
+    for (const rail of orch.rails) {
+      for (const stage of rail.stages) {
+        const step = stage.steps.find((t) => t.id === run.stepId);
+        if (step) return { kind: "nested", workspaceId, rail, step, childPath: run.childPath };
       }
     }
   }
@@ -184,6 +208,33 @@ function parallelStageBlocker(rail: Rail, step: Step): string | null {
   );
 }
 
+/// Whether a Nested task is already finished: its line in its plan is
+/// ticked (ADR 0012), or the plan itself reached the done column.
+function childIsFinished(workspaceId: string, planPath: string, childPath: string): boolean {
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const plan = cards.get(planPath);
+  const child = cards.get(childPath);
+  if (plan && child && childTicked(plan.plan, child.plan)) return true;
+  return cardIsFinished(workspaceId, planPath);
+}
+
+/// `parallelStageBlocker` for the children of one parallel Orchestrated
+/// plan (v80): they share the plan's checkout, so two that broke together
+/// stay stalled for the same reason two steps of a parallel stage do.
+function parallelChildrenBlocker(workspaceId: string, planPath: string, stepId: string): string | null {
+  const plan = cardIndex(get(gavinTrees)[workspaceId]).get(planPath);
+  if (plan?.plan.children !== "parallel") return null;
+  const failures = get(layoutState).failureReasonById;
+  const broken = (get(orchestrations)[workspaceId]?.nestedRuns ?? []).filter(
+    (r) => r.stepId === stepId && r.sessionId !== null && failures[r.sessionId] !== undefined
+  );
+  if (broken.length < 2) return null;
+  return (
+    `${broken.length} nested tasks of this plan broke together, and putting them all back ` +
+    `would return each agent to a shared checkout its siblings had moved on from`
+  );
+}
+
 // ---- The decision, assembled ------------------------------------------------
 
 function decide(
@@ -204,6 +255,23 @@ function decide(
   // than v50 would drop the override and hand the relaunch the proxy it
   // broke on. Read for that cause only (autoResume.ts).
   const withoutHeadroomBlocked = featureBlockedReason(get(daemonCompat), "headroomFailures");
+
+  if (owner.kind === "nested") {
+    const orch = get(orchestrations)[owner.workspaceId];
+    const run = orch?.nestedRuns?.find((r) => r.stepId === owner.step.id && r.childPath === owner.childPath);
+    return autoResumeDecision({
+      consented: owner.rail.autoResume === true,
+      reason,
+      causes: agent.failureCauses,
+      verdictCause: refineCause("unknown", get(turnVerdictById)[sessionId]),
+      previousStatus,
+      attempts: run?.resumeAttempts,
+      conversationId: run?.conversationId,
+      workFinished: childIsFinished(owner.workspaceId, owner.step.cardPath, owner.childPath),
+      blocked: tooOld ?? parallelChildrenBlocker(owner.workspaceId, owner.step.cardPath, owner.step.id),
+      withoutHeadroomBlocked,
+    });
+  }
 
   if (owner.kind === "step") {
     const orch = get(orchestrations)[owner.workspaceId];
@@ -243,7 +311,7 @@ function decide(
 /// auto-resume must not be told, every time an agent breaks, that gavin
 /// declined to do something it was never allowed to do.
 function consented(owner: NonNullable<Owner>): boolean {
-  if (owner.kind === "step") return owner.rail.autoResume === true;
+  if (owner.kind === "step" || owner.kind === "nested") return owner.rail.autoResume === true;
   return get(layoutState).workspaces.find((w) => w.id === owner.workspaceId)?.autoResumeRuns === true;
 }
 
@@ -251,7 +319,8 @@ function consented(owner: NonNullable<Owner>): boolean {
 
 function ownerLabel(owner: NonNullable<Owner>, sessionId: string): string {
   const state = get(layoutState);
-  const path = owner.kind === "step" ? owner.step.cardPath : owner.path;
+  const path =
+    owner.kind === "step" ? owner.step.cardPath : owner.kind === "nested" ? owner.childPath : owner.path;
   const entry = path ? cardIndex(get(gavinTrees)[owner.workspaceId]).get(path) : undefined;
   return entry?.plan.title ?? sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
 }
@@ -361,7 +430,9 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
   const error =
     owner.kind === "step"
       ? await resumeStep(owner.workspaceId, owner.step.id, options)
-      : await resumeCardByPath(owner.workspaceId, owner.path, options);
+      : owner.kind === "nested"
+        ? await resumeNestedChild(owner.workspaceId, owner.step.id, owner.childPath, options)
+        : await resumeCardByPath(owner.workspaceId, owner.path, options);
 
   if (error) {
     // The caller that takes a claim and then fails to launch gives it
@@ -377,15 +448,20 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
     failedAt,
     resumedAt: clock.now(),
   };
-  const trailKey = owner.kind === "step" ? owner.step.id : owner.path;
+  const trailKey =
+    owner.kind === "step" ? owner.step.id : owner.kind === "nested" ? owner.childPath : owner.path;
   publishResumeTrail(trailKey, record);
   // The NEW session, so an immediate second failure is recognised as one.
   const replacement =
     owner.kind === "step"
       ? get(orchestrations)[owner.workspaceId]?.stepRuns.find((r) => r.stepId === owner.step.id)
           ?.sessionId
-      : get(kanbanState)[owner.workspaceId]?.cardSessions.find((cs) => cs.path === owner.path)
-          ?.sessionId;
+      : owner.kind === "nested"
+        ? get(orchestrations)[owner.workspaceId]?.nestedRuns?.find(
+            (r) => r.stepId === owner.step.id && r.childPath === owner.childPath
+          )?.sessionId
+        : get(kanbanState)[owner.workspaceId]?.cardSessions.find((cs) => cs.path === owner.path)
+            ?.sessionId;
   if (replacement) resumedAt.set(replacement, record.resumedAt);
   void notify(resumeNotificationBody(label, record));
 }

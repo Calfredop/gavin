@@ -1,6 +1,6 @@
 import type { Complexity } from "$lib/cards/complexity";
 import type { Board, Column } from "$lib/board/kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
+import type { ChecklistLink, ChildrenMode, GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 
 export interface CardView {
   id: string; // the card file's absolute path — stable identity
@@ -53,6 +53,11 @@ export interface CardView {
   // Whether this task's body is sent as the whole prompt. Optional for
   // the same reason `effort` is: fixtures, and a pre-v75 daemon.
   direct?: boolean;
+  // A plan's `children:` mode (v80): its nested tasks run as their own
+  // sessions before its own, each finished by ticking its line -- the
+  // `checklistLinks` below. Optional for the reason `direct` is.
+  children?: ChildrenMode | null;
+  checklistLinks?: ChecklistLink[];
   checklistDone: number;
   checklistTotal: number;
   contextName: string;
@@ -133,6 +138,8 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
     model: plan.model ?? null,
     effort: plan.effort ?? null,
     direct: plan.direct === true,
+    children: plan.children ?? null,
+    checklistLinks: plan.checklistLinks ?? [],
     checklistDone: plan.checklistDone,
     checklistTotal: plan.checklistTotal,
     contextName: ctx.name,
