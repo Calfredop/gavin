@@ -372,12 +372,18 @@ describe("the remembered tab", () => {
     const storage = fakeStorage();
     saveFilesMemory(
       "ws-1",
-      { selected: "/repo/app/README.md", expanded: ["/repo", "/repo/app"], treeShare: 0.4 },
+      {
+        selected: "/repo/app/README.md",
+        mode: "edit",
+        expanded: ["/repo", "/repo/app"],
+        treeShare: 0.4,
+      },
       storage
     );
     expect(storage.map.has(filesMemoryKey("ws-1"))).toBe(true);
     expect(loadFilesMemory("ws-1", storage)).toEqual({
       selected: "/repo/app/README.md",
+      mode: "edit",
       expanded: ["/repo", "/repo/app"],
       treeShare: 0.4,
     });
@@ -391,6 +397,7 @@ describe("the remembered tab", () => {
     storage.setItem(filesMemoryKey("ws-1"), "{not json");
     expect(loadFilesMemory("ws-1", storage)).toEqual({
       selected: null,
+      mode: null,
       expanded: [],
       treeShare: DEFAULT_TREE_SHARE,
     });
@@ -407,6 +414,23 @@ describe("the remembered tab", () => {
     expect(loaded.treeShare).toBe(DEFAULT_TREE_SHARE);
   });
 
+  it("reopens the remembered file in a mode it can offer", () => {
+    const storage = fakeStorage();
+    // A record from before the mode was remembered has none.
+    storage.setItem(filesMemoryKey("ws-1"), JSON.stringify({ selected: "/repo/a.md", expanded: [] }));
+    expect(loadFilesMemory("ws-1", storage).mode).toBe("formatted");
+
+    storage.setItem(
+      filesMemoryKey("ws-1"),
+      JSON.stringify({ selected: "/repo/a.rs", mode: "formatted", expanded: [] })
+    );
+    expect(loadFilesMemory("ws-1", storage).mode).toBe("plain");
+
+    // No file, no mode.
+    storage.setItem(filesMemoryKey("ws-1"), JSON.stringify({ selected: null, mode: "edit" }));
+    expect(loadFilesMemory("ws-1", storage).mode).toBeNull();
+  });
+
   it("survives a storage that refuses to be read or written", () => {
     const dead = {
       getItem: () => {
@@ -419,13 +443,14 @@ describe("the remembered tab", () => {
     };
     expect(loadFilesMemory("ws-1", dead).selected).toBeNull();
     expect(() =>
-      saveFilesMemory("ws-1", { selected: "/a", expanded: [], treeShare: 0.3 }, dead)
+      saveFilesMemory("ws-1", { selected: "/a", mode: null, expanded: [], treeShare: 0.3 }, dead)
     ).not.toThrow();
   });
 
   it("opens the remembered folders plus every ancestor of the remembered file", () => {
     const targets = restoreTargets("/repo", {
       selected: "/repo/app/src/main.ts",
+      mode: null,
       expanded: ["/repo/docs", "/elsewhere/nope"],
       treeShare: 0.3,
     });

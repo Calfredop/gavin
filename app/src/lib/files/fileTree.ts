@@ -1,4 +1,5 @@
 import { shareFromSize } from "$lib/panes/splitShare";
+import { openingMode, type EditorMode } from "$lib/files/fileEditing";
 
 // The Files tab's directory tree, as data.
 //
@@ -548,6 +549,8 @@ export function afterRename(state: FileTreeState, from: string, to: string): Fil
 export interface FilesTabMemory {
   /// The file in the editor pane, or null.
   selected: string | null;
+  /// The mode that file was left in, or null when there is no file.
+  mode: EditorMode | null;
   /// Directories left open.
   expanded: string[];
   /// The tree pane's share of the split (see splitShare.ts for why a
@@ -576,7 +579,7 @@ export const MAX_TREE_SHARE = 0.6;
 export const DIVIDER_PX = 6;
 
 export function emptyMemory(): FilesTabMemory {
-  return { selected: null, expanded: [], treeShare: DEFAULT_TREE_SHARE };
+  return { selected: null, mode: null, expanded: [], treeShare: DEFAULT_TREE_SHARE };
 }
 
 /// The share a drag wanting the tree pane `desired` px wide should
@@ -617,13 +620,16 @@ export function loadFilesMemory(
     if (!raw) return emptyMemory();
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return emptyMemory();
-    const { selected, expanded, treeShare } = parsed as {
+    const { selected, mode, expanded, treeShare } = parsed as {
       selected?: unknown;
+      mode?: unknown;
       expanded?: unknown;
       treeShare?: unknown;
     };
+    const file = typeof selected === "string" && selected !== "" ? selected : null;
     return {
-      selected: typeof selected === "string" && selected !== "" ? selected : null,
+      selected: file,
+      mode: file === null ? null : openingMode(file, mode),
       expanded: Array.isArray(expanded) ? expanded.filter((e): e is string => typeof e === "string") : [],
       treeShare: resolveTreeShare(typeof treeShare === "number" ? treeShare : null),
     };
@@ -644,6 +650,7 @@ export function saveFilesMemory(
       filesMemoryKey(workspaceId),
       JSON.stringify({
         selected: memory.selected,
+        mode: memory.mode,
         expanded: [...memory.expanded],
         treeShare: memory.treeShare,
       })

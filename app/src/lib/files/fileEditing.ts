@@ -16,6 +16,16 @@ export function defaultMode(path: string, surface: "tab" | "hub"): EditorMode {
   return isMarkdown(path) ? "formatted" : "plain";
 }
 
+// The mode a remembered file reopens in. A remembered mode the file
+// cannot offer -- Formatted on a markdown file since renamed to .txt, or
+// a hand-edited word from localStorage -- is the file's default instead,
+// never a pane stuck in a mode it has no rendering for.
+export function openingMode(path: string, remembered: unknown): EditorMode {
+  return modesFor(path).includes(remembered as EditorMode)
+    ? (remembered as EditorMode)
+    : defaultMode(path, "tab");
+}
+
 // A file that failed to load has no buffer to edit; a truncated one holds
 // only a prefix, so writing it back would destroy everything past the
 // cap. A file that merely doesn't exist yet IS editable -- saving creates

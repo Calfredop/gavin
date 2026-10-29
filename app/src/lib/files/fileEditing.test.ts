@@ -3,6 +3,7 @@ import { get } from "svelte/store";
 import {
   modesFor,
   defaultMode,
+  openingMode,
   canEdit,
   classifyExternalRead,
   resolveExternalChange,
@@ -30,6 +31,27 @@ describe("defaultMode", () => {
   it("opens hub tabs (PRD, agent file) in edit", () => {
     expect(defaultMode("/root/.gavin-root/PRD.md", "hub")).toBe("edit");
     expect(defaultMode("/root/CLAUDE.md", "hub")).toBe("edit");
+  });
+});
+
+describe("openingMode", () => {
+  it("reopens a file in the mode it was left in", () => {
+    expect(openingMode("/tmp/a.md", "edit")).toBe("edit");
+    expect(openingMode("/tmp/a.md", "plain")).toBe("plain");
+    expect(openingMode("/tmp/a.rs", "edit")).toBe("edit");
+  });
+
+  it("falls back to the file's default when nothing was remembered", () => {
+    expect(openingMode("/tmp/a.md", null)).toBe("formatted");
+    expect(openingMode("/tmp/a.rs", null)).toBe("plain");
+  });
+
+  it("falls back when the file cannot offer the remembered mode", () => {
+    // A markdown file renamed to .txt keeps no rendered form.
+    expect(openingMode("/tmp/a.txt", "formatted")).toBe("plain");
+    // localStorage is hand-editable.
+    expect(openingMode("/tmp/a.md", "wysiwyg")).toBe("formatted");
+    expect(openingMode("/tmp/a.md", 7)).toBe("formatted");
   });
 });
 

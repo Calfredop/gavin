@@ -12,7 +12,7 @@
   import { askConfirm, showAlert } from "$lib/core/dialog";
   import { confirmDestructive } from "$lib/core/confirmGate";
   import { isViewableExtension, loadViewableExtensions } from "$lib/files/fileTypes";
-  import { defaultMode } from "$lib/files/fileEditing";
+  import { openingMode, type EditorMode } from "$lib/files/fileEditing";
   import {
     DEFAULT_TREE_SHARE,
     afterCreate,
@@ -81,6 +81,8 @@
 
   let tree = $state<FileTreeState>(emptyTree(""));
   let selection = $state<string | null>(null);
+  // The mode the selected file was left in; null opens it in its default.
+  let mode = $state<EditorMode | null>(null);
   let query = $state("");
   let error = $state<string | null>(null);
   let share = $state(DEFAULT_TREE_SHARE);
@@ -204,6 +206,7 @@
       if (rootPath === null) {
         tree = emptyTree("");
         selection = null;
+        mode = null;
         return;
       }
       void restore(workspaceId, rootPath, generation);
@@ -218,6 +221,7 @@
     tree = next;
     share = resolveTreeShare(memory.treeShare);
     selection = memory.selected;
+    mode = memory.mode;
 
     // Parents first, so every read finds its parent already listed.
     for (const dir of targets) {
@@ -237,7 +241,10 @@
     // The selection is verified against the tree, never assumed: a file
     // deleted while the tab was away must not leave a phantom in the
     // editor pane.
-    if (selection && verifyRestored(tree, selection) === "missing") selection = null;
+    if (selection && verifyRestored(tree, selection) === "missing") {
+      selection = null;
+      mode = null;
+    }
   }
 
   // Written on every change rather than on the way out: nothing runs
@@ -247,6 +254,7 @@
   $effect(() => {
     const memory = {
       selected: selection,
+      mode: selection === null ? null : mode,
       expanded: Object.keys(tree.expanded),
       treeShare: share,
     };
@@ -256,13 +264,22 @@
 
   // ---- opening ---------------------------------------------------------
 
+  // A different file opens in its own default mode; picking the open
+  // one again keeps the mode it is in. A rename (retargetPath) is not a
+  // new pick, so the moved file keeps its mode too.
+  function select(path: string): void {
+    if (path === selection) return;
+    selection = path;
+    mode = null;
+  }
+
   async function open(node: FileNode): Promise<void> {
     if (node.isDir) {
       await toggle(node);
       return;
     }
     if (isViewableExtension(node.path, viewable)) {
-      selection = node.path;
+      select(node.path);
       return;
     }
     // Images, video, binaries, anything unrecognized: the OS's default
@@ -317,7 +334,7 @@
     // reached through the menu does not require opening it first.
     if (!isLoaded(tree, target.dir)) await readDir(target.dir);
     else tree = afterCreate(tree, path, target.kind === "folder");
-    if (target.kind === "file") selection = path;
+    if (target.kind === "file") select(path);
   }
 
   async function renameEntry(name: string): Promise<void> {
@@ -540,7 +557,12 @@
              the selection, the editor remounts on the new path, and its
              buffer was flushed before the move. -->
         {#key selection}
-          <FileEditor bind:this={editor} path={selection} initialMode={defaultMode(selection, "tab")} />
+          <FileEditor
+            bind:this={editor}
+            path={selection}
+            initialMode={openingMode(selection, mode)}
+            onModeChange={(next) => (mode = next)}
+          />
         {/key}
       {/if}
     </div>
