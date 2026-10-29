@@ -1,8 +1,8 @@
 ---
-order: 14336
+order: 8192
 labels: bug
 title: [bug] Cursor usage shows empty after usage-summary went stale
-status: In Progress
+status: Done
 complexity: moderate
 ---
 Cursor limits in the usage panel are wrong or empty. Gavin still probed `GET https://cursor.com/api/usage-summary` with a session cookie; that endpoint answers 200 with `totalPercentUsed`/`auto`/`api` all 0 while DashboardService still has real percentages.

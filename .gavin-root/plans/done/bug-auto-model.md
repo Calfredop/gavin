@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 3072
 kind: task
 title: [bug] “auto” model
 status: Done

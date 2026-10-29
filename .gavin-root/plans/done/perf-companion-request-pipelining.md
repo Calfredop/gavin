@@ -1,4 +1,5 @@
 ---
+order: 10240
 title: [perf] companion: time the wire, pipeline the shell's requests
 status: Done
 ---

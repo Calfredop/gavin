@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 5120
 kind: task
 title: [perf] companion workspace sync
 status: Done

@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 6144
 kind: task
 title: [ui] diff tab
 status: Done

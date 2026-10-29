@@ -1,5 +1,5 @@
 ---
-order: 15360
+order: 2048
 kind: task
 title: [bug] hidden session after decision
 status: Done

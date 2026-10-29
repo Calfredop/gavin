@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 9216
 kind: task
 title: [ui] orchestration layout
 status: Done

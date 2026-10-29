@@ -1,6 +1,6 @@
 ---
 complexity: moderate
-order: 16384
+order: 7168
 kind: plan
 title: [ui] git tab
 status: Done

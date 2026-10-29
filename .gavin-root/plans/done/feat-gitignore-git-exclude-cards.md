@@ -1,5 +1,5 @@
 ---
-order: 16384
+order: 4096
 kind: task
 title: [feat] gitignore/git exclude cards
 status: Done
