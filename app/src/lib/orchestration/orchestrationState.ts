@@ -10,8 +10,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { appDuty, listenToOtherWindows, runsRailsFor, tellOtherWindows } from "$lib/shell/appDuty";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import * as backend from "$lib/core/backend";
+import type { WorktreeInfo } from "$lib/git/git";
 import {
   nextActions,
+  worktreesStalledAsGone,
   firstUnfinishedStageId,
   cardIndex,
   doneColumn,
@@ -2674,7 +2676,9 @@ export async function tick(workspaceId: string): Promise<void> {
   if (tickAgain.delete(workspaceId) || again) await tick(workspaceId);
 }
 
-async function runTick(workspaceId: string): Promise<boolean> {
+/// `reread` is the worktree list a pass read from git itself, standing
+/// in for the refs snapshot; see the end of the function.
+async function runTick(workspaceId: string, reread: WorktreeInfo[] | null = null): Promise<boolean> {
   const orch = get(orchestrations)[workspaceId];
   const board = get(kanbanState)[workspaceId];
   if (!orch || !board) return false;
@@ -2688,7 +2692,7 @@ async function runTick(workspaceId: string): Promise<boolean> {
   const tree = get(gavinTrees)[workspaceId];
   // null, not [] -- an unloaded refs snapshot must not look like "every
   // worktree is gone" and stall every bound rail on a cold start.
-  const worktrees = get(gitStore)[workspaceId]?.refs?.worktrees ?? null;
+  const worktrees = reread ?? get(gitStore)[workspaceId]?.refs?.worktrees ?? null;
   const live = new Set<string>();
   for (const ws of get(layoutState).workspaces) {
     for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
@@ -2733,26 +2737,58 @@ async function runTick(workspaceId: string): Promise<boolean> {
   for (const rail of orch.rails) {
     if (wantsPrPoll(rail, orch, kinds)) requestPr(conflictCheckout(rail, tree), rail.branch);
   }
-  return await executeActions(
-    workspaceId,
-    nextActions(
-      orch,
-      board,
-      tree,
-      worktrees,
-      live,
-      tools,
-      get(sessionExits),
-      statuses,
-      interrupted,
-      failureReasons,
-      currentPrReports(),
-      Math.floor(Date.now() / 1000),
-      get(layoutState).sessionsSeenWorking ?? new Set(),
-      critiqueSessionsMap(get(criticalReviewRuns)[workspaceId]),
-      verdictsOf(get(turnVerdictById))
-    )
+  const actions = nextActions(
+    orch,
+    board,
+    tree,
+    worktrees,
+    live,
+    tools,
+    get(sessionExits),
+    statuses,
+    interrupted,
+    failureReasons,
+    currentPrReports(),
+    Math.floor(Date.now() / 1000),
+    get(layoutState).sessionsSeenWorking ?? new Set(),
+    critiqueSessionsMap(get(criticalReviewRuns)[workspaceId]),
+    verdictsOf(get(turnVerdictById))
   );
+  // A "gone" worktree is a verdict about the refs SNAPSHOT, and nothing
+  // refreshes that snapshot when a worktree is cut outside the app: the
+  // Git watcher ignores `.gavin-worktrees/` and `.git/worktrees/`, and a
+  // Companion's Git refresh refreshes the phone's copy of gitStore, not
+  // this window's. So ask git before believing it -- once per pass, and
+  // only when the pass is about to stall on it. A stall pauses the rail,
+  // so a worktree that really is gone costs one `git worktree list` per
+  // press of Play, not one per tick.
+  //
+  // The pass is decided again on the fresh list rather than patched:
+  // branchSwitchFor reads the same list, and a checkout that has just
+  // appeared may need its branch switched before it can launch.
+  const gone = reread ? [] : worktreesStalledAsGone(orch, actions);
+  if (gone.length > 0) {
+    const fresh = await readWorktrees(workspaceId);
+    if (fresh && gone.some((path) => fresh.some((w) => w.path === path))) {
+      // The Git tab and the rail's own warning read the snapshot too.
+      void refreshGit(workspaceId);
+      return await runTick(workspaceId, fresh);
+    }
+  }
+  return await executeActions(workspaceId, actions);
+}
+
+/// `git worktree list`, asked of the repository the refs snapshot was
+/// read from, or null when git cannot answer -- in which case the
+/// snapshot's verdict stands, as it did before this re-read existed.
+async function readWorktrees(workspaceId: string): Promise<WorktreeInfo[] | null> {
+  const cwd = get(gitStore)[workspaceId]?.cwd ?? workspaceRootPath(workspaceId);
+  if (!cwd) return null;
+  try {
+    return (await backend.gitRefs(cwd)).worktrees;
+  } catch {
+    return null;
+  }
 }
 
 // ---- What makes the scheduler run ------------------------------------------

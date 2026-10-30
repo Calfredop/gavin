@@ -16,6 +16,7 @@ import {
   startRailTargetWorkspace,
   railRunsDiffer,
   nextActions,
+  worktreesStalledAsGone,
   addRail,
   renameRail,
   bindRail,
@@ -1099,6 +1100,20 @@ describe("nextActions", () => {
     expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), worktrees, new Set())).toEqual([
       { kind: "stall", stepId: "t1", reason: "worktree /x/gone is gone" },
     ]);
+  });
+
+  it("names the worktree a pass stalls as gone, so the executor can ask git first", () => {
+    const r = { ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]), worktreePath: "/x/gone" };
+    const other = { ...rail("r2", [[["t2", "/ws/.gavin-root/plans/b.md"]]]), worktreePath: "/x/fine" };
+    const orch = { ...running(r, "r1-s0"), rails: [r, other] };
+    expect(
+      worktreesStalledAsGone(orch, [
+        { kind: "stall", stepId: "t1", reason: "worktree /x/gone is gone" },
+        // Another stall on a bound rail is not a worktree verdict.
+        { kind: "stall", stepId: "t2", reason: "card file is missing" },
+        { kind: "launch", stepId: "t2" },
+      ])
+    ).toEqual(["/x/gone"]);
   });
 
   it("does not stall on a missing worktree when the worktree list is unknown", () => {

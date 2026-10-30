@@ -15,6 +15,9 @@ vi.mock("$lib/core/backend", () => ({
   deleteTool: vi.fn(),
   gitStatus: vi.fn(),
   gitCheckout: vi.fn(),
+  // The scheduler's own `git worktree list`, asked before it believes a
+  // refs snapshot that says a bound worktree is gone.
+  gitRefs: vi.fn(),
   // The decoy sweep's one call: what THIS run changed in its own
   // checkout, baseline included, so a committed decoy edit still shows.
   gitRunChanges: vi.fn(),
@@ -4180,6 +4183,100 @@ describe("a tick requested while one is in flight", () => {
 
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(2);
     expect(backend.setStepRun).toHaveBeenCalledWith("late", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
+  });
+});
+
+// ---- A worktree cut outside the app -----------------------------------------
+// The bug: the orchestrate skill cuts `.gavin-worktrees/<name>` with a
+// shell `git worktree add`, which the Git watcher never hears (it ignores
+// that folder and `.git/worktrees/`, and is only armed while the Git tab
+// is on screen). The refs snapshot kept the list from before, so every
+// Start of a rail bound to the new checkout stalled it as "gone".
+
+describe("a rail bound to a worktree the refs snapshot has not seen", () => {
+  const WT = (path: string) => ({ path, head: "a", branch: "main", isMain: false, locked: false, prunable: false });
+  const snapshot = (paths: string[]) =>
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
+      "ws-1": { cwd: "/ws", refs: { branches: [], remotes: [], stashes: [], worktrees: paths.map(WT), headBranch: "main" } },
+    });
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    // Snapshot BEFORE the plan lands: a plan arriving ticks.
+    snapshot(["/ws"]);
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...boundRail(),
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    await fetchOrchestration("ws-1");
+    armWorkspace();
+    vi.mocked(backend.setStepRun).mockClear();
+    vi.mocked(backend.setRailRun).mockClear();
+    vi.mocked(layoutStateModule.createSessionOnPage).mockClear();
+    vi.mocked(backend.gitRefs).mockClear();
+  });
+
+  it("launches its first step once git itself lists the worktree", async () => {
+    vi.mocked(backend.gitRefs).mockResolvedValue({
+      branches: [], remotes: [], stashes: [], worktrees: [WT("/ws"), WT("/x/wt")], headBranch: "main",
+    });
+
+    await tick("ws-1");
+
+    expect(backend.gitRefs).toHaveBeenCalledWith("/ws");
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith("ws-1", "p1", "/x/wt", expect.any(String), "claude-code");
+    expect(backend.setStepRun).not.toHaveBeenCalledWith("t1", "stalled", null, expect.anything(), null, null, null, "ws-1");
+    expect(backend.setRailRun).not.toHaveBeenCalledWith("r1", "paused", expect.anything(), "ws-1");
+    // The Git tab and the rail's warning read the same stale snapshot.
+    expect(gitStateModule.refresh).toHaveBeenCalledWith("ws-1");
+  });
+
+  it("still stalls when git agrees the worktree is gone", async () => {
+    vi.mocked(backend.gitRefs).mockResolvedValue({
+      branches: [], remotes: [], stashes: [], worktrees: [WT("/ws")], headBranch: "main",
+    });
+
+    await tick("ws-1");
+
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1", "stalled", null, "worktree /x/wt is gone", null, null, null, "ws-1"
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1", "ws-1");
+  });
+
+  it("keeps the snapshot's verdict when git cannot answer", async () => {
+    vi.mocked(backend.gitRefs).mockRejectedValue(new Error("not a git repository"));
+
+    await tick("ws-1");
+
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1", "stalled", null, "worktree /x/wt is gone", null, null, null, "ws-1"
+    );
+  });
+
+  it("asks git nothing when the snapshot already lists the worktree", async () => {
+    snapshot(["/ws", "/x/wt"]);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockClear();
+
+    await tick("ws-1");
+
+    expect(backend.gitRefs).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith("ws-1", "p1", "/x/wt", expect.any(String), "claude-code");
   });
 });
 

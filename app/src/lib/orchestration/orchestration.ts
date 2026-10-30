@@ -1173,9 +1173,33 @@ function launchBlocker(
     if (entry.plan.kind === "note") return "notes are not runnable";
   }
   if (rail.worktreePath && knownWorktrees && !knownWorktrees.has(rail.worktreePath)) {
-    return `worktree ${rail.worktreePath} is gone`;
+    return worktreeGoneReason(rail.worktreePath);
   }
   return null;
+}
+
+function worktreeGoneReason(path: string): string {
+  return `worktree ${path} is gone`;
+}
+
+/// The bound checkouts this pass stalls a step on as "gone" -- each one
+/// a verdict read off the refs snapshot, which is a CACHE. It is filled
+/// by the Git view's refresh, and the Git watcher deliberately ignores
+/// `.gavin-worktrees/` and `.git/worktrees/`, so a `git worktree add`
+/// run from a shell (the orchestrate skill's own instruction) leaves it
+/// without the new checkout until something unrelated refreshes it. The
+/// executor re-reads `git worktree list` for these before it believes
+/// them: a cached absence must never stall a rail on its own.
+export function worktreesStalledAsGone(orch: Orchestration, actions: Action[]): string[] {
+  const gone = new Set<string>();
+  for (const action of actions) {
+    if (action.kind !== "stall") continue;
+    const rail = orch.rails.find((r) => r.stages.some((g) => g.steps.some((t) => t.id === action.stepId)));
+    if (rail?.worktreePath && action.reason === worktreeGoneReason(rail.worktreePath)) {
+      gone.add(rail.worktreePath);
+    }
+  }
+  return [...gone];
 }
 
 /// The branch a running rail's checkout must be put on before anything
