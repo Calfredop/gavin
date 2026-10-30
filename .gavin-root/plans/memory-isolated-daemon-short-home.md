@@ -1,4 +1,5 @@
 ---
+order: 15360
 labels: memory
 kind: note
 title: An isolated daemon on macOS needs a short HOME
