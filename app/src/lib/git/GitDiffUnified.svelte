@@ -142,7 +142,7 @@
     white-space: nowrap;
   }
   .act:hover {
-    border-color: var(--border-accent);
+    background: var(--hover-wash);
     color: var(--text);
   }
   .act.danger {
@@ -150,7 +150,6 @@
     color: var(--danger-text);
   }
   .act.danger:hover {
-    border-color: var(--border-danger);
     color: var(--danger-text);
   }
   .line {

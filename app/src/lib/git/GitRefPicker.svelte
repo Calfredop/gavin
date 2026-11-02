@@ -95,7 +95,7 @@
     max-width: 200px;
   }
   .current:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
   }
   .current:disabled {
     opacity: 0.45;
@@ -152,7 +152,7 @@
     white-space: nowrap;
   }
   .pick:hover {
-    background: var(--surface-raised);
+    background: var(--hover-wash);
   }
   .pick.active {
     color: var(--text);

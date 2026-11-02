@@ -74,7 +74,7 @@
     user-select: none;
   }
   .row:hover {
-    background: var(--surface-sunken);
+    background: var(--hover-wash);
   }
   .row.selected {
     background: var(--surface-accent);
@@ -139,7 +139,7 @@
     font-family: monospace;
   }
   .actions button:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
     color: var(--text);
   }
   .actions button:disabled {

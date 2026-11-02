@@ -365,8 +365,12 @@
     cursor: pointer;
     white-space: nowrap;
   }
+  /* Not over `.on`: its accent fill is the toggle's state, and a hover
+     must not paint it away. */
+  .act:not(.on):hover:not(:disabled) {
+    background: var(--hover-wash);
+  }
   .act:hover:not(:disabled) {
-    border-color: var(--border-strong);
     color: var(--text);
   }
   .act.on {
@@ -483,8 +487,9 @@
     padding: 0 6px;
     cursor: pointer;
   }
+  /* Layered over its own accent fill, so the hover keeps the tint. */
   .editor :global(.cm-conflict-act:hover) {
-    border-color: var(--border-accent);
+    background: linear-gradient(var(--hover-wash), var(--hover-wash)), var(--surface-accent);
   }
   .msg {
     display: flex;

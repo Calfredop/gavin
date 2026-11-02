@@ -104,7 +104,7 @@
     cursor: default;
   }
   .row:hover {
-    background: var(--surface-sunken);
+    background: var(--hover-wash);
   }
   .row.selected {
     background: var(--surface-accent);

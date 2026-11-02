@@ -303,7 +303,7 @@
     cursor: pointer;
   }
   .sha:hover {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
   }
   .who {
     color: var(--text);
@@ -410,7 +410,7 @@
     white-space: nowrap;
   }
   .card-link-card:hover {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
   }
   .files {
     flex: 0 1 auto;

@@ -82,7 +82,7 @@
     cursor: pointer;
   }
   button:hover {
-    border-color: var(--border-accent);
+    background: var(--hover-wash);
     color: var(--text);
   }
 </style>

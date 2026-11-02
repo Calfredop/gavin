@@ -367,7 +367,7 @@
     max-width: 320px;
   }
   .current:hover {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
   }
   .name {
     overflow: hidden;
@@ -393,7 +393,7 @@
     border-radius: 6px;
   }
   .row:hover {
-    background: var(--surface-raised);
+    background: var(--hover-wash);
   }
   .row.active .lbl {
     color: var(--text);
@@ -459,7 +459,7 @@
     cursor: pointer;
   }
   .foot button:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
     color: var(--text);
   }
   .foot button:disabled {

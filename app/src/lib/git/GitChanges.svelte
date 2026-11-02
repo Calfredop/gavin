@@ -431,7 +431,7 @@
     cursor: pointer;
   }
   .all:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
     color: var(--text);
   }
   .all:disabled {

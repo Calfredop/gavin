@@ -149,8 +149,12 @@
   .outlined {
     border-color: var(--border);
   }
+  /* A fill, as every other variant answers the pointer -- a border that
+     brightens reads as the button swelling. The wash rather than
+     --surface-hover, because an outlined button also sits on sunken
+     panels and inside hovered rows, where that grey is the one under it. */
   .outlined:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
   }
 
   .filled {

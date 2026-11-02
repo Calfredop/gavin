@@ -224,7 +224,7 @@
     cursor: pointer;
   }
   .banner .banner-act:hover:not(:disabled) {
-    border-color: var(--border-warning);
+    background: var(--hover-wash);
   }
   .banner .banner-act:disabled {
     opacity: 0.45;

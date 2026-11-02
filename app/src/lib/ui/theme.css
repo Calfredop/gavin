@@ -210,6 +210,17 @@
   --lane-4: var(--lane-light-4);  --lane-8: var(--lane-light-8);
 }
 
+/* A hover fill for a control that may sit on ANY surface. --surface-hover
+   is one fixed grey, and in the light theme it is the same #eee as
+   --surface-sunken, so a row or button on a sunken panel (the Git tab's
+   are) hovered to nothing there. A thin wash of the text colour darkens a
+   light surface and lightens a dark one by the same step, whatever is
+   under it, and stacks: a button hovered inside a hovered row still shows.
+   Declared once, on :root, because --text resolves per theme right here. */
+:root {
+  --hover-wash: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
 /* ---- Base typography -------------------------------------------------
    The app is monospace. Before this rule every view declared
    `font-family: monospace` in its own scoped <style>, and a view that

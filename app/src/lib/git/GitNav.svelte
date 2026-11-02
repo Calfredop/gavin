@@ -355,7 +355,7 @@
     user-select: none;
   }
   .row:hover {
-    background: var(--surface-sunken);
+    background: var(--hover-wash);
   }
   .row.current {
     color: var(--text);
@@ -409,7 +409,7 @@
     cursor: pointer;
   }
   .acts button:hover:not(:disabled) {
-    border-color: var(--border-strong);
+    background: var(--hover-wash);
     color: var(--text);
   }
   .acts button:disabled {
