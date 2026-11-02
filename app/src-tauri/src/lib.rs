@@ -24,6 +24,7 @@ mod layout;
 mod mac_window;
 mod memory;
 mod navigation_guard;
+mod npx;
 mod program;
 mod pull_request;
 mod remote;
@@ -324,6 +325,8 @@ pub fn run() {
             agent_skills::dismiss_agent_skills_farewell,
             agent_skills::agent_skills_status,
             agent_skills::agent_skills_install,
+            npx::npx_location,
+            npx::set_npx_path,
             agent_playwright::playwright_status,
             agent_playwright::playwright_install,
             browser_view::watch_browser,

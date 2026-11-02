@@ -369,8 +369,18 @@ pub(crate) fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Re
         return Err(format!("directory not found: {}", cwd.display()));
     }
     // `bin` is `claude` or `npx`, which on Windows are shims CreateProcess
-    // cannot start unresolved.
-    let mut child = crate::program::command(crate::program::resolve_or_name(bin))
+    // cannot start unresolved. `npx` has a search of its own (`npx.rs`):
+    // a Dock-launched app's PATH misses every Node a version manager
+    // installed, and the one found runs with its own `node` first.
+    let mut command = if bin == "npx" {
+        let npx = crate::npx::locate().ok_or_else(crate::npx::not_found_message)?;
+        let mut command = crate::program::command(&npx.program);
+        command.env("PATH", &npx.path_env);
+        command
+    } else {
+        crate::program::command(crate::program::resolve_or_name(bin))
+    };
+    let mut child = command
         .args(args)
         .current_dir(cwd)
         // Nothing here is interactive, and a child that decides to ask

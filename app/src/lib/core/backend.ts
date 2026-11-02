@@ -19,6 +19,7 @@ import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$li
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { AgentSkillsMark, AgentSkillsStatus } from "$lib/agents/agentSkills";
 import type { PlaywrightStatus } from "$lib/agents/playwrightSetup";
+import type { NpxReport } from "$lib/agents/npxLocate";
 import type { BrowserFrame, DeviceBrowserWatch, LiveBrowser } from "$lib/panes/browserView";
 import type { MemoryIndexStatus } from "$lib/cards/memoryIndex";
 import type { GavinTracking } from "$lib/git/gitTracking";
@@ -786,6 +787,20 @@ export function agentSkillsFarewell(rootPath: string): Promise<boolean> {
 /// Dismisses that note for one root, for good.
 export function dismissAgentSkillsFarewell(rootPath: string): Promise<void> {
   return invoke("dismiss_agent_skills_farewell", { rootPath });
+}
+
+/// Where this machine's `npx` is, by the host's whole search
+/// (`npx.rs`): the human's own path, PATH, the usual Node.js install
+/// places, the login shell.
+export function npxLocation(): Promise<NpxReport> {
+  return invoke("npx_location");
+}
+
+/// The human's answer to "where is npx", checked on the host by running
+/// `npx --version` before it is kept; `null` forgets it. Rejects with the
+/// reason when the path is not an `npx` that runs.
+export function setNpxPath(path: string | null): Promise<NpxReport> {
+  return invoke("set_npx_path", { path });
 }
 
 /// Playwright's three checks for one workspace root (`agent_playwright.rs`):

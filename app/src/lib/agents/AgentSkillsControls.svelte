@@ -21,6 +21,8 @@
     type AgentSkillsMark,
     type AgentSkillsStatus,
   } from "$lib/agents/agentSkills";
+  import { isNpxNotFound } from "$lib/agents/npxLocate";
+  import NpxPathPrompt from "$lib/agents/NpxPathPrompt.svelte";
 
   interface Props {
     rootPath: string | null;
@@ -116,6 +118,12 @@
 
   {#if error}
     <p class="warn">{error}</p>
+  {/if}
+  {#if isNpxNotFound(error)}
+    <!-- Only on the final miss: gavin already searched PATH, the usual
+         Node.js places and the login shell. Saving retries the install
+         the human was attempting. -->
+    <NpxPathPrompt onSaved={() => void install()} />
   {/if}
 
   {#if believedPresent}

@@ -361,6 +361,13 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // repository chooses what it runs.
   playwright_status: ["ordinary"],
   playwright_install: ["ordinary"],
+  // Where this machine's `npx` is (npx.rs), and the human's answer when
+  // gavin's search found none. The path is run with `--version` before
+  // it is kept and is then what the two installs above start; it names
+  // a program the human chose, like `[agent].command`, and removes
+  // nothing.
+  npx_location: ["ordinary"],
+  set_npx_path: ["ordinary"],
   // The live view of an agent's browser: a stream to the asking window,
   // its read-back, and the app-wide pane setting.
   watch_browser: ["ordinary"],

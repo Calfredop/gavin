@@ -10,6 +10,9 @@
     type PlaywrightMark,
     type PlaywrightReading,
   } from "$lib/agents/playwrightSetup";
+  import { playwrightLacksLocalNpx } from "$lib/agents/npxLocate";
+  import NpxPathPrompt from "$lib/agents/NpxPathPrompt.svelte";
+  import { isSshWorkspace } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspaceId: string;
@@ -92,6 +95,17 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if playwrightLacksLocalNpx(view.checks, isSshWorkspace(ws))}
+    <!-- gavin's whole search came up empty on this machine (`npx.rs`).
+         Saving re-checks, dropping an install's answer that predates it. -->
+    <NpxPathPrompt
+      onSaved={() => {
+        installed = null;
+        onChanged();
+      }}
+    />
   {/if}
 
   {#if view.conflict && view.action === "replace"}

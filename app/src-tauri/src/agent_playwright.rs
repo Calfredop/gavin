@@ -201,8 +201,10 @@ impl Machine for ThisMachine {
         &LocalFiles
     }
 
+    /// The same search the install runs `npx` from (`npx.rs`), so "found"
+    /// here is "Install will start it".
     fn npx(&self) -> Result<bool, String> {
-        Ok(crate::program::resolve("npx").is_some())
+        Ok(crate::npx::locate().is_some())
     }
 
     fn browser(&self) -> Result<(bool, String), String> {
@@ -442,7 +444,7 @@ fn server_line(command: &str, args: &[String]) -> String {
 fn checks(f: &Findings) -> Vec<Check> {
     let npx = match &f.npx {
         Ok(true) => Check { id: "npx", ok: Some(true), line: "Node.js (npx) found".to_string() },
-        Ok(false) => Check { id: "npx", ok: Some(false), line: "Node.js (npx) not found on PATH".to_string() },
+        Ok(false) => Check { id: "npx", ok: Some(false), line: "Node.js (npx) not found".to_string() },
         Err(why) => Check { id: "npx", ok: None, line: why.clone() },
     };
     let browser = match &f.browser {

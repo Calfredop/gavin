@@ -232,6 +232,11 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("dismiss_agent_skills_farewell", RemoteAllowance::Allowed),
     ("agent_skills_status", RemoteAllowance::Allowed),
     ("agent_skills_install", RemoteAllowance::Allowed),
+    // Where the desk's `npx` is: a read. Telling the desk where it is
+    // names a program the desk then runs, from a path only someone at the
+    // desk's own terminal can read off -- that stays at the desk.
+    ("npx_location", RemoteAllowance::Allowed),
+    ("set_npx_path", RemoteAllowance::Refused), // names a program the desk runs
     // The Playwright setup step, like the agent skills step beside it.
     ("playwright_status", RemoteAllowance::Allowed),
     ("playwright_install", RemoteAllowance::Allowed),

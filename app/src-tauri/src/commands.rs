@@ -169,6 +169,8 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "dismiss_agent_skills_farewell",
     "agent_skills_status",
     "agent_skills_install",
+    "npx_location",
+    "set_npx_path",
     "playwright_status",
     "playwright_install",
     "watch_browser",
