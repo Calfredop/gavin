@@ -20,6 +20,12 @@
 //! (`/usr/bin/bash`) that no Windows API can start anyway.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 /// The shell an emitted command line is run through.
 ///
@@ -154,24 +160,90 @@ pub fn path_with_posix_tools(shell: &Path) -> Option<std::ffi::OsString> {
     )
 }
 
-/// The PATH an emitted command line runs under: `path_with_posix_tools`,
-/// then every well-known agent install directory that exists and is not
-/// already on it (`protocol::bin_dirs`). `None` when neither adds
-/// anything, and the shell inherits the daemon's PATH untouched.
+/// PATH for the shell an emitted command line runs under: Git Bash's tools
+/// on Windows, the user's login-shell PATH on macOS, then every well-known
+/// agent install directory that exists and is not already on it
+/// (`protocol::bin_dirs`).
 ///
 /// `sh -c` reads no profile, and the daemon's own PATH is whatever its
 /// launcher had -- a Dock launch's bare system PATH, or a terminal's
 /// frozen at the moment the app started. Kimi Code's installer only
 /// adds `~/.kimi-code/bin` to the shell rc file, so a workspace whose
 /// default agent was Kimi failed with `/bin/sh: kimi: command not found`
-/// while `kimi` ran fine in the human's terminal. Resolved per spawn, so
-/// an agent installed while the daemon runs is found by its next session.
+/// while `kimi` ran fine in the human's terminal. Well-known directories
+/// are resolved per spawn, so an agent installed while the daemon runs is
+/// found by its next session.
 pub fn command_path(shell: &Path) -> Option<std::ffi::OsString> {
     let posix = path_with_posix_tools(shell);
-    let base = posix.clone().or_else(|| std::env::var_os("PATH"));
+    // A Finder-launched macOS app does not inherit the PATH its login shell
+    // builds from nvm, mise, fnm, Volta or asdf. The fixed install
+    // directories below cover the stock locations, but miss version-manager
+    // shims such as ~/.nvm/versions/node/.../bin. Ask the user's login shell
+    // once and use that PATH for every emitted command line, including both
+    // the Home main agent and card runs.
+    #[cfg(target_os = "macos")]
+    let login = macos_login_path();
+    #[cfg(not(target_os = "macos"))]
+    let login: Option<std::ffi::OsString> = None;
+    let base = posix.or(login).or_else(|| std::env::var_os("PATH"));
     let home = home_dir();
     let dirs = protocol::bin_dirs::well_known_bin_dirs(home.as_deref(), cfg!(windows));
-    protocol::bin_dirs::path_with_bin_dirs(base.as_deref(), &dirs, cfg!(windows), |p| p.is_dir()).or(posix)
+    protocol::bin_dirs::path_with_bin_dirs(base.as_deref(), &dirs, cfg!(windows), |p| p.is_dir())
+        .or(base)
+}
+
+/// The PATH exported by the user's interactive login shell. Cached because
+/// starting shell profiles can take seconds and every agent launch needs the
+/// same environment. A timeout keeps a broken profile from blocking a spawn.
+#[cfg(target_os = "macos")]
+fn macos_login_path() -> Option<std::ffi::OsString> {
+    static PATH: OnceLock<Option<std::ffi::OsString>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        const MARKER: &str = "__GAVIN_LOGIN_PATH__";
+        let shell = std::env::var_os("SHELL")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_file())
+            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+        let mut child = Command::new(shell)
+            .args(["-l", "-i", "-c", "printf '\\n__GAVIN_LOGIN_PATH__%s\\n' \"$PATH\""])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        if !status.is_some_and(|status| status.success()) {
+            return None;
+        }
+        reader
+            .join()
+            .ok()?
+            .lines()
+            .filter_map(|line| line.strip_prefix(MARKER))
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .last()
+            .map(std::ffi::OsString::from)
+    })
+    .clone()
 }
 
 /// This user's home: `USERPROFILE` on Windows, `HOME` elsewhere -- the
