@@ -757,6 +757,13 @@ pub struct LaunchConfig {
     /// the shipped answer rather than as a refusal.
     #[serde(default = "default_true")]
     pub reclaim_done_sessions: bool,
+    /// The share of RAM in use (1-99) at which memory counts as under
+    /// pressure; `None` follows macOS's own pressure signal, the shipped
+    /// behaviour. `memory.ts`'s `pressureOf` owns what it means -- the
+    /// kernel's `critical` still holds either way. Skipped when absent so
+    /// a config.json that never set it keeps the shape it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_at_percent: Option<u32>,
 }
 
 /// Four agents, the pressure hold on, and finished cards' idle agents
@@ -771,7 +778,12 @@ pub struct LaunchConfig {
 /// and the cost of closing them is a transcript the card can re-launch.
 impl Default for LaunchConfig {
     fn default() -> Self {
-        Self { max_in_flight: Some(4), hold_on_pressure: true, reclaim_done_sessions: true }
+        Self {
+            max_in_flight: Some(4),
+            hold_on_pressure: true,
+            reclaim_done_sessions: true,
+            hold_at_percent: None,
+        }
     }
 }
 

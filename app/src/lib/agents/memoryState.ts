@@ -78,9 +78,19 @@ export const fleetMemory: Readable<FleetMemory> = derived(agentSessions, (sessio
 /// the floor -- which understates a Claude Code tree by two thirds.
 export const storedMeans = writable<Record<string, number>>({});
 
+/// `LaunchConfig.holdAtPercent`, mirrored here by `launchQueue` (which
+/// owns the config and already imports this module -- the other way round
+/// would be a cycle). Null follows macOS's own pressure signal.
+export const pressureThresholdPercent = writable<number | null>(null);
+
 /// The machine's pressure in one word, recomputed as samples land.
-export const memoryPressure: Readable<MemoryPressure> = derived(systemMemory, (sample) =>
-  pressureOf(sample)
+///
+/// Through the human's threshold when one is set, so every reader -- the
+/// gate, the fleet strip's tone, the banner, the done-card reclaim and the
+/// poll cadence -- agrees on what "under pressure" means.
+export const memoryPressure: Readable<MemoryPressure> = derived(
+  [systemMemory, pressureThresholdPercent],
+  ([sample, threshold]) => pressureOf(sample, threshold)
 );
 
 /// The roots a live watchman is watching. Empty when there is no server,

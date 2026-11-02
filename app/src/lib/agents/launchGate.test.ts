@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ceilingFrom,
+  holdAtPercentFrom,
   DEFAULT_LAUNCH,
   DRAIN_SPACING_MS,
   HYSTERESIS_MS,
@@ -94,7 +95,27 @@ describe("ceilingFrom", () => {
   });
 });
 
+describe("holdAtPercentFrom", () => {
+  it("reads a percentage, rounded and clamped into 1-99", () => {
+    expect(holdAtPercentFrom("85")).toBe(85);
+    expect(holdAtPercentFrom(" 72.6 ")).toBe(73);
+    expect(holdAtPercentFrom("100")).toBe(99);
+    expect(holdAtPercentFrom("0")).toBe(1);
+  });
+
+  it("reads blank and anything that is not a number as follow macOS", () => {
+    for (const raw of ["", "   ", "lots", "Infinity"]) expect(holdAtPercentFrom(raw)).toBeNull();
+  });
+});
+
 describe("the pressure hold", () => {
+  it("names the human's threshold when that is what is holding", () => {
+    const cfg = { ...DEFAULT_LAUNCH, holdAtPercent: 85 };
+    expect(launchVerdict(input({ config: cfg, pressure: "warn", usedBytes: 28 * GB })).why).toBe(
+      "Held: memory past your 85% threshold, 28 of 32 GB in use"
+    );
+  });
+
   it("holds under warn pressure and names how full the machine is", () => {
     const verdict = launchVerdict(input({ pressure: "warn", usedBytes: 28 * GB }));
     expect(verdict.allowed).toBe(false);

@@ -40,6 +40,13 @@ export interface LaunchConfig {
   /// `holdOnPressure`, because holding a start costs nothing and closing
   /// a finished agent costs its transcript.
   reclaimDoneSessions: boolean;
+  /// The share of RAM in use (1-99) at which memory counts as under
+  /// pressure, or absent/null to follow macOS's own pressure signal --
+  /// the shipped behaviour. See `memory.pressureOf` for why the kernel's
+  /// signal is the default and why its `critical` still stands. Optional
+  /// so a config written before it existed, and every caller that builds
+  /// one field by field, reads as "follow macOS".
+  holdAtPercent?: number | null;
 }
 
 /// Four agents, the pressure hold on, and finished cards' idle agents
@@ -61,6 +68,17 @@ export function ceilingFrom(raw: string): number | null {
   const value = Number(raw.trim());
   if (!raw.trim() || !Number.isFinite(value) || value < 1) return null;
   return Math.floor(value);
+}
+
+/// The pressure threshold a settings field's text stands for. Blank (or
+/// anything that is not a number) means FOLLOW MACOS, the shipped
+/// default. A number is clamped into 1-99 rather than refused: 100 would
+/// never hold anything, which is the "hold on pressure" switch's job, and
+/// a typo of 0 should not quietly mean "always held".
+export function holdAtPercentFrom(raw: string): number | null {
+  const value = Number(raw.trim());
+  if (!raw.trim() || !Number.isFinite(value)) return null;
+  return Math.min(99, Math.max(1, Math.round(value)));
 }
 
 /// Why a launch is being held. `null` on an allowed verdict.
@@ -160,7 +178,15 @@ export function launchVerdict(input: GateInput): LaunchVerdict {
   if (config.holdOnPressure) {
     const usage = usageClause(input.usedBytes, input.totalBytes);
     if (pressure !== "normal") {
-      const head = pressure === "critical" ? "Held: memory is critical" : "Held: memory pressure";
+      // A warn from the human's own threshold names that threshold, so
+      // the sentence points at the setting that produced it.
+      const threshold = config.holdAtPercent ?? null;
+      const head =
+        pressure === "critical"
+          ? "Held: memory is critical"
+          : threshold !== null
+            ? `Held: memory past your ${threshold}% threshold`
+            : "Held: memory pressure";
       return { allowed: false, reason: "pressure", why: usage ? `${head}, ${usage}` : head };
     }
     // Normal, but not for long enough yet. The queue must not empty into

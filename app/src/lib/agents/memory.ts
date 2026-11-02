@@ -75,9 +75,54 @@ export function pressureFromLevel(level: number): MemoryPressure {
 
 /// The pressure a whole sample carries. An unsupported host is `normal`
 /// for the reason above: no measurement is not a bad measurement.
-export function pressureOf(sample: SystemMemorySample | null): MemoryPressure {
+///
+/// By default this is the KERNEL's word, not a percentage: macOS raises
+/// `warn` when it is working to keep pages available, which can happen
+/// with most of the RAM still "free" by any figure a human reads -- one
+/// report had launches held at 20 of 48 GB. `holdAtPercent` is the human's
+/// way out of that: when set, the share of RAM in use decides `warn`
+/// instead, and the kernel's `warn` is ignored. The kernel's `critical`
+/// still stands either way -- that is the machine about to swap hard or
+/// kill processes, and no threshold typed into a settings field should
+/// be able to wave a launch into it.
+export function pressureOf(
+  sample: SystemMemorySample | null,
+  holdAtPercent: number | null = null
+): MemoryPressure {
   if (!sample || !sample.supported) return "normal";
-  return pressureFromLevel(sample.pressureLevel);
+  const kernel = pressureFromLevel(sample.pressureLevel);
+  if (holdAtPercent === null || kernel === "critical") return kernel;
+  const used = usedPercent(sample);
+  // Unmeasured reads as normal, for the reason `pressureFromLevel` gives.
+  return used !== null && used >= holdAtPercent ? "warn" : "normal";
+}
+
+/// The share of RAM in use, 0-100, or null when nothing was measured.
+/// The same arithmetic `usedBytes` rests on, so the percentage a
+/// threshold compares against and the "20 of 48 GB" a sentence prints
+/// can never disagree.
+export function usedPercent(sample: SystemMemorySample | null): number | null {
+  if (!sample || !sample.supported || sample.totalBytes <= 0) return null;
+  return 100 - Math.min(100, Math.max(0, sample.freePercent));
+}
+
+/// What the settings panel says about the machine right now, so a human
+/// choosing a threshold can see what the wall is looking at: "20 of 48
+/// GB in use (42%) · macOS reports memory pressure". Null when nothing
+/// was measured -- a panel line with a zero nobody read in it is worse
+/// than no line.
+export function memoryReadout(sample: SystemMemorySample | null): string | null {
+  const used = usedBytes(sample);
+  const percent = usedPercent(sample);
+  if (used === null || percent === null || !sample) return null;
+  const kernel = pressureFromLevel(sample.pressureLevel);
+  const word =
+    kernel === "critical"
+      ? "macOS reports memory is critical"
+      : kernel === "warn"
+        ? "macOS reports memory pressure"
+        : "macOS reports no pressure";
+  return `Now ${formatGbPair(used, sample.totalBytes)} in use (${Math.round(percent)}%) · ${word}`;
 }
 
 /// Bytes in use, or null when nothing was measured.
@@ -87,9 +132,9 @@ export function pressureOf(sample: SystemMemorySample | null): MemoryPressure {
 /// on -- free pages on a Mac read near zero at all times, and a bar
 /// built on them would sit at 100% for ever.
 export function usedBytes(sample: SystemMemorySample | null): number | null {
-  if (!sample || !sample.supported || sample.totalBytes <= 0) return null;
-  const free = Math.min(100, Math.max(0, sample.freePercent)) / 100;
-  return Math.round(sample.totalBytes * (1 - free));
+  const percent = usedPercent(sample);
+  if (percent === null || !sample) return null;
+  return Math.round((sample.totalBytes * percent) / 100);
 }
 
 /// Bytes still available, or null when nothing was measured.

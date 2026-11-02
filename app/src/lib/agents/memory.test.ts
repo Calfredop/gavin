@@ -8,6 +8,8 @@ import {
   formatGbPair,
   freeBytes,
   meanRssByProfile,
+  memoryReadout,
+  usedPercent,
   perAgentEstimate,
   pressureFromLevel,
   pressureOf,
@@ -57,6 +59,61 @@ describe("pressureOf", () => {
   it("is normal for an unsupported host and for no sample at all", () => {
     expect(pressureOf(sample({ supported: false, pressureLevel: 4 }))).toBe("normal");
     expect(pressureOf(null)).toBe("normal");
+  });
+});
+
+// The reported case: a 48 GB Mac held at 20 GB in use, because the
+// default follows the kernel's warning, not a percentage.
+describe("pressureOf with a human threshold", () => {
+  const reported = sample({ totalBytes: 48 * GB, freePercent: 58, pressureLevel: 2 });
+
+  it("follows the kernel when no threshold is set", () => {
+    expect(pressureOf(reported)).toBe("warn");
+    expect(pressureOf(reported, null)).toBe("warn");
+  });
+
+  it("lets the threshold overrule the kernel's warning", () => {
+    expect(pressureOf(reported, 85)).toBe("normal");
+  });
+
+  it("reads warn once the share in use reaches the threshold, whatever the kernel says", () => {
+    expect(pressureOf(sample({ freePercent: 15, pressureLevel: 1 }), 85)).toBe("warn");
+    expect(pressureOf(sample({ freePercent: 16, pressureLevel: 1 }), 85)).toBe("normal");
+  });
+
+  // Critical is the machine about to swap hard: no typed number waves a
+  // launch into it.
+  it("never overrules the kernel's critical", () => {
+    expect(pressureOf(sample({ freePercent: 90, pressureLevel: 4 }), 99)).toBe("critical");
+  });
+
+  it("is normal for an unmeasured machine, threshold or not", () => {
+    expect(pressureOf(sample({ supported: false, freePercent: 0 }), 10)).toBe("normal");
+    expect(pressureOf(null, 10)).toBe("normal");
+  });
+});
+
+describe("usedPercent", () => {
+  it("is the complement of the kernel's free share, clamped", () => {
+    expect(usedPercent(sample({ freePercent: 58 }))).toBe(42);
+    expect(usedPercent(sample({ freePercent: 140 }))).toBe(0);
+    expect(usedPercent(sample({ supported: false }))).toBeNull();
+  });
+});
+
+describe("memoryReadout", () => {
+  it("names the usage and what macOS reports", () => {
+    expect(memoryReadout(sample({ totalBytes: 48 * GB, freePercent: 58, pressureLevel: 2 }))).toBe(
+      "Now 20 of 48 GB in use (42%) · macOS reports memory pressure"
+    );
+    expect(memoryReadout(sample({ pressureLevel: 1 }))).toBe(
+      "Now 16 of 32 GB in use (50%) · macOS reports no pressure"
+    );
+  });
+
+  it("says nothing when nothing was measured", () => {
+    expect(memoryReadout(null)).toBeNull();
+    expect(memoryReadout(sample({ supported: false }))).toBeNull();
   });
 });
 

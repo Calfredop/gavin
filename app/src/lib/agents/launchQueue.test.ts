@@ -49,6 +49,7 @@ const probe = vi.hoisted(() => {
     }),
     fleetMemory: store({ rssBytes: 0, agents: 0, meanByProfile: {} as Record<string, number> }),
     storedMeans: store<Record<string, number>>({}),
+    pressureThresholdPercent: store<number | null>(null),
     layoutState: store<{ sessionStatusById: Record<string, string> }>({ sessionStatusById: {} }),
   };
 });
@@ -59,6 +60,7 @@ vi.mock("$lib/agents/memoryState", () => ({
   systemMemory: probe.systemMemory,
   fleetMemory: probe.fleetMemory,
   storedMeans: probe.storedMeans,
+  pressureThresholdPercent: probe.pressureThresholdPercent,
 }));
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: probe.layoutState,

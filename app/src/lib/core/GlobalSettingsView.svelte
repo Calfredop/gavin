@@ -161,7 +161,9 @@
   import { DEVICES_LABEL } from "$lib/core/devicesPanel";
   import { deskRelayIndicator, directIndicator, relayIndicator } from "$lib/ui/indicators";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
-  import { ceilingFrom, type LaunchConfig } from "$lib/agents/launchGate";
+  import { ceilingFrom, holdAtPercentFrom, type LaunchConfig } from "$lib/agents/launchGate";
+  import { memoryReadout } from "$lib/agents/memory";
+  import { systemMemory } from "$lib/agents/memoryState";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
 
   // Full-page app settings: opened via appSettingsOpen, closed by
@@ -187,6 +189,8 @@
   /// The wall in force, never null: a config nobody has edited resolves
   /// to the shipped default so the fields always have values.
   const launch = $derived($launchConfigStore);
+  /// What the wall is looking at right now, beside the threshold field.
+  const readout = $derived(memoryReadout($systemMemory));
 
   function editLaunch(patch: Partial<LaunchConfig>): void {
     void saveLaunchConfig({ ...launch, ...patch });
@@ -839,6 +843,8 @@
         "max agents",
         "concurrent",
         "limit agents",
+        "threshold",
+        "percent",
       ],
     },
     {
@@ -1584,6 +1590,26 @@
           <span>Hold new agents when memory is under pressure</span>
         </label>
       </div>
+      <!-- Blank is the shipped answer: macOS's own pressure signal, which is
+           not a percentage and can read "pressure" with half the RAM
+           free. A number replaces the kernel's warning (never its
+           critical) for the hold, the fleet strip and the reclaim alike. -->
+      <div class="row">
+        <span>Pressure threshold</span>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          max="99"
+          placeholder="macOS"
+          value={launch.holdAtPercent ?? ""}
+          onchange={(e) => editLaunch({ holdAtPercent: holdAtPercentFrom(e.currentTarget.value) })}
+        />
+        <span class="unit">% of RAM in use · blank follows macOS's own pressure signal</span>
+      </div>
+      {#if readout}
+        <p class="hint">{readout}</p>
+      {/if}
       <!-- Its own switch rather than a mode of the hold above: holding a
            start costs nothing, closing a finished agent costs its
            transcript, and a human may want one without the other. -->

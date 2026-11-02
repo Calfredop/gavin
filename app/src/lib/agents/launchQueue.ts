@@ -49,7 +49,14 @@ import {
 } from "$lib/agents/launchGate";
 import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/agents/memory";
 import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate";
-import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
+import {
+  agentSessions,
+  fleetMemory,
+  memoryPressure,
+  pressureThresholdPercent,
+  storedMeans,
+  systemMemory,
+} from "$lib/agents/memoryState";
 import { layoutState, resolvedAgentFor, agentDefaultsStore } from "$lib/core/layoutState";
 import { currentWindowLabel } from "$lib/shell/appWindowState";
 import {
@@ -66,6 +73,10 @@ import type { ReviewedCard } from "$lib/review/codeReview";
 /// The app-wide wall in force. Never null: a config that has never been
 /// edited resolves to `DEFAULT_LAUNCH`, so every reader has numbers.
 export const launchConfigStore = writable<LaunchConfig>(DEFAULT_LAUNCH);
+
+// The threshold is a config field but a MEMORY judgement: every reader of
+// `memoryPressure` must see it, not only the gate.
+launchConfigStore.subscribe((config) => pressureThresholdPercent.set(config.holdAtPercent ?? null));
 
 /// Read once at bootstrap. Best-effort like every other config read: a
 /// failure leaves the shipped default, which is the safe direction here
