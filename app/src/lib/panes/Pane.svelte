@@ -97,6 +97,8 @@
     type TabNaming,
   } from "$lib/panes/tabIdentity";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
+  import { followUpButtonTip } from "$lib/agents/cardFollowUp";
+  import { heldCardCountById } from "$lib/agents/cardFollowUpState";
   import { queueTargetFor } from "$lib/agents/queuedInputActions";
   import {
     setDragPayload,
@@ -830,12 +832,16 @@
             )
           )}
           {@const queued = $queuedInputsById[active] ?? []}
+          {@const heldCards = $heldCardCountById[active] ?? 0}
+          {@const followUps = queued.length + heldCards}
           <span use:tooltip={blocked ?? undefined}>
             <IconButton
               icon={MessageSquarePlus}
               label="Follow-ups for this agent"
-              tip={blocked ?? queueTip(queued) ?? "Queue a follow-up for when this agent finishes its turn"}
-              tone={queued.length > 0 ? "accent" : "default"}
+              tip={blocked ??
+                followUpButtonTip(queueTip(queued), heldCards) ??
+                "Queue a follow-up for when this agent finishes its turn"}
+              tone={followUps > 0 ? "accent" : "default"}
               size={14}
               disabled={blocked !== null}
               onclick={() => {
@@ -843,7 +849,7 @@
                 if (ws) void openFollowUpsInSplit(active, ws.id);
               }}
             >
-              {#if queued.length > 0}<span class="queue-count">{queued.length}</span>{/if}
+              {#if followUps > 0}<span class="queue-count">{followUps}</span>{/if}
             </IconButton>
           </span>
         {/if}

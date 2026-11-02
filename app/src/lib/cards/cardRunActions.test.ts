@@ -163,7 +163,9 @@ import {
   jumpToBoundSession,
   sendToMainAgent,
   pasteToMainAgent,
+  queueCardFollowUp,
 } from "$lib/cards/cardRunActions";
+import type { QueueTarget } from "$lib/agents/queuedInput";
 import { NOTHING_TO_REPLAY } from "$lib/board/kanban";
 import { EMPTY_DIRECT_PROMPT, FOREIGN_RELAUNCH_COMMAND, relaunchNote, shellQuote } from "$lib/cards/cardRun";
 import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
@@ -2250,6 +2252,62 @@ describe("sendToMainAgent", () => {
     layoutState.update((st) => ({ ...st, interruptedSessionIds: new Set<string>() }));
     setMainSession(null);
     setMainStatus(undefined);
+  });
+});
+
+describe("queueCardFollowUp (a card picked inline in the follow-up view)", () => {
+  const target = (over: Partial<QueueTarget> = {}): QueueTarget => ({
+    status: "working",
+    interrupted: false,
+    blockedReason: null,
+    verdict: null,
+    ...over,
+  });
+
+  it("queues the card's run prompt on THAT session and sets In Progress", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    expect(await queueCardFollowUp("ws-1", "s-live", target(), card("task", "To Do"))).toBeNull();
+
+    const [sid, text] = vi.mocked(backend.queueInput).mock.calls[0];
+    expect(sid).toBe("s-live");
+    expect(text).toContain("Do it.");
+    expect(text).toContain("/ws/.gavin-root/plans/t.md");
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith(
+      "/ws/.gavin-root/plans/t.md",
+      "status",
+      "In Progress"
+    );
+    // Not pasted, not spawned, and the human is not moved anywhere: the
+    // view they picked it in is the one that shows it queued.
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(switchWorkspaceView).not.toHaveBeenCalled();
+  });
+
+  it("refuses on the queue's own reasons BEFORE writing the card's status", async () => {
+    // A card set In Progress for a session that can never take its
+    // prompt is a card nobody is working, wearing a column that says
+    // somebody is.
+    for (const t of [
+      target({ interrupted: true }),
+      target({ blockedReason: "Needs daemon v29" }),
+    ]) {
+      expect(await queueCardFollowUp("ws-1", "s-live", t, card("task", "To Do"))).not.toBeNull();
+    }
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    expect(backend.queueInput).not.toHaveBeenCalled();
+  });
+
+  it("refuses a note", async () => {
+    expect(await queueCardFollowUp("ws-1", "s-live", target(), card("note", null))).toContain(
+      "not runnable"
+    );
   });
 });
 

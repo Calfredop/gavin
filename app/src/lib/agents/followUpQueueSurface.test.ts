@@ -47,7 +47,11 @@ describe("where the queue lives", () => {
     const text = source(PANE);
     const button = text.slice(text.indexOf("MessageSquarePlus,") + 1);
     expect(button).toContain("{#if !isViewTab(active)}");
-    expect(button).toContain('<span class="queue-count">{queued.length}</span>');
+    // The badge counts BOTH queues -- typed follow-ups and cards held to
+    // open in a new session -- so a held card never hides behind a bare
+    // icon.
+    expect(button).toContain("{@const followUps = queued.length + heldCards}");
+    expect(button).toContain('<span class="queue-count">{followUps}</span>');
   });
 
   it("keeps a way to queue on the Home tab, which has no tab bar", () => {
@@ -136,6 +140,27 @@ describe("the view", () => {
     // And the button's own tooltip, which is the queue read without
     // opening the pane.
     expect(source(PANE)).toContain("queueTip(queued)");
+  });
+
+  it("lets a card be picked as the follow-up, inline or in a new session", () => {
+    const text = source(VIEW);
+    // Both modes come from the one table in cardFollowUp.ts, so the
+    // switch and the sentence under it cannot drift from what each does.
+    expect(text).toContain("{#each CARD_FOLLOW_UP_MODES as m (m.mode)}");
+    expect(text).toContain("cardFollowUpCandidates(");
+    // Inline rides the session's own queue; a new session is held by the
+    // app and opened when the turn ends.
+    expect(text).toContain("queueCardFollowUp(workspaceId, sessionId, target, card)");
+    expect(text).toContain("holdCardFollowUp(sessionId, workspaceId, card)");
+    // A held card is visible, and can be opened early or cancelled.
+    expect(text).toContain("openCardFollowUpNow(");
+    expect(text).toContain("cancelCardFollowUp(");
+    expect(text).toContain("cardFollowUpHold(");
+  });
+
+  it("is started with the app, not with the pane", () => {
+    // A held card that only opens while its pane is mounted never opens.
+    expect(source(STATE)).toContain("unlisteners.push(startCardFollowUps());");
   });
 
   it("shows the message rather than the first line of it", () => {

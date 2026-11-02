@@ -15,12 +15,31 @@
   // tab bar to hang an action on -- only have to know a session id.
   // Everything it decides comes from queuedInput.ts; the template below
   // chooses no wording of its own.
-  import { ChevronDown, ChevronUp, Send, X } from "@lucide/svelte";
+  import { ChevronDown, ChevronUp, ExternalLink, Send, SquareKanban, X } from "@lucide/svelte";
   import Modal from "$lib/core/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { layoutState, queuedInputsById } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { cardViewForPath } from "$lib/core/planBoard";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
+  import {
+    CARD_FOLLOW_UP_MODES,
+    cardFollowUpCandidates,
+    cardFollowUpHold,
+    cardFollowUpRefusal,
+    workspaceOfSession,
+    type CardCandidate,
+    type CardFollowUpMode,
+  } from "$lib/agents/cardFollowUp";
+  import {
+    cancelCardFollowUp,
+    cardFollowUpsById,
+    holdCardFollowUp,
+    openCardFollowUpNow,
+  } from "$lib/agents/cardFollowUpState";
+  import { queueCardFollowUp } from "$lib/cards/cardRunActions";
   import {
     composeRefusal,
     deliveryHold,
@@ -66,6 +85,7 @@
   // and read as "just now" forever.
   const now = $derived.by(() => {
     void queued;
+    void held;
     return Date.now();
   });
   const target = $derived(
@@ -98,6 +118,57 @@
 
   async function act(run: Promise<string | null>): Promise<void> {
     error = await run;
+  }
+
+  // ---- A card as the follow-up ---------------------------------------------
+  //
+  // Picked rather than typed, and handed over one of two ways
+  // (cardFollowUp.ts): inline, as this session's own queued prompt, or
+  // run in a new tab once this session's turn ends.
+  let pickerOpen = $state(false);
+  let query = $state("");
+  let mode = $state<CardFollowUpMode>("inline");
+  // A pick in flight, so a double click cannot hand the same card over
+  // twice while the first one is still clearing its gates.
+  let picking = $state(false);
+
+  const workspaceId = $derived(workspaceOfSession($layoutState, sessionId));
+  const candidates = $derived(
+    workspaceId ? cardFollowUpCandidates($gavinTrees[workspaceId], query) : []
+  );
+  const held = $derived($cardFollowUpsById[sessionId] ?? []);
+  const heldHold = $derived(cardFollowUpHold(target, held.length));
+  const modeNote = $derived(CARD_FOLLOW_UP_MODES.find((m) => m.mode === mode)?.note ?? "");
+  // The refusal for the MODE, whatever card is picked -- the per-card
+  // one (already held) is asked again on the pick itself.
+  const pickBlocked = $derived(cardFollowUpRefusal(mode, target, composeBlocked, [], ""));
+
+  async function pick(candidate: CardCandidate): Promise<void> {
+    if (!workspaceId || picking) return;
+    const refusal = cardFollowUpRefusal(mode, target, composeBlocked, held, candidate.path);
+    if (refusal) {
+      error = refusal;
+      return;
+    }
+    const card = cardViewForPath($gavinTrees[workspaceId], candidate.path);
+    if (!card) {
+      error = "That card is no longer on the board.";
+      return;
+    }
+    picking = true;
+    try {
+      if (mode === "inline") {
+        error = await queueCardFollowUp(workspaceId, sessionId, target, card);
+      } else {
+        holdCardFollowUp(sessionId, workspaceId, card);
+        error = null;
+      }
+    } finally {
+      picking = false;
+    }
+    if (error) return;
+    pickerOpen = false;
+    query = "";
   }
 </script>
 
@@ -156,6 +227,17 @@
         }}
       ></textarea>
       <div class="composer-actions">
+        <IconButton
+          icon={SquareKanban}
+          label={pickerOpen ? "Hide the card picker" : "Pick a card as the follow-up"}
+          text="Card"
+          variant="outlined"
+          active={pickerOpen}
+          size={13}
+          disabled={!workspaceId}
+          tip={workspaceId ? undefined : "This agent's workspace isn't loaded, so there are no cards to pick from."}
+          onclick={() => (pickerOpen = !pickerOpen)}
+        />
         <span use:tooltip={refusal ?? undefined}>
           <IconButton
             icon={Send}
@@ -171,10 +253,87 @@
       </div>
     </div>
 
+    {#if pickerOpen && workspaceId}
+      <div class="picker">
+        <div class="modes" role="radiogroup" aria-label="How the card reaches the agent">
+          {#each CARD_FOLLOW_UP_MODES as m (m.mode)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === m.mode}
+              class:selected={mode === m.mode}
+              onclick={() => (mode = m.mode)}
+            >
+              {m.label}
+            </button>
+          {/each}
+        </div>
+        <p class="mode-note">{pickBlocked ?? modeNote}</p>
+        <SearchInput bind:value={query} placeholder="Find a card…" label="Find a card" />
+        <ul class="cards">
+          {#each candidates as c (c.path)}
+            <li>
+              <button
+                type="button"
+                class="card-row"
+                disabled={pickBlocked !== null || picking}
+                onclick={() => void pick(c)}
+              >
+                <span class="card-kind">{c.kind}</span>
+                <span class="card-title">{c.title}</span>
+                <span class="card-meta">{c.contextName} · {c.status ?? "No status"}</span>
+              </button>
+            </li>
+          {:else}
+            <li class="none">
+              {query.trim() ? "No open card matches that." : "This workspace has no open cards to run."}
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     <div class="body">
+      {#if held.length > 0}
+        <section class="held">
+          <h3>Cards to open in a new session</h3>
+          {#if heldHold}<p class="strip quiet">{heldHold}</p>{/if}
+          <ol class="queue">
+            {#each held as entry (entry.id)}
+              <li class="entry">
+                <SquareKanban size={13} />
+                <div class="text">
+                  <p class="held-title">{entry.title}</p>
+                  {#if entry.error}<p class="held-error" role="alert">{entry.error}</p>{/if}
+                </div>
+                <span class="age">{queuedAgeLabel(entry.askedAtMs * 1000, now)}</span>
+                <span class="entry-actions">
+                  <IconButton
+                    icon={ExternalLink}
+                    label="Open this card in a new session now"
+                    tip="Open it now, without waiting for this agent's turn to end"
+                    size={13}
+                    onclick={() => void openCardFollowUpNow(sessionId, entry.id)}
+                  />
+                  <IconButton
+                    icon={X}
+                    label="Cancel this card follow-up"
+                    tone="danger"
+                    size={13}
+                    onclick={() => cancelCardFollowUp(sessionId, entry.id)}
+                  />
+                </span>
+              </li>
+            {/each}
+          </ol>
+        </section>
+      {/if}
       {#if queued.length === 0}
-        <p class="none">Nothing queued. What you write here is delivered when this agent's turn ends.</p>
+        {#if held.length === 0}
+          <p class="none">Nothing queued. What you write here — or a card you pick — is delivered when this agent's turn ends.</p>
+        {/if}
       {:else}
+        {#if held.length > 0}<h3>Queued in this session</h3>{/if}
         <ol class="queue">
           {#each queued as entry, index (entry.id)}
             <li class="entry">
@@ -356,5 +515,111 @@
     display: flex;
     align-items: center;
     gap: 2px;
+  }
+  .picker {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 0 1 auto;
+    min-height: 0;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .modes {
+    display: flex;
+    gap: 4px;
+  }
+  .modes button {
+    flex: 1 1 0;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .modes button.selected {
+    color: var(--text);
+    background: var(--surface-base);
+    border-color: var(--accent);
+  }
+  .mode-note {
+    margin: 0;
+    font-size: 0.8em;
+    color: var(--text-muted);
+  }
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .card-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 0.85em;
+    text-align: left;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .card-row:hover:not(:disabled) {
+    background: var(--surface-base);
+  }
+  .card-row:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .card-kind {
+    flex: none;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+  .card-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-meta {
+    flex: none;
+    font-size: 0.9em;
+    color: var(--text-muted);
+  }
+  h3 {
+    margin: 0 0 4px;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .held {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+  .held-title,
+  .held-error {
+    margin: 0;
+  }
+  .held-error {
+    margin-top: 2px;
+    color: var(--danger-text);
   }
 </style>

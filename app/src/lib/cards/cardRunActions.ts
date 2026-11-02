@@ -60,7 +60,13 @@ import {
 } from "$lib/cards/attachments";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { cardContentOf, UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent, bracketedPaste } from "$lib/agents/queuedInput";
+import {
+  INTERRUPTED_REASON,
+  shouldQueueForMainAgent,
+  bracketedPaste,
+  queueBlockedReason,
+  type QueueTarget,
+} from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { inputLockedReason } from "$lib/core/sessionOwnershipState";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
@@ -1144,6 +1150,47 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // Checked before composing: composing reads the card file, and "no
   // agent" is the more useful message when both are true.
   if (!mainAgentSessionId(workspaceId)) return NO_MAIN_AGENT;
+  const error = await handCardToRunningAgent(workspaceId, card, (prompt) =>
+    pasteToMainAgent(workspaceId, prompt)
+  );
+  if (error) return error;
+  await switchWorkspaceView(workspaceId, "home");
+  return null;
+}
+
+/// Queues a card's run prompt as a follow-up on ANY running session --
+/// the follow-up queue view's "inline" card. The same hand-over as "Send
+/// to workspace agent", every gate included, delivered through the
+/// session's own queue: at the next idle, or at once when the agent is
+/// already idle (the daemon decides, as it does for a typed follow-up).
+///
+/// The queue's own refusals are asked BEFORE the card's status is
+/// written, so a session that cannot take the prompt leaves the card
+/// where it was rather than In Progress with nobody working it.
+export async function queueCardFollowUp(
+  workspaceId: string,
+  sessionId: string,
+  target: QueueTarget,
+  card: CardView
+): Promise<string | null> {
+  if (card.kind === "note") return "Notes are not runnable";
+  const blocked = queueBlockedReason(target);
+  if (blocked) return blocked;
+  const locked = inputLockedReason(sessionId);
+  if (locked) return locked;
+  return handCardToRunningAgent(workspaceId, card, (prompt) =>
+    queueFollowUp(sessionId, target, prompt)
+  );
+}
+
+/// The body shared by both: gates, compose, first-Run review, status
+/// write, then `deliver` with the prompt composed against the path the
+/// card landed on.
+async function handCardToRunningAgent(
+  workspaceId: string,
+  card: CardView,
+  deliver: (prompt: string) => Promise<string | null>
+): Promise<string | null> {
   // The same develop gate a dedicated run passes, because the conflict is
   // about the CARD, not about which agent reads it: the main agent would
   // be handed the body of a file being rewritten as it read it.
@@ -1225,10 +1272,7 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
       return `Couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
     }
   }
-  const pasteError = await pasteToMainAgent(workspaceId, composePrompt(path));
-  if (pasteError) return pasteError;
-  await switchWorkspaceView(workspaceId, "home");
-  return null;
+  return deliver(composePrompt(path));
 }
 
 // Re-launch from the remembered binding (same cwd/command), replacing

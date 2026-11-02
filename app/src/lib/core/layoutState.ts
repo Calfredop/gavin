@@ -1575,6 +1575,13 @@ export async function bootstrap(): Promise<void> {
   // and module-level for the same reason both of those are.
   const { startLaunchQueue } = await import("$lib/agents/launchQueue");
   unlisteners.push(startLaunchQueue());
+  // ...and the cards held to open in a new tab when an agent's turn ends
+  // (the follow-up view's "new session" card). After the queue, because
+  // a held card's launch goes through the same wall. Per window, like the
+  // queue, and module-level for its reason: a held card that only opens
+  // while its pane is mounted never opens.
+  const { startCardFollowUps } = await import("$lib/agents/cardFollowUpState");
+  unlisteners.push(startCardFollowUps());
   // ...and the one thing the wall may END: an idle agent of a done card,
   // while memory is short. After the queue, because its closes are what
   // make room for that queue's drain, and module-level for the sharpest

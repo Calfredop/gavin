@@ -25,6 +25,8 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
+  import { followUpButtonTip } from "$lib/agents/cardFollowUp";
+  import { heldCardCountById } from "$lib/agents/cardFollowUpState";
   import { queueTargetFor } from "$lib/agents/queuedInputActions";
 
   interface Props {
@@ -137,6 +139,10 @@
   // agent" lands here.
   let queueOpen = $state(false);
   const queued = $derived(sessionId ? ($queuedInputsById[sessionId] ?? []) : []);
+  // Cards held to open in a new session when this agent's turn ends --
+  // the other half of the follow-ups the button opens.
+  const heldCards = $derived(sessionId ? ($heldCardCountById[sessionId] ?? 0) : 0);
+  const followUps = $derived(queued.length + heldCards);
   const queueBlocked = $derived(
     sessionId
       ? queueBlockedReason(
@@ -172,13 +178,15 @@
           <IconButton
             icon={MessageSquarePlus}
             label="Follow-ups for this agent"
-            tip={queueBlocked ?? queueTip(queued) ?? "Queue a follow-up for when this agent finishes its turn"}
-            tone={queued.length > 0 ? "accent" : "default"}
+            tip={queueBlocked ??
+              followUpButtonTip(queueTip(queued), heldCards) ??
+              "Queue a follow-up for when this agent finishes its turn"}
+            tone={followUps > 0 ? "accent" : "default"}
             size={13}
             disabled={queueBlocked !== null}
             onclick={() => (queueOpen = true)}
           >
-            {#if queued.length > 0}<span class="queue-count">{queued.length}</span>{/if}
+            {#if followUps > 0}<span class="queue-count">{followUps}</span>{/if}
           </IconButton>
         </span>
         <button type="button" onclick={() => void stopMainAgent(workspaceId)}>Stop</button>
