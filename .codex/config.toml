@@ -1,1 +1,14 @@
-mcp_servers = { gavin = { command = "scripts/gavin-mcp", args = [] } }
+[mcp_servers.gavin]
+command = "scripts/gavin-mcp"
+args = []
+default_tools_approval_mode = "prompt"
+
+[mcp_servers.gavin.tools.gavin_name_session]
+approval_mode = "approve"
+
+[mcp_servers.gavin.tools.gavin_get_board]
+approval_mode = "approve"
+
+[mcp_servers.gavin.tools.gavin_get_tree]
+approval_mode = "approve"
+
