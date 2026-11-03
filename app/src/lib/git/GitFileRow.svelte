@@ -116,16 +116,25 @@
   .name {
     color: var(--text);
   }
+  /* Laid out even while hidden -- zero wide and invisible, but still its
+     buttons' height -- so the pointer arriving does not make the row grow
+     and push every row under it down. `display: none` here was the Git
+     tab's "shift" on hover. */
   .actions {
-    display: none;
+    display: flex;
     gap: 4px;
+    width: 0;
+    overflow: hidden;
+    visibility: hidden;
   }
   .actions.hidden {
     display: none !important;
   }
   .row:hover .actions,
   .row.selected .actions {
-    display: flex;
+    width: auto;
+    overflow: visible;
+    visibility: visible;
   }
   .actions button {
     background: transparent;
@@ -153,7 +162,9 @@
      matches neither query, so the desk draws the row as above. */
   @media (hover: none) {
     .row .actions {
-      display: flex;
+      width: auto;
+      overflow: visible;
+      visibility: visible;
     }
   }
   @media (pointer: coarse) {

@@ -437,13 +437,21 @@
     padding-right: 4px;
     flex: 0 0 auto;
   }
+  /* Laid out even while hidden (zero wide, invisible) so a hovered row
+     keeps its height instead of growing to the buttons' and shifting the
+     rows under it. */
   .acts {
-    display: none;
+    display: inline-flex;
     gap: 3px;
     padding-right: 4px;
+    width: 0;
+    overflow: hidden;
+    visibility: hidden;
   }
   .row:hover .acts {
-    display: inline-flex;
+    width: auto;
+    overflow: visible;
+    visibility: visible;
   }
   .foot button {
     background: transparent;
