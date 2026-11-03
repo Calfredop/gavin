@@ -11,3 +11,4 @@ When the implementation is done, commit it. Commit only the files you touched �
 <!-- /gavin:auto-commit -->
 
 - [ ] Human test: Git tab, in BOTH light and dark theme: hover the toolbar buttons, file rows and their +/− and trash buttons, sidebar branch rows and their actions, graph rows, the worktree/ref pickers and their menu items, and the diff hunk Stage/Discard buttons. Each should show a soft background fill and no border flash or "zoom"; a selected row and the conflict view's active Base toggle should keep their accent tint while hovered.
+- [ ] Human test: Git tab: sweep the pointer down the file list, the sidebar branch/remote/stash rows and the worktree switcher menu — no row should grow or push the rows below it when its +/−/trash/checkout actions appear, and the actions should still be clickable.
