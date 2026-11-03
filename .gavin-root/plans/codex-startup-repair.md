@@ -1,6 +1,7 @@
 ---
+order: 3840
 title: Codex startup repair
-status: Done
+status: In Progress
 ---
 - [x] Trace how the packaged app resolves agent commands and identify the shared failure path for Home and card runs.
 - [x] Repair executable discovery for launch environments with a minimal PATH.

@@ -1,9 +1,9 @@
 ---
 agent: codex
-order: 16384
+order: 3584
 kind: task
 title: [bug] Codex not starting
-status: Done
+status: In Progress
 ---
 In app build as .dmg file using Codex as main agent didnt make the app able to run agents (neither in ws home nor from cards).
 
