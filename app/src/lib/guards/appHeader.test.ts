@@ -217,7 +217,11 @@ describe("the hub and the page reach the top of the window", () => {
   it("puts the title strip in the rail beside the view, not above it", () => {
     expect(PAGE).toMatch(/<div class="rail">\s*<TitleBar \/>/);
     expect(rule(PAGE, ".rail").width).toBe("var(--rail-width)");
-    expect(rule(PAGE, ".app")["--rail-width"]).toBe("var(--sidebar-width)");
+    expect(rule(PAGE, ".app")["--rail-width"]).toBe("var(--sidebar-open-width)");
+    // Dragging the edge can only widen the column past its chrome.
+    expect(rule(PAGE, ".app")["--sidebar-open-width"]).toBe(
+      "max(var(--sidebar-width), var(--sidebar-chosen-width, 0px))"
+    );
     // The divider between the columns runs the full height, so it has to
     // belong to the column rather than to the sidebar inside it.
     expect(rule(PAGE, ".rail")["border-right"]).toBe("1px solid var(--border)");

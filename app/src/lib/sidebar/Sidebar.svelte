@@ -2053,7 +2053,7 @@
     top: var(--header-height);
     left: 0;
     bottom: 0;
-    width: var(--sidebar-width);
+    width: var(--sidebar-open-width);
     z-index: 50;
     border-right: 1px solid var(--border);
     box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);

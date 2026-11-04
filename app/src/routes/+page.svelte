@@ -57,6 +57,12 @@
   import { resolveAgentConfig, accentVar } from "$lib/core/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import {
+    beginSidebarResize,
+    resetSidebarWidth,
+    sidebarWidth,
+    sidebarWidthStyle,
+  } from "$lib/sidebar/sidebarWidth";
   import { tabStripHubViews, visibleHubViews } from "$lib/hub/workspaceViews";
   import TerminalView from "$lib/terminal/TerminalView.svelte";
   import TitleBar from "$lib/shell/TitleBar.svelte";
@@ -421,7 +427,31 @@
     void startDeviceCommitRequests().then((stop) => (stopDeviceCommits = stop));
   });
 
+  // The open column's right edge. The drag itself -- live width, one
+  // write on release, the WKWebView pointerup bail-out -- is
+  // sidebarWidth.ts; this only hands it where the column starts. The
+  // width it reads is the one DRAWN, which off macOS can be a floor
+  // wider than anything stored, so the column never jumps on the first
+  // pixel of a drag. clientWidth, not offsetWidth: the rail's 1px rule
+  // is outside its content-box width.
+  let resizingSidebar = $state(false);
+  let endSidebarResize: (() => void) | null = null;
+  function startSidebarResize(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    const rail = (e.currentTarget as HTMLElement | null)?.parentElement;
+    if (!rail) return;
+    e.preventDefault();
+    resizingSidebar = true;
+    endSidebarResize = beginSidebarResize(rail.clientWidth, e.clientX, {
+      onEnd: () => {
+        resizingSidebar = false;
+        endSidebarResize = null;
+      },
+    });
+  }
+
   onDestroy(() => {
+    endSidebarResize?.();
     unlistenClose?.();
     unlistenQuit?.();
     uninstallShortcuts?.();
@@ -455,9 +485,11 @@
 <div
   class="app"
   class:sidebar-collapsed={$sidebarCollapsed}
+  class:resizing-sidebar={resizingSidebar}
   class:wide-window-controls={!isMacSync()}
   class:rounded-corners={isMacSync()}
   style:--ws-accent={accent}
+  style:--sidebar-chosen-width={sidebarWidthStyle($sidebarWidth)}
 >
   <!-- Outside the body row and ahead of every connection branch, for
        the same reason TitleBar is: a window that cannot reach its
@@ -478,6 +510,21 @@
       <TitleBar />
       {#if $layoutState.status === "ready"}
         <Sidebar />
+      {/if}
+      <!-- Only while the column is open: the icon rail is as wide as
+           what it draws, and a collapsed column that could be dragged
+           wider would be an open one in all but its rows. -->
+      {#if !$sidebarCollapsed}
+        <div
+          class="rail-resize"
+          class:dragging={resizingSidebar}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          use:tooltip={"Drag to resize \u00b7 double-click to reset"}
+          onpointerdown={startSidebarResize}
+          ondblclick={() => resetSidebarWidth()}
+        ></div>
       {/if}
     </div>
     <div class="main">
@@ -856,7 +903,12 @@
        variable rather than two rules on .rail because the head of the
        header row reads it too: it has to know how much of the window's
        corner overhangs a narrow rail to leave room for it. */
-    --rail-width: var(--sidebar-width);
+    /* The open column: the chrome's floor (theme.css, wider off macOS)
+       or the width the human dragged it to, whichever is wider -- see
+       sidebarWidth.ts. --sidebar-chosen-width is set inline only once
+       the edge has been dragged. The peek reads this too. */
+    --sidebar-open-width: max(var(--sidebar-width), var(--sidebar-chosen-width, 0px));
+    --rail-width: var(--sidebar-open-width);
     /* And how wide that corner is -- the platform's own controls. macOS
        draws three 12px lights 8px apart inside a 12px pad; everything
        else three 26px tiles 2px apart inside an 8px/6px pad. Stated
@@ -946,6 +998,45 @@
        rather than widening this one, so the anchor has to be the column
        and the overlay has to be inside it. */
     position: relative;
+  }
+  /* The column's right edge, straddling its rule: 3px over the rail and
+     3px over the view, so it is grabbable without either side giving up
+     a pixel of layout. Over the corner too (z-index above its 1): the
+     rule it sits on runs the full height, and so does the edge. Only the
+     rule itself ever paints, and only while hovered or dragged. */
+  .rail-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -4px;
+    width: 7px;
+    z-index: 2;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .rail-resize::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 3px;
+    background: transparent;
+    transition: background 120ms ease;
+  }
+  .rail-resize:hover::before,
+  .rail-resize.dragging::before {
+    background: var(--border-strong);
+  }
+  /* While dragging, the pointer crosses terminals, links and text; none
+     of them may take the cursor or start a selection. */
+  .app.resizing-sidebar {
+    cursor: col-resize;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .app.resizing-sidebar :global(*) {
+    cursor: col-resize !important;
   }
   /* Everything that is not the window's own column, from the top of the
      window down: the banners, and whichever of the app hub, a hub tab or
