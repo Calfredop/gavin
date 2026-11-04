@@ -12,3 +12,6 @@ registry.sqlite
 
 # Scheduled tasks' Run reports and saved terminals (ADR 0010).
 .gavin-root/scheduled/runs/
+/app/.agents/skills/brag/
+/brag-output/
+/app/.claude/skills/brag
