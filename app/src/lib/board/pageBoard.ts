@@ -24,7 +24,7 @@
 // whose agent exited leaves the board with its tab. Nothing has to
 // expire a binding row for that to be true.
 
-import { allSessionIds } from "$lib/panes/layout";
+import { allSessionIds, findLeafPath } from "$lib/panes/layout";
 import { railCardPaths } from "$lib/orchestration/orchestration";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
@@ -143,9 +143,11 @@ export function translateDropIndex(
 /// context board, which is the behaviour that predates this lens.
 export function pageHolding(workspaces: readonly Workspace[], tabId: string | null): Page | null {
   if (!tabId) return null;
+  // findLeafPath, not allSessionIds: a board opened beside a terminal is
+  // one of its Attached views (ADR 0013), and is on that page all the same.
   for (const ws of workspaces) {
     for (const page of ws.pages) {
-      if (allSessionIds(page.layout).includes(tabId)) return page;
+      if (findLeafPath(page.layout, tabId)) return page;
     }
   }
   return null;

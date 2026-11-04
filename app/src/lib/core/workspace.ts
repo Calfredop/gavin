@@ -2,7 +2,7 @@ import type { PauseCycle } from "$lib/agents/agentPause";
 import type { ComplexityTable, CustomProfile } from "$lib/cards/complexity";
 import type { CommitDetailSplit } from "$lib/git/gitCommitSplit";
 import type { LayoutNode } from "$lib/panes/layout";
-import { addTab, allSessionIds, findLeafPath } from "$lib/panes/layout";
+import { addTab, allSessionIds, allTabIds, findLeafPath } from "$lib/panes/layout";
 
 export interface Page {
   id: string;
@@ -780,9 +780,12 @@ export function getActiveTree(state: WorkspacesData): LayoutNode | null {
 // remembered focusedSessionId if that session is still present in its
 // tree, otherwise the first session in tree order. Returns null for a
 // page with no sessions (or no page at all).
+//
+// A remembered focus on an Attached view counts as present: focus can sit
+// inside a Tab group, and the view is in its owner's pane.
 export function resolveFocusForPage(page: Page | null): string | null {
   if (!page) return null;
-  if (page.focusedSessionId && allSessionIds(page.layout).includes(page.focusedSessionId)) {
+  if (page.focusedSessionId && findLeafPath(page.layout, page.focusedSessionId)) {
     return page.focusedSessionId;
   }
   return allSessionIds(page.layout)[0] ?? null;
@@ -827,6 +830,12 @@ export function resolveActiveFocus(
 
 export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
+}
+
+/// allSessionIdsInWorkspace with every page's Attached views as well --
+/// for closing a workspace, which ends them too.
+export function allTabIdsInWorkspace(workspace: Workspace): string[] {
+  return workspace.pages.flatMap((p) => allTabIds(p.layout));
 }
 
 /// The order the sidebar renders workspaces in: the Scratchpad pinned

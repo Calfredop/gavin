@@ -80,6 +80,30 @@ describe("confirmTabClose", () => {
     expect(vi.mocked(askConfirm).mock.calls[0][0].confirmLabel).toBe("Close tab");
   });
 
+  it("says a tab's Attached views close with it, and that a view is never the pane's last tab", async () => {
+    const grouped: LayoutNode = {
+      type: "leaf",
+      tabs: ["a", "b"],
+      activeTabIndex: 0,
+      attached: { a: { tabs: ["plan", "diff"], activeTabIndex: 0, size: 0.5 } },
+    };
+    setActivePage([ws("ws-1", [page("page-1", grouped)])], "ws-1");
+    layoutState.update((s) => ({
+      ...s,
+      cardTabsById: {
+        plan: { workspaceId: "ws-1", path: "/p.md", view: "plan" },
+        diff: { workspaceId: "ws-1", path: "/p.md", view: "changes" },
+      },
+    }));
+    vi.mocked(askConfirm).mockResolvedValue(true);
+
+    await confirmTabClose("a");
+    expect(prompt(0)).toBe("Close this tab? The terminal session will end. The 2 views beside it will close too.");
+
+    await confirmTabClose("diff");
+    expect(prompt(1)).toBe("Close this tab?");
+  });
+
   it("prompts and returns the dialog's answer when the tab is the last one in its pane", async () => {
     setActivePage([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1");
     vi.mocked(askConfirm).mockResolvedValue(true);

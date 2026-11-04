@@ -6,7 +6,7 @@ import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
 import { executionKeys, executionKeysHash } from "$lib/workspace/workspaceTrust";
 import { EMPTY_AGENT_DEFAULTS } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/panes/layout";
-import { allSessionIds } from "$lib/panes/layout";
+import { allSessionIds, allTabIds } from "$lib/panes/layout";
 import type { Page, Workspace } from "$lib/core/workspace";
 import { getActiveView } from "$lib/core/workspace";
 import { listen } from "@tauri-apps/api/event";
@@ -249,6 +249,9 @@ import {
   openCardInSplit,
   openFollowUpsInSplit,
   openBrowserInSplit,
+  closeAttachedViews,
+  previewResizeAttached,
+  pressViewChip,
   mainBrowserOpen,
   mainBrowserShare,
   setMainBrowserShare,
@@ -329,6 +332,13 @@ import { confirmDestructive } from "$lib/core/confirmGate";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex };
+}
+
+/// `base` with `views` attached to `owner`, the last in front, at the
+/// side pane's starting width -- what one open after another leaves.
+function attachedTo(base: LayoutNode, owner: string, views: string[], front = views.length - 1): LayoutNode {
+  if (base.type !== "leaf") throw new Error("expected a leaf");
+  return { ...base, attached: { [owner]: { tabs: views, activeTabIndex: front, size: 0.5 } } };
 }
 
 function page(id: string, layout: LayoutNode): Page {
@@ -653,14 +663,14 @@ describe("handleAgentSessionSpawned", () => {
 });
 
 describe("openBoardInSplit", () => {
-  it("splits beside the anchor, records the board tab, persists, spawns nothing", async () => {
+  it("attaches the board to the anchor's tab, records the board tab, persists, spawns nothing", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     await openBoardInSplit("a", "ws-1", "/ws/auth");
 
     const state = get(layoutState);
-    expect(state.workspaces[0].pages[0].layout.type).toBe("split");
     const boardTabIds = Object.keys(state.boardTabsById);
+    expect(state.workspaces[0].pages[0].layout).toEqual(attachedTo(leaf(["a"]), "a", boardTabIds));
     expect(boardTabIds).toHaveLength(1);
     expect(state.boardTabsById[boardTabIds[0]]).toEqual({ workspaceId: "ws-1", contextFolder: "/ws/auth" });
     expect(state.focusedSessionId).toBe(boardTabIds[0]);
@@ -671,14 +681,14 @@ describe("openBoardInSplit", () => {
 });
 
 describe("openCardInSplit", () => {
-  it("splits beside the anchor, records the card tab, persists, spawns nothing", async () => {
+  it("attaches the view to the anchor's tab, records the card tab, persists, spawns nothing", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     await openCardInSplit("a", "ws-1", "/ws/.gavin-root/plans/login.md", "plan");
 
     const state = get(layoutState);
-    expect(state.workspaces[0].pages[0].layout.type).toBe("split");
     const cardTabIds = Object.keys(state.cardTabsById);
+    expect(state.workspaces[0].pages[0].layout).toEqual(attachedTo(leaf(["a"]), "a", cardTabIds));
     expect(cardTabIds).toHaveLength(1);
     expect(state.cardTabsById[cardTabIds[0]]).toEqual({
       workspaceId: "ws-1",
@@ -754,6 +764,246 @@ describe("openCardInSplit", () => {
   });
 });
 
+// ADR 0013: a view a terminal tab opens is that tab's Attached view, one
+// side pane inside its pane, drawn only while the tab is in front.
+describe("Tab groups", () => {
+  const PLAN = "/ws/plans/login.md";
+  function paneOf(): LayoutNode {
+    return get(layoutState).workspaces[0].pages[0].layout;
+  }
+  function cardIds(): string[] {
+    return Object.keys(get(layoutState).cardTabsById);
+  }
+
+  it("opens a view into the anchor's group only, and switching tabs leaves it there", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [diff] = cardIds();
+
+    await switchToTab("b");
+
+    // (b) fills the pane: the diff is (a)'s, and is not one of the pane's tabs.
+    expect(paneOf()).toEqual(attachedTo(leaf(["a", "b"], 1), "a", [diff]));
+    expect(allSessionIds(paneOf())).toEqual(["a", "b"]);
+  });
+
+  it("an open from inside the group joins it: Show plan from the diff opens the plan beside it", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [diff] = cardIds();
+    expect(get(layoutState).focusedSessionId).toBe(diff);
+
+    await openCardInSplit(diff, "ws-1", PLAN, "plan");
+
+    const [, plan] = cardIds();
+    expect(paneOf()).toEqual(attachedTo(leaf(["a"]), "a", [diff, plan]));
+    expect(get(layoutState).focusedSessionId).toBe(plan);
+  });
+
+  it("de-duplicates within the anchor's group, not across the pane", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+    await openCardInSplit("b", "ws-1", PLAN, "plan");
+
+    expect(cardIds()).toHaveLength(2);
+    const tree = paneOf();
+    expect(tree.type === "leaf" && Object.keys(tree.attached ?? {})).toEqual(["a", "b"]);
+  });
+
+  it("brings an open view forward in its group rather than opening it twice", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [plan, diff] = cardIds();
+
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+
+    expect(cardIds()).toEqual([plan, diff]);
+    expect(paneOf()).toEqual(attachedTo(leaf(["a"]), "a", [plan, diff], 0));
+    expect(get(layoutState).focusedSessionId).toBe(plan);
+  });
+
+  it("falls back to a page split beside a view tab, which cannot own views", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"], 1))])], "ws-1", "file-1");
+    layoutState.update((st) => ({ ...st, fileTabsById: { "file-1": { path: "/ws/a.md" } } }));
+
+    await openFileInSplit("file-1", "/ws/b.md");
+
+    const tree = paneOf();
+    expect(tree.type).toBe("split");
+    expect(allSessionIds(tree)).toHaveLength(3);
+  });
+
+  it("closing the owner closes its views: no kill for them, and their map entries go", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+    await openFileInSplit("a", "/ws/notes.md");
+    const [fileTab] = Object.keys(get(layoutState).fileTabsById);
+    vi.mocked(backend.killSession).mockClear();
+
+    await closeSession("a");
+    await vi.waitFor(() => expect(get(layoutState).fileTabsById).toEqual({}));
+
+    expect(paneOf()).toEqual(leaf(["b"]));
+    expect(get(layoutState).cardTabsById).toEqual({});
+    expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/ws/notes.md");
+    // Only the session: a view id handed to the daemon is an "unknown
+    // session" on the streaming connection, which blanks the window.
+    expect(vi.mocked(backend.killSession).mock.calls.map(([id]) => id)).not.toContain(fileTab);
+    expect(vi.mocked(backend.killSession).mock.calls.every(([id]) => id === "a")).toBe(true);
+  });
+
+  it("a session that dies on its own takes its views with it too", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "b");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+
+    handleSessionExited("a");
+    await vi.waitFor(() => expect(get(layoutState).cardTabsById).toEqual({}));
+
+    expect(paneOf()).toEqual(leaf(["b"]));
+  });
+
+  it("closing a focused view hands the focus back to its owner", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["b", "a"], 1))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [diff] = cardIds();
+
+    await closeSession(diff);
+
+    expect(paneOf()).toEqual(leaf(["b", "a"], 1));
+    expect(get(layoutState).focusedSessionId).toBe("a");
+    expect(get(layoutState).workspaces[0].pages[0].focusedSessionId).toBe("a");
+  });
+
+  it("closes every view of a group at once, and the side pane with them", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+
+    await closeAttachedViews("a");
+
+    expect(paneOf()).toEqual(leaf(["a"]));
+    expect(get(layoutState).cardTabsById).toEqual({});
+    expect(get(layoutState).focusedSessionId).toBe("a");
+  });
+
+  it("Close Pane closes the groups in it as well", async () => {
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "row",
+            children: [leaf(["a"]), leaf(["c"])],
+            sizes: [0.5, 0.5],
+          }),
+        ]),
+      ],
+      "ws-1",
+      "a"
+    );
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+
+    await closePane("a");
+
+    expect(paneOf()).toEqual(leaf(["c"]));
+    expect(get(layoutState).cardTabsById).toEqual({});
+  });
+
+  it("closing a page ends its Attached views too", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["z"]))], "page-1")], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+
+    await closePage("ws-1", "page-1");
+
+    expect(get(layoutState).cardTabsById).toEqual({});
+  });
+
+  it("remembers the divider per group, saved with the layout", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+
+    previewResizeAttached("a", 0.3);
+
+    const tree = paneOf();
+    expect(tree.type === "leaf" && tree.attached?.a.size).toBe(0.3);
+  });
+
+  it("a view dragged out onto a tab bar becomes an ordinary tab there", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [diff] = cardIds();
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: diff },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "center", targetSessionId: "a", targetIndex: 2 }
+    );
+
+    // Out of (a)'s group, and on screen whichever tab is in front.
+    expect(paneOf()).toEqual(leaf(["a", "b", diff], 2));
+    expect(cardIds()).toEqual([diff]);
+  });
+
+  it("a view dragged out onto a pane's body becomes a pane of its own", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+    const [diff] = cardIds();
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: diff },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "right", targetSessionId: "a" }
+    );
+
+    expect(paneOf()).toEqual({
+      type: "split",
+      direction: "row",
+      children: [leaf(["a"]), leaf([diff])],
+      sizes: [0.5, 0.5],
+    });
+  });
+
+  it("a tab moved to another pane takes its group along", async () => {
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", { type: "split", direction: "row", children: [leaf(["a", "b"]), leaf(["c"])], sizes: [0.5, 0.5] }),
+        ]),
+      ],
+      "ws-1",
+      "a"
+    );
+    await openCardInSplit("a", "ws-1", PLAN, "plan");
+    const [plan] = cardIds();
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "center", targetSessionId: "c" }
+    );
+
+    const tree = paneOf();
+    expect(tree.type === "split" && tree.children[1]).toEqual(attachedTo(leaf(["c", "a"], 1), "a", [plan]));
+  });
+
+  it("a chip closes its view while that view is in front, and opens or brings it forward otherwise", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    const subject = { kind: "card" as const, tab: { workspaceId: "ws-1", path: PLAN, view: "plan" as const } };
+    const open = () => openCardInSplit("a", "ws-1", PLAN, "plan");
+
+    await pressViewChip("a", subject, open);
+    expect(cardIds()).toHaveLength(1);
+    await openCardInSplit("a", "ws-1", PLAN, "changes");
+
+    // The plan is open but behind the diff: the press brings it forward.
+    await pressViewChip("a", subject, open);
+    expect(cardIds()).toHaveLength(2);
+    expect(paneOf()).toEqual(attachedTo(leaf(["a"]), "a", cardIds(), 0));
+
+    // Now in front: the same press closes it.
+    await pressViewChip("a", subject, open);
+    expect(cardIds()).toHaveLength(1);
+  });
+});
+
 describe("card tabs following their card", () => {
   it("setCardTabPath moves ONE pane, leaving a sibling view of the same card alone", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
@@ -820,13 +1070,13 @@ describe("the tab maps against a store Rust has not caught up with", () => {
 
     void openBoardInSplit("a", "ws-1", "/ws/auth");
     const tabId = Object.keys(get(layoutState).boardTabsById)[0];
-    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+    expect(allTabIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
 
     await bootstrapAgain();
 
     // Still in the tree, so it must still be classified: an id in a tree
     // and in neither map IS a terminal as far as Pane.svelte is concerned.
-    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+    expect(allTabIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
     expect(get(layoutState).boardTabsById[tabId]).toEqual({
       workspaceId: "ws-1",
       contextFolder: "/ws/auth",
@@ -844,7 +1094,7 @@ describe("the tab maps against a store Rust has not caught up with", () => {
 
     await bootstrapAgain();
 
-    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+    expect(allTabIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
     expect(get(layoutState).fileTabsById[tabId]).toEqual({ path: "/ws/readme.md" });
   });
 
@@ -1301,7 +1551,7 @@ describe("openFollowUpsInSplit", () => {
 });
 
 describe("openBrowserInSplit", () => {
-  it("splits the browser beside its session without taking the focus", async () => {
+  it("attaches the browser to its session's tab without taking the focus", async () => {
     // The auto-open: nobody pressed anything, and a human may be typing in
     // the terminal the pane appears beside.
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
@@ -1311,7 +1561,7 @@ describe("openBrowserInSplit", () => {
     const state = get(layoutState);
     const [id, tab] = Object.entries(state.cardTabsById)[0];
     expect(tab).toEqual({ workspaceId: "ws-1", path: "", view: "browser", sessionId: "a" });
-    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a", id]);
+    expect(state.workspaces[0].pages[0].layout).toEqual(attachedTo(leaf(["a"]), "a", [id]));
     expect(state.focusedSessionId).toBe("a");
     expect(backend.setCardTabs).toHaveBeenCalledWith(state.cardTabsById);
   });
@@ -1326,8 +1576,18 @@ describe("openBrowserInSplit", () => {
     expect(await openBrowserInSplit("b", false)).toBe(true);
 
     const state = get(layoutState);
-    expect(allSessionIds(state.workspaces[0].pages[0].layout)).toEqual(["a"]);
-    expect(allSessionIds(state.workspaces[0].pages[1].layout)).toHaveLength(2);
+    expect(allTabIds(state.workspaces[0].pages[0].layout)).toEqual(["a"]);
+    expect(allTabIds(state.workspaces[0].pages[1].layout)).toHaveLength(2);
+  });
+
+  it("does not switch a pane showing another tab over to the session whose browser opened", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"], 1))])], "ws-1", "b");
+
+    await openBrowserInSplit("a", false);
+
+    const tree = get(layoutState).workspaces[0].pages[0].layout;
+    expect(tree.type === "leaf" && tree.tabs[tree.activeTabIndex]).toBe("b");
+    expect(get(layoutState).focusedSessionId).toBe("b");
   });
 
   it("opens one pane per session, and the chip brings it forward", async () => {
@@ -2912,20 +3172,17 @@ describe("createSessionForCard", () => {
 });
 
 describe("openFileInSplit", () => {
-  it("splits the anchor's pane with a new file tab and persists both the tree and the file-tab map", async () => {
+  it("attaches a new file tab to the anchor's tab and persists both the tree and the file-tab map", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     await openFileInSplit("a", "/tmp/README.md");
 
     const state = get(layoutState);
     const tree = state.workspaces[0].pages[0].layout;
-    expect(tree.type).toBe("split");
-    if (tree.type !== "split") throw new Error("expected a split");
-    // The anchor keeps its own leaf; the new file tab gets the sibling leaf.
-    expect(tree.children[0]).toEqual(leaf(["a"]));
-    const newLeaf = tree.children[1];
-    if (newLeaf.type !== "leaf") throw new Error("expected a leaf");
-    const newTabId = newLeaf.tabs[0];
+    if (tree.type !== "leaf") throw new Error("expected the anchor's own leaf");
+    // The pane is not split: the file is one of the anchor's Attached views.
+    const newTabId = tree.attached?.a.tabs[0] ?? "";
+    expect(tree).toEqual(attachedTo(leaf(["a"]), "a", [newTabId]));
     expect(state.fileTabsById[newTabId]).toEqual({ path: "/tmp/README.md" });
     expect(backend.setFileTabs).toHaveBeenCalledWith({ [newTabId]: "/tmp/README.md" });
     expect(backend.setWorkspacesState).toHaveBeenCalled();

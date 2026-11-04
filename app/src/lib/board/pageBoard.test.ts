@@ -236,6 +236,17 @@ describe("pageHolding", () => {
     expect(pageHolding(ws, "d")?.id).toBe("p-3");
   });
 
+  it("finds a board that is one of a tab's Attached views", () => {
+    const grouped: LayoutNode = {
+      type: "leaf",
+      tabs: ["c"],
+      activeTabIndex: 0,
+      attached: { c: { tabs: ["board-1"], activeTabIndex: 0, size: 0.5 } },
+    };
+    const ws = [workspace("ws-1", [page("p-1", leaf("a")), page("p-2", grouped)])];
+    expect(pageHolding(ws, "board-1")?.id).toBe("p-2");
+  });
+
   it("is null for a tab no tree holds, and for no tab at all", () => {
     const ws = [workspace("ws-1", [page("p-1", leaf("a"))])];
     expect(pageHolding(ws, "gone")).toBeNull();

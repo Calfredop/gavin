@@ -341,7 +341,12 @@ mod tests {
             pages: vec![Page {
                 id: s("page"),
                 name: s("Page"),
-                layout: LayoutNode::Leaf { tabs: vec![s("tab")], active_tab_index: 0, pinned: vec![] },
+                layout: LayoutNode::Leaf {
+                    tabs: vec![s("tab")],
+                    active_tab_index: 0,
+                    pinned: vec![],
+                    attached: Default::default(),
+                },
                 focused_session_id: Some(s("tab")),
                 pinned_at: Some(n),
             }],

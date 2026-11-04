@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { askConfirm, showAlert } from "$lib/core/dialog";
 import type { LayoutNode } from "$lib/panes/layout";
 import * as layout from "$lib/panes/layout";
+import { chipPress, placeViewOpen, type ViewSubject } from "$lib/panes/attachedViews";
 import * as backend from "$lib/core/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agents/agentPause";
@@ -766,6 +767,18 @@ async function pruneClosedTabs(closed: ClosedTabs): Promise<void> {
   if (closed.fileTabIds.length > 0) await pruneFileTabs(closed.fileTabIds);
   if (closed.boardTabIds.length > 0) await pruneBoardTabs(closed.boardTabIds);
   if (closed.cardTabIds.length > 0) await pruneCardTabs(closed.cardTabIds);
+}
+
+/// Ends and prunes view tabs that have already left the tree -- a closed
+/// tab's Attached views. Only ids a map still classifies: one that is in
+/// none (pruned by a close already under way, or lost) is not a session
+/// either, and endTabs would ask the daemon to kill it.
+async function endViewTabs(ids: string[]): Promise<void> {
+  const state = get(layoutState);
+  const views = ids.filter((id) => state.fileTabsById[id] || state.boardTabsById[id] || state.cardTabsById[id]);
+  if (views.length === 0) return;
+  const closed = await endTabs(views, state.fileTabsById, state.boardTabsById, state.cardTabsById);
+  if (closed) await pruneClosedTabs(closed);
 }
 
 // Mirrors pruneBoardTabs exactly, over the third map.
@@ -3679,80 +3692,43 @@ export async function splitPane(targetSessionId: string, direction: "row" | "col
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
-// Opens `path` as a new file tab, split beside the pane holding
-// `anchorSessionId` -- the cmd+click-a-path flow's entry point. Mirrors
-// splitPane exactly, except the new tab is a file tab (a fresh opaque id
-// recorded in fileTabsById) rather than a freshly spawned session, so no
-// create_session call happens at all.
+// Opens `path` as a file view beside `anchorSessionId` -- the
+// cmd+click-a-path flow's entry point, and the Files and Plans tabs'
+// "open in split". A file tab is a fresh opaque id recorded in
+// fileTabsById, so no create_session call happens at all. Beside a
+// terminal it is one of that tab's Attached views (openViewBeside).
 export async function openFileInSplit(anchorSessionId: string, path: string): Promise<void> {
-  const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = activePageLocation(get(layoutState));
   if (!location) return;
-  const tabId = crypto.randomUUID();
-  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
-  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
-  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
-  const fileTabsById = { ...state.fileTabsById, [tabId]: { path } };
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, fileTabsById }));
-
-  const asPathMap: Record<string, string> = {};
-  for (const [id, tab] of Object.entries(fileTabsById)) {
-    asPathMap[id] = tab.path;
-  }
-  try {
-    await backend.setFileTabs(asPathMap);
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
-  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  await openViewBeside(location, anchorSessionId, { kind: "file", path }, true);
 }
 
-// Opens a context board as a new board tab, split beside the pane holding
-// `anchorSessionId` -- the pane board-icon flow's entry point. Mirrors
-// openFileInSplit exactly, with boardTabsById/setBoardTabs in place of the
-// file-tab map.
+// Opens a context board as a board view beside `anchorSessionId` -- the
+// pane board-icon flow's entry point. openFileInSplit, with the board-tab
+// map in place of the file-tab one.
 export async function openBoardInSplit(
   anchorSessionId: string,
   workspaceId: string,
   contextFolder: string
 ): Promise<void> {
-  const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = activePageLocation(get(layoutState));
   if (!location) return;
-  const tabId = crypto.randomUUID();
-  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
-  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
-  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
-  const boardTabsById = { ...state.boardTabsById, [tabId]: { workspaceId, contextFolder } };
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, boardTabsById }));
-  try {
-    await backend.setBoardTabs(boardTabsById);
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
-  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  await openViewBeside(location, anchorSessionId, { kind: "board", tab: { workspaceId, contextFolder } }, true);
 }
 
 // Opens one of a card's own views -- its detail panel, or the diff of
-// what its run did to the checkout -- as a new tab split beside the pane
-// holding `anchorSessionId`. Mirrors openBoardInSplit, with
-// cardTabsById/setCardTabs in place of the board-tab map.
-//
-// Unlike the file and board splits this one DEDUPES first (see
-// openViewTabInSplit). It is reached from a chip on a terminal tab,
-// which the human clicks to check on the agent and clicks again a minute
-// later; splitting a second identical pane every time is how a page ends
-// up four copies deep in the same card. An already-open view of the same
-// card is brought forward instead, wherever on this page it lives.
+// what its run did to the checkout -- beside `anchorSessionId`, as one of
+// its Attached views. Reached from a chip on a terminal tab, which the
+// human clicks to check on the agent and clicks again a minute later, so
+// an open view of the same card in that tab's group is brought forward
+// instead of opened twice (openViewBeside).
 export function openCardInSplit(
   anchorSessionId: string,
   workspaceId: string,
   path: string,
   view: CardTabView
 ): Promise<void> {
-  return openViewTabInSplit(anchorSessionId, { workspaceId, path, view });
+  return openActiveViewBeside(anchorSessionId, { kind: "card", tab: { workspaceId, path, view } });
 }
 
 /// The follow-up queue for ONE session, split beside the terminal it
@@ -3770,11 +3746,9 @@ export function openFollowUpsInSplit(
   anchorSessionId: string,
   workspaceId: string
 ): Promise<void> {
-  return openViewTabInSplit(anchorSessionId, {
-    workspaceId,
-    path: "",
-    view: "followups",
-    sessionId: anchorSessionId,
+  return openActiveViewBeside(anchorSessionId, {
+    kind: "card",
+    tab: { workspaceId, path: "", view: "followups", sessionId: anchorSessionId },
   });
 }
 
@@ -3823,17 +3797,19 @@ export function hideMainBrowser(sessionId: string): void {
   });
 }
 
-/// An agent's browser, live, split beside the terminal it belongs to
-/// (`browserView.ts`). Keyed by the session like the follow-up queue, and
-/// deduped the same way: one browser pane per session per page.
+/// An agent's browser, live, beside the terminal it belongs to
+/// (`browserView.ts`) -- one of that tab's Attached views. Keyed by the
+/// session like the follow-up queue, and de-duplicated the same way: one
+/// browser view per session's group.
 ///
 /// Unlike the chips' opens it is also reached with nobody pressing
 /// anything -- the browser's first frame, in a workspace set to open it
 /// automatically -- so it finds the page that HOLDS the session rather than
 /// assuming the active one, and takes the focus only when `focus` says a
-/// human asked: a pane appearing must not take the keyboard from someone
-/// typing in another one. Resolves whether a pane is open beside the
-/// session now: false when nothing in this window holds the session.
+/// human asked: a view appearing must not take the keyboard from someone
+/// typing in another pane, nor switch a pane showing another tab over to
+/// this one. Resolves whether a view is open beside the session now:
+/// false when nothing in this window holds the session.
 ///
 /// A workspace's main agent lives outside every page tree, in its Home
 /// cell, which has no tab bar to add a tab to: its browser opens as that
@@ -3849,28 +3825,64 @@ export async function openBrowserInSplit(sessionId: string, focus: boolean): Pro
     ? state.workspaces.find((w) => w.id === found.workspaceId)?.pages.find((p) => p.id === found.pageId)
     : undefined;
   if (!found || !page) return false;
-  const existing = Object.entries(state.cardTabsById).find(
-    ([id, tab]) =>
-      tab.view === "browser" && tab.sessionId === sessionId && layout.findLeafPath(page.layout, id) !== null
+  const tab: CardTab = { workspaceId: found.workspaceId, path: "", view: "browser", sessionId };
+  return openViewBeside(
+    { workspaceId: found.workspaceId, pageId: found.pageId, tree: page.layout },
+    sessionId,
+    { kind: "card", tab },
+    focus
   );
-  if (existing) {
-    if (focus) await switchToTab(existing[0]);
+}
+
+/// A card view's open, on the page on screen -- every chip is on it.
+async function openActiveViewBeside(anchorSessionId: string, subject: ViewSubject): Promise<void> {
+  const location = activePageLocation(get(layoutState));
+  if (!location) return;
+  await openViewBeside(location, anchorSessionId, subject, true);
+}
+
+/// The body every view open shares (ADR 0013): place it, then bring an
+/// open view of the same subject forward or record a new one, and persist.
+///
+/// Beside a terminal tab -- or beside one of its views, which stands for
+/// it -- the view is one of that tab's Attached views, de-duplicated
+/// within its group. Beside a view tab of the page tree (a file or board
+/// tab) it falls back to the page split every view used to open as,
+/// since a view cannot own views (attachedViews.placeViewOpen).
+///
+/// The tab map is mirrored to Rust before the layout is: an id in the
+/// tree and in no map is a terminal as far as the pane is concerned (see
+/// ClosedTabs), so a failed map write must not be followed by a layout
+/// that names the tab. Resolves whether the view is open now.
+async function openViewBeside(
+  location: { workspaceId: string; pageId: string; tree: LayoutNode },
+  anchorSessionId: string,
+  subject: ViewSubject,
+  focus: boolean
+): Promise<boolean> {
+  const state = get(layoutState);
+  const placement = placeViewOpen(location.tree, anchorSessionId, subject, state);
+  if (!placement) return false;
+  if (placement.existingId) {
+    if (focus) await switchToTab(placement.existingId);
     return true;
   }
   const tabId = crypto.randomUUID();
-  const tab: CardTab = { workspaceId: found.workspaceId, path: "", view: "browser", sessionId };
-  const newTree = layout.splitLeaf(page.layout, sessionId, "row", tabId);
-  const withTree = workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree);
-  const data = focus ? workspace.setPageFocus(withTree, found.workspaceId, found.pageId, tabId) : withTree;
-  const cardTabsById = { ...state.cardTabsById, [tabId]: tab };
+  const newTree =
+    placement.kind === "attach"
+      ? layout.attachView(location.tree, placement.ownerId, tabId, { activate: focus })
+      : layout.splitLeaf(location.tree, placement.anchorId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = focus ? workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId) : withTree;
+  const maps = withViewTab(state, tabId, subject);
   layoutState.update((s) => ({
     ...s,
+    ...maps,
     workspaces: data.workspaces,
-    cardTabsById,
     ...(focus ? { focusedSessionId: tabId } : {}),
   }));
   try {
-    await backend.setCardTabs(cardTabsById);
+    await persistViewTabMap(subject, maps);
   } catch (e) {
     setError(String(e));
     return false;
@@ -3879,36 +3891,84 @@ export async function openBrowserInSplit(sessionId: string, focus: boolean): Pro
   return true;
 }
 
-/// The body both of those share: dedupe, split, record, persist.
-async function openViewTabInSplit(anchorSessionId: string, tab: CardTab): Promise<void> {
+/// The one tab map `subject`'s kind lives in, with `tabId` added to it.
+function withViewTab(
+  state: LayoutState,
+  tabId: string,
+  subject: ViewSubject
+): Partial<Pick<LayoutState, "fileTabsById" | "boardTabsById" | "cardTabsById">> {
+  switch (subject.kind) {
+    case "file":
+      return { fileTabsById: { ...state.fileTabsById, [tabId]: { path: subject.path } } };
+    case "board":
+      return { boardTabsById: { ...state.boardTabsById, [tabId]: subject.tab } };
+    case "card":
+      return { cardTabsById: { ...state.cardTabsById, [tabId]: subject.tab } };
+  }
+}
+
+function persistViewTabMap(
+  subject: ViewSubject,
+  maps: Partial<Pick<LayoutState, "fileTabsById" | "boardTabsById" | "cardTabsById">>
+): Promise<void> {
+  switch (subject.kind) {
+    case "file": {
+      const asPathMap: Record<string, string> = {};
+      for (const [id, tab] of Object.entries(maps.fileTabsById ?? {})) asPathMap[id] = tab.path;
+      return backend.setFileTabs(asPathMap);
+    }
+    case "board":
+      return backend.setBoardTabs(maps.boardTabsById ?? {});
+    case "card":
+      return backend.setCardTabs(maps.cardTabsById ?? {});
+  }
+}
+
+/// The X at the end of a side strip: every Attached view of `ownerId`
+/// closes, and the side pane with them. A focus that sat on one of them
+/// goes back to the owner.
+export async function closeAttachedViews(ownerId: string): Promise<void> {
   const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = pageLocationForSession(state, ownerId);
   if (!location) return;
-  const existing = Object.entries(state.cardTabsById).find(
-    ([id, open]) =>
-      open.workspaceId === tab.workspaceId &&
-      open.path === tab.path &&
-      open.view === tab.view &&
-      open.sessionId === tab.sessionId &&
-      layout.findLeafPath(location.tree, id) !== null
-  );
-  if (existing) {
-    await switchToTab(existing[0]);
-    return;
-  }
-  const tabId = crypto.randomUUID();
-  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
-  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
-  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
-  const cardTabsById = { ...state.cardTabsById, [tabId]: tab };
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, cardTabsById }));
-  try {
-    await backend.setCardTabs(cardTabsById);
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
+  const views = layout.attachedViewsOf(location.tree, ownerId);
+  if (views.length === 0) return;
+  const newTree = layout.closeAttachedGroup(location.tree, ownerId);
+  let data = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const focusWasInside = views.includes(state.focusedSessionId ?? "");
+  if (focusWasInside) data = workspace.setPageFocus(data, location.workspaceId, location.pageId, ownerId);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    ...(focusWasInside ? { focusedSessionId: ownerId } : {}),
+  }));
+  await endViewTabs(views);
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+/// Moves `ownerId`'s side pane divider without persisting -- live while
+/// it is dragged, like previewResizePane. commitLayout persists it.
+export function previewResizeAttached(ownerId: string, size: number): void {
+  const state = get(layoutState);
+  const location = pageLocationForSession(state, ownerId);
+  if (!location) return;
+  const newTree = layout.resizeAttached(location.tree, ownerId, size);
+  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
+  layoutState.update((s) => ({ ...s, workspaces }));
+}
+
+/// A chip on the tab bar toggles its view (attachedViews.chipPress):
+/// pressed while that view is in front of `ownerId`'s group it closes
+/// the view, and otherwise `open` opens it or brings it forward.
+export async function pressViewChip(
+  ownerId: string,
+  subject: ViewSubject,
+  open: () => Promise<unknown>
+): Promise<void> {
+  const state = get(layoutState);
+  const press = chipPress(pageLocationForSession(state, ownerId)?.tree ?? null, ownerId, subject, state);
+  if (press.kind === "close") await closeSession(press.viewId);
+  else await open();
 }
 
 /// Repoints ONE card tab at another card -- the pane's own navigation
@@ -4170,13 +4230,25 @@ export function handleSessionExited(
   }
   if (!found) return;
 
+  // A Tab group goes as one (ADR 0013): closing a tab closes its Attached
+  // views, and closing one of those hands the focus back to the tab that
+  // opened it rather than to whichever tab the page happens to start
+  // with.
+  const ownerOfClosed = layout.ownerOfAttached(found.page.layout, sessionId);
+  const views = ownerOfClosed === null ? layout.attachedViewsOf(found.page.layout, sessionId) : [];
   const newTree = layout.closeTab(found.page.layout, sessionId);
   let updated = newTree
     ? workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree)
     : workspace.removePage(state, found.workspaceId, found.pageId);
+  const pageFocus = state.workspaces
+    .find((w) => w.id === found.workspaceId)
+    ?.pages.find((p) => p.id === found.pageId)?.focusedSessionId;
+  if (ownerOfClosed !== null && (pageFocus === sessionId || state.focusedSessionId === sessionId)) {
+    updated = workspace.setPageFocus(updated, found.workspaceId, found.pageId, ownerOfClosed);
+  }
 
   let focusedSessionId = state.focusedSessionId;
-  if (state.focusedSessionId === sessionId) {
+  if (state.focusedSessionId === sessionId || views.includes(state.focusedSessionId ?? "")) {
     const resolved = workspace.resolveActiveFocus(updated);
     updated = resolved.state;
     focusedSessionId = resolved.focusedSessionId;
@@ -4188,6 +4260,11 @@ export function handleSessionExited(
     activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
+  // After the tree, never before (see ClosedTabs). Fired, like the
+  // follow-up and browser closes above, so this keeps its synchronous
+  // contract -- and a session that died on its own takes its views with
+  // it exactly as a closed one does.
+  if (views.length > 0) void endViewTabs(views);
   terminalRegistry.destroyTerminal(sessionId);
   // The daemon keeps an exited session's screen until KillSession so a
   // retained tool tab can still Snapshot it. A non-retained exit never
@@ -4752,17 +4829,20 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (!path) return;
   const leaf = layout.getNodeAtPath(location.tree, path);
   if (leaf.type !== "leaf") return;
-  const sessionIds = [...leaf.tabs];
+  // The pane's tabs and every view attached to them: Close Pane closes
+  // everything in it, groups included.
+  const sessionIds = layout.allTabIds(leaf);
 
   const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
 
+  // Only the tabs are closed one by one; each takes its group with it.
   let tree: LayoutNode | null = location.tree;
-  for (const id of sessionIds) {
+  for (const id of leaf.tabs) {
     if (!tree) break;
     tree = layout.closeTab(tree, id);
-    terminalRegistry.destroyTerminal(id);
   }
+  for (const id of sessionIds) terminalRegistry.destroyTerminal(id);
 
   let updated = tree
     ? workspace.updatePageLayout(state, location.workspaceId, location.pageId, tree)
@@ -4933,7 +5013,8 @@ export async function closeWorkspace(
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
-  const sessionIds = workspace.allSessionIdsInWorkspace(ws);
+  // Attached views included, as closePage does.
+  const sessionIds = workspace.allTabIdsInWorkspace(ws);
 
   const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
@@ -5304,7 +5385,9 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   const state = get(layoutState);
   const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
   if (!page) return;
-  const sessionIds = layout.allSessionIds(page.layout);
+  // Attached views included: they end with the page, and their tab-map
+  // entries go with them.
+  const sessionIds = layout.allTabIds(page.layout);
 
   const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;

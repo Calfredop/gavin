@@ -1,6 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/panes/layout";
+  import { allTabIds, leafHolds, paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/panes/layout";
+  import {
+    attachedViewsIn,
+    boardSubject,
+    cardSubject,
+    groupTooltip,
+    openViewOf,
+    sidePaneFor,
+    sideShareAt,
+    type ViewSubject,
+  } from "$lib/panes/attachedViews";
   import type { CardTab } from "$lib/core/gavin";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FileViewerPane from "$lib/files/FileViewerPane.svelte";
@@ -23,6 +33,10 @@
     openBoardInSplit,
     openCardInSplit,
     openFollowUpsInSplit,
+    pressViewChip,
+    closeAttachedViews,
+    previewResizeAttached,
+    commitLayout,
     queuedInputsById,
     repairUnknownTabs,
     terminalFontSize,
@@ -63,6 +77,7 @@
     Globe,
     Columns2,
     Rows2,
+    PanelRight,
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
@@ -118,8 +133,10 @@
   let paneRefs: Record<string, { fit: () => void }> = {};
   let containerEl: HTMLDivElement;
 
+  // leafHolds rather than `tabs`: focus on one of a tab's Attached views
+  // is focus in this pane, and the pane reads as the group's owner's.
   const isFocused = $derived(
-    $layoutState.focusedSessionId !== null && leaf.tabs.includes($layoutState.focusedSessionId)
+    $layoutState.focusedSessionId !== null && leafHolds(leaf, $layoutState.focusedSessionId)
   );
   // One row of actions per page, on the pane the keyboard is already in
   // (layout.ts says which, and why). Only the ACTIVE page renders panes,
@@ -134,6 +151,12 @@
   // is nowhere else in it for those buttons to be.
   const leadsWindow = $derived(paneLeadsWindow(getActiveTree($layoutState), leaf));
   const active = $derived(leaf.tabs[leaf.activeTabIndex]);
+  // The active tab's Tab group (ADR 0013): drawn as one side pane beside
+  // it, and only beside it -- switch to another tab and the side pane goes
+  // with the tab it belongs to. Every group's views stay mounted below,
+  // hidden, so one comes back where it was left.
+  const side = $derived(sidePaneFor(leaf));
+  const attachedViews = $derived(attachedViewsIn(leaf));
 
   // $state, not plain `let` -- editInput is a bind:this target read inside
   // the $effect below, and only $state reads establish reactivity there
@@ -153,7 +176,7 @@
   let tabReorderState: { sessionId: string; position: "before" | "after" } | null = $state(null);
 
   export function fitAll(): void {
-    for (const id of leaf.tabs) {
+    for (const id of allTabIds(leaf)) {
       paneRefs[id]?.fit();
     }
   }
@@ -280,8 +303,12 @@
   // back in the map and the terminal built for it destroyed. Without it a
   // lost entry is permanent, and costs a `pty-output` listener plus a
   // resize the daemon refuses every time the pane is rebuilt.
+  //
+  // An Attached view is asked about too, although it never renders as a
+  // terminal (the side pane draws views only): a lost entry there leaves
+  // an empty side pane until the map is put back.
   $effect(() => {
-    const unknown = leaf.tabs.filter((id) => !isViewTab(id));
+    const unknown = allTabIds(leaf).filter((id) => !isViewTab(id));
     if (unknown.length > 0) void repairUnknownTabs(unknown);
   });
 
@@ -354,6 +381,64 @@
   function tabHeadroomBadge(sessionId: string): Indicator | null {
     const compressedHere = resolveHeadroom(ownHeadroom(getActiveWorkspace($layoutState)), $headroomDefault);
     return headroomIndicator(headroomException($sessionCompressionById[sessionId], compressedHere));
+  }
+
+  // The marker on a tab that owns Attached views, naming them.
+  function groupTip(sessionId: string): string | null {
+    return groupTooltip(leaf, sessionId, tabLabel);
+  }
+
+  // A chip is lit while its view is open in the active tab's group, and
+  // its press toggles it (attachedViews.chipPress). The subjects are the
+  // ones the opens record, so the light and the press agree on what the
+  // chip's view is.
+  function chipLit(subject: ViewSubject | null): boolean {
+    return subject !== null && openViewOf(getActiveTree($layoutState), active, subject, naming) !== null;
+  }
+
+  function wsId(): string | null {
+    return getActiveWorkspace($layoutState)?.id ?? null;
+  }
+
+  function planSubject(link: LinkedCard | null): ViewSubject | null {
+    const ws = wsId();
+    return link && ws ? cardSubject(ws, link.path, "plan") : null;
+  }
+
+  function changesSubject(run: { path: string } | null): ViewSubject | null {
+    const ws = wsId();
+    return run && ws ? cardSubject(ws, run.path, "changes") : null;
+  }
+
+  function sessionViewSubject(view: "followups" | "browser"): ViewSubject | null {
+    const ws = wsId();
+    return ws ? cardSubject(ws, "", view, active) : null;
+  }
+
+  function boardViewSubject(board: { workspaceId: string; folderPath: string } | null): ViewSubject | null {
+    return board ? boardSubject(board.workspaceId, board.folderPath) : null;
+  }
+
+  // The side pane's divider. Window listeners rather than pointer capture,
+  // as LayoutTree's dividers do: capture is unreliable in WKWebView.
+  let bodyEl: HTMLDivElement;
+  let stopSideDrag: (() => void) | null = null;
+
+  function startSideDrag(event: PointerEvent): void {
+    if (!side) return;
+    const ownerId = side.ownerId;
+    event.preventDefault();
+    const move = (e: PointerEvent): void =>
+      previewResizeAttached(ownerId, sideShareAt(bodyEl.getBoundingClientRect(), e.clientX));
+    const stop = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      stopSideDrag = null;
+      void commitLayout();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    stopSideDrag = stop;
   }
 
   // The three pane controls, on the pane. They used to live in the app's
@@ -593,7 +678,10 @@
   onMount(() => {
     const observer = new ResizeObserver(() => fitAll());
     observer.observe(containerEl);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      stopSideDrag?.();
+    };
   });
 </script>
 
@@ -671,6 +759,11 @@
               >
             {/if}
           </span>
+          {#if groupTip(sessionId)}
+            <!-- This tab has Attached views; they are drawn beside it while
+                 it is in front, and the hover names them. -->
+            <span class="group-glyph" use:tooltip={groupTip(sessionId) ?? undefined}><PanelRight size={10} /></span>
+          {/if}
           {#if tabStatusBadge(sessionId)}
             {@const status = tabStatusBadge(sessionId)}
             {#if status}<StatusBadge indicator={status} size={10} />{/if}
@@ -773,29 +866,33 @@
       <div class="tab-actions">
         {#if linkedCard(active)}
           {@const link = linkedCard(active)}
+          {@const plan = planSubject(link)}
           <IconButton
             icon={ListChecks}
             label="Show the plan this agent is running"
             tip={`Show plan · ${link?.title}`}
             tone="accent"
             size={14}
+            active={chipLit(plan)}
             onclick={() => {
               const ws = getActiveWorkspace($layoutState);
-              if (link && ws) void openCardInSplit(active, ws.id, link.path, "plan");
+              if (link && ws && plan) void pressViewChip(active, plan, () => openCardInSplit(active, ws.id, link.path, "plan"));
             }}
           />
         {/if}
         {#if runChangesFor(active)}
           {@const run = runChangesFor(active)}
+          {@const changes = changesSubject(run)}
           <IconButton
             icon={FileDiff}
             label="See what this run changed"
             tip={run ? chipTooltip(run.baseSha) : null}
             tone="accent"
             size={14}
+            active={chipLit(changes)}
             onclick={() => {
               const ws = getActiveWorkspace($layoutState);
-              if (run && ws) void openCardInSplit(active, ws.id, run.path, "changes");
+              if (run && ws && changes) void pressViewChip(active, changes, () => openCardInSplit(active, ws.id, run.path, "changes"));
             }}
           />
         {/if}
@@ -804,13 +901,17 @@
                pane beside this tab, or brings it forward -- the way back
                to a pane that was closed, which only hid it. -->
           {@const chip = browserChip(active)}
+          {@const browser = sessionViewSubject("browser")}
           <IconButton
             icon={Globe}
             label="Show this agent's browser"
             tip={chip?.tip}
             tone="accent"
             size={14}
-            onclick={() => void browserViews.openFromChip(active)}
+            active={chipLit(browser)}
+            onclick={() => {
+              if (browser) void pressViewChip(active, browser, () => browserViews.openFromChip(active));
+            }}
           />
         {/if}
         {#if !isViewTab(active)}
@@ -834,6 +935,7 @@
           {@const queued = $queuedInputsById[active] ?? []}
           {@const heldCards = $heldCardCountById[active] ?? 0}
           {@const followUps = queued.length + heldCards}
+          {@const queueView = sessionViewSubject("followups")}
           <span use:tooltip={blocked ?? undefined}>
             <IconButton
               icon={MessageSquarePlus}
@@ -844,9 +946,10 @@
               tone={followUps > 0 ? "accent" : "default"}
               size={14}
               disabled={blocked !== null}
+              active={chipLit(queueView)}
               onclick={() => {
                 const ws = getActiveWorkspace($layoutState);
-                if (ws) void openFollowUpsInSplit(active, ws.id);
+                if (ws && queueView) void pressViewChip(active, queueView, () => openFollowUpsInSplit(active, ws.id));
               }}
             >
               {#if followUps > 0}<span class="queue-count">{followUps}</span>{/if}
@@ -854,12 +957,19 @@
           </span>
         {/if}
         {#if activeBoardContext}
+          {@const board = boardViewSubject(activeBoardContext)}
           <IconButton
             icon={Kanban}
             label="Open context board"
             tip={`Open board · ${activeBoardContext.name}`}
             size={14}
-            onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
+            active={chipLit(board)}
+            onclick={() => {
+              if (board)
+                void pressViewChip(active, board, () =>
+                  openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)
+                );
+            }}
           />
         {/if}
         <NewAgentTabButton target={active} />
@@ -880,70 +990,118 @@
       </div>
     {/if}
   </div>
-  <div
-    class="content"
-    class:drop-zone-left={contentDropZone === "left"}
-    class:drop-zone-right={contentDropZone === "right"}
-    class:drop-zone-top={contentDropZone === "top"}
-    class:drop-zone-bottom={contentDropZone === "bottom"}
-    class:drop-zone-center={contentDropZone === "center"}
-    bind:this={containerEl}
-    onmousedown={() => focusPane(active)}
-    ondragover={handleContentDragOver}
-    ondragleave={clearContentDrop}
-    ondragend={clearContentDrop}
-    ondrop={handleContentDrop}
-  >
-    {#each leaf.tabs as sessionId (sessionId)}
-      {#if boardTab(sessionId)}
-        <BoardPane
-          bind:this={paneRefs[sessionId]}
-          workspaceId={boardTab(sessionId)?.workspaceId ?? ""}
-          contextFolder={boardTab(sessionId)?.contextFolder ?? ""}
-          tabId={sessionId}
-          visible={sessionId === active}
-        />
-      {:else if fileTabPath(sessionId)}
-        <FileViewerPane
-          bind:this={paneRefs[sessionId]}
-          path={fileTabPath(sessionId) ?? ""}
-          visible={sessionId === active}
-        />
-      {:else if followUpsFor(sessionId)}
-        <FollowUpQueuePane
-          bind:this={paneRefs[sessionId]}
-          sessionId={followUpsFor(sessionId) ?? ""}
-          tabId={sessionId}
-          visible={sessionId === active}
-        />
-      {:else if browserFor(sessionId)}
-        <BrowserPane
-          bind:this={paneRefs[sessionId]}
-          sessionId={browserFor(sessionId) ?? ""}
-          visible={sessionId === active}
-        />
-      {:else if cardTab(sessionId)}
-        {@const tab = cardTab(sessionId)!}
-        <CardTabPane
-          bind:this={paneRefs[sessionId]}
-          workspaceId={tab.workspaceId}
-          path={tab.path}
-          view={tab.view}
-          tabId={sessionId}
-          visible={sessionId === active}
-        />
-      {:else}
-        <TerminalPane
-          bind:this={paneRefs[sessionId]}
-          {sessionId}
-          visible={sessionId === active}
-          focused={sessionId === $layoutState.focusedSessionId}
-          fontSize={$terminalFontSize}
-        />
+  <div class="pane-body" bind:this={bodyEl}>
+    <div
+      class="content"
+      style="flex-grow: {side ? 1 - side.size : 1}"
+      class:drop-zone-left={contentDropZone === "left"}
+      class:drop-zone-right={contentDropZone === "right"}
+      class:drop-zone-top={contentDropZone === "top"}
+      class:drop-zone-bottom={contentDropZone === "bottom"}
+      class:drop-zone-center={contentDropZone === "center"}
+      bind:this={containerEl}
+      onmousedown={() => focusPane(active)}
+      ondragover={handleContentDragOver}
+      ondragleave={clearContentDrop}
+      ondragend={clearContentDrop}
+      ondrop={handleContentDrop}
+    >
+      {#each leaf.tabs as sessionId (sessionId)}
+        {#if isViewTab(sessionId)}
+          {@render viewBody(sessionId, sessionId === active)}
+        {:else}
+          <TerminalPane
+            bind:this={paneRefs[sessionId]}
+            {sessionId}
+            visible={sessionId === active}
+            focused={sessionId === $layoutState.focusedSessionId}
+            fontSize={$terminalFontSize}
+          />
+        {/if}
+      {/each}
+    </div>
+    {#if side}
+      <div class="side-divider" role="separator" aria-orientation="vertical" onpointerdown={startSideDrag}></div>
+    {/if}
+    <!-- The active tab's Attached views. No drop handlers anywhere in
+         here: nothing is dropped INTO a side pane, and a view leaves it
+         only by being dragged out to a pane or a tab bar. -->
+    <div class="side-pane" class:shown={side !== null} style="flex-grow: {side?.size ?? 0}">
+      {#if side}
+        <div class="side-strip" use:wheelScrollsSideways>
+          {#each side.views as viewId (viewId)}
+            <button
+              class="side-tab"
+              class:active={viewId === side.front}
+              class:focused={viewId === side.front && $layoutState.focusedSessionId === viewId}
+              draggable="true"
+              ondragstart={(e) => handleTabDragStart(e, viewId)}
+              ondragend={clearTabReorder}
+              onclick={() => switchToTab(viewId)}
+              onmousedown={(e) => claimTabMiddlePress(e, viewId)}
+              onauxclick={(e) => void handleTabAuxClick(e, viewId)}
+            >
+              <span class="side-tab-label" use:tooltip={tabTooltip(viewId)}>{tabLabel(viewId)}</span>
+              <span
+                class="side-tab-close"
+                role="button"
+                tabindex="-1"
+                aria-label="Close Tab"
+                title="Close Tab"
+                onclick={async (e) => {
+                  e.stopPropagation();
+                  if (await confirmTabClose(viewId)) closeSession(viewId);
+                }}
+              >
+                <X size={11} />
+              </span>
+            </button>
+          {/each}
+          <span class="side-spacer"></span>
+          <IconButton icon={X} label="Close side pane" size={12} onclick={() => void closeAttachedViews(side.ownerId)} />
+        </div>
       {/if}
-    {/each}
+      <div class="side-content" onmousedown={() => side && focusPane(side.front)}>
+        {#each attachedViews as view (view.id)}
+          {@render viewBody(view.id, side !== null && view.ownerId === side.ownerId && view.id === side.front)}
+        {/each}
+      </div>
+    </div>
   </div>
 </div>
+
+<!-- Every view a tab can be, ordinary or attached: the main body and the
+     side pane draw the same five, and a terminal is only ever the main
+     body's (a view is never a terminal, ADR 0013). -->
+{#snippet viewBody(tabId: string, visible: boolean)}
+  <div class="view-slot" class:hidden={!visible}>
+  {#if boardTab(tabId)}
+    <BoardPane
+      bind:this={paneRefs[tabId]}
+      workspaceId={boardTab(tabId)?.workspaceId ?? ""}
+      contextFolder={boardTab(tabId)?.contextFolder ?? ""}
+      {tabId}
+      {visible}
+    />
+  {:else if fileTabPath(tabId)}
+    <FileViewerPane bind:this={paneRefs[tabId]} path={fileTabPath(tabId) ?? ""} {visible} />
+  {:else if followUpsFor(tabId)}
+    <FollowUpQueuePane bind:this={paneRefs[tabId]} sessionId={followUpsFor(tabId) ?? ""} {tabId} {visible} />
+  {:else if browserFor(tabId)}
+    <BrowserPane bind:this={paneRefs[tabId]} sessionId={browserFor(tabId) ?? ""} {visible} />
+  {:else if cardTab(tabId)}
+    {@const tab = cardTab(tabId)!}
+    <CardTabPane
+      bind:this={paneRefs[tabId]}
+      workspaceId={tab.workspaceId}
+      path={tab.path}
+      view={tab.view}
+      {tabId}
+      {visible}
+    />
+  {/if}
+  </div>
+{/snippet}
 
 <style>
   .pane-wrapper {
@@ -1182,10 +1340,116 @@
     opacity: 1;
     pointer-events: auto;
   }
+  /* The main body and, beside it, the active tab's side pane. Both are
+     sized by their flex-grow alone (the group's remembered share), on a
+     zero basis, for the reason LayoutTree's .child gives: a basis of
+     auto would let either one's content decide the split. */
+  .pane-body {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
   .content {
+    position: relative;
+    flex-basis: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Each view's own box. The panes inside paint themselves
+     position:absolute; inset:0, so their host must be a positioned box
+     (absolutePaneMount.test.ts), and a snippet has no element of its own
+     to be one. Hidden with its view: a stack of these covers the same
+     rectangle, and a visible one would take the click meant for the view
+     in front. */
+  .view-slot {
+    position: absolute;
+    inset: 0;
+  }
+  .view-slot.hidden {
+    visibility: hidden;
+  }
+  .side-divider {
+    flex: 0 0 4px;
+    background: var(--surface-overlay);
+    cursor: col-resize;
+  }
+  .side-pane {
+    display: none;
+    flex-direction: column;
+    flex-basis: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .side-pane.shown {
+    display: flex;
+  }
+  /* The side pane's own tabs: a smaller row than the pane's, so it reads
+     as belonging to the view under it rather than as a second header. */
+  .side-strip {
+    display: flex;
+    align-items: stretch;
+    flex: 0 0 auto;
+    height: 26px;
+    box-sizing: border-box;
+    padding: 0 4px;
+    background: var(--surface-base);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .side-tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 0 6px 0 10px;
+    background: transparent;
+    border: none;
+    border-bottom: var(--tab-indicator) solid transparent;
+    box-sizing: border-box;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.9em;
+    cursor: pointer;
+  }
+  .side-tab:hover,
+  .side-tab.active {
+    color: var(--text);
+  }
+  .side-tab.focused {
+    border-bottom-color: var(--ws-accent, #d9a648);
+  }
+  .side-tab-label {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Always there, unlike the pane tabs' hover-only box: a side strip is
+     closed one view at a time often enough that a hunt for the X is the
+     wrong cost. Muted until hovered. */
+  .side-tab-close {
+    display: flex;
+    align-items: center;
+    opacity: 0.55;
+  }
+  .side-tab-close:hover {
+    opacity: 1;
+  }
+  .side-spacer {
+    flex: 1 1 auto;
+  }
+  .side-content {
     position: relative;
     flex: 1 1 auto;
     overflow: hidden;
+  }
+  .group-glyph {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    color: var(--text-muted);
   }
   .content.drop-zone-left::after,
   .content.drop-zone-right::after,

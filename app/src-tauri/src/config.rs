@@ -1938,6 +1938,7 @@ mod tests {
             tabs: vec!["abc-123".to_string()],
             active_tab_index: 0,
             pinned: Vec::new(),
+            attached: Default::default(),
         }
     }
 

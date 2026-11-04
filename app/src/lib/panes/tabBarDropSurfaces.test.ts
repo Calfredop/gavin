@@ -66,3 +66,21 @@ describe("the tab bar takes the drop", () => {
     expect(text).toContain(".tab-bar.drop-target");
   });
 });
+
+// ADR 0013: a view leaves its Tab group only by being dragged out, and
+// nothing is dropped into a side pane.
+describe("the side pane", () => {
+  const side = (): string => {
+    const text = source(PANE);
+    return text.slice(text.indexOf('class="side-pane"'), text.indexOf("{#snippet viewBody"));
+  };
+
+  it("lets its tabs be dragged out, with the same payload a pane tab carries", () => {
+    expect(side()).toContain("ondragstart={(e) => handleTabDragStart(e, viewId)}");
+  });
+
+  it("takes no drop anywhere inside it", () => {
+    expect(side()).toBeTruthy();
+    expect(side()).not.toMatch(/\bon(dragover|dragenter|drop)=/);
+  });
+});

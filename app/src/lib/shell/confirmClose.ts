@@ -2,7 +2,14 @@ import { askConfirm } from "$lib/core/dialog";
 import { get } from "svelte/store";
 import { layoutState } from "$lib/core/layoutState";
 import type { LayoutNode } from "$lib/panes/layout";
-import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
+import {
+  attachedViewsOf,
+  findLeafPath,
+  getNodeAtPath,
+  isLastTabInPane,
+  allSessionIds,
+  sessionTabsOnly,
+} from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "$lib/core/workspace";
 
@@ -55,8 +62,12 @@ export async function confirmTabClose(sessionId: string): Promise<boolean> {
     !state.fileTabsById[sessionId] &&
     !state.boardTabsById[sessionId] &&
     !state.cardTabsById[sessionId];
+  // Its Attached views go with it (ADR 0013), which is not obvious from a
+  // close box on the tab alone.
+  const views = tree ? attachedViewsOf(tree, sessionId).length : 0;
   const lines = [
     ...(ends ? ["The terminal session will end."] : []),
+    ...(views > 0 ? [`${views === 1 ? "The view" : `The ${views} views`} beside it will close too.`] : []),
     ...(tree && isLastTabInPane(tree, sessionId)
       ? ["It's the last tab in this pane, so the pane will close too."]
       : []),

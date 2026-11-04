@@ -8,6 +8,8 @@
     retargetFileTabs,
     switchWorkspaceView,
   } from "$lib/core/layoutState";
+  import { openAnchorFor } from "$lib/panes/attachedViews";
+  import { getActiveTree } from "$lib/core/workspace";
   import * as backend from "$lib/core/backend";
   import { askConfirm, showAlert } from "$lib/core/dialog";
   import { confirmDestructive } from "$lib/core/confirmGate";
@@ -111,18 +113,10 @@
 
   const view = $derived(visibleRows(tree, query));
 
-  // A split needs a terminal session to anchor to; file and board tabs
-  // are not sessions. Same rule as the Plans tab.
+  // An open beside needs a terminal tab to anchor to (or a view attached
+  // to one, which stands for it); file and board tabs are not sessions. Same rule as the Plans tab.
   const anchorSessionId = $derived.by(() => {
-    const focused = $layoutState.focusedSessionId;
-    if (!focused) return null;
-    if (
-        $layoutState.fileTabsById[focused] ||
-        $layoutState.boardTabsById[focused] ||
-        $layoutState.cardTabsById[focused]
-      )
-        return null;
-    return focused;
+    return openAnchorFor($layoutState.focusedSessionId, getActiveTree($layoutState), $layoutState);
   });
 
   // The list is a compile-time constant on the Rust side and cached in

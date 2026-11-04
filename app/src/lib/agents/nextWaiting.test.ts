@@ -238,6 +238,14 @@ describe("sessionOnScreen", () => {
   // page is not on screen, and the dot must not say it is.
   it("is nothing when the focused session is not on the page being shown", () => {
     expect(sessionOnScreen(ws, "terminal", tree, "elsewhere")).toBeNull();
+    // A focused Attached view stands for the tab it is drawn beside.
+    const grouped: LayoutNode = {
+      type: "leaf",
+      tabs: ["s1"],
+      activeTabIndex: 0,
+      attached: { s1: { tabs: ["diff"], activeTabIndex: 0, size: 0.5 } },
+    };
+    expect(sessionOnScreen(ws, "terminal", grouped, "diff")).toBe("s1");
     expect(sessionOnScreen(ws, "terminal", null, "s1")).toBeNull();
     expect(sessionOnScreen(ws, "terminal", tree, null)).toBeNull();
   });

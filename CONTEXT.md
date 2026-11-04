@@ -32,6 +32,16 @@ _Avoid_: subtask, child card (when meaning one that has its own status), promote
 A plan whose Nested tasks each run as their own agent session, one after another or all at once, before the plan's own session runs to finish what is left.
 _Avoid_: auto-plan, plan rail, parent run
 
+### Pages
+
+**Attached view**:
+A view a terminal tab opens of its own work (its card's plan, what its run changed, its follow-up queue, its browser, a file or a board it opened), drawn beside that tab only while the tab is the one in front.
+_Avoid_: split, split tab, subtab
+
+**Tab group**:
+A terminal tab together with its Attached views. The group's header is the tab's own, wherever focus sits inside it, and closing the tab closes the group.
+_Avoid_: split pane (that is a page-level division between panes), tab stack
+
 ### Scheduling
 
 **Scheduled task**:

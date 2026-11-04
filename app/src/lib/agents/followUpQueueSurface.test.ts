@@ -81,8 +81,9 @@ describe("the queue tab", () => {
     expect(text).toContain('view: "followups"');
     expect(text).toContain("sessionId: anchorSessionId");
     // Two tabs on one card have two different queues, so a dedupe that
-    // ignored the session would fold them into one pane.
-    expect(text).toContain("open.sessionId === tab.sessionId");
+    // ignored the session would fold them into one pane. The dedupe is
+    // the Tab group's now (attachedViews.ts, ADR 0013).
+    expect(source("attachedViews.ts")).toContain("open.sessionId === subject.tab.sessionId");
   });
 
   it("is named after its terminal, by the label that terminal's own tab wears", () => {

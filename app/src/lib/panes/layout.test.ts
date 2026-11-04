@@ -28,6 +28,18 @@ import {
   presetTiled,
   paneOwnsActions,
   paneLeadsWindow,
+  attachView,
+  attachedOwner,
+  attachedGroup,
+  attachedViewsOf,
+  ownerOfAttached,
+  leafHolds,
+  allTabIds,
+  closeAttachedGroup,
+  resizeAttached,
+  ATTACHED_DEFAULT_SIZE,
+  ATTACHED_MIN_SIZE,
+  ATTACHED_MAX_SIZE,
 } from "$lib/panes/layout";
 import type { LayoutNode, Leaf } from "$lib/panes/layout";
 
@@ -877,5 +889,213 @@ describe("paneLeadsWindow", () => {
     expect(paneLeadsWindow(null, left)).toBe(true);
     const only = presetSingle("a") as Leaf;
     expect(paneLeadsWindow(only, only)).toBe(true);
+  });
+});
+
+// ADR 0013: a view a tab opens is that tab's, drawn beside it only while
+// it is in front, and saved under it in the layout.
+describe("Attached views", () => {
+  const pane = (tabs: string[], active = 0): Leaf => ({ type: "leaf", tabs, activeTabIndex: active });
+  const leafAt = (tree: LayoutNode | null, id: string): Leaf => {
+    if (!tree) throw new Error("no tree");
+    const path = findLeafPath(tree, id);
+    if (!path) throw new Error(`${id} not in tree`);
+    return getNodeAtPath(tree, path) as Leaf;
+  };
+
+  it("attaches a view to its owner, opens the side pane at half width and puts it in front", () => {
+    const tree = attachView(pane(["a", "b"], 1), "a", "diff");
+    expect(tree).toEqual({
+      type: "leaf",
+      tabs: ["a", "b"],
+      // The owner comes to the front of its pane: the view is only ever
+      // on screen beside it.
+      activeTabIndex: 0,
+      attached: { a: { tabs: ["diff"], activeTabIndex: 0, size: ATTACHED_DEFAULT_SIZE } },
+    });
+    expect(ATTACHED_DEFAULT_SIZE).toBe(0.5);
+  });
+
+  it("adds a second view as another tab of the same side pane, keeping its width", () => {
+    let tree: LayoutNode = attachView(pane(["a"]), "a", "diff");
+    tree = resizeAttached(tree, "a", 0.3);
+    tree = attachView(tree, "a", "plan");
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["diff", "plan"], activeTabIndex: 1, size: 0.3 });
+  });
+
+  it("brings a view already in the group forward instead of listing it twice", () => {
+    let tree: LayoutNode = attachView(attachView(pane(["a"]), "a", "diff"), "a", "plan");
+    tree = attachView(tree, "a", "diff");
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["diff", "plan"], activeTabIndex: 0, size: 0.5 });
+  });
+
+  it("an open nobody asked for joins the group without moving the pane or the strip", () => {
+    let tree: LayoutNode = attachView(pane(["a", "b"], 1), "a", "browser", { activate: false });
+    expect(activeSessionId(tree as Leaf)).toBe("b");
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["browser"], activeTabIndex: 0, size: 0.5 });
+    tree = attachView(attachView(pane(["a"]), "a", "diff"), "a", "browser", { activate: false });
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["diff", "browser"], activeTabIndex: 0, size: 0.5 });
+  });
+
+  it("leaves the tree alone when the owner is not an ordinary tab in it", () => {
+    const tree = attachView(pane(["a"]), "a", "diff");
+    expect(attachView(tree, "nope", "x")).toBe(tree);
+    // A view cannot own views: only a tab owns a group.
+    expect(attachView(tree, "diff", "x")).toEqual(tree);
+  });
+
+  it("keeps the views out of allSessionIds and in allTabIds, each group after its owner", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      children: [attachView(pane(["a", "b"]), "a", "diff"), attachView(pane(["c"]), "c", "plan")],
+      sizes: [0.5, 0.5],
+    };
+    expect(allSessionIds(tree)).toEqual(["a", "b", "c"]);
+    expect(allTabIds(tree)).toEqual(["a", "diff", "b", "c", "plan"]);
+  });
+
+  it("resolves a view to its owner's pane", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      children: [pane(["x"]), attachView(pane(["a"]), "a", "diff")],
+      sizes: [0.5, 0.5],
+    };
+    expect(findLeafPath(tree, "diff")).toEqual([1]);
+    expect(ownerOfAttached(tree, "diff")).toBe("a");
+    expect(ownerOfAttached(tree, "a")).toBeNull();
+    expect(attachedViewsOf(tree, "a")).toEqual(["diff"]);
+    const leaf = leafAt(tree, "a");
+    expect(leafHolds(leaf, "diff")).toBe(true);
+    expect(leafHolds(leaf, "x")).toBe(false);
+    expect(attachedOwner(leaf, "a")).toBeNull();
+  });
+
+  it("is not the last tab in its pane, even beside a lone owner", () => {
+    const tree = attachView(pane(["a"]), "a", "diff");
+    expect(isLastTabInPane(tree, "a")).toBe(true);
+    expect(isLastTabInPane(tree, "diff")).toBe(false);
+  });
+
+  it("switching to a view switches to its owner and brings the view to the front of the strip", () => {
+    let tree: LayoutNode = attachView(attachView(pane(["a", "b"]), "a", "diff"), "a", "plan");
+    tree = switchTab(tree, "b");
+    tree = switchTab(tree, "diff");
+    const leaf = tree as Leaf;
+    expect(activeSessionId(leaf)).toBe("a");
+    expect(attachedGroup(leaf, "a")?.activeTabIndex).toBe(0);
+  });
+
+  it("switching tabs keeps every group, so the side pane returns at the width it was left", () => {
+    let tree: LayoutNode = resizeAttached(attachView(pane(["a", "b"]), "a", "diff"), "a", 0.7);
+    tree = switchTab(tree, "b");
+    tree = switchTab(tree, "a");
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["diff"], activeTabIndex: 0, size: 0.7 });
+  });
+
+  it("closing one view takes it out of the strip and brings its neighbour forward", () => {
+    let tree: LayoutNode = attachView(attachView(attachView(pane(["a"]), "a", "v1"), "a", "v2"), "a", "v3");
+    tree = switchTab(tree, "v2");
+    tree = closeTab(tree, "v2")!;
+    expect(attachedGroup(tree as Leaf, "a")).toEqual({ tabs: ["v1", "v3"], activeTabIndex: 1, size: 0.5 });
+    // Closing the last one closes the side pane, never the pane.
+    tree = closeTab(closeTab(tree, "v1")!, "v3")!;
+    expect(tree).toEqual(pane(["a"]));
+  });
+
+  it("closing the owner closes its group, and only its group", () => {
+    let tree: LayoutNode = attachView(attachView(pane(["a", "b"]), "a", "diff"), "b", "plan");
+    tree = closeTab(tree, "a")!;
+    expect(tree).toEqual({
+      type: "leaf",
+      tabs: ["b"],
+      activeTabIndex: 0,
+      attached: { b: { tabs: ["plan"], activeTabIndex: 0, size: 0.5 } },
+    });
+    expect(findLeafPath(tree, "diff")).toBeNull();
+  });
+
+  it("closes a whole group at once, leaving the owner and the others", () => {
+    let tree: LayoutNode = attachView(attachView(attachView(pane(["a", "b"]), "a", "v1"), "a", "v2"), "b", "v3");
+    tree = closeAttachedGroup(tree, "a");
+    expect(attachedGroup(tree as Leaf, "a")).toBeNull();
+    expect(attachedGroup(tree as Leaf, "b")?.tabs).toEqual(["v3"]);
+    expect(closeAttachedGroup(pane(["a"]), "a")).toEqual(pane(["a"]));
+  });
+
+  it("clamps the remembered width so neither half can be dragged away", () => {
+    const tree = attachView(pane(["a"]), "a", "diff");
+    expect(attachedGroup(resizeAttached(tree, "a", 0) as Leaf, "a")?.size).toBe(ATTACHED_MIN_SIZE);
+    expect(attachedGroup(resizeAttached(tree, "a", 1) as Leaf, "a")?.size).toBe(ATTACHED_MAX_SIZE);
+    // A tab with no group has no divider to move.
+    expect(resizeAttached(pane(["a"]), "a", 0.3)).toEqual(pane(["a"]));
+  });
+
+  it("dragging a view out makes it an ordinary tab of its own", () => {
+    const tree = attachView(pane(["a"]), "a", "diff");
+    const result = detachTab(tree, "diff");
+    expect(result?.detached).toEqual(pane(["diff"]));
+    expect(result?.tree).toEqual(pane(["a"]));
+    // ... which then stays on screen whichever tab is in front.
+    const merged = mergeIntoActivePane(result!.tree!, "a", result!.detached);
+    expect(merged).toEqual({ type: "leaf", tabs: ["a", "diff"], activeTabIndex: 1 });
+  });
+
+  it("a tab moved to another pane takes its group with it", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      children: [attachView(pane(["a", "b"]), "a", "diff"), pane(["c"])],
+      sizes: [0.5, 0.5],
+    };
+    const result = detachTab(tree, "a")!;
+    expect(result.detached.attached).toEqual({ a: { tabs: ["diff"], activeTabIndex: 0, size: 0.5 } });
+    expect(allTabIds(result.tree!)).toEqual(["b", "c"]);
+    const merged = mergeIntoActivePane(result.tree!, "c", result.detached);
+    expect(attachedGroup(leafAt(merged, "c"), "a")?.tabs).toEqual(["diff"]);
+    expect(ownerOfAttached(merged, "diff")).toBe("a");
+  });
+
+  it("keeps groups through the leaf's other edits", () => {
+    let tree: LayoutNode = attachView(pane(["a", "b"]), "a", "diff");
+    tree = addTab(tree, "a", "c");
+    tree = moveTabWithinLeaf(tree, "a", 2);
+    tree = pinTab(tree, "b");
+    tree = unpinTab(tree, "b");
+    tree = splitLeaf(tree, "b", "row", "d");
+    expect(ownerOfAttached(tree, "diff")).toBe("a");
+    expect(attachedGroup(leafAt(tree, "a"), "a")).toEqual({ tabs: ["diff"], activeTabIndex: 0, size: 0.5 });
+  });
+
+  it("normalizeLeaf prunes groups whose owner left, empty groups, and views that are tabs", () => {
+    expect(
+      normalizeLeaf({
+        type: "leaf",
+        tabs: ["a", "b"],
+        activeTabIndex: 0,
+        attached: {
+          gone: { tabs: ["v0"], activeTabIndex: 0, size: 0.5 },
+          a: { tabs: ["b", "v1", "v1"], activeTabIndex: 7, size: 2 },
+          b: { tabs: [], activeTabIndex: 0, size: 0.5 },
+        },
+      })
+    ).toEqual({
+      type: "leaf",
+      tabs: ["a", "b"],
+      activeTabIndex: 0,
+      attached: { a: { tabs: ["v1"], activeTabIndex: 0, size: ATTACHED_MAX_SIZE } },
+    });
+    // No groups left is no key at all, so state written before groups
+    // stays byte-identical.
+    expect(normalizeLeaf({ type: "leaf", tabs: ["a"], activeTabIndex: 0, attached: {} })).toEqual(pane(["a"]));
+  });
+
+  it("the pane's actions stay on the owner's pane while focus sits inside its group", () => {
+    const left = attachView(pane(["a"]), "a", "diff") as Leaf;
+    const right = pane(["c"]);
+    const tree: LayoutNode = { type: "split", direction: "row", children: [left, right], sizes: [0.5, 0.5] };
+    expect(paneOwnsActions(tree, left, "diff")).toBe(true);
+    expect(paneOwnsActions(tree, right, "diff")).toBe(false);
   });
 });

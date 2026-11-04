@@ -86,7 +86,8 @@
   } from "$lib/cards/cardRunActions";
   import { developingRunIn } from "$lib/cards/developingCards";
   import { finishDeveloping } from "$lib/cards/developingCardsState";
-  import { isViewTab } from "$lib/panes/tabIdentity";
+  import { openAnchorFor } from "$lib/panes/attachedViews";
+  import { getActiveTree } from "$lib/core/workspace";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker, isDirectPrompt } from "$lib/cards/cardRun";
   import { mustPromptBody } from "$lib/agents/actionPromptsState";
@@ -760,14 +761,13 @@
   // tabs are not sessions. Null means the app has no pane to split, and the
   // chip falls back to the OS's default application -- an honest second
   // choice, rather than a click that does nothing.
-  const anchorSessionId = $derived.by(() => {
-    const focused = $layoutState.focusedSessionId;
-    if (!focused) return null;
+  const anchorSessionId = $derived.by(() =>
     // The same classification the pane itself applies (tabIdentity.ts):
     // a tab in none of the three maps is a session, and only a session
-    // can be split beside.
-    return isViewTab(focused, $layoutState) ? null : focused;
-  });
+    // can be opened beside -- or the owner of the Attached view the focus
+    // is on, which a view opened from inside its group joins.
+    openAnchorFor($layoutState.focusedSessionId, getActiveTree($layoutState), $layoutState)
+  );
 
   async function openAttachment(status: AttachmentStatus): Promise<void> {
     attachmentsError = null;

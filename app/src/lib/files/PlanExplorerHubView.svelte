@@ -2,6 +2,8 @@
   import { untrack } from "svelte";
   import { pickPath } from "$lib/workspace/picker";
   import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/core/layoutState";
+  import { openAnchorFor } from "$lib/panes/attachedViews";
+  import { getActiveTree } from "$lib/core/workspace";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import type { GavinTree } from "$lib/core/gavin";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
@@ -263,18 +265,10 @@
     void fetchOrchestration(workspaceId);
   });
 
-  // A split needs a terminal session to anchor to; file and board tabs
-  // are not sessions.
+  // An open beside needs a terminal tab to anchor to (or a view attached
+  // to one, which stands for it); file and board tabs are not sessions.
   const anchorSessionId = $derived.by(() => {
-    const focused = $layoutState.focusedSessionId;
-    if (!focused) return null;
-    if (
-        $layoutState.fileTabsById[focused] ||
-        $layoutState.boardTabsById[focused] ||
-        $layoutState.cardTabsById[focused]
-      )
-        return null;
-    return focused;
+    return openAnchorFor($layoutState.focusedSessionId, getActiveTree($layoutState), $layoutState);
   });
 
   async function createFile(

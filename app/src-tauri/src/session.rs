@@ -3959,7 +3959,7 @@ pub(crate) fn resolve_sessions(
     home: &str,
 ) -> anyhow::Result<()> {
     match node {
-        LayoutNode::Leaf { tabs, pinned, .. } => {
+        LayoutNode::Leaf { tabs, pinned, attached, .. } => {
             for id in tabs.iter_mut() {
                 if non_session_tab_ids.contains(id.as_str()) {
                     continue;
@@ -3984,6 +3984,13 @@ pub(crate) fn resolve_sessions(
                     // carry it over so a daemon restart doesn't unpin it.
                     if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
                         *pin = fresh.clone();
+                    }
+                    // So do its Attached views (ADR 0013), which are keyed
+                    // by the tab: left under the dead id, the frontend
+                    // would read them as a group whose owner had closed
+                    // and drop them on its first save.
+                    if let Some(group) = attached.remove(id.as_str()) {
+                        attached.insert(fresh.clone(), group);
                     }
                     *id = fresh;
                 }
@@ -4814,7 +4821,12 @@ mod resolve_workspaces_tests {
     use crate::config::Page;
 
     fn leaf(tabs: &[&str]) -> LayoutNode {
-        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0, pinned: Vec::new() }
+        LayoutNode::Leaf {
+            tabs: tabs.iter().map(|s| s.to_string()).collect(),
+            active_tab_index: 0,
+            pinned: Vec::new(),
+            attached: Default::default(),
+        }
     }
 
     fn page(id: &str, layout: LayoutNode) -> Page {
@@ -4920,6 +4932,7 @@ mod resolve_workspaces_tests {
             tabs: vec!["stale-a".to_string(), "stale-b".to_string()],
             active_tab_index: 1,
             pinned: vec!["stale-a".to_string()],
+            attached: Default::default(),
         };
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", pinned_leaf)])];
 
@@ -4931,6 +4944,45 @@ mod resolve_workspaces_tests {
                 tabs: vec!["fresh-a".to_string(), "fresh-b".to_string()],
                 active_tab_index: 1,
                 pinned: vec!["fresh-a".to_string()],
+                attached: Default::default(),
+            }
+        );
+    }
+
+    /// A tab's Attached views belong to the tab slot like its pin does: a
+    /// daemon restart that replaces the dead session keeps the group under
+    /// the fresh id, and leaves the views themselves alone -- they are not
+    /// sessions, so nothing replaces them with a shell.
+    #[test]
+    fn a_stale_owners_attached_views_follow_it_to_its_fresh_id() {
+        let (client, _captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList { sessions: vec![] },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
+        ]);
+        let conn = lanes_over(client);
+        let group = crate::layout::AttachedGroup {
+            tabs: vec!["diff-tab".to_string(), "plan-tab".to_string()],
+            active_tab_index: 1,
+            size: 0.4,
+        };
+        let grouped = LayoutNode::Leaf {
+            tabs: vec!["stale-a".to_string()],
+            active_tab_index: 0,
+            pinned: Vec::new(),
+            attached: [("stale-a".to_string(), group.clone())].into_iter().collect(),
+        };
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", grouped)])];
+        let views: HashSet<String> = ["diff-tab".to_string(), "plan-tab".to_string()].into_iter().collect();
+
+        resolve_workspaces(&mut workspaces, &conn, &views).unwrap();
+
+        assert_eq!(
+            workspaces[0].pages[0].layout,
+            LayoutNode::Leaf {
+                tabs: vec!["fresh-a".to_string()],
+                active_tab_index: 0,
+                pinned: Vec::new(),
+                attached: [("fresh-a".to_string(), group)].into_iter().collect(),
             }
         );
     }
@@ -9858,6 +9910,7 @@ mod attach_target_tests {
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
             active_tab_index: 0,
             pinned: Vec::new(),
+            attached: Default::default(),
         }
     }
 

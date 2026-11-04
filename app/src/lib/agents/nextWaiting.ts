@@ -24,7 +24,7 @@
 
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
 import type { Workspace } from "$lib/core/workspace";
-import { allSessionIds, type LayoutNode } from "$lib/panes/layout";
+import { findLeafPath, ownerOfAttached, type LayoutNode } from "$lib/panes/layout";
 import { rowTip, waitLabel, type AttentionReason, type AttentionRow } from "$lib/agents/attentionInbox";
 
 /// What the menu calls itself -- the hub panel's own heading, since it
@@ -176,5 +176,9 @@ export function sessionOnScreen(
   if (!ws) return null;
   if (view === "home") return ws.mainSessionId ?? null;
   if (view !== "terminal" || !tree || !focusedSessionId) return null;
-  return allSessionIds(tree).includes(focusedSessionId) ? focusedSessionId : null;
+  // Focus on one of a tab's Attached views is that tab on screen: the
+  // view is drawn beside it, and only while it is in front (ADR 0013).
+  const owner = ownerOfAttached(tree, focusedSessionId);
+  if (owner !== null) return owner;
+  return findLeafPath(tree, focusedSessionId) ? focusedSessionId : null;
 }
