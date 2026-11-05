@@ -1342,6 +1342,11 @@ export async function bootstrap(): Promise<void> {
       // what keeps reconcileLayoutSessions from closing their tabs.
       seedSshLinks(event.payload.workspaces);
       void refreshDaemonCompat();
+      // The app-wide settings are managed in the same step as the
+      // workspaces, and bootstrap() read them before it: on a relaunch or
+      // after an update that first read is refused ("state not managed")
+      // and the theme picked in Settings drew as System for the whole run.
+      void reloadAppSettings();
       void reconcileLayoutSessions();
     })
   );
@@ -1812,6 +1817,9 @@ async function pollForStartupState(): Promise<void> {
       watchRootedWorkspaces(data.workspaces);
       seedSshLinks(data.workspaces);
       void refreshDaemonCompat();
+      // As the workspaces-ready listener: the first read of the app-wide
+      // settings may have come before Rust managed them.
+      void reloadAppSettings();
       void reconcileLayoutSessions();
       return;
     }

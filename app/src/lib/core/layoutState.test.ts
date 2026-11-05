@@ -78,6 +78,8 @@ vi.mock("$lib/core/backend", () => ({
     .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, fallbackChains: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  // themeState.init() reads it first thing in bootstrap(); null is System.
+  getThemePref: vi.fn().mockResolvedValue(null),
   getPlaywrightPaneOpen: vi.fn().mockResolvedValue(null),
   getCustomResumeArgs: vi.fn().mockResolvedValue(null),
   setCustomResumeArgs: vi.fn().mockResolvedValue(undefined),
@@ -3857,6 +3859,42 @@ describe("bootstrap / pollForStartupState readiness", () => {
       { timeout: 3000 }
     );
     expect(get(layoutState).status).toBe("ready");
+  });
+
+  // The app-wide settings (theme, font size, model defaults, ...) are
+  // managed at the end of session::bootstrap too, and bootstrap() reads
+  // them before it -- after a relaunch, and always after an update, whose
+  // daemon is still coming up. Each read swallowed the "state not
+  // managed" refusal and kept its default for the whole run, so the
+  // theme picked in Settings drew as System on every launch.
+  it("re-reads the app-wide settings once ready, when the first read came before Rust managed them", async () => {
+    const { themeState } = await import("$lib/ui/themeState.svelte");
+    vi.mocked(backend.getWorkspacesState)
+      .mockRejectedValueOnce(new Error("state not managed"))
+      .mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getThemePref)
+      .mockRejectedValueOnce(new Error("state not managed"))
+      .mockResolvedValue("light");
+    vi.mocked(backend.getTerminalFontSize)
+      .mockRejectedValueOnce(new Error("state not managed"))
+      .mockResolvedValue(11);
+
+    try {
+      await bootstrap();
+      expect(themeState.pref).toBe("system");
+
+      await vi.waitFor(() => expect(get(layoutState).status).toBe("ready"), { timeout: 3000 });
+      await vi.waitFor(() => expect(themeState.pref).toBe("light"));
+      expect(themeState.effective).toBe("light");
+      await vi.waitFor(() => expect(get(terminalFontSizeDefault)).toBe(11));
+    } finally {
+      vi.mocked(backend.getThemePref).mockResolvedValue(null);
+      vi.mocked(backend.getTerminalFontSize).mockResolvedValue(null);
+      themeState.pref = "system";
+      terminalFontSizeDefault.set(null);
+    }
   });
 });
 

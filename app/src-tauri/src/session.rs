@@ -1366,6 +1366,27 @@ mod workspaces_data_tests {
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
     }
 
+    /// What `get_theme_pref` answers before bootstrap has managed
+    /// `ThemePref`: the theme a save wrote, absent for System, and nothing
+    /// written back -- bootstrap owns the file at that moment.
+    #[test]
+    fn stored_theme_reads_the_saved_theme_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::stored_theme(dir.path()), None, "no config.json yet");
+
+        let path = crate::config::config_path(dir.path());
+        let written = r#"{"workspaces":[],"theme":"light","agent_models":{}}"#;
+        std::fs::write(&path, written).unwrap();
+        assert_eq!(super::stored_theme(dir.path()), Some("light".to_string()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+
+        std::fs::write(&path, r#"{"workspaces":[],"theme":null}"#).unwrap();
+        assert_eq!(super::stored_theme(dir.path()), None);
+
+        std::fs::write(&path, "{not json").unwrap();
+        assert_eq!(super::stored_theme(dir.path()), None);
+    }
+
     /// The seventh field, and the seventh chance to make the same
     /// mistake: session_names, file_tabs, board_tabs, theme, agent_models
     /// and removed_workspaces were each silently reset by a save site
@@ -1914,9 +1935,27 @@ pub fn set_agent_skills_mark(
     .map_err(|e| e.to_string())
 }
 
+/// Answers before `bootstrap` has managed `ThemePref` too, straight from
+/// config.json: the window asks for its theme on its first frame, and
+/// bootstrap is still waiting on the daemon then -- for seconds after an
+/// update. A `State<ThemePref>` argument would refuse that call, and the
+/// window would draw System until the ready path read it again.
 #[tauri::command]
-pub fn get_theme_pref(state: State<ThemePref>) -> Option<String> {
-    state.0.lock().unwrap().clone()
+pub fn get_theme_pref(app_handle: AppHandle) -> Option<String> {
+    if let Some(state) = app_handle.try_state::<ThemePref>() {
+        return state.0.lock().unwrap().clone();
+    }
+    let config_dir = app_handle.path().app_config_dir().ok()?;
+    stored_theme(&config_dir)
+}
+
+/// The `theme` key alone, read without `config::load`: a load that
+/// migrates writes the file back, and bootstrap is loading and saving it
+/// on another thread at this very moment.
+fn stored_theme(config_dir: &std::path::Path) -> Option<String> {
+    let contents = std::fs::read_to_string(crate::config::config_path(config_dir)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    value.get("theme")?.as_str().map(str::to_string)
 }
 
 #[tauri::command]
