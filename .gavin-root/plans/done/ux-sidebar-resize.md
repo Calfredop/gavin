@@ -2,7 +2,7 @@
 order: 17408
 kind: task
 title: [ux] sidebar resize
-status: In Progress
+status: Done
 ---
 Allow resizing of sidebar
 
