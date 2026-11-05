@@ -198,6 +198,11 @@ function stateOf(status: string, tone: Staleness | null, visible: boolean): Sess
       return "active";
     case "waiting_for_input":
       return "waiting";
+    // Work the agent started is still running: busy, just not on screen.
+    case "background":
+      return "active";
+    case "done":
+      return "idle";
     case "idle":
     case "failed":
       return status;
@@ -450,7 +455,10 @@ export function killConfirm(row: SessionRow): KillPrompt {
 /// the stale wording that names SIGTERM.
 export function isIdleSession(row: SessionRow): boolean {
   if (row.stale) return false;
-  return row.status !== "working" && row.status !== "waiting_for_input";
+  // Not `background` either: ending it ends the shell or subagent the
+  // agent is still waiting on, which is work in flight however quiet the
+  // screen. `done` is the idle session this button is for.
+  return row.status !== "working" && row.status !== "waiting_for_input" && row.status !== "background";
 }
 
 /// The rows Kill idle acts on, in the list order the panel is showing.

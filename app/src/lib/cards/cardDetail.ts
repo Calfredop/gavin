@@ -187,6 +187,8 @@ const LIVE_HEADLINE: Record<SessionStatus, string> = {
   working: "Working",
   waiting_for_input: "Waiting for you",
   idle: "Idle at its prompt",
+  background: "Waiting for background work to finish",
+  done: "Done — close it unless you have a follow-up",
   failed: "Stopped — something broke",
   unknown: "Status unknown — a newer daemon wrote it",
 };
@@ -195,6 +197,8 @@ const LIVE_TONE: Record<SessionStatus, IndicatorTone> = {
   working: "accent",
   waiting_for_input: "warning",
   idle: "neutral",
+  background: "accent",
+  done: "success",
   failed: "danger",
   unknown: "neutral",
 };
@@ -204,6 +208,8 @@ const LIVE_WANTS_HUMAN: Record<SessionStatus, boolean> = {
   working: false,
   waiting_for_input: true,
   idle: false,
+  background: false,
+  done: false,
   failed: true,
   unknown: false,
 };

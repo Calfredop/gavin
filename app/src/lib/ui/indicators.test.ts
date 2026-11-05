@@ -151,6 +151,11 @@ describe("the indicator vocabulary", () => {
     expect(agentIndicatorByState("failed").tone).toBe("danger");
     expect(agentIndicatorByState("interrupted").tone).toBe("warning");
     expect(agentIndicator("unknown").tone).toBe("neutral");
+    // Something it started is still going: happening now, nobody wanted.
+    expect(agentIndicatorByState("background").tone).toBe("accent");
+    expect(agentIndicatorByState("background").spin).toBe(false);
+    // The agent's own clean finish.
+    expect(agentIndicatorByState("done").tone).toBe("success");
     expect(shellRestartedIndicator(true).tone).toBe("warning");
     expect(shellOrphanIndicator().tone).toBe("danger");
     expect(gitIndicator(true).tone).toBe("warning");
@@ -444,6 +449,13 @@ describe("tabAgentIndicator", () => {
   it("draws the shared agent badge for the two live states", () => {
     expect(tabAgentIndicator("working")).toEqual(agentIndicator("working"));
     expect(tabAgentIndicator("waiting_for_input")).toEqual(agentIndicator("waiting_for_input"));
+  });
+
+  // Neither is the bare idle a tab leaves blank: one says something the
+  // agent started is still going, the other that the tab can be closed.
+  it("draws background and done, the two quiet states that say more than idle", () => {
+    expect(tabAgentIndicator("background")).toEqual(agentIndicator("background"));
+    expect(tabAgentIndicator("done")).toEqual(agentIndicator("done"));
   });
 
   // The case this function exists for: a broken agent used to read as

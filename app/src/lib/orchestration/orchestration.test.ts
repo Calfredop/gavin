@@ -3317,6 +3317,20 @@ describe("nextActions — an agent tool step's turn", () => {
     ).toEqual([]);
   });
 
+  // v81's refinements of idle end the turn just as idle does: an agent
+  // that declared itself done finished, and one that left a background
+  // shell running finished too -- holding the rail on that shell would
+  // hold it for as long as a dev server lives.
+  it("marks it done when its live session goes done or background", () => {
+    for (const status of ["done", "background"] as const) {
+      const actions = nextActions(
+        armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", status]]),
+        new Set(), new Map(), {}, 0, new Set(["s1"])
+      );
+      expect(actions, status).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+    }
+  });
+
   // The agent is asking the human something, not finishing. The daemon
   // pins TERM_PROGRAM so this is reported rather than looking like
   // silence, and refuses to let a quiet period downgrade it -- advancing
@@ -4457,6 +4471,16 @@ describe("stepAttentions", () => {
   it("marks a card step whose agent's turn ended with the card short of Done", () => {
     const orch = running(cardRail, "r1-s0", runs());
     expect(attn(orch, statuses("idle")).get("t1")).toBe("turn-ended");
+  });
+
+  // An agent calling ITSELF done does not move the card, so the same
+  // question stands. One waiting on its background work has not ended
+  // its turn yet -- it wakes when that finishes -- and "turn ended short
+  // of Done" over it is the confusing badge `background` replaces.
+  it("marks a done agent's unmoved card, but not one waiting on background work", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("done")).get("t1")).toBe("turn-ended");
+    expect(attn(orch, statuses("background")).get("t1")).toBeUndefined();
   });
 
   // Would be a lie: the card IS finished. Rule 1 marks the step done on

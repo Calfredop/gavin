@@ -325,7 +325,7 @@ function taskPhase(liveness: CardSessionState, status: SessionStatus | undefined
   // but every surface used to read the quiet seconds behind it as idle.
   if (liveness === "failed") return "failed";
   if (status === "waiting_for_input") return "waiting";
-  if (status === "working") return "working";
+  if (status === "working" || status === "background") return "working";
   return "idle";
 }
 
@@ -354,7 +354,7 @@ function countLooseAgents(ws: Workspace, state: FleetState, bound: Set<string>):
   for (const id of ids) {
     if (bound.has(id)) continue;
     const status = state.sessionStatusById[id];
-    if (status === "working" || status === "waiting_for_input") n += 1;
+    if (status === "working" || status === "background" || status === "waiting_for_input") n += 1;
   }
   return n;
 }

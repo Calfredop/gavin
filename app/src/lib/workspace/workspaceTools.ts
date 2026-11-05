@@ -45,6 +45,7 @@
 // glyphs already are.
 
 import { relativeTime } from "$lib/hub/appHub";
+import { endsTurn } from "$lib/core/turnEnd";
 import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
 import {
   duplicateTool,
@@ -262,7 +263,7 @@ export function toolCwdLabel(tool: Pick<Tool, "cwd">): string | null {
 /// Device's for the runs it started.
 export function agentToolVerdict(status: string | undefined, seenWorking: boolean): "passed" | "failed" | null {
   if (status === "failed") return "failed";
-  if (status === "idle" && seenWorking) return "passed";
+  if (endsTurn(status) && seenWorking) return "passed";
   return null;
 }
 

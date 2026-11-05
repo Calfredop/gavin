@@ -111,6 +111,17 @@ folder to the work still in flight — and taking it off Done brings it back.
 The reply names the card's path after the write, so when it moved, use the
 new path from then on. Nested children travel with their parent.
 
+**Your tab has a status of its own.** When the work is finished and
+verified, nothing you started is still running, and there is nothing left
+for you to do, call `gavin_session_done()` as the last thing your turn
+does: your tab then reads **done** — the human can close it unless they
+have a follow-up — instead of a bare idle. It is about this session, not
+the card: still set the card's column yourself. Never call it while you are
+waiting on a background task, asking something, or leaving work for later;
+the human's next message takes it back on its own. A turn that ends with a
+background shell or subagent still running reads **waiting for background
+work** by itself — there is nothing to call for that.
+
 ## 5. When only a person can answer
 
 Some work stops on a human, not on a command: a choice that is not yours

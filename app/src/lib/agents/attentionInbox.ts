@@ -360,7 +360,10 @@ function reasonFor(
   if (status === "waiting_for_input") return "asking";
   // Only a rail can say these, and only about an agent that has actually
   // gone quiet. An idle session with no mark is a shell at its prompt.
-  if (status === "idle" && (mark === "turn-ended" || mark === "stale")) return mark;
+  // `done` is quiet too -- the agent calling itself finished does not
+  // move the card. `background` is not: that agent will wake up when its
+  // shell or subagent finishes, so its turn has not really ended yet.
+  if ((status === "idle" || status === "done") && (mark === "turn-ended" || mark === "stale")) return mark;
   return null;
 }
 

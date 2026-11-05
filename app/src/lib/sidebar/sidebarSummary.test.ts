@@ -557,6 +557,21 @@ describe("pageAgentsSummary", () => {
     });
   });
 
+  // v81: an agent waiting on its own background work is running -- it
+  // used to land in idle, which is what made the recap read "quiet" over
+  // a session with a shell still going. `done` is the idle it refines.
+  it("counts background as running and done as idle", () => {
+    const state = tabState({ sessionStatusById: { a: "background", b: "done" } });
+    expect(pageAgentsSummary(page("p1", leaf(["a", "b"])), state)).toEqual({
+      tabs: 2,
+      agents: 2,
+      running: 1,
+      waiting: 0,
+      failed: 0,
+      idle: 1,
+    });
+  });
+
   it("buckets each agent by its status", () => {
     const state = tabState({
       sessionStatusById: { a: "working", b: "waiting_for_input", c: "idle", d: "working" },

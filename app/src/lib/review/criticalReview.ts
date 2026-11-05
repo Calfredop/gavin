@@ -21,6 +21,7 @@ import {
   type ReviewedCard,
 } from "$lib/review/codeReview";
 import { DEFAULT_CRITICAL_REVIEW_SUFFIX, fillTemplate } from "$lib/agents/actionPromptDefaults";
+import { endsTurn } from "$lib/core/turnEnd";
 
 export type { Candidate };
 export { seedCandidates, candidateLabel };
@@ -213,7 +214,7 @@ export function critiqueSessionsComplete(input: {
   return input.sessionIds.every((id) => {
     if (!input.liveSessionIds.has(id)) return true;
     return (
-      input.sessionStatuses.get(id) === "idle" && input.sessionsSeenWorking.has(id)
+      endsTurn(input.sessionStatuses.get(id)) && input.sessionsSeenWorking.has(id)
     );
   });
 }

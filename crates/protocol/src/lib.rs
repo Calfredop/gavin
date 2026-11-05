@@ -121,6 +121,17 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v81 widens what a session's status can say with two refinements of a
+/// quiet turn (`ux-agents-waiting-background-activity-done.md`):
+/// `background`, an agent whose turn ended while a shell or subagent it
+/// started is still running (read off its rendered screen), and `done`,
+/// an agent that declared itself finished through gavin-mcp's
+/// `gavin_session_done` -- the new request TYPE `DeclareSessionDone`,
+/// gated by `min_version_for`. `StatusChanged` carries the status as a
+/// plain string, so no gate can see the two new values: an app older than
+/// this reads both as `unknown`, which ends no turn -- the safe direction.
+/// `MIN_COMPATIBLE_VERSION` stands.
+///
 /// v80 is the Orchestrated plan (`feat-plan-orchestrates-nested-tasks.md`,
 /// ADR 0012): a plan whose `children: sequence | parallel` line runs each
 /// of its Nested tasks as its own session before the plan's own.
@@ -1061,7 +1072,7 @@ pub const RUN_GIT_CAPPED_MIN_VERSION: u32 = 58;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 80;
+pub const PROTOCOL_VERSION: u32 = 81;
 
 /// The first version that keeps the Workspace log and pushes
 /// `WorkspaceLogAppended` (v79). The daemon compares the watching app's
@@ -2255,6 +2266,15 @@ pub enum Request {
         #[serde(default)]
         agent_conversation_id: Option<String>,
     },
+    /// An agent saying its session is finished -- nothing left to do,
+    /// close it unless the human has a follow-up (gavin-mcp's
+    /// `gavin_session_done`, v81). Routed by SESSION like `NameSession`,
+    /// and like it only ever about the caller's own: the next quiet turn
+    /// reports `done` instead of `idle`, until a submitted line takes it
+    /// back. Independent of any card's column.
+    DeclareSessionDone {
+        session_id: String,
+    },
     /// Prove the peer holds this user's daemon token *before* the app
     /// sends it (v76, DP-06). The app's nonce is answered as
     /// `Response::ServerProof` = HMAC(token, `"gavin-server-challenge-v1" ||
@@ -2874,6 +2894,11 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::TickChecklistLink { .. }
         | Request::SetNestedRun { .. }
         | Request::ClearNestedRuns { .. } => 80,
+
+        // An agent declaring its session finished (v81). A new TYPE, so
+        // this is its whole wire gate: gavin-mcp never sends it to a
+        // daemon that would answer `Unsupported`.
+        Request::DeclareSessionDone { .. } => 81,
 
         // One binding, command included (v43), now the board read leaves
         // the command out. A new request TYPE, so this is the whole wire
@@ -8861,7 +8886,10 @@ mod tests {
         // Orchestrated plan. Three new TYPES; PlanFileInfo.children and
         // Orchestration.nested_runs widen behind
         // FEATURE_MIN_VERSION.orchestratedPlans.
-        assert_eq!(PROTOCOL_VERSION, 80);
+        // v81: DeclareSessionDone -- an agent saying its session is
+        // finished. One new TYPE; the `background` and `done` statuses
+        // ride StatusChanged's plain string, which no gate can see.
+        assert_eq!(PROTOCOL_VERSION, 81);
     }
 
     #[test]

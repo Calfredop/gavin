@@ -41,6 +41,15 @@ describe("idleTabsOnPage", () => {
     expect(idle.busy).toBe(2);
   });
 
+  it("leaves a session waiting on background work open, and closes a done one", () => {
+    const idle = idleTabsOnPage(
+      page(leaf(["a", "b"])),
+      state({ sessionStatusById: { a: "background", b: "done" } })
+    );
+    expect(idle.ids).toEqual(["b"]);
+    expect(idle.busy).toBe(1);
+  });
+
   it("counts a session that has never reported a status as idle", () => {
     const idle = idleTabsOnPage(page(leaf(["a"])), state());
     expect(idle.ids).toEqual(["a"]);

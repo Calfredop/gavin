@@ -72,6 +72,21 @@ pub enum SessionStatus {
     /// indistinguishable, so a rail marked a step done on work that never
     /// happened. See `server.rs`'s failure detection.
     Failed,
+    /// The agent's turn ended, but work it started in the background is
+    /// still running -- a shell or a subagent it will wake up for. Read
+    /// off the rendered screen at the quiet transition (`server.rs`'s
+    /// `background_on_screen`). Not `Idle` because "nothing is running"
+    /// is exactly what it is not; not `Working` because nobody is moving
+    /// on the screen and the human's follow-up is welcome. Ends the turn
+    /// for everything that acts on one (`ends_turn`).
+    Background,
+    /// A quiet turn from an agent that said, through `gavin_session_done`,
+    /// that it has nothing left to do: the session can be closed unless
+    /// the human has a follow-up. The agent's word, not the card's
+    /// column -- a session can be done on a card still In Progress, and a
+    /// card can be Done under a session that is not. A submitted line
+    /// takes it back (`SessionManager::write_input`).
+    Done,
     /// A status string this build does not recognise -- written by a
     /// NEWER daemon into the same registry, and read back here.
     ///
@@ -93,6 +108,8 @@ impl SessionStatus {
             SessionStatus::WaitingForInput => "waiting_for_input",
             SessionStatus::Exited => "exited",
             SessionStatus::Failed => "failed",
+            SessionStatus::Background => "background",
+            SessionStatus::Done => "done",
             // Round-trips as itself rather than as any real status: a row
             // this build could not read must not be REWRITTEN as one it
             // invented, or the newer daemon that wrote it loses the fact
@@ -108,8 +125,19 @@ impl SessionStatus {
             "waiting_for_input" => SessionStatus::WaitingForInput,
             "exited" => SessionStatus::Exited,
             "failed" => SessionStatus::Failed,
+            "background" => SessionStatus::Background,
+            "done" => SessionStatus::Done,
             _ => SessionStatus::Unknown,
         }
+    }
+
+    /// Whether this status means the agent's turn is over and it sits at
+    /// its prompt: `Idle`, and its two refinements. Everything that acts
+    /// on a finished turn -- the follow-up queue above all -- reads this
+    /// rather than `== Idle`, so a refinement never silently becomes a
+    /// turn that did not end.
+    pub fn ends_turn(&self) -> bool {
+        matches!(self, SessionStatus::Idle | SessionStatus::Background | SessionStatus::Done)
     }
 }
 

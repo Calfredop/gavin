@@ -775,7 +775,8 @@ fn tool_definitions() -> Value {
         { "name": "gavin_name_session", "description": "Name your own tab in the gavin app — do this first, so the human can tell your session apart from every other one. Short and specific: what this session is working on, not who you are.", "inputSchema": { "type": "object", "properties": {
             "name": { "type": "string", "description": "2-4 words, e.g. \"login flow\" or \"git tab conflicts\"" },
             "agent_conversation_id": { "type": "string", "description": "Optional. Your own CLI's native conversation/session id — NOT this argument's cousin above, which only labels the tab. Pass it once your CLI generates its own session id and told you what it is (a profile whose CLI mints one up front instead needs no second call). Gavin stores it so Resume can replay your real conversation instead of writing a fresh prompt reconstructing it." }
-        }, "required": ["name"] } }
+        }, "required": ["name"] } },
+        { "name": "gavin_session_done", "description": "Tell the human this session is finished: the work is complete and verified, nothing of yours is still running, and there is nothing left for you to do — they can close this tab unless they have a follow-up. Call it last, once, as the final thing your turn does; it is about this SESSION, not a card (a card's status is still gavin_set_plan_field's). Your tab then reads done instead of idle until the human sends another message. Do not call it while you are waiting on anything, asking something, or leaving work for later.", "inputSchema": { "type": "object", "properties": {} } }
     ])
 }
 
@@ -826,6 +827,11 @@ fn dispatch_tool(
             current_session_id(),
             transport,
         );
+    }
+
+    // Nor does declaring it finished, for the same reason.
+    if name == "gavin_session_done" {
+        return session_done(current_session_id(), transport);
     }
 
     // gavin_init_root is the only other tool that works without a
@@ -1331,6 +1337,18 @@ fn name_session(
         other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
     }
 }
+
+fn session_done(session_id: Option<String>, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let session_id = session_id.ok_or_else(|| anyhow::anyhow!(NOT_IN_A_SESSION_DONE))?;
+    match transport.request(&Request::DeclareSessionDone { session_id })? {
+        Response::Ok => Ok("this session reads done once your turn ends — a follow-up from the human takes it back".to_string()),
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
+const NOT_IN_A_SESSION_DONE: &str =
+    "not running in a gavin session (no GAVIN_SESSION_ID) — there is no tab to mark done";
 
 /// A native CLI session/conversation id, not a display label: trimmed
 /// like `name`. Empty or whitespace-only is treated as absent rather than
@@ -4792,6 +4810,24 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn declaring_done_sends_the_id_the_pty_exported() {
+        let mut t = mock(vec![Response::Ok]);
+        session_done(Some("s-1".into()), &mut t).unwrap();
+        match &t.requests[0] {
+            Request::DeclareSessionDone { session_id } => assert_eq!(session_id, "s-1"),
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declaring_done_outside_a_gavin_session_says_so_without_calling_the_daemon() {
+        let mut t = mock(vec![]);
+        let err = session_done(None, &mut t).unwrap_err();
+        assert!(err.to_string().contains("GAVIN_SESSION_ID"));
+        assert!(t.requests.is_empty());
     }
 
     #[test]

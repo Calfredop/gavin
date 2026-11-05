@@ -18,6 +18,7 @@
 // badge that says what is happening and by every launch that must not.
 
 import type { SessionStatus } from "$lib/core/notifications";
+import { endsTurn } from "$lib/core/turnEnd";
 import type { DevelopingCardRecord, SessionLiveness, WorkspacesData } from "$lib/core/workspace";
 import type { GavinTree } from "$lib/core/gavin";
 import { cardViewForPath } from "$lib/core/planBoard";
@@ -124,7 +125,7 @@ export function developRunOver(
   written: boolean
 ): boolean {
   if (liveness !== "live") return true;
-  return written && status === "idle";
+  return written && endsTurn(status);
 }
 
 /// Why nothing may be launched on this card, phrased for the surface that

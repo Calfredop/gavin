@@ -2955,7 +2955,7 @@ export function startScheduler(): () => void {
 /// will never read, and "stopped without finishing its card" would send
 /// them to restart an agent that would make the same mistake again.
 export function railStatusVoice(sessionId: string, status: SessionStatus): string | null {
-  if (status !== "idle") return null;
+  if (status !== "idle" && status !== "done") return null;
   // Reads the same derived map the chips do, and the layout store it
   // rides has already been updated with this very status by the time
   // handleSessionStatusChanged calls the notifier -- so the mark here is

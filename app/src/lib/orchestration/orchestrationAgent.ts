@@ -13,6 +13,7 @@
 // first one still thinking.
 
 import type { SessionStatus } from "$lib/core/notifications";
+import { endsTurn } from "$lib/core/turnEnd";
 import type { OrchestrationAgentRecord, SessionLiveness } from "$lib/core/workspace";
 
 /// The name a whole-tab Organize wears wherever a run is named.
@@ -57,7 +58,7 @@ export function orchestrationAgentOver(
   status: SessionStatus | undefined
 ): boolean {
   if (liveness !== "live") return true;
-  return status === "idle";
+  return endsTurn(status);
 }
 
 /// What a press does. `jump` rather than a disabled button on purpose: a

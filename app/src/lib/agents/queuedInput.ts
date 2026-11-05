@@ -211,6 +211,8 @@ export function deliveryHold(target: QueueTarget, queued: number): string | null
     case "failed":
       return "The agent stopped because something broke. Nothing is delivered into a failed session; send it now, or cancel it and resume the agent first.";
     case "idle":
+    case "background":
+    case "done":
       // Idle with a queue still standing is a real state and a brief
       // one: the daemon hands over one item per idle, so the rest of the
       // list is genuinely waiting for the turn this delivery starts.

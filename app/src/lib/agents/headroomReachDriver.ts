@@ -19,6 +19,7 @@ import * as backend from "$lib/core/backend";
 import { addSessionStatusListener, daemonCompat } from "$lib/core/layoutState";
 import { featureBlockedReason } from "$lib/core/daemonCompat";
 import type { SessionStatus } from "$lib/core/notifications";
+import { endsTurn } from "$lib/core/turnEnd";
 import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { parseReach, reachCheckDue } from "$lib/agents/headroomMark";
@@ -62,7 +63,7 @@ function onSessionStatus(
   status: SessionStatus,
   previousStatus: SessionStatus | undefined
 ): void {
-  const turnEnded = previousStatus === "working" && status === "idle";
+  const turnEnded = previousStatus === "working" && endsTurn(status);
   const reopenedPaint = turnEnded && isAwaitingFirstSubmit(sessionId);
   const due = reachCheckDue({
     previousStatus,

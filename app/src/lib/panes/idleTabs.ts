@@ -43,7 +43,9 @@ export function idleTabsOnPage(page: Page, state: PageTabState): IdleTabs {
   const sessions = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   const idle = sessions.filter((id) => {
     const status = state.sessionStatusById[id];
-    return status !== "working" && status !== "waiting_for_input";
+    // `background` is not idle: closing the tab ends the shell or
+    // subagent its agent is still waiting on.
+    return status !== "working" && status !== "waiting_for_input" && status !== "background";
   });
   const leaves = allLeaves(page.layout);
   const pinnedIds = new Set(leaves.flatMap((leaf) => leaf.pinned ?? []));

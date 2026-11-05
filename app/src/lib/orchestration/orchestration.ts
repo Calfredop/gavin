@@ -7,6 +7,7 @@ import type { Board, Column } from "$lib/board/kanban";
 import type { ChildrenMode, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { WorktreeInfo } from "$lib/git/git";
 import type { SessionStatus } from "$lib/core/notifications";
+import { endsTurn } from "$lib/core/turnEnd";
 import { isArchivedCard, planKey, slugStatus } from "$lib/core/planBoard";
 import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "$lib/orchestration/orchestrationLoop";
 import { isUnreviewedStall } from "$lib/cards/cardReview";
@@ -1258,6 +1259,15 @@ function toolStepOutcome(
   return { kind: "stall", reason: `${label} exited with code ${exitCode}` };
 }
 
+/// A quiet session with nothing left to wait for: `idle`, or `done`. The
+/// marks that say "its turn ended short of the card" read this. Not
+/// `background`: that agent wakes up when its shell or subagent finishes,
+/// so its turn has not really ended, and calling it so is the confusing
+/// badge v81 exists to replace.
+function quietWithoutWaiting(status: SessionStatus | undefined): boolean {
+  return status === "idle" || status === "done";
+}
+
 /// Whether a step is a finished AGENT tool step -- the one completion
 /// signal that is not an exit code.
 ///
@@ -1317,7 +1327,11 @@ function agentTurnEnded(
   // a library still loading. The step keeps running until its session
   // ends rather than completing on a guess.
   if (toolKinds.get(step.toolId as string) !== "agent") return false;
-  if (sessionStatuses.get(sessionId) !== "idle") return false;
+  // `endsTurn`, not `=== "idle"`: an agent that declared itself done has
+  // ended its turn, and one waiting on a background shell has too -- a
+  // tool agent that left a dev server running finished its work, and the
+  // server would hold the rail for as long as it lives.
+  if (!endsTurn(sessionStatuses.get(sessionId))) return false;
   // The shell's first prompt is idle too. Without this, a rail that
   // reached an agent-prompt tool marked it done before the agent ran.
   if (!sessionsSeenWorking.has(sessionId)) return false;
@@ -1624,7 +1638,7 @@ export function stepAttentions(
             if (status === "failed") childMarks.push("failed");
             else if (status === "waiting_for_input") childMarks.push("asking");
             else if (verdictAsksQuietly(status, verdict)) childMarks.push("asking");
-            else if (status === "idle") {
+            else if (quietWithoutWaiting(status)) {
               const since = statusSince.get(row.sessionId);
               childMarks.push(since !== undefined && now - since >= STALE_AFTER_MS ? "stale" : "turn-ended");
             }
@@ -1695,7 +1709,7 @@ export function stepAttentions(
           // its exit code and nothing else (T5), because a quiet `npm
           // run dev` is a server that started rather than an agent that
           // stopped.
-        } else if (status === "idle" && !isToolStep(step)) {
+        } else if (quietWithoutWaiting(status) && !isToolStep(step)) {
           // The card IS finished -- saying its turn ended short of Done
           // would be false, and rule 1 marks the step done this same
           // tick. Read through effectiveStatus, so a nested task under a

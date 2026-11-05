@@ -25,6 +25,7 @@
 // headroomReachDriver.ts, and the badge in ui/indicators.ts.
 
 import type { SessionStatus } from "$lib/core/notifications";
+import { endsTurn } from "$lib/core/turnEnd";
 
 /// What Headroom has been found to have seen of a compressed session.
 /// `unknown` is not stored: an answer that could not be told changes
@@ -140,7 +141,7 @@ export interface ReachCheckInput {
 /// its mark, and Headroom has nothing of it to have seen.
 export function reachCheckDue(input: ReachCheckInput): boolean {
   if (input.blocked) return false;
-  if (input.previousStatus !== "working" || input.status !== "idle") return false;
+  if (input.previousStatus !== "working" || !endsTurn(input.status)) return false;
   if (!input.run || input.reopenedPaint) return false;
   const compression = input.compression;
   return compression?.compressed === true && compression.reach !== "reached";

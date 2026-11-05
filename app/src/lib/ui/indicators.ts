@@ -35,7 +35,9 @@ import {
   Cable,
   ChevronsRight,
   Clock,
+  CircleCheck,
   CircleDashed,
+  CircleEllipsis,
   CircleOff,
   CirclePause,
   CircleQuestionMark,
@@ -192,6 +194,8 @@ const AGENT: Record<
   | "unknown"
   | "interrupted"
   | "idle"
+  | "background"
+  | "done"
   | "exited"
   | "queued"
   | "held"
@@ -273,6 +277,24 @@ const AGENT: Record<
     "developing this card — an agent is rewriting it"
   ),
   idle: make("agent", "idle", CircleDashed, "neutral", "idle — nothing running"),
+  // The turn ended, but a shell or a subagent the agent started is still
+  // going, and it will wake up when that finishes. Accent, because
+  // something is happening right now; no spin, because nothing on the
+  // screen is moving and the agent is not the one doing it. Before v81
+  // this was `idle` -- "nothing running" over a session with something
+  // running.
+  background: make(
+    "agent",
+    "background",
+    CircleEllipsis,
+    "accent",
+    "waiting for background work to finish"
+  ),
+  // The agent said it is finished (`gavin_session_done`): nothing is left
+  // for it, so the tab can close unless you have a follow-up. Success,
+  // the tone every clean finish speaks in. The agent's word about its
+  // SESSION, not the card's column -- the two are kept apart on purpose.
+  done: make("agent", "done", CircleCheck, "success", "done — close it unless you have a follow-up"),
   exited: make("agent", "exited", CircleSlash2, "neutral", "session exited"),
   // Asked for, not started: the launch wall is holding it and the queue
   // will start it by itself (launchGate.ts). Not a daemon status -- there
@@ -343,6 +365,8 @@ export const AGENT_STATES = [
   "failed",
   "interrupted",
   "queued",
+  "background",
+  "done",
   "idle",
   "exited",
 ] as const;
@@ -926,13 +950,20 @@ export function attentionIndicator(attention: StepAttention | "blocked"): Indica
 /// human marked as read draws nothing -- which is what the mark is for
 /// -- and a question asked in PROSE draws the waiting badge even though
 /// the daemon calls that session idle.
+///
+/// `background` and `done` (v81) draw too: each says something a bare
+/// tab cannot -- "something it started is still going", "you can close
+/// this" -- and drawing nothing for them is exactly the generic idle the
+/// two were added to replace.
 export function tabAgentIndicator(
   status: SessionStatus | null | undefined,
   failureReason?: string | null
 ): Indicator | null {
   if (status === "failed") return agentFailedIndicator(failureReason);
-  if (status !== "working" && status !== "waiting_for_input") return null;
-  return agentIndicator(status);
+  if (status === "working" || status === "waiting_for_input" || status === "background" || status === "done") {
+    return agentIndicator(status);
+  }
+  return null;
 }
 
 /// Every indicator the app can draw. Exists for the invariant tests --

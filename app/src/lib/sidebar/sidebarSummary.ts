@@ -324,7 +324,10 @@ export function pageAgentsSummary(page: Page, state: PageTabState): PageAgentsSu
   let failed = 0;
   for (const id of agentIds) {
     const status = state.sessionStatusById[id];
-    if (status === "working") running += 1;
+    // An agent waiting on its own background work is running all the
+    // same: something it started is going, and calling that idle is what
+    // v81's `background` exists to stop.
+    if (status === "working" || status === "background") running += 1;
     else if (status === "waiting_for_input") waiting += 1;
     else if (status === "failed") failed += 1;
   }
@@ -384,7 +387,7 @@ export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): Work
     total.tabs += 1;
     total.agents += 1;
     const status = state.sessionStatusById[main];
-    if (status === "working") total.running += 1;
+    if (status === "working" || status === "background") total.running += 1;
     else if (status === "waiting_for_input") total.waiting += 1;
     else if (status === "failed") total.failed += 1;
     else total.idle += 1;

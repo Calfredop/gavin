@@ -19,6 +19,7 @@ import type { WorkspacesData } from "$lib/core/workspace";
 import { allSessionIds } from "$lib/panes/layout";
 import { slugStatus } from "$lib/core/planBoard";
 import { verdictIsAsking } from "$lib/agents/turnVerdict";
+import { endsTurn } from "$lib/core/turnEnd";
 import type { QueueTarget } from "$lib/agents/queuedInput";
 
 /// How a picked card reaches the agent.
@@ -158,14 +159,15 @@ export function cardFollowUpRefusal(
 
 /// Whether held cards may be launched now: the turn has ended.
 ///
-/// `idle` and nothing else, the same rule the daemon applies to its own
-/// queue -- and not while the verdict says the agent stopped on a
+/// A turn that ended (`endsTurn`: `idle`, `background` or `done`) and
+/// nothing else, the same rule the daemon applies to its own queue -- and
+/// not while the verdict says the agent stopped on a
 /// question, because then the turn has not really ended: the work the
 /// card follows is waiting on the human's answer.
 export function cardFollowUpsMayFire(target: QueueTarget): boolean {
   if (target.interrupted) return false;
   if (verdictIsAsking(target.verdict)) return false;
-  return target.status === "idle";
+  return endsTurn(target.status);
 }
 
 /// What the held-cards list says about why its cards have not opened.
@@ -186,6 +188,8 @@ export function cardFollowUpHold(target: QueueTarget, held: number): string | nu
     case "failed":
       return "The agent stopped because something broke, so its turn will not end on its own. Open these now, or cancel them.";
     case "idle":
+    case "background":
+    case "done":
       return "Opening now.";
     default:
       return "Waiting for the agent.";

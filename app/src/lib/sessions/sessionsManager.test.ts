@@ -568,6 +568,23 @@ describe("idleSessions", () => {
   });
 });
 
+describe("idleSessions — background and done", () => {
+  // Ending a `background` session ends the shell or subagent its agent
+  // is still waiting on; a `done` one is exactly what the button is for.
+  it("keeps done and leaves background alone", () => {
+    const rows = sessionRows({
+      sample: {
+        sessions: [session({ id: "finished", status: "done" }), session({ id: "waiting", status: "background" })],
+        metrics: true,
+      },
+      previous: null,
+      workspaces: [showing("finished"), showing("waiting")],
+      sessionNames: {},
+    });
+    expect(idleSessions(rows).map((r) => r.id)).toEqual(["finished"]);
+  });
+});
+
 describe("state", () => {
   it("gives every row one word, staleness first, then visibility, then what it is doing", () => {
     const rows = sessionRows({

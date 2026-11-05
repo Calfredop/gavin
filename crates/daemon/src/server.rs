@@ -374,9 +374,9 @@ fn heuristic_speaks_for(record: &SessionRecord) -> bool {
 /// uses for Response::CwdChanged, factored out here since this plan adds
 /// three separate call sites for it (OSC 133 events, bare-BEL events, and
 /// the heuristic timer).
-fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: SessionStatus) {
+fn persist_and_emit_status(manager: &SessionManager, id: &str, status: SessionStatus) {
     let status_str = status.as_str();
-    let went_idle = status == SessionStatus::Idle;
+    let went_idle = status.ends_turn();
     if let Err(e) = manager.registry.lock().unwrap().update_status(id, status) {
         eprintln!("failed to persist status for session {id}: {e}");
     }
@@ -659,8 +659,10 @@ fn deliver_head(manager: &SessionManager, id: &str) -> anyhow::Result<bool> {
 /// Delivers only if the session is sitting `Idle`. The trigger for the
 /// human queueing onto an agent that already finished its turn.
 ///
-/// `Idle` and nothing else, which is the load-bearing half of the whole
-/// feature. Not `WaitingForInput`: that session is asking the human a
+/// A finished turn and nothing else (`ends_turn`: `Idle`, or its
+/// `Background` and `Done` refinements -- the agent is at its prompt in
+/// all three), which is the load-bearing half of the whole feature. Not
+/// `WaitingForInput`: that session is asking the human a
 /// question, and answering it with an unrelated follow-up would put the
 /// answer to a different question at its prompt. Not `Failed`: there is
 /// no turn to follow up on, and a message sent into a broken agent is a
@@ -668,7 +670,7 @@ fn deliver_head(manager: &SessionManager, id: &str) -> anyhow::Result<bool> {
 fn deliver_next_queued_if_idle(manager: &SessionManager, id: &str) {
     let idle = matches!(
         manager.registry.lock().unwrap().get(id),
-        Ok(Some(ref r)) if r.status == SessionStatus::Idle
+        Ok(Some(ref r)) if r.status.ends_turn()
     );
     if idle {
         deliver_next_queued(manager, id);
@@ -908,6 +910,100 @@ fn screen_is_asking(contents: &str) -> bool {
     })
 }
 
+/// Whether this session's RENDERED screen says the agent is waiting on
+/// work it started in the background. The screen model for the same
+/// reason as `failure_on_screen`.
+fn background_on_screen(manager: &Arc<SessionManager>, id: &str) -> bool {
+    let Some(screen) = manager.screens.lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    let contents = screen.lock().unwrap().contents();
+    screen_is_background(&contents)
+}
+
+/// The glyph Claude Code paints in front of its turn-status row, live
+/// (`✻ Waiting for 1 background agent to finish`) and finished (`✻ Worked
+/// for 7s · done 12:54 · 1 shell still running`) alike.
+const TURN_STATUS_GLYPH: char = '\u{273b}';
+
+/// Whether a rendered screen shows background work still running.
+///
+/// Measured against Claude Code 2.1.318 in a pty on 2026-11-05, a turn
+/// that ended while work it started was still going paints one of:
+///
+/// - after `Bash` with `run_in_background`: the turn-status row
+///   `✻ Worked for 7s · done 12:54 · 1 shell still running`, and the
+///   footer under the input box `⏵⏵ auto mode on · 1 shell`;
+/// - after `Agent` with `run_in_background`: `✻ Waiting for 1 background
+///   agent to finish`.
+///
+/// The footer is current state, so any of its ` · ` segments counting
+/// shells is enough. The turn-status row is history -- the next turn
+/// paints a new one beneath it -- so only the NEWEST one above the input
+/// box is read, and an old "still running" further up says nothing about
+/// now.
+///
+/// Held here as constants, like `ASKING_ON_SCREEN` and for its reason: a
+/// false match is a badge, not a verdict -- a `background` session ends
+/// its turn for everything that acts on one (`SessionStatus::ends_turn`).
+fn screen_is_background(contents: &str) -> bool {
+    let rows: Vec<&str> = contents.lines().collect();
+    // The input box is drawn between two full-width rules; the footer is
+    // what follows the second, the transcript what precedes the first.
+    let rules: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            let t = r.trim();
+            t.chars().count() >= 20 && t.chars().all(|c| c == '\u{2500}')
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let (transcript_end, footer_start) = match rules.as_slice() {
+        [.., top, bottom] => (*top, *bottom + 1),
+        [only] => (*only, *only + 1),
+        [] => (rows.len(), rows.len()),
+    };
+    let footer_counts_work = rows[footer_start.min(rows.len())..]
+        .iter()
+        .flat_map(|r| r.split(" \u{b7} "))
+        .any(|segment| counts_background_work(segment.trim(), ""));
+    if footer_counts_work {
+        return true;
+    }
+    let Some(status) = rows[..transcript_end]
+        .iter()
+        .rev()
+        .map(|r| r.trim())
+        .find(|r| r.starts_with(TURN_STATUS_GLYPH))
+    else {
+        return false;
+    };
+    let status = status.trim_start_matches(TURN_STATUS_GLYPH).trim();
+    if let Some(rest) = status.strip_prefix("Waiting for ") {
+        if let Some(what) = rest.strip_suffix(" to finish") {
+            return counts_background_work(what, "");
+        }
+    }
+    status
+        .rsplit(" \u{b7} ")
+        .next()
+        .is_some_and(|last| counts_background_work(last, " still running"))
+}
+
+/// `"1 shell"`, `"2 background agents"`, `"3 shells still running"` (with
+/// `suffix` `" still running"`): a count, then one of the kinds of work
+/// Claude Code runs in the background, and nothing else.
+fn counts_background_work(segment: &str, suffix: &str) -> bool {
+    let Some(rest) = segment.strip_suffix(suffix) else { return false };
+    let Some((count, kind)) = rest.split_once(' ') else { return false };
+    if count.is_empty() || !count.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let kind = kind.trim_end_matches('s');
+    matches!(kind, "shell" | "background agent" | "background task" | "local agent" | "agent" | "task")
+}
+
 /// The opening of the one failure reason gavin writes ITSELF rather than
 /// quoting from an agent's screen.
 ///
@@ -1112,6 +1208,11 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         // advance past a question nobody answered. Read here, with
         // `inner` still dropped, for the same lock-order reason.
         let asking = verdict.is_none() && asking_on_screen(&manager, &id);
+        // Nor is every finished turn `idle`: one that left a shell or a
+        // subagent running is waiting on that, and one whose agent said it
+        // is finished is `done`. Background first -- "you can close this"
+        // is not true while something it started is still going.
+        let background = verdict.is_none() && !asking && background_on_screen(&manager, &id);
 
         // Re-taken, and re-validated: anything could have happened while
         // the screen was being read. New output means this verdict
@@ -1136,7 +1237,8 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
                 inner.waiting_for_input = true;
                 persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
             }
-            None => persist_and_emit_status(&manager, &id, SessionStatus::Idle),
+            None if background => persist_and_emit_status(&manager, &id, SessionStatus::Background),
+            None => persist_and_emit_status(&manager, &id, manager.quiet_status(&id)),
         }
     });
 }
@@ -1652,6 +1754,13 @@ pub struct SessionManager {
     /// cannot have finished its turn, because it was frozen in the middle
     /// of one.
     slept_mid_turn: Mutex<HashMap<String, u64>>,
+    /// Sessions whose agent said it is finished (`Request::DeclareSessionDone`,
+    /// gavin-mcp's `gavin_session_done`). Read at every quiet transition,
+    /// which then reports `Done` rather than `Idle`; the next submitted
+    /// line -- the human's follow-up -- removes it (`write_input`). A
+    /// flag rather than a status because the agent says it mid-turn,
+    /// while it is still `Working`, and it describes the turn's END.
+    declared_done: Mutex<std::collections::HashSet<String>>,
     /// The daemon's first genuinely *shared* (not per-session) state:
     /// one entry per unique repo root any live session is currently
     /// mapped to. Not persisted -- see this plan's Global Constraints.
@@ -2266,6 +2375,7 @@ impl SessionManager {
             osc133_distrusted: Mutex::new(std::collections::HashSet::new()),
             acknowledged_failures: Mutex::new(HashMap::new()),
             slept_mid_turn: Mutex::new(HashMap::new()),
+            declared_done: Mutex::new(std::collections::HashSet::new()),
             repo_pollers: Mutex::new(HashMap::new()),
             session_repo_root: Mutex::new(HashMap::new()),
             gavin_watchers: Mutex::new(HashMap::new()),
@@ -5935,6 +6045,36 @@ impl SessionManager {
     /// the write itself happens on the session's own input thread
     /// (`crate::input`). A program that has stopped reading holds up its
     /// own input and nobody else's.
+    /// What a quiet turn reports when nothing on the screen says more:
+    /// `Done` if the agent declared it, `Idle` otherwise.
+    fn quiet_status(&self, id: &str) -> SessionStatus {
+        if self.declared_done.lock().unwrap().contains(id) {
+            SessionStatus::Done
+        } else {
+            SessionStatus::Idle
+        }
+    }
+
+    /// An agent saying it is finished (`gavin_session_done`). Usually
+    /// said mid-turn, so it only arms the flag the next quiet transition
+    /// reads; a session already sitting `Idle` -- the call was the last
+    /// thing its turn did, and the quiet timer beat it -- turns `Done`
+    /// here, since nothing else would ever say so.
+    pub fn declare_session_done(&self, id: &str) -> anyhow::Result<()> {
+        if !self.sessions.lock().unwrap().contains_key(id) {
+            anyhow::bail!("unknown session: {id}");
+        }
+        self.declared_done.lock().unwrap().insert(id.to_string());
+        let idle = matches!(
+            self.registry.lock().unwrap().get(id),
+            Ok(Some(ref r)) if r.status == SessionStatus::Idle
+        );
+        if idle {
+            persist_and_emit_status(self, id, SessionStatus::Done);
+        }
+        Ok(())
+    }
+
     pub fn write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
         let input = {
             let sessions = self.sessions.lock().unwrap();
@@ -5999,6 +6139,14 @@ impl SessionManager {
                 Some(line) => acked.insert(id.to_string(), line),
                 None => acked.remove(id),
             };
+        }
+        // A submitted line is a follow-up, and a follow-up is the one
+        // thing a done session was waiting for: the agent's "nothing left"
+        // described the turn before it. Only a carriage return counts --
+        // a keystroke being typed is not yet a request, and the focus and
+        // mouse reports that never carry one left above.
+        if data.contains(&b'\r') {
+            self.declared_done.lock().unwrap().remove(id);
         }
         input.send(data)?;
         if let Err(e) = self.registry.lock().unwrap().clear_restored(id) {
@@ -6187,6 +6335,7 @@ impl SessionManager {
         self.osc133_distrusted.lock().unwrap().remove(id);
         self.acknowledged_failures.lock().unwrap().remove(id);
         self.slept_mid_turn.lock().unwrap().remove(id);
+        self.declared_done.lock().unwrap().remove(id);
         self.awaiting_agent_since.lock().unwrap().remove(id);
         self.agent_announced.lock().unwrap().remove(id);
         Ok(())
@@ -6930,13 +7079,13 @@ impl SessionManager {
                                         // so an A is no evidence of an
                                         // honest speaker either.
                                         heuristic.seen_osc133.store(true, Ordering::SeqCst);
-                                        persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                        persist_and_emit_status(&manager, &id, manager.quiet_status(&id));
                                         trigger_recheck_for_session(&manager, &id);
                                     } else if heuristic.seen_osc133.load(Ordering::SeqCst) && !osc133_distrusted {
                                         // B from a speaker already
                                         // switched: its own word for
                                         // "output ended".
-                                        persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                        persist_and_emit_status(&manager, &id, manager.quiet_status(&id));
                                         trigger_recheck_for_session(&manager, &id);
                                     }
                                     // Not switched: a B with no A/D
@@ -7820,6 +7969,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::NameSession { session_id, name, agent_conversation_id } => manager
             .name_session(&session_id, &name, agent_conversation_id.as_deref())
             .map(|_| Response::Ok),
+        Request::DeclareSessionDone { session_id } => {
+            manager.declare_session_done(&session_id).map(|_| Response::Ok)
+        }
         // handle_connection intercepts Shutdown first (mirroring
         // Attach/WatchGavinRoot) so it can reply and then exit the process.
         // This arm only exists so the match stays exhaustive; it is never
@@ -8176,6 +8328,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
                 && agent_owns_session(id, session_id)
         }
         Request::NameSession { session_id, .. } => agent_owns_session(id, session_id),
+        // Declaring itself finished: only ever its own session, for the
+        // reason naming is -- another agent's "you can close this" would
+        // be a lie told about work it never saw.
+        Request::DeclareSessionDone { session_id } => agent_owns_session(id, session_id),
         // The shim behind the agent's `browser_*` tools asks for its own
         // session's endpoint (v65), and only its own: another session's
         // would be that agent's browser, cookies and all.
@@ -17340,6 +17496,93 @@ mod tests {
         .unwrap();
 
         await_status(&mut reader, &id, "waiting_for_input");
+    }
+
+    /// Claude Code 2.1.318's screens after a turn that left work running,
+    /// rendered from a pty capture on 2026-11-05 (rows trimmed to what
+    /// the reader looks at). The negatives: a turn that finished clean, an
+    /// OLD "still running" row with a newer turn summary beneath it, and
+    /// prose that merely says something is still running.
+    #[test]
+    fn claude_codes_background_work_reads_as_background() {
+        let rule = "\u{2500}".repeat(40);
+        let shell = format!(
+            "\u{23fa} started.\n\n\u{273b} Worked for 7s \u{b7} done 12:54 \u{b7} 1 shell still running\n{rule}\n\u{276f}\n{rule}\n  \u{23f5}\u{23f5} auto mode on \u{b7} 1 shell\n"
+        );
+        let agent = format!(
+            "\u{23fa} started.\n\n\u{273b} Waiting for 1 background agent to finish\n{rule}\n\u{276f}\n{rule}\n  \u{23f5}\u{23f5} auto mode on (shift+tab to cycle) \u{b7} /tasks to see subagents\n"
+        );
+        let footer_only = format!("\u{23fa} ok\n{rule}\n\u{276f}\n{rule}\n  ? for shortcuts \u{b7} 2 shells\n");
+        let clean = format!("\u{23fa} Done.\n\n\u{273b} Worked for 1m 2s\n{rule}\n\u{276f}\n{rule}\n  \u{23f5}\u{23f5} auto mode on\n");
+        let stale = format!(
+            "\u{273b} Worked for 7s \u{b7} 1 shell still running\n\u{23fa} The shell finished.\n\u{273b} Worked for 2s\n{rule}\n\u{276f}\n{rule}\n  \u{23f5}\u{23f5} auto mode on\n"
+        );
+        let prose = format!("\u{23fa} The dev server is still running\n{rule}\n\u{276f}\n{rule}\n  \u{23f5}\u{23f5} auto mode on\n");
+        assert!(screen_is_background(&shell), "a background shell");
+        assert!(screen_is_background(&agent), "a background agent");
+        assert!(screen_is_background(&footer_only), "the footer's count alone");
+        assert!(!screen_is_background(&clean), "a turn that finished clean");
+        assert!(!screen_is_background(&stale), "an older turn's running shell");
+        assert!(!screen_is_background(&prose), "prose about something running");
+    }
+
+    /// End to end through the quiet timer: a session that goes quiet
+    /// under a turn summary counting a running shell reads `background`.
+    /// Octal escapes, so the echoed command line never carries the row.
+    #[test]
+    fn a_quiet_session_under_a_running_shell_reads_background_not_idle() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+        write_message(
+            &mut stream,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\342\\234\\273 Worked for 7s \\302\\267 1 shell still running\\n'\n".to_string(),
+            },
+        )
+        .unwrap();
+        await_status(&mut reader, &id, "background");
+    }
+
+    /// An agent's "I am finished" turns its next quiet turn `done`, a
+    /// line it did not submit leaves that alone, and the human's next
+    /// submitted line takes it back to plain `idle`.
+    #[test]
+    fn a_declared_session_ends_its_turns_done_until_a_line_is_submitted() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+        write_message(&mut stream, &Request::DeclareSessionDone { session_id: id.clone() }).unwrap();
+        // `\n`, not `\r`: the shell runs it all the same, but it is not
+        // the carriage return a submitted line is recognised by.
+        write_message(&mut stream, &Request::WriteInput { id: id.clone(), data: "printf 'x\\n'\n".to_string() })
+            .unwrap();
+        await_status(&mut reader, &id, "done");
+
+        write_message(&mut stream, &Request::WriteInput { id: id.clone(), data: "printf 'y\\n'\r".to_string() })
+            .unwrap();
+        await_status(&mut reader, &id, "working");
+        await_status(&mut reader, &id, "idle");
+    }
+
+    /// Declared while already quiet -- the call was the turn's last act
+    /// and the quiet timer got there first -- it says so at once.
+    #[test]
+    fn declaring_a_quiet_session_done_says_so_at_once() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+        write_message(&mut stream, &Request::WriteInput { id: id.clone(), data: "printf 'x\\n'\n".to_string() })
+            .unwrap();
+        await_status(&mut reader, &id, "idle");
+        write_message(&mut stream, &Request::DeclareSessionDone { session_id: id.clone() }).unwrap();
+        await_status(&mut reader, &id, "done");
+    }
+
+    #[test]
+    fn declaring_an_unknown_session_done_is_refused() {
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = Stream::connect(&socket_path).unwrap();
+        let resp = request(&mut stream, &Request::DeclareSessionDone { session_id: "ghost".into() });
+        assert!(matches!(resp, Response::Error { .. }), "{resp:?}");
     }
 
     #[test]

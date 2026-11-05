@@ -1,5 +1,6 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { endsTurn } from "$lib/core/turnEnd";
 
 /// What the daemon says a session is doing.
 ///
@@ -8,15 +9,32 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 /// turn ended, and those two used to be byte-identical two seconds of
 /// silence. `unknown` is a status this build does not recognise, written
 /// by a NEWER daemon into the same registry.
-export type SessionStatus = "idle" | "working" | "waiting_for_input" | "failed" | "unknown";
+///
+/// `background` and `done` (v81) are two refinements of `idle`, and like
+/// it a live agent at its prompt with its turn over. `background`: work
+/// it started -- a shell, a subagent -- is still running, read off its
+/// screen. `done`: it said, through `gavin_session_done`, that nothing is
+/// left for it, so the tab can close unless the human has a follow-up.
+/// Neither is the card's column.
+export type SessionStatus =
+  | "idle"
+  | "working"
+  | "waiting_for_input"
+  | "failed"
+  | "background"
+  | "done"
+  | "unknown";
 
 const KNOWN_STATUSES: readonly SessionStatus[] = [
   "idle",
   "working",
   "waiting_for_input",
   "failed",
+  "background",
+  "done",
   "unknown",
 ];
+
 
 /// Every status string that crosses from Rust, run through one door.
 ///
@@ -88,7 +106,7 @@ function isNotificationWorthy(previousStatus: SessionStatus | undefined, newStat
   // `working`: a failure is news whatever the session was doing, and
   // the daemon only ever writes it at the end of a turn.
   if (newStatus === "failed") return true;
-  return previousStatus === "working" && newStatus === "idle";
+  return previousStatus === "working" && endsTurn(newStatus);
 }
 
 // Called for every status transition a session reports; no-ops unless the
@@ -145,7 +163,7 @@ export async function maybeNotifyStatusChange(
       ? `${label} needs your input`
       : newStatus === "failed"
         ? failureBody(label, failureReason)
-        : `${label} finished`;
+        : quietTurnBody(label, newStatus);
   sendNotification({ title: "gavin", body: railVoice?.(sessionId, newStatus) ?? generic });
 }
 
@@ -191,6 +209,15 @@ export async function maybeNotifyTurnVerdict(
   // `stepAttentions` marks the rail is about to draw, and by now they
   // have the settled verdict in them.
   sendNotification({ title: "gavin", body: railVoice?.(sessionId, "idle") ?? notice.body });
+}
+
+/// What a turn that ended cleanly says in the tray. "finished" was the one
+/// word for all three until v81, and for an agent waiting on its own
+/// background shell it was false: the agent will wake up and go on.
+export function quietTurnBody(label: string, status: SessionStatus): string {
+  if (status === "background") return `${label} is waiting for background work to finish`;
+  if (status === "done") return `${label} is done — close it unless you have a follow-up`;
+  return `${label} finished`;
 }
 
 /// A failure notification's body. Separate so the tray and the surfaces

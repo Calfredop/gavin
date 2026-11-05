@@ -419,3 +419,33 @@ describe("maybeNotifyReviewWait", () => {
     expect(reviewWaitBody("  ", "")).toBe("a rail is waiting for you — a review step");
   });
 });
+
+describe("background and done (v81)", () => {
+  it("parses both as themselves rather than as unknown", () => {
+    expect(parseSessionStatus("background")).toBe("background");
+    expect(parseSessionStatus("done")).toBe("done");
+  });
+
+  it("says a turn waiting on background work is not finished", async () => {
+    await maybeNotifyStatusChange("s-1", "working", "background", "my-project", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { title: string; body: string };
+    expect(call.body).toBe("my-project is waiting for background work to finish");
+    expect(call.body).not.toContain("finished");
+  });
+
+  it("says a done session can be closed", async () => {
+    await maybeNotifyStatusChange("s-1", "working", "done", "my-project", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { title: string; body: string };
+    expect(call.body).toBe("my-project is done — close it unless you have a follow-up");
+  });
+
+  it("rides the finished toggle, like the idle turn it refines", async () => {
+    await maybeNotifyStatusChange("s-1", "working", "done", "my-project", { needsInput: true, finished: false });
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("stays silent when a waiting session goes done -- only a turn from working is news", async () => {
+    await maybeNotifyStatusChange("s-1", "idle", "done", "my-project", ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+});
