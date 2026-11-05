@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
@@ -204,7 +204,7 @@ fn macos_login_path() -> Option<std::ffi::OsString> {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute() && path.is_file())
             .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
-        let mut child = Command::new(shell)
+        let mut child = crate::program::command(shell)
             .args(["-l", "-i", "-c", "printf '\\n__GAVIN_LOGIN_PATH__%s\\n' \"$PATH\""])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
