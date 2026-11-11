@@ -30,8 +30,9 @@ describe("a nested task's row inside its plan's card", () => {
     expect(BOARD_CARD).toContain("<StatusBadge indicator={nestedTaskIndicator(nestedState)}");
   });
 
-  it("marks the plan itself when it orchestrates its children", () => {
-    expect(BOARD_CARD).toContain("childrenMarkTip(card.children)");
+  it("marks the plan itself whenever it has Nested tasks, line or not", () => {
+    expect(BOARD_CARD).toContain("const childrenMode = $derived(orchestratedMode(card));");
+    expect(BOARD_CARD).toContain("childrenMarkTip(childrenMode)");
   });
 });
 

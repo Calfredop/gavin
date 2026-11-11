@@ -1821,6 +1821,32 @@ describe("executeActions — an Orchestrated plan's children (v80)", () => {
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalledWith(CHILD, "status", expect.anything());
   });
 
+  // ADR 0014 made every plan with a Nested task orchestrate, line or not
+  // -- and a daemon older than v80 can neither send the line nor keep a
+  // child's run row. The step stalls naming why, rather than starting a
+  // children phase that daemon could never finish.
+  it("stalls the step on a daemon too old to orchestrate, appending and filing nothing", async () => {
+    const compat = layoutStateModule.daemonCompat as unknown as Writable<unknown>;
+    compat.set({ daemonVersion: 79, appVersion: 81, degraded: true });
+    try {
+      await executeActions("ws-1", [{ kind: "beginChildren", stepId: "t1", fresh: true }]);
+    } finally {
+      compat.set(null);
+    }
+    expect(backend.tickChecklistLink).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("80"),
+      null,
+      null,
+      null,
+      "ws-1"
+    );
+  });
+
   it("launches a child through the card-run path and never gives it a status", async () => {
     vi.mocked(backend.readFileForViewer).mockResolvedValue({
       content: "---\nkind: task\ntitle: Step one\nparent: big.md\n---\nparse the thing",

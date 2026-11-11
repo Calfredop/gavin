@@ -199,28 +199,25 @@ exists to avoid.
 
 ### How the children run: `children:`
 
-A plan with nested tasks can run them two ways. Without the line, Run
-starts ONE agent on the plan, which works the children itself, inline. With
-`children: sequence` (or `parallel`) the plan is an **Orchestrated plan**:
-Run puts it on a rail of its own, each nested task runs as **its own
-session** — one at a time in tree order, or all at once in one checkout —
-and the plan's own session runs last, to integrate and verify.
+A plan with nested tasks is an **Orchestrated plan**: Run puts it on a
+rail of its own, each nested task runs as **its own session**, and the
+plan's own session runs last, to integrate and verify. The line says only
+HOW the children run, so whenever developing gives a card nested tasks,
+propose the mode with them:
 
-So whenever developing gives a card nested tasks, propose the line with
-them:
+- **No line (`sequence`)** — the default: one at a time, in tree order.
+  The tasks build on each other, or nobody has shown they do not.
+- **`children: parallel`** — all at once, in one checkout. Only when the
+  tasks are genuinely independent of each other: different files, no task
+  reading another's output. Two that touch the same files collide.
 
-- **`children: sequence`** — the default. The tasks build on each other,
-  or nobody has shown they do not.
-- **`children: parallel`** — only when the tasks are genuinely independent
-  of each other: different files, no task reading another's output. They
-  share one checkout at the same time, so two that touch the same files
-  collide.
-- **No line** — only when the human wants one agent doing it all, or the
-  children are too small to deserve a session each.
+Every nested task gets a session of its own. When the human wants one
+agent doing it all, or a piece is too small to deserve a session, write it
+as a checklist item on the plan instead of a nested task.
 
-`gavin_promote_task` never sets it: promoting an item makes a nested task
-and nothing more. If the plan should orchestrate its children, the line is
-a write of its own.
+`gavin_promote_task` never sets the line: promoting an item makes a nested
+task and nothing more — which the plan's next start runs as its own
+session.
 
 A nested task of an Orchestrated plan finishes by **ticking its own line**
 in the plan (`gavin_tick_item`), never by a status — so write each child's
@@ -303,10 +300,10 @@ In this order, because the `kind:` decides what the rest of it means:
   instruction, not as a note. Rate it in the same call — a child filed
   unrated and rated afterwards can be run in between, at the wrong
   agent.
-- **How the children run**, when it has any and the human approved a
-  mode: `gavin_set_plan_field(path, "children", "sequence")` (or
-  `"parallel"`), after the children exist. Nothing else writes it —
-  `gavin_promote_task` does not.
+- **How the children run**, when the human approved `parallel`:
+  `gavin_set_plan_field(path, "children", "parallel")`, after the
+  children exist. Sequence is the default and needs no line. Nothing else
+  writes it — `gavin_promote_task` does not.
 - **Then read it back** from the canonical parse: `gavin_find_cards` with
   this card's file name as `parent` lists its children, and `gavin_get_tree`
   shows the card itself. The card must come back the kind you meant,

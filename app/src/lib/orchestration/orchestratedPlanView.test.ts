@@ -5,7 +5,9 @@ import {
   childrenControlShown,
   childrenFieldValue,
   childrenHint,
+  childrenMarkTip,
   nestedChildState,
+  orchestratedMode,
   nestedProgress,
   nestedProgressText,
   nestedProgressTip,
@@ -105,12 +107,14 @@ const run = (childPath: string, state: NestedRun["state"], stepId = "t1"): Neste
 });
 
 describe("the Children control", () => {
-  it("reads and writes the line, off being no line at all", () => {
-    expect(childrenChoiceOf(null)).toBe("off");
+  // ADR 0014: a plan with Nested tasks always runs them as their own
+  // sessions, so the control chooses HOW -- no line reads as sequence.
+  it("reads no line as sequence and writes the mode it is set to", () => {
+    expect(childrenChoiceOf(null)).toBe("sequence");
     expect(childrenChoiceOf("parallel")).toBe("parallel");
-    expect(childrenFieldValue("off")).toBe("");
     expect(childrenFieldValue("sequence")).toBe("sequence");
-    expect(CHILDREN_CHOICES.map((c) => c.value)).toEqual(["off", "sequence", "parallel"]);
+    expect(childrenFieldValue("parallel")).toBe("parallel");
+    expect(CHILDREN_CHOICES.map((c) => c.value)).toEqual(["sequence", "parallel"]);
   });
 
   it("is offered on a plan with nested tasks, or one that already carries the line", () => {
@@ -121,17 +125,29 @@ describe("the Children control", () => {
   });
 
   it("says what Run will do under each choice", () => {
-    expect(childrenHint("off")).toContain("one agent");
     expect(childrenHint("sequence")).toContain("one after another");
     expect(childrenHint("parallel")).toContain("at once");
+  });
+});
+
+describe("the plan card's orchestrated mark", () => {
+  it("is worn by every plan with Nested tasks, line or not", () => {
+    expect(orchestratedMode({ kind: "plan", children: null, nestedChildren: [{}] })).toBe("sequence");
+    expect(orchestratedMode({ kind: "plan", children: "parallel", nestedChildren: [{}] })).toBe("parallel");
+    expect(orchestratedMode({ kind: "plan", children: null, nestedChildren: [] })).toBeNull();
+    expect(orchestratedMode({ kind: "task", children: null, nestedChildren: [{}] })).toBeNull();
+    expect(childrenMarkTip("sequence")).toContain("one at a time");
   });
 });
 
 describe("nestedChildState", () => {
   const plan = { children: "sequence" as const, checklistLinks: [{ fileName: "one.md", done: true }] };
 
-  it("says nothing under a plan that does not orchestrate its children", () => {
-    expect(nestedChildState({ children: null }, { id: `${DIR}/two.md`, fileName: "two.md" }, [])).toBeNull();
+  it("reads the run of a child under a plan with no line, which runs it all the same", () => {
+    const noLine = { children: null, checklistLinks: [{ fileName: "one.md", done: true }] };
+    expect(nestedChildState(noLine, { id: `${DIR}/one.md`, fileName: "one.md" }, [])).toBe("done");
+    const two = { id: `${DIR}/two.md`, fileName: "two.md" };
+    expect(nestedChildState(noLine, two, [run(two.id, "running")])).toBe("running");
   });
 
   it("is done by the tick, whatever the run rows say", () => {
@@ -177,8 +193,8 @@ describe("the n/m nested chip", () => {
     });
   });
 
-  it("is absent for a plan without the line", () => {
-    expect(nestedProgress(step, orchWith([]), cardIndex(tree({ children: null })))).toBeNull();
+  it("counts a plan without the line the same way", () => {
+    expect(nestedProgress(step, orchWith([]), cardIndex(tree({ children: null })))).toEqual({ done: 1, total: 3 });
   });
 
   it("says the plan's session is next once every child is ticked", () => {

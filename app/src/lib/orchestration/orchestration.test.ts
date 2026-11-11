@@ -2026,9 +2026,10 @@ describe("detectConflicts — the other kinds", () => {
 
   it("flags a nested child on a rail while its plan is on one too", () => {
     const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]], [["t2", CHILD]]])]);
+    // Live: the plan runs its Nested tasks itself (ADR 0014).
     expect(detectConflicts(o, NESTED, WT)).toContainEqual({
       kind: "nested-with-parent",
-      severity: "potential",
+      severity: "live",
       stepIds: ["t2", "t1"],
       cardPath: CHILD,
       parentPath: PARENT,

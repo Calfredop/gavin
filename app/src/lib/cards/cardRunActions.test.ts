@@ -10,6 +10,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
   readFileForViewer: vi.fn(),
+  // The first read a rail press makes (fetchOrchestration). Unanswered:
+  // what is asked of it here is only whether a press got that far.
+  getOrchestration: vi.fn(),
   setPlanFrontmatterField: vi.fn(),
   linkCardSession: vi.fn(),
   unlinkCardSession: vi.fn(),
@@ -153,6 +156,7 @@ import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { findSessionLocation } from "$lib/core/workspace";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/core/gavinState";
+import type { GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import {
   runCard,
   resumeCard,
@@ -2428,5 +2432,143 @@ describe("attachments gate the run", () => {
     expect(err).toContain("no root folder");
     expect(backend.attachmentStatus).not.toHaveBeenCalled();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+// --- a plan with Nested tasks runs on a rail of its own (ADR 0014) ----
+// Every press that would start ONE agent on such a plan -- Run, and
+// Resume or a new session while a child is still to run -- goes to the
+// plan's rail instead (`pressGoesToRail`, tested beside the scheduler),
+// so each Nested task runs as its own session and the plan's own session
+// finishes it. What is asked here is the contract at the press: no agent
+// is started on the plan, and the card is not moved for one.
+describe("a plan with Nested tasks", () => {
+  function info(fileName: string, overrides: Partial<PlanFileInfo>): PlanFileInfo {
+    return {
+      path: `/ws/.gavin-root/plans/${fileName}`,
+      fileName,
+      title: fileName,
+      status: null,
+      priority: null,
+      order: null,
+      kind: "task",
+      parent: null,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
+      parseWarning: false,
+      ...overrides,
+    };
+  }
+
+  /// `t.md` and, unless `alone`, its Nested task `c.md` -- ticked in the
+  /// plan's checklist when `ticked`.
+  function planTree(opts: { ticked?: boolean; alone?: boolean } = {}): GavinTree {
+    const plan = info("t.md", {
+      kind: "plan",
+      status: "In Progress",
+      children: null,
+      checklistLinks: opts.alone ? [] : [{ fileName: "c.md", done: opts.ticked === true }],
+    });
+    return {
+      rootPath: "/ws",
+      rootMissing: false,
+      contexts: [
+        {
+          folderPath: "/ws/.gavin-root",
+          kind: "root",
+          name: "root",
+          plans: opts.alone ? [plan] : [plan, info("c.md", { parent: "t.md" })],
+          docs: [],
+          specs: [],
+          hasPrd: true,
+          configWarning: false,
+        },
+      ],
+    };
+  }
+
+  /// No agent started on the plan, and no status written for one.
+  function expectNoPlanSession(): void {
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  }
+
+  beforeEach(() => {
+    daemonCompat.set(null);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(BENIGN_CARD_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+  });
+
+  it("starts no agent of its own on Run, with no `children:` line", async () => {
+    gavinTrees.set({ "ws-1": planTree() });
+    await runCard("ws-1", card("plan", "To Do"));
+    expectNoPlanSession();
+  });
+
+  it("runs as one session when nothing is nested", async () => {
+    gavinTrees.set({ "ws-1": planTree({ alone: true }) });
+    await runCard("ws-1", card("plan", "To Do"));
+    expect(backend.createSession).toHaveBeenCalled();
+  });
+
+  it("runs as one session, as it did there before, on a daemon too old to orchestrate", async () => {
+    daemonCompat.set({ daemonVersion: 79, appVersion: 81, degraded: true });
+    gavinTrees.set({ "ws-1": planTree() });
+    await runCard("ws-1", card("plan", "To Do"));
+    expect(backend.createSession).toHaveBeenCalled();
+  });
+
+  it("starts no agent of its own on Resume or a new session while a Nested task is still to run", async () => {
+    gavinTrees.set({ "ws-1": planTree() });
+    await resumeCard("ws-1", card("plan", "In Progress"));
+    await launchCardAsNewSession("ws-1", card("plan", "In Progress"));
+    expectNoPlanSession();
+  });
+
+  it("resumes the plan's own session once every Nested task is ticked", async () => {
+    gavinTrees.set({ "ws-1": planTree({ ticked: true }) });
+    await resumeCard("ws-1", card("plan", "In Progress"));
+    expect(backend.createSession).toHaveBeenCalled();
+  });
+
+  // The rail cannot ask the first-Run review -- it stalls on an unreviewed
+  // card -- so the press asks it for every card the rail will launch.
+  it("asks the first-Run review at the press, for each child still to run and then the plan", async () => {
+    gavinTrees.set({ "ws-1": planTree() });
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    await runCard("ws-1", card("plan", "To Do"));
+    expect(vi.mocked(ensureCardReviewed).mock.calls.map((c) => c[0].path)).toEqual([
+      "/ws/.gavin-root/plans/c.md",
+      "/ws/.gavin-root/plans/t.md",
+    ]);
+    expectNoPlanSession();
+  });
+
+  it("stops at a declined review with nothing written and no rail touched", async () => {
+    gavinTrees.set({ "ws-1": planTree() });
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    vi.mocked(ensureCardReviewed).mockResolvedValueOnce(false);
+    expect(await runCard("ws-1", card("plan", "To Do"))).toBeNull();
+    expect(ensureCardReviewed).toHaveBeenCalledTimes(1);
+    expect(backend.getOrchestration).not.toHaveBeenCalled();
+    expectNoPlanSession();
+  });
+
+  it("does not ask again for a child already ticked", async () => {
+    gavinTrees.set({ "ws-1": planTree({ ticked: true }) });
+    vi.mocked(cardReviewed).mockReturnValue(false);
+    await runCard("ws-1", card("plan", "To Do"));
+    expect(vi.mocked(ensureCardReviewed).mock.calls.map((c) => c[0].path)).toEqual([
+      "/ws/.gavin-root/plans/t.md",
+    ]);
+  });
+
+  it("leaves an automatic resume to reopen the session it was asked about", async () => {
+    gavinTrees.set({ "ws-1": planTree() });
+    await resumeCard("ws-1", card("plan", "In Progress"), { automatic: true });
+    expect(backend.createSession).toHaveBeenCalled();
   });
 });

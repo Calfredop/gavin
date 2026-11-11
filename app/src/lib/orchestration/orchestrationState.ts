@@ -2012,11 +2012,10 @@ async function launchCardOnRail(
     );
   } else {
     // An Orchestrated plan's own session runs after its children have,
-    // so it is told so (v80). A plan with the line and no children has
-    // nothing to integrate, and runs as any plan does.
-    const orchestrated =
-      entry.plan.children != null &&
-      nestedChildrenOf(cardPath, cardIndex(get(gavinTrees)[workspaceId])).length > 0;
+    // so it is told so (v80) -- every plan with a Nested task is one
+    // (ADR 0014). A plan with the line and no children has nothing to
+    // integrate, and runs as any plan does.
+    const orchestrated = nestedChildrenOf(cardPath, cardIndex(get(gavinTrees)[workspaceId])).length > 0;
     prompt = composePlanPrompt(
       cardPath,
       resolved.paths,
@@ -2529,6 +2528,15 @@ async function executeBeginChildren(workspaceId: string, stepId: string, fresh: 
   const entry = step ? cards.get(step.cardPath) : undefined;
   const phase = step ? orchestratedChildren(step, cards, placedCardPaths(orch)) : null;
   if (!orch || !rail || !step || !entry || !phase) return false;
+  // Every plan with a Nested task orchestrates (ADR 0014), and a daemon
+  // older than v80 can neither keep a child's run row nor say it ticked:
+  // a children phase there would never finish. Said on the step, which
+  // pauses the rail, rather than started and left to wedge.
+  const blocked = featureBlockedReason(get(daemonCompat), "orchestratedPlans");
+  if (blocked) {
+    await stallStep(workspaceId, orch, stepId, blocked);
+    return false;
+  }
 
   const rows = fresh ? (orch.nestedRuns ?? []).filter((r) => r.stepId === stepId) : [];
   if (rows.length > 0) {

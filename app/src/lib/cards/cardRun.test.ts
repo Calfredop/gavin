@@ -111,10 +111,20 @@ describe("composePlanPrompt", () => {
     const p = composePlanPrompt("/p/plan.md");
     expect(p).toBe(
       `${NAME_TAB_FIRST}\n\n` +
-        "Read /p/plan.md and execute that plan. Work its checklist top to bottom: " +
-        "tick items (- [x]) as you complete them, promote items that need their own agent " +
-        "with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field."
+        "Read /p/plan.md and execute that plan, all of it, in this session. Work its checklist " +
+        "top to bottom and do every item yourself, ticking each (- [x]) as you complete it. " +
+        "Keep the plan's status current with gavin_set_plan_field, and when every item is done " +
+        "and verified, set it to the board's done column."
     );
+  });
+
+  // A plan run as one session has nobody else to hand an item to: the
+  // promote advice made agents file a Nested task and stop, leaving the
+  // plan unfinished with a child nothing was going to run.
+  it("takes the plan to the done column and hands nothing off", () => {
+    const p = composePlanPrompt("/p/plan.md");
+    expect(p).toContain("set it to the board's done column");
+    expect(p).not.toContain("gavin_promote_task");
   });
 });
 
@@ -178,8 +188,9 @@ describe("resume prompts", () => {
     const p = composeResumePlanPrompt("/p/plan.md");
     expect(p).toContain("Use the gavin-resume skill to resume the plan at /p/plan.md.");
     expect(p).toContain("find what is already done before you write anything");
-    expect(p).toContain("gavin_promote_task");
+    expect(p).not.toContain("gavin_promote_task");
     expect(p).toContain("gavin_set_plan_field");
+    expect(p).toContain("set it to the board's done column");
     // Never inlines the body -- the plan file is the agent's to read.
     expect(p).not.toContain("You are executing");
   });

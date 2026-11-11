@@ -80,8 +80,9 @@ be a parent, and `parent:` is a file name in the same context folder; a
 with a broken mark rather than erroring.
 
 **An Orchestrated plan's nested tasks finish by a tick, never by a status.**
-A plan carrying `children: sequence | parallel` runs each nested task as its
-own session before the plan's own. If you are one of those tasks, finish by
+Starting a plan that has nested tasks runs each of them as its own session
+before the plan's own — one at a time, or all at once when the plan carries
+`children: parallel`. If you are one of those tasks, finish by
 ticking your own line in the plan with `gavin_tick_item(plan, child)` once
 the work is done and verified — and never set your card's status: a status
 would pull you out of the plan, and the plan reads you as finished only by

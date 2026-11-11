@@ -1437,7 +1437,8 @@ export function setPlanFrontmatterField(
     | "effort"
     | "direct"
     // An Orchestrated plan's mode (v80): sequence | parallel, or empty
-    // to make it a plan run as one session again.
+    // to clear the line (a plan with Nested tasks then runs them in
+    // sequence, ADR 0014).
     | "children",
   value: string
 ): Promise<string> {

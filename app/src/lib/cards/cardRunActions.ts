@@ -8,10 +8,17 @@ import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import { withoutHeadroom } from "$lib/agents/compression";
 import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, daemonCompat, layoutState, handleAgentSessionSpawned, prepareCursorAgentLaunch, profileIdForLaunch, promptExtrasFor, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import type { ResolvedAgent } from "$lib/core/settings";
 import { gavinTrees } from "$lib/core/gavinState";
-import { cardIndex, runsAsOrchestratedPlan } from "$lib/orchestration/orchestration";
+import {
+  cardIndex,
+  childTicked,
+  nestedChildrenOf,
+  pressGoesToRail,
+  type CardEntry,
+} from "$lib/orchestration/orchestration";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
@@ -334,23 +341,92 @@ export function sshLaunchBlocker(workspaceId: string): string | null {
   );
 }
 
+/// A press on a plan with Nested tasks, taken to the plan's own rail
+/// (v80, ADR 0014): the rail is what runs each Nested task as its own
+/// session and then the plan's, and launching one agent on the plan
+/// would orchestrate nothing -- that agent is never told the children are
+/// there, and does not take the plan to the end. `undefined` when the
+/// press is not the rail's and launches as it always did; otherwise the
+/// rail's answer, an error or null.
+///
+/// `whileChildrenLeft` is Resume's and a new session's: once every Nested
+/// task is ticked, the plan's own session is the work, and those presses
+/// are about that session. Run always goes to the rail, which launches
+/// the plan's session itself when nothing is left to run.
+///
+/// Which presses go is `pressGoesToRail`'s.
+async function orchestratedPress(
+  workspaceId: string,
+  card: CardView,
+  whileChildrenLeft: boolean
+): Promise<string | null | undefined> {
+  if (card.kind !== "plan") return undefined;
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const entry = cards.get(card.id);
+  const orchestrationBlocked = featureBlockedReason(get(daemonCompat), "orchestratedPlans") !== null;
+  if (!entry || !pressGoesToRail(entry, cards, { whileChildrenLeft, orchestrationBlocked })) return undefined;
+  const review = await reviewOrchestratedRun(workspaceId, entry, cards);
+  if (!review.go) return review.error;
+  // Imported lazily -- the rail scheduler imports this module, and the
+  // route is the only way back.
+  const { runOrchestratedPlan } = await import("$lib/orchestration/orchestrationState");
+  return runOrchestratedPlan(workspaceId, card.id);
+}
+
+/// The first-Run review for every card a rail press is about to hand to an
+/// agent: each Nested task still to run, then the plan. Asked HERE, at the
+/// press, because the rail cannot ask -- it stalls on an unreviewed card
+/// and waits for a Retry -- and a plan meant to run to the end would stop
+/// at every child nobody had read yet. Each card is checked with the same
+/// content the rail checks (`launchCardOnRail`), so a card approved here is
+/// one the rail launches.
+///
+/// A declined card stops the press with nothing written, like a declined
+/// board Run; a card the rail could not launch anyway -- its file gone, an
+/// attachment missing -- stops it with the reason, rather than starting a
+/// rail that would stall on it.
+async function reviewOrchestratedRun(
+  workspaceId: string,
+  plan: CardEntry,
+  cards: Map<string, CardEntry>
+): Promise<{ go: true } | { go: false; error: string | null }> {
+  const left = nestedChildrenOf(plan.plan.path, cards).filter((c) => !childTicked(plan.plan, c.plan));
+  for (const entry of [...left, plan]) {
+    const info = entry.plan;
+    const file = await backend.readFileForViewer(info.path);
+    if (!file.exists) return { go: false, error: `Card file not found: ${info.path}` };
+    const body = stripFrontmatter(file.content).trim();
+    const content = cardContentOf({
+      title: info.title,
+      body,
+      attachments: info.attachments,
+      agent: info.agent,
+      model: info.model,
+      effort: info.effort,
+    });
+    if (cardReviewed(workspaceId, info.path, content)) continue;
+    const resolved = await resolveAttachmentsForRun(workspaceId, info.attachments ?? []);
+    if ("error" in resolved) return { go: false, error: resolved.error };
+    const approved = await ensureCardReviewed({
+      workspaceId,
+      path: info.path,
+      content,
+      statuses: resolved.statuses,
+      prompt: body,
+      blockLabel: "The card body the agent will read:",
+    });
+    if (!approved) return { go: false, error: null };
+  }
+  return { go: true };
+}
+
 export async function runCard(
   workspaceId: string,
   card: CardView,
   host: CardLaunchHost = DESK_LAUNCH_HOST
 ): Promise<string | null> {
-  // An Orchestrated plan (v80) runs on a rail of its own: the rail is what
-  // runs each Nested task as its own session first, and launching the plan
-  // the old way would orchestrate nothing. Imported lazily -- the rail
-  // scheduler imports this module, and the route is the only way back.
-  if (card.kind === "plan" && card.children) {
-    const cards = cardIndex(get(gavinTrees)[workspaceId]);
-    const entry = cards.get(card.id);
-    if (entry && runsAsOrchestratedPlan(entry, cards)) {
-      const { runOrchestratedPlan } = await import("$lib/orchestration/orchestrationState");
-      return runOrchestratedPlan(workspaceId, card.id);
-    }
-  }
+  const routed = await orchestratedPress(workspaceId, card, false);
+  if (routed !== undefined) return routed;
   return launchCard(workspaceId, card, "run", { host });
 }
 
@@ -369,11 +445,17 @@ export async function runCard(
 // refusal rather than a jump: the action exists to start an agent, and a
 // second one in a checkout an agent is still working in is the outcome
 // every other launch goes out of its way to prevent.
-export function launchCardAsNewSession(
+//
+// A plan whose Nested tasks are still running on its rail is the rail's:
+// a second agent on the plan beside them is the outcome every other
+// launch avoids, so the press goes to the rail (orchestratedPress).
+export async function launchCardAsNewSession(
   workspaceId: string,
   card: CardView,
   host: CardLaunchHost = DESK_LAUNCH_HOST
 ): Promise<string | null> {
+  const routed = await orchestratedPress(workspaceId, card, true);
+  if (routed !== undefined) return routed;
   return launchCard(workspaceId, card, "new-session", { host });
 }
 
@@ -382,7 +464,13 @@ export function launchCardAsNewSession(
 // on a card whose bound session has EXITED -- picking that work back up
 // is the whole point -- and the fresh session replaces the dead
 // binding. A live session still just gets a jump: it is the work.
-export function resumeCard(
+//
+// A plan with a Nested task still to run is picked up by its rail, which
+// resumes where the plan's children stopped (orchestratedPress) -- one
+// agent resuming the whole plan would redo their work in one session.
+// Except for an automatic resume: gavin decided that about a session it
+// watched break, and that session's own conversation is what it reopens.
+export async function resumeCard(
   workspaceId: string,
   card: CardView,
   /// Whether GAVIN decided this rather than the human pressing Resume.
@@ -394,6 +482,10 @@ export function resumeCard(
   /// Headroom: the relaunch goes around it (`relaunchesWithoutHeadroom`).
   options: { automatic?: boolean; withoutHeadroom?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
+  if (!options.automatic) {
+    const routed = await orchestratedPress(workspaceId, card, true);
+    if (routed !== undefined) return routed;
+  }
   return launchCard(workspaceId, card, "resume", options);
 }
 

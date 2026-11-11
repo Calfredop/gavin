@@ -29,7 +29,7 @@ A task card that belongs to a plan and has no status of its own: its status is i
 _Avoid_: subtask, child card (when meaning one that has its own status), promoted item
 
 **Orchestrated plan**:
-A plan whose Nested tasks each run as their own agent session, one after another or all at once, before the plan's own session runs to finish what is left.
+A plan whose Nested tasks each run as their own agent session, one after another or all at once, before the plan's own session runs to finish what is left. Every plan with a Nested task is one; its `children:` line only chooses one after another (the default) or all at once.
 _Avoid_: auto-plan, plan rail, parent run
 
 ### Pages

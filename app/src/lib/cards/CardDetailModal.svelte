@@ -650,10 +650,10 @@
   }
 
   // --- children (an Orchestrated plan, v80) -----------------------------
-  // A plan with nested tasks only. The line changes what Run does -- the
-  // plan goes on a rail of its own and each child runs as its own session
-  // -- so it waits on a daemon that parses it: an older one would never
-  // read the line back, and the plan would run as one session.
+  // A plan with nested tasks only. Run puts such a plan on a rail of its
+  // own and runs each child as its own session (ADR 0014); the line says
+  // whether one at a time or all at once. It waits on a daemon that parses
+  // it: an older one would never read the line back.
   const childrenBlocked = $derived(featureBlockedReason($daemonCompat, "orchestratedPlans"));
   let childrenBusy = $state(false);
   async function chooseChildren(choice: ChildrenChoice): Promise<void> {

@@ -23,6 +23,7 @@
     childrenChoiceOf,
     childrenControlShown,
     childrenHint,
+    orchestratedMode,
     type ChildrenChoice,
   } from "$lib/orchestration/orchestratedPlanView";
   import { nestedTaskIndicator } from "$lib/ui/indicators";
@@ -72,8 +73,9 @@
   const childList = $derived(card ? childRows(card, children, $orchestrations[workspace.id]) : []);
   const childrenBlocked = $derived(featureBlockedReason($daemonCompat, "orchestratedPlans"));
   // An Orchestrated plan's children run on its rail, and their runs are
-  // kept with it -- read them, once per card, for the list below.
-  const orchestrated = $derived(card?.kind === "plan" && card.children != null);
+  // kept with it -- read them, once per card, for the list below. Every
+  // plan with a Nested task is one (ADR 0014), line or not.
+  const orchestrated = $derived(card !== null && orchestratedMode(card) !== null);
   $effect(() => {
     if (orchestrated) untrack(() => void loadNestedRuns(workspace.id));
   });

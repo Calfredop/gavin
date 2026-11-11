@@ -110,7 +110,9 @@ export interface PlanFileInfo {
   direct?: boolean;
   // The card's `children:` line (v80): on a plan, how its Nested tasks run
   // when it starts -- one at a time or all at once, each as its own
-  // session, before the plan's own. Null is a plan run as one session.
+  // session, before the plan's own. Null is no line: a plan with Nested
+  // tasks runs them one at a time all the same (ADR 0014,
+  // `childrenModeOf`), and one with none runs as one session.
   // Only a plan carries it (on any other kind the daemon reads a warning
   // and null), and a pre-v80 daemon never sends it --
   // FEATURE_MIN_VERSION.orchestratedPlans is what tells the two apart.

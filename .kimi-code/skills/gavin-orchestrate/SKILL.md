@@ -79,8 +79,9 @@ goes back with the same ids, the same stages and the same `toolId` /
 A card can NEST inside another: `kind: task`, `parent:` naming a plan's
 file name, and **no `status:` line of its own**. Such a child has no card
 of its own on the board — it is drawn inside the plan's card, and so it
-rides inside the plan's card step on a rail. The agent that runs the plan
-works its children.
+rides inside the plan's card step on a rail. That step runs each child as
+its own session, one at a time (or all at once under `children:
+parallel`), and then the plan's own session.
 
 So the **plan is the unit of placement**, and `unplacedCards` does not
 list nested children at all. Neither should your arrangement:

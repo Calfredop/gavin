@@ -23,7 +23,7 @@
   import { cancelLaunch, launchQueue, queuedForCard, startHoldFor } from "$lib/agents/launchQueue";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardRailBadge, type StepState } from "$lib/orchestration/orchestration";
-  import { childrenMarkTip, nestedChildState, nestedRunsOfPlan } from "$lib/orchestration/orchestratedPlanView";
+  import { childrenMarkTip, nestedChildState, nestedRunsOfPlan, orchestratedMode } from "$lib/orchestration/orchestratedPlanView";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { boardSelection } from "$lib/board/boardSelection";
   import { tooltip } from "$lib/core/tooltip";
@@ -218,13 +218,14 @@
   const nestedSlots = $derived(
     card.kind === "plan" ? buildNestedSlots(card.nestedChildren, (c) => c.id, slotDrag, card.id) : []
   );
+  // How this plan runs its Nested tasks -- every plan with one is an
+  // Orchestrated plan (ADR 0014), `children:` line or not.
+  const childrenMode = $derived(orchestratedMode(card));
   // The runs an Orchestrated plan's rail steps keep for its children,
   // read from the store like the rail glyph -- each child row below is
   // handed its own state from them (orchestratedPlanView.ts).
   const planRuns = $derived(
-    card.kind === "plan" && card.children && workspaceId !== null
-      ? nestedRunsOfPlan($orchestrations[workspaceId], card.id)
-      : []
+    childrenMode && workspaceId !== null ? nestedRunsOfPlan($orchestrations[workspaceId], card.id) : []
   );
 
   // Count only, from the parsed frontmatter alone: the daemon never
@@ -361,8 +362,8 @@
         <Bot size={11} />
       </span>
     {/if}
-    {#if card.kind === "plan" && card.children}
-      <span class="orchestrated" use:tooltip={childrenMarkTip(card.children)}>
+    {#if childrenMode}
+      <span class="orchestrated" use:tooltip={childrenMarkTip(childrenMode)}>
         <ListTree size={11} />
       </span>
     {/if}

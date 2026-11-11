@@ -24,11 +24,17 @@ export const DEFAULT_RUN_TASK =
   "set it to the board's done column when finished." +
   "{{card_home_note}}";
 
+/// A plan run as ONE session: one with no Nested tasks (a plan with any
+/// runs on its rail, ADR 0014). Nobody else is coming to do an item, so the
+/// agent is told to do them all and finish -- the promote advice it once
+/// carried made agents file a Nested task and stop, leaving the plan half
+/// done with a child nothing was going to run.
 export const DEFAULT_RUN_PLAN =
   "{{name_tab_first}}\n\n" +
-  "Read {{path}} and execute that plan. Work its checklist top to bottom: " +
-  "tick items (- [x]) as you complete them, promote items that need their own agent " +
-  "with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field." +
+  "Read {{path}} and execute that plan, all of it, in this session. Work its checklist " +
+  "top to bottom and do every item yourself, ticking each (- [x]) as you complete it. " +
+  "Keep the plan's status current with gavin_set_plan_field, and when every item is done " +
+  "and verified, set it to the board's done column." +
   "{{attachments}}" +
   "{{card_home_note}}";
 
@@ -74,9 +80,10 @@ export const DEFAULT_RESUME_PLAN =
   "{{name_tab_first}}\n\n" +
   "Use the gavin-resume skill to resume the plan at {{path}}. Work on it already started " +
   "and stopped: find what is already done before you write anything — the checklist's " +
-  "ticks are the record, but not the whole of it. Then work it top to bottom from there, " +
-  "ticking items (- [x]) as you complete them, promoting items that need their own agent " +
-  "with gavin_promote_task, and keeping the plan's status current with gavin_set_plan_field." +
+  "ticks are the record, but not the whole of it. Then work it top to bottom from there " +
+  "and do every item left yourself, ticking each (- [x]) as you complete it. Keep the " +
+  "plan's status current with gavin_set_plan_field, and when every item is done and " +
+  "verified, set it to the board's done column." +
   "{{attachments}}";
 
 export const DEFAULT_DEVELOP =

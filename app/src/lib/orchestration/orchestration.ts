@@ -433,9 +433,10 @@ export function effectiveWorktree(rail: Rail, entry: CardEntry | undefined): str
   return rail.worktreePath ?? entry?.contextFolder ?? null;
 }
 
-// ---- Orchestrated plans (v80, ADR 0012) -------------------------------------
-// A plan whose `children:` line runs each of its Nested tasks as its own
-// session before the plan's own session runs. Its card step goes through a
+// ---- Orchestrated plans (v80, ADR 0012, ADR 0014) ---------------------------
+// A plan with Nested tasks runs each of them as its own session before the
+// plan's own session runs -- one at a time, unless its `children:` line
+// says `parallel`. Its card step goes through a
 // CHILDREN PHASE first: the step is `running` with no session of its own
 // while the children run, and the plan's session launches once every
 // child's line in the plan is ticked. A child is finished by that tick and
@@ -461,9 +462,26 @@ export function placedCardPaths(orch: Orchestration): Set<string> {
   return placed;
 }
 
+/// How a plan runs its Nested tasks, or null when it runs none (ADR 0014).
+/// The `children:` line names the mode; a plan with Nested tasks and no
+/// line runs them one at a time, because a plan started from the board is
+/// meant to be taken to the end, and one agent handed the plan alone was
+/// never told its children were there. `nestedCount` counts every Nested
+/// task, placed elsewhere or not -- the same count the plan's card shows.
+///
+/// A line on a plan whose children have all gone is kept as written: it
+/// orchestrates nothing, and the step goes straight to the plan's session.
+export function childrenModeOf(
+  plan: { kind: PlanFileInfo["kind"]; children?: ChildrenMode | null },
+  nestedCount: number
+): ChildrenMode | null {
+  if (plan.kind !== "plan") return null;
+  return plan.children ?? (nestedCount > 0 ? "sequence" : null);
+}
+
 /// The children an Orchestrated plan's card step runs, or null for any
-/// other step -- a tool step, a task, a plan with no `children:` line. A
-/// plan without the line is exactly the plan it always was.
+/// other step -- a tool step, a task, a plan with nothing nested and no
+/// `children:` line. That last one is exactly the plan it always was.
 export function orchestratedChildren(
   step: Step,
   cards: ReadonlyMap<string, CardEntry>,
@@ -472,12 +490,11 @@ export function orchestratedChildren(
 ): PlanChildren | null {
   if (isToolStep(step)) return null;
   const entry = cards.get(step.cardPath);
-  const mode = entry?.plan.kind === "plan" ? (entry.plan.children ?? null) : null;
-  if (!entry || !mode) return null;
-  const children = [...cards.values()].filter(
-    (e) => nestedParent(e, plans)?.plan.path === entry.plan.path && !placed.has(e.plan.path)
-  );
-  return { mode, children };
+  if (!entry || entry.plan.kind !== "plan") return null;
+  const nested = [...cards.values()].filter((e) => nestedParent(e, plans)?.plan.path === entry.plan.path);
+  const mode = childrenModeOf(entry.plan, nested.length);
+  if (!mode) return null;
+  return { mode, children: nested.filter((e) => !placed.has(e.plan.path)) };
 }
 
 /// Whether a Nested task is finished: its line in the plan, `- [x]
@@ -582,14 +599,44 @@ export function childrenPhaseActions(
   return actions;
 }
 
-/// Whether the board's Run sends this card to a rail of its own: an
-/// Orchestrated plan with at least one Nested task to run. A plan with
-/// the line and no children has nothing to orchestrate, and Run launches
+/// Whether the board's Run sends this card to a rail of its own: a plan
+/// with at least one Nested task, `children:` line or not (ADR 0014). A
+/// plan with nothing nested has nothing to orchestrate, and Run launches
 /// it the way it launches any plan.
 export function runsAsOrchestratedPlan(entry: CardEntry, cards: ReadonlyMap<string, CardEntry>): boolean {
-  if (entry.plan.kind !== "plan" || !entry.plan.children) return false;
+  if (entry.plan.kind !== "plan") return false;
   const plans = planIndex(cards);
   return [...cards.values()].some((e) => nestedParent(e, plans)?.plan.path === entry.plan.path);
+}
+
+/// Whether a press on this card goes to its plan's rail rather than
+/// launching one agent on it (ADR 0014). Run does whenever the plan
+/// orchestrates; Resume and a new session (`whileChildrenLeft`) only while
+/// a Nested task is still to run -- after that, the plan's own session is
+/// the work they are about. A plan with no `children:` line on a daemon
+/// too old to orchestrate (`orchestrationBlocked`) runs as one session,
+/// which is what Run did there before; one carrying the line goes to the
+/// rail, whose own gate refuses it with the reason.
+export function pressGoesToRail(
+  entry: CardEntry,
+  cards: ReadonlyMap<string, CardEntry>,
+  opts: { whileChildrenLeft: boolean; orchestrationBlocked: boolean }
+): boolean {
+  if (!runsAsOrchestratedPlan(entry, cards)) return false;
+  if (opts.whileChildrenLeft && !orchestratedChildrenLeft(entry, cards)) return false;
+  return entry.plan.children != null || !opts.orchestrationBlocked;
+}
+
+/// Whether an Orchestrated plan still has a Nested task to run: one whose
+/// line in the plan is unticked. While one does, the plan's work is its
+/// rail's, and a press that would start one agent on the plan -- Resume,
+/// a new session -- goes to that rail instead.
+export function orchestratedChildrenLeft(entry: CardEntry, cards: ReadonlyMap<string, CardEntry>): boolean {
+  if (!runsAsOrchestratedPlan(entry, cards)) return false;
+  const plans = planIndex(cards);
+  return [...cards.values()].some(
+    (e) => nestedParent(e, plans)?.plan.path === entry.plan.path && !childTicked(entry.plan, e.plan)
+  );
 }
 
 export type OrchestratedRunTarget =
@@ -3957,9 +4004,10 @@ export function detectConflicts(
   }
 
   // 3b. A nested task and the plan it nests inside, both on rails. Two
-  // card files, one piece of work: the plan's agent works its children
-  // (its step draws them inside the card, spec §6.2), so the child's own
-  // step re-runs work the rail is already scheduled to do.
+  // card files, one piece of work: the plan's step runs its children
+  // (it draws them inside the card, spec §6.2, and runs each as its own
+  // session, ADR 0014), so the child's own step re-runs work the rail is
+  // already scheduled to do.
   //
   // Only ever reached deliberately -- the drawer and the "+ Add step"
   // picker do not offer a nested child at all (availableCards), so
@@ -3977,11 +4025,12 @@ export function detectConflicts(
     if (!parentSteps) continue;
     conflicts.push({
       kind: "nested-with-parent",
-      // LIVE under an Orchestrated plan (v80): the plan's step would run
-      // the child too, were it not placed here -- so the expansion skips
-      // it, and the plan's own session then integrates work it never
-      // saw run. Worth saying as plainly as any shared checkout.
-      severity: parent.plan.children ? "live" : "potential",
+      // LIVE: the plan is an Orchestrated plan (v80) -- every plan with
+      // a Nested task is (ADR 0014) -- so its step would run the child
+      // too, were it not placed here. The expansion skips it, and the
+      // plan's own session then integrates work it never saw run. Worth
+      // saying as plainly as any shared checkout.
+      severity: "live",
       stepIds: [...group.map((s) => s.stepId), ...parentSteps.map((s) => s.stepId)],
       cardPath,
       parentPath: parent.plan.path,

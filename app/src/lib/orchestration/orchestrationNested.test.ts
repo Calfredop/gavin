@@ -1,5 +1,6 @@
-// Orchestrated plans (v80, ADR 0012): a plan whose `children:` line runs
-// each Nested task as its own session before the plan's own. The rules
+// Orchestrated plans (v80, ADR 0012, ADR 0014): a plan with Nested tasks
+// runs each as its own session before the plan's own -- one at a time
+// unless its `children:` line says `parallel`. The rules
 // live in orchestration.ts beside the scheduler they extend; this file is
 // theirs alone, so the two thousand lines of nextActions tests above them
 // stay about every other step.
@@ -7,14 +8,17 @@ import { describe, it, expect } from "vitest";
 import {
   CHILD_ENDED_UNTICKED,
   childTicked,
+  childrenModeOf,
   detectConflicts,
   emptyOrchestration,
   failedStepReason,
   nestedStallReason,
   nextActions,
   orchestratedChildren,
+  orchestratedChildrenLeft,
   orchestratedRunTarget,
   placedCardPaths,
+  pressGoesToRail,
   runsAsOrchestratedPlan,
   cardIndex,
   stepAttentions,
@@ -151,9 +155,38 @@ function decide(
   );
 }
 
+/// The plan alone, its Nested tasks gone.
+function childless(plan: Partial<PlanFileInfo> = {}): GavinTree {
+  const t = tree(plan);
+  return { ...t, contexts: [{ ...t.contexts[0], plans: [t.contexts[0].plans[0]] }] };
+}
+
+describe("childrenModeOf", () => {
+  it("is the line when the plan has one, and sequence for a plan with Nested tasks and no line", () => {
+    expect(childrenModeOf({ kind: "plan", children: "parallel" }, 2)).toBe("parallel");
+    expect(childrenModeOf({ kind: "plan", children: null }, 2)).toBe("sequence");
+    expect(childrenModeOf({ kind: "plan" }, 1)).toBe("sequence");
+  });
+
+  it("is null for a plan with nothing nested and no line, and for every task", () => {
+    expect(childrenModeOf({ kind: "plan", children: null }, 0)).toBeNull();
+    expect(childrenModeOf({ kind: "task", children: "sequence" }, 2)).toBeNull();
+  });
+
+  it("keeps a line on a plan whose children have all gone, which then has nothing to run", () => {
+    expect(childrenModeOf({ kind: "plan", children: "sequence" }, 0)).toBe("sequence");
+  });
+});
+
 describe("an Orchestrated plan's step reached by its rail", () => {
-  it("launches a plan WITHOUT children: exactly as it always did", () => {
-    expect(decide(orch("pending"), tree({ children: null }))).toEqual([{ kind: "launch", stepId: "t1" }]);
+  it("launches a plan with nothing nested and no line exactly as it always did", () => {
+    expect(decide(orch("pending"), childless({ children: null }))).toEqual([{ kind: "launch", stepId: "t1" }]);
+  });
+
+  it("begins the children phase of a plan with Nested tasks and no `children:` line", () => {
+    expect(decide(orch("pending"), tree({ children: null }))).toEqual([
+      { kind: "beginChildren", stepId: "t1", fresh: true },
+    ]);
   });
 
   it("begins its children phase, forgetting the last pass, when it starts from pending", () => {
@@ -256,8 +289,14 @@ describe("the children phase", () => {
     ]);
   });
 
-  it("gives a plan whose `children:` line was taken away mid-phase its own session", () => {
-    expect(decide(orch("running"), tree({ children: null }))).toEqual([{ kind: "launch", stepId: "t1" }]);
+  it("runs on, one at a time, when a plan's `children:` line is taken away mid-phase", () => {
+    expect(decide(orch("running"), tree({ children: null }))).toEqual([
+      { kind: "launchChild", stepId: "t1", childPath: ONE, resume: false },
+    ]);
+  });
+
+  it("gives a plan whose Nested tasks all left mid-phase its own session", () => {
+    expect(decide(orch("running"), childless({ children: null }))).toEqual([{ kind: "launch", stepId: "t1" }]);
   });
 
   it("never names a Nested task as a step of its own -- the child stays nested throughout", () => {
@@ -305,10 +344,17 @@ describe("childTicked", () => {
 });
 
 describe("orchestratedChildren", () => {
-  it("is null for a plan without the line and for a task", () => {
+  it("is null for a plan with nothing nested and no line, and for a task", () => {
     const step = { id: "t1", position: 0, cardPath: BIG };
-    expect(orchestratedChildren(step, cardIndex(tree({ children: null })), new Set())).toBeNull();
+    expect(orchestratedChildren(step, cardIndex(childless({ children: null })), new Set())).toBeNull();
     expect(orchestratedChildren({ ...step, cardPath: ONE }, cardIndex(tree()), new Set())).toBeNull();
+  });
+
+  it("runs a plan's Nested tasks in sequence when it carries no line", () => {
+    const step = { id: "t1", position: 0, cardPath: BIG };
+    const pc = orchestratedChildren(step, cardIndex(tree({ children: null })), new Set());
+    expect(pc?.mode).toBe("sequence");
+    expect(pc?.children.map((c) => c.plan.path)).toEqual([ONE, TWO]);
   });
 
   it("lists the plan's nested tasks in tree order, leaving out a placed one and a free-standing one", () => {
@@ -326,11 +372,11 @@ describe("orchestratedChildren", () => {
 });
 
 describe("nested-with-parent under an Orchestrated plan", () => {
-  it("rises to live, because the plan would otherwise run the child too", () => {
+  it("is live, line or not, because the plan would otherwise run the child too", () => {
     const o = { ...emptyOrchestration(), rails: [rail("r1", [["t1", BIG]]), rail("r2", [["t2", ONE]])] };
     const nestedConflict = (t: GavinTree) => detectConflicts(o, t, null).find((c) => c.kind === "nested-with-parent");
     expect(nestedConflict(tree())?.severity).toBe("live");
-    expect(nestedConflict(tree({ children: null }))?.severity).toBe("potential");
+    expect(nestedConflict(tree({ children: null }))?.severity).toBe("live");
   });
 });
 
@@ -387,16 +433,47 @@ describe("stepAttentions in the children phase", () => {
 });
 
 describe("the board's Run on an Orchestrated plan", () => {
-  it("runs as one only with children to run", () => {
+  it("runs as one whenever it has children to run, line or not", () => {
     const cards = cardIndex(tree());
     expect(runsAsOrchestratedPlan(cards.get(BIG)!, cards)).toBe(true);
     const noLine = cardIndex(tree({ children: null }));
-    expect(runsAsOrchestratedPlan(noLine.get(BIG)!, noLine)).toBe(false);
-    const childless = cardIndex({
-      ...tree(),
-      contexts: [{ ...tree().contexts[0], plans: [tree().contexts[0].plans[0]] }],
-    });
-    expect(runsAsOrchestratedPlan(childless.get(BIG)!, childless)).toBe(false);
+    expect(runsAsOrchestratedPlan(noLine.get(BIG)!, noLine)).toBe(true);
+    const alone = cardIndex(childless());
+    expect(runsAsOrchestratedPlan(alone.get(BIG)!, alone)).toBe(false);
+    expect(runsAsOrchestratedPlan(cards.get(ONE)!, cards)).toBe(false);
+  });
+
+  it("leaves the plan to its rail while a Nested task's line is unticked", () => {
+    const fresh = cardIndex(tree({ children: null }));
+    expect(orchestratedChildrenLeft(fresh.get(BIG)!, fresh)).toBe(true);
+    const half = cardIndex(tree({}, ["one.md"]));
+    expect(orchestratedChildrenLeft(half.get(BIG)!, half)).toBe(true);
+    const all = cardIndex(tree({}, ["one.md", "two.md"]));
+    expect(orchestratedChildrenLeft(all.get(BIG)!, all)).toBe(false);
+    const alone = cardIndex(childless());
+    expect(orchestratedChildrenLeft(alone.get(BIG)!, alone)).toBe(false);
+  });
+
+  it("takes Run to the rail whenever the plan orchestrates, and Resume only while a child is left", () => {
+    const go = (t: GavinTree, whileChildrenLeft: boolean, orchestrationBlocked = false) => {
+      const cards = cardIndex(t);
+      return pressGoesToRail(cards.get(BIG)!, cards, { whileChildrenLeft, orchestrationBlocked });
+    };
+    expect(go(tree({ children: null }), false)).toBe(true);
+    expect(go(tree({ children: null }), true)).toBe(true);
+    expect(go(tree({}, ["one.md", "two.md"]), false)).toBe(true);
+    expect(go(tree({}, ["one.md", "two.md"]), true)).toBe(false);
+    expect(go(childless(), false)).toBe(false);
+  });
+
+  it("runs a plan with no line as one session on a daemon too old to orchestrate", () => {
+    const go = (t: GavinTree) => {
+      const cards = cardIndex(t);
+      return pressGoesToRail(cards.get(BIG)!, cards, { whileChildrenLeft: false, orchestrationBlocked: true });
+    };
+    expect(go(tree({ children: null }))).toBe(false);
+    // The line was written for the rail, whose own gate says why it cannot.
+    expect(go(tree({ children: "sequence" }))).toBe(true);
   });
 
   it("makes a rail named after the plan when none runs it", () => {

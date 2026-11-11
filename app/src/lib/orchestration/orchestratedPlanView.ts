@@ -1,4 +1,5 @@
-// What the desk shows about an Orchestrated plan (v80, ADR 0012): the
+// What the desk shows about an Orchestrated plan (v80, ADR 0012) -- which
+// every plan with a Nested task is (ADR 0014): the
 // Children control on its card, each Nested task's run state in its row
 // inside the plan's card, and the "n/m nested" chip on its rail step.
 // Pure, so the three .svelte surfaces stay thin templates over it; the
@@ -7,6 +8,7 @@
 import type { ChecklistLink, ChildrenMode } from "$lib/core/gavin";
 import {
   childTicked,
+  childrenModeOf,
   isToolStep,
   orchestratedChildren,
   placedCardPaths,
@@ -17,25 +19,34 @@ import {
   type StepState,
 } from "$lib/orchestration/orchestration";
 
-/// The Children control's three answers. `off` is no line at all -- a
-/// plan run as one session, which is what every plan was before v80.
-export type ChildrenChoice = "off" | ChildrenMode;
+/// The Children control's answers: HOW a plan's Nested tasks run, since
+/// a plan with any always runs them as their own sessions (ADR 0014). No
+/// line reads as `sequence`, the default.
+export type ChildrenChoice = ChildrenMode;
 
 export const CHILDREN_CHOICES: ReadonlyArray<{ value: ChildrenChoice; label: string }> = [
-  { value: "off", label: "Off — one session" },
   { value: "sequence", label: "Sequence — one at a time" },
   { value: "parallel", label: "Parallel — all at once" },
 ];
 
 export function childrenChoiceOf(children: ChildrenMode | null | undefined): ChildrenChoice {
-  return children ?? "off";
+  return children ?? "sequence";
 }
 
-/// The `children:` value the choice writes. Off REMOVES the line rather
-/// than writing a word for it, so an ordinary plan stays byte-for-byte
-/// the card it was.
+/// The `children:` value the choice writes: the mode, by name.
 export function childrenFieldValue(choice: ChildrenChoice): string {
-  return choice === "off" ? "" : choice;
+  return choice;
+}
+
+/// How a board card's plan runs its Nested tasks, or null when it runs
+/// none -- `childrenModeOf` over the children the card already carries.
+/// What the plan's orchestrated mark is worn by.
+export function orchestratedMode(card: {
+  kind: "note" | "task" | "plan";
+  children?: ChildrenMode | null;
+  nestedChildren: readonly unknown[];
+}): ChildrenMode | null {
+  return childrenModeOf(card, card.nestedChildren.length);
 }
 
 /// Whether a card offers the control: a plan with nested tasks -- and one
@@ -52,8 +63,6 @@ export function childrenControlShown(card: {
 /// The sentence under the control: what pressing Run will now do.
 export function childrenHint(choice: ChildrenChoice): string {
   switch (choice) {
-    case "off":
-      return "Run starts one agent on the plan, which works its nested tasks itself.";
     case "sequence":
       return "Run puts the plan on a rail of its own: each nested task runs as its own session, one after another, then the plan's session integrates them.";
     case "parallel":
@@ -87,20 +96,18 @@ export function nestedRunsOfPlan(orch: Orchestration | undefined, planPath: stri
 /// a run happening now, then one that broke.
 const ROW_RANK: Record<NestedRun["state"], number> = { running: 3, stalled: 2, skipped: 1, done: 0 };
 
-/// What one Nested task's row inside its plan's card says about its run,
-/// or null when the plan does not orchestrate its children -- such a
-/// child is worked by the plan's own session, and a mark would claim a
-/// run of its own that never happens.
+/// What one Nested task's row inside its plan's card says about its run.
+/// Every Nested task runs as its own session (ADR 0014), so every one has
+/// a state to show.
 ///
 /// `done` is the TICK (ADR 0012), whatever the run rows say: a child the
 /// human ticked by hand is finished, and one whose run ended `done` but
 /// whose line was unticked since is waiting to run again.
 export function nestedChildState(
-  plan: { children?: ChildrenMode | null; checklistLinks?: ChecklistLink[] },
+  plan: { checklistLinks?: ChecklistLink[] },
   child: { id: string; fileName: string },
   runs: readonly NestedRun[]
-): StepState | null {
-  if (!plan.children) return null;
+): StepState {
   if (childTicked(plan, child)) return "done";
   const row = runs
     .filter((r) => r.childPath === child.id)
