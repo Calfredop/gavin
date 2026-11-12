@@ -76,6 +76,25 @@ describe("hub navigator surface", () => {
     );
   });
 
+  // The margin that clears the bar is aimed at Pane's markup from
+  // outside it, so a wrapper added inside Pane silently un-aims it: the
+  // tab groups' .pane-body did exactly that, and the bar sat over the
+  // page again. Pin the selector to the child Pane actually draws.
+  it("makes room for the bar on the pane's body, which Pane draws directly under its wrapper", () => {
+    const pane = Object.values(
+      import.meta.glob("../panes/Pane.svelte", { query: "?raw", import: "default", eager: true }) as Record<
+        string,
+        string
+      >
+    )[0];
+    const template = pane.slice(pane.indexOf('<div class="pane-wrapper">'));
+    const children = template.match(/^ {2}<div class="([^"]+)"/gm)?.map((m) => m.match(/"([^"]+)"/)![1]);
+    expect(children).toContain("pane-body");
+    expect(page).toContain(":global(.tree .pane-wrapper > .pane-body:not(.split.row > .child:not(:first-child) *))");
+    expect(page).toContain(":global(.tree .pane-wrapper > .pane-body:not(.split.row > .child:not(:last-child) *))");
+    expect(page).not.toContain(".pane-wrapper > .content");
+  });
+
   it("is mounted beside the terminal view only", () => {
     expect(page).toMatch(/<HubNavigator[\s\S]*?<TerminalView/);
     expect(page.match(/<HubNavigator/g)).toHaveLength(1);
