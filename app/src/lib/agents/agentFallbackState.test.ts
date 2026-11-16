@@ -25,6 +25,7 @@ const layout = vi.hoisted(() => {
   const layoutState = store({
     workspaces: [] as Array<{
       id: string;
+      rootPath?: string | null;
       fallbackChains?: Record<string, string[]>;
       armedAgents?: string[];
       declinedAgents?: string[];
@@ -37,8 +38,12 @@ const layout = vi.hoisted(() => {
     complexityTables: {} as Record<string, Record<string, { profile: string; model: string }>>,
     fallbackChains: {},
   });
+  const wizardWorkspaceId = store<string | null>(null);
+  const newWorkspaceFlow = store({ naming: null, pendingSetupId: null as string | null });
   return {
     layoutState,
+    wizardWorkspaceId,
+    newWorkspaceFlow,
     agentDefaultsStore,
     resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code" })),
     workspaceComplexityTable: vi.fn(() => ({})),
@@ -68,6 +73,7 @@ const layout = vi.hoisted(() => {
 });
 
 vi.mock("$lib/core/layoutState", () => layout);
+vi.mock("$lib/workspace/workspaceCreate", () => ({ newWorkspaceFlow: layout.newWorkspaceFlow }));
 
 import {
   armNewlyAdded,
@@ -76,6 +82,7 @@ import {
   completeArmRequest,
   declineArmRequest,
   dismissArmRequest,
+  holdArming,
   owedArming,
   requestArm,
   startArmOnFocus,
@@ -83,7 +90,15 @@ import {
 
 beforeEach(() => {
   armRequest.set(null);
-  layout.layoutState.set({ workspaces: [], activeWorkspaceId: null });
+  layout.layoutState.set({
+    workspaces: [
+      { id: "w1", rootPath: "/repo/w1" },
+      { id: "w-dismiss", rootPath: "/repo/w-dismiss" },
+    ],
+    activeWorkspaceId: null,
+  });
+  layout.wizardWorkspaceId.set(null);
+  layout.newWorkspaceFlow.set({ naming: null, pendingSetupId: null });
   layout.agentDefaultsStore.set({
     customCommand: "",
     customModelFlag: "",
@@ -97,7 +112,7 @@ beforeEach(() => {
 describe("owedArming", () => {
   it("names unarmed chain and complexity profiles, not the workspace agent", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
       activeWorkspaceId: "w1",
     });
     layout.agentDefaultsStore.set({
@@ -114,7 +129,7 @@ describe("owedArming", () => {
   });
 
   it("asks for the table of whichever agent the workspace runs", () => {
-    layout.layoutState.set({ workspaces: [{ id: "w1", armedAgents: [] }], activeWorkspaceId: "w1" });
+    layout.layoutState.set({ workspaces: [{ id: "w1", rootPath: "/repo/w1", armedAgents: [] }], activeWorkspaceId: "w1" });
     layout.resolvedAgentFor.mockReturnValue({ profileId: "codex" });
     layout.workspaceComplexityTable.mockReturnValue({ trivial: { profile: "opencode", model: "" } });
     expect(owedArming("w1")).toEqual(["opencode"]);
@@ -123,7 +138,7 @@ describe("owedArming", () => {
 
   it("leaves out an agent the human said not to ask about again", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, declinedAgents: ["codex"] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, declinedAgents: ["codex"] }],
       activeWorkspaceId: "w1",
     });
     expect(owedArming("w1")).toEqual(["gemini"]);
@@ -132,7 +147,7 @@ describe("owedArming", () => {
   it("unions every primary's effective chain, not only the workspace agent's", () => {
     layout.layoutState.set({
       workspaces: [
-        { id: "w1", fallbackChains: { "claude-code": ["codex"], gemini: ["opencode"] }, armedAgents: [] },
+        { id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["codex"], gemini: ["opencode"] }, armedAgents: [] },
       ],
       activeWorkspaceId: "w1",
     });
@@ -141,7 +156,7 @@ describe("owedArming", () => {
 
   it("treats a workspace's empty chain for a primary as no fallback for it", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": [] }, armedAgents: [] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": [] }, armedAgents: [] }],
       activeWorkspaceId: "w1",
     });
     layout.agentDefaultsStore.set({
@@ -167,7 +182,7 @@ describe("armNewlyAdded", () => {
 
   it("asks again about an agent the human explicitly put back in the chain", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["gemini"] }, declinedAgents: ["gemini"] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["gemini"] }, declinedAgents: ["gemini"] }],
       activeWorkspaceId: "w1",
     });
     await armNewlyAdded("w1", [], ["gemini"]);
@@ -188,7 +203,7 @@ describe("requestArm", () => {
 describe("declineArmRequest", () => {
   it("records the choice so no later focus or launch reopens the wizard", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w-decline", fallbackChains: { "claude-code": ["codex"] } }],
+      workspaces: [{ id: "w-decline", rootPath: "/repo/w-decline", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: null,
     });
     requestArm("w-decline", "codex");
@@ -204,7 +219,7 @@ describe("declineArmRequest", () => {
 describe("askAgainToArm", () => {
   it("drops the recorded choice and opens the wizard", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w-again", fallbackChains: { "claude-code": ["codex"] } }],
+      workspaces: [{ id: "w-again", rootPath: "/repo/w-again", fallbackChains: { "claude-code": ["codex"] } }],
       activeWorkspaceId: null,
     });
     requestArm("w-again", "codex");
@@ -218,7 +233,7 @@ describe("askAgainToArm", () => {
 describe("completeArmRequest", () => {
   it("records the arm and queues the next owed profile", async () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, armedAgents: [] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["codex", "gemini"] }, armedAgents: [] }],
       activeWorkspaceId: "w1",
     });
     requestArm("w1", "codex");
@@ -231,12 +246,87 @@ describe("completeArmRequest", () => {
 describe("startArmOnFocus", () => {
   it("queues the first owed agent when the active workspace changes", () => {
     layout.layoutState.set({
-      workspaces: [{ id: "w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
+      workspaces: [{ id: "w1", rootPath: "/repo/w1", fallbackChains: { "claude-code": ["codex"] }, armedAgents: [] }],
       activeWorkspaceId: null,
     });
     const stop = startArmOnFocus();
     layout.layoutState.update((s) => ({ ...s, activeWorkspaceId: "w1" }));
     expect(get(armRequest)).toEqual({ workspaceId: "w1", profileId: "codex" });
+    stop();
+  });
+});
+
+// The fallback wizard is a follow-up to a workspace's own setup. Created
+// from the hub, a workspace becomes active before its creation modal is
+// up, gets its root inside that modal, and only then reaches the setup
+// wizard -- and the fallback wizard used to pop out at the first of those.
+describe("arming waits for the workspace's own setup", () => {
+  const chain = { "claude-code": ["codex"] };
+
+  it("does not ask in a workspace with no root yet", () => {
+    layout.layoutState.set({ workspaces: [{ id: "w-new", fallbackChains: chain }], activeWorkspaceId: null });
+    const stop = startArmOnFocus();
+    layout.layoutState.update((s) => ({ ...s, activeWorkspaceId: "w-new" }));
+    expect(get(armRequest)).toBeNull();
+    requestArm("w-new", "codex");
+    expect(get(armRequest)).toBeNull();
+    stop();
+  });
+
+  it("asks only once the setup wizard closes, through the whole creation flow", () => {
+    layout.layoutState.set({ workspaces: [], activeWorkspaceId: null });
+    const stop = startArmOnFocus();
+    // createWorkspace: a rootless workspace, made active.
+    layout.layoutState.set({ workspaces: [{ id: "w-new", fallbackChains: chain }], activeWorkspaceId: "w-new" });
+    // commitNewWorkspace puts the creation modal up; the folder is picked in it.
+    layout.newWorkspaceFlow.set({ naming: null, pendingSetupId: "w-new" });
+    layout.layoutState.update((s) => ({
+      ...s,
+      workspaces: s.workspaces.map((w) => ({ ...w, rootPath: "/repo/w-new" })),
+    }));
+    expect(get(armRequest)).toBeNull();
+    // finishSetup: wizard open, then the modal closed.
+    layout.wizardWorkspaceId.set("w-new");
+    layout.newWorkspaceFlow.set({ naming: null, pendingSetupId: null });
+    expect(get(armRequest)).toBeNull();
+    // A launch that needs an arm while the wizard is up waits as well.
+    requestArm("w-new", "codex");
+    expect(get(armRequest)).toBeNull();
+    // closeWizard.
+    layout.wizardWorkspaceId.set(null);
+    expect(get(armRequest)).toEqual({ workspaceId: "w-new", profileId: "codex" });
+    stop();
+  });
+
+  it("asks when a skipped setup's workspace later gets a root", () => {
+    layout.layoutState.set({ workspaces: [{ id: "w-new", fallbackChains: chain }], activeWorkspaceId: null });
+    const stop = startArmOnFocus();
+    layout.layoutState.update((s) => ({ ...s, activeWorkspaceId: "w-new" }));
+    expect(get(armRequest)).toBeNull();
+    layout.layoutState.update((s) => ({
+      ...s,
+      workspaces: s.workspaces.map((w) => ({ ...w, rootPath: "/repo/w-new" })),
+    }));
+    expect(get(armRequest)).toEqual({ workspaceId: "w-new", profileId: "codex" });
+    stop();
+  });
+
+  it("holds every request until the hold is released", () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w-held", rootPath: "/repo/w-held", fallbackChains: chain }],
+      activeWorkspaceId: null,
+    });
+    const stop = startArmOnFocus();
+    const release = holdArming();
+    layout.layoutState.update((s) => ({ ...s, activeWorkspaceId: "w-held" }));
+    expect(get(armRequest)).toBeNull();
+    // The flow that took the hold opened the setup wizard before letting go.
+    layout.wizardWorkspaceId.set("w-held");
+    release();
+    release(); // a second release must not free someone else's hold
+    expect(get(armRequest)).toBeNull();
+    layout.wizardWorkspaceId.set(null);
+    expect(get(armRequest)).toEqual({ workspaceId: "w-held", profileId: "codex" });
     stop();
   });
 });

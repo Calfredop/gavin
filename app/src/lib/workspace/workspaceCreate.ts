@@ -85,8 +85,13 @@ export function skipSetup(): void {
 }
 
 /// Closes the setup modal and opens the wizard on the same workspace.
+///
+/// Wizard first, modal second: fallback arming waits while either is up
+/// for the workspace (`armingWaits`), and closing the modal first would
+/// leave a moment with neither -- which is when the fallback wizard got
+/// in ahead of this one.
 export function finishSetup(): void {
   const id = get(newWorkspaceFlow).pendingSetupId;
-  newWorkspaceFlow.update((f) => ({ ...f, pendingSetupId: null }));
   if (id) openWizard(id);
+  newWorkspaceFlow.update((f) => ({ ...f, pendingSetupId: null }));
 }

@@ -129,6 +129,19 @@ describe("setup handoff", () => {
     expect(openWizard).toHaveBeenCalledWith("ws-new");
   });
 
+  // Fallback arming waits while either the modal or the wizard is up for
+  // the workspace, so a moment with neither is a moment the fallback
+  // wizard can open in ahead of setup.
+  it("opens the wizard before it closes the modal", () => {
+    newWorkspaceFlow.set({ naming: null, pendingSetupId: "ws-new" });
+    const modalAtOpen: Array<string | null> = [];
+    vi.mocked(openWizard).mockImplementationOnce(() => {
+      modalAtOpen.push(get(newWorkspaceFlow).pendingSetupId);
+    });
+    finishSetup();
+    expect(modalAtOpen).toEqual(["ws-new"]);
+  });
+
   it("finishing with no modal up opens no wizard", () => {
     finishSetup();
     expect(openWizard).not.toHaveBeenCalled();

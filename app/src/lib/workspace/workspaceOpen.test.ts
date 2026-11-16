@@ -25,6 +25,18 @@ const layoutMock = vi.hoisted(() => ({
   setWorkspaceRoot: vi.fn(async () => {}),
   switchWorkspace: vi.fn(async () => {}),
   markGitTrackingAsked: vi.fn(async () => {}),
+  openWizard: vi.fn(),
+}));
+
+// Fallback arming, as far as this flow touches it: a hold taken across
+// the bind and released once the setup wizard is up. The log records
+// both, in order, alongside the wizard opening.
+const armLog = vi.hoisted(() => [] as string[]);
+vi.mock("$lib/agents/agentFallbackState", () => ({
+  holdArming: vi.fn(() => {
+    armLog.push("hold");
+    return () => void armLog.push("release");
+  }),
 }));
 
 vi.mock("$lib/core/layoutState", async () => {
@@ -48,6 +60,7 @@ vi.mock("$lib/core/layoutState", async () => {
     setWorkspaceRoot: layoutMock.setWorkspaceRoot,
     switchWorkspace: layoutMock.switchWorkspace,
     markGitTrackingAsked: layoutMock.markGitTrackingAsked,
+    openWizard: layoutMock.openWizard,
   };
 });
 
@@ -74,6 +87,7 @@ function setState(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  armLog.length = 0;
   backendMock.gavinRootExists.mockResolvedValue(false);
   // Reset the resolutions too, not just the call log: clearAllMocks
   // leaves a mockRejectedValue from a previous test in place, and a
@@ -217,6 +231,24 @@ describe("answering the initialize question", () => {
     expect(layoutMock.markGitTrackingAsked).toHaveBeenCalledWith("ws-fresh");
   });
 
+  // Initialize is the human asking for gavin in this folder, so its setup
+  // follows -- and the fallback wizard, which the root landing would
+  // otherwise let in first, is held until the setup wizard is up.
+  it("opens the setup wizard, holding fallback arming until it is up", async () => {
+    layoutMock.openWizard.mockImplementation(() => void armLog.push("wizard"));
+    layoutMock.setWorkspaceRoot.mockImplementation(async () => void armLog.push("root"));
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true);
+    expect(layoutMock.openWizard).toHaveBeenCalledWith("ws-fresh");
+    expect(armLog).toEqual(["hold", "root", "wizard", "release"]);
+  });
+
+  it("releases the hold when the bind fails", async () => {
+    layoutMock.setWorkspaceRoot.mockRejectedValueOnce(new Error("gone"));
+    await expect(initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true)).rejects.toThrow("gone");
+    expect(armLog).toEqual(["hold", "release"]);
+    expect(layoutMock.openWizard).not.toHaveBeenCalled();
+  });
+
   // Nothing was asked, so nothing has been answered: binding an existing
   // folder must leave the wizard's step to do its job.
   it("records nothing when the folder is opened without initializing", async () => {
@@ -228,6 +260,7 @@ describe("answering the initialize question", () => {
   // before anyone wants a board in it.
   it("opens without scaffolding when asked to", async () => {
     await bindWithoutInit({ rootPath: "/repo/plain", name: "plain" });
+    expect(layoutMock.openWizard).not.toHaveBeenCalled();
     expect(backendMock.initGavinRoot).not.toHaveBeenCalled();
     expect(layoutMock.createWorkspace).toHaveBeenCalledWith("plain");
     expect(layoutMock.setWorkspaceRoot).toHaveBeenCalledWith("ws-plain", "/repo/plain");

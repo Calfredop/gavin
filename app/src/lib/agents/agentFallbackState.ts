@@ -2,7 +2,7 @@
 /// setup-only wizard for, and a focus watcher that queues the next
 /// unarmed chain/complexity agent.
 
-import { get, writable } from "svelte/store";
+import { derived, get, writable, type Readable } from "svelte/store";
 import {
   agentsOwedArming,
   effectiveFallbackChain,
@@ -14,9 +14,11 @@ import {
   markAgentArmed,
   resolvedAgentFor,
   setAgentArmDeclined,
+  wizardWorkspaceId,
   workspaceComplexityTable,
 } from "$lib/core/layoutState";
 import { COMPLEXITY_LEVELS, complexityEntryFor } from "$lib/cards/complexity";
+import { newWorkspaceFlow } from "$lib/workspace/workspaceCreate";
 
 export interface ArmRequest {
   workspaceId: string;
@@ -41,9 +43,81 @@ function declinedIn(workspaceId: string): Set<string> {
   return new Set(workspace?.declinedAgents ?? []);
 }
 
+/// Flows that are about to put a workspace's own setup in front, and
+/// have not yet got as far as opening it. Counted, not a flag, so two
+/// overlapping flows cannot release each other's hold.
+const holds = writable(0);
+
+/// Holds every arming request until the returned release is called.
+/// For a flow whose setup wizard opens only AFTER the workspace has a
+/// root -- "Open workspace…" → Initialize binds the folder first -- so
+/// the root landing does not slip a fallback wizard in ahead of it.
+export function holdArming(): () => void {
+  holds.update((n) => n + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    holds.update((n) => n - 1);
+  };
+}
+
+interface ArmGate {
+  workspaces: ReadonlyArray<{ id: string; rootPath?: string | null }>;
+  activeWorkspaceId: string | null;
+  wizardWorkspaceId: string | null;
+  pendingSetupId: string | null;
+  holds: number;
+}
+
+/// Whether arming in this workspace has to wait. The fallback wizard is a
+/// follow-up to the workspace's own setup, never its opening act: while
+/// the creation modal or the setup wizard is up for it the human has not
+/// even chosen the agent the chain falls back FROM. And a workspace with
+/// no root has no checkout to write MCP config and skills into -- which
+/// is also what covers the moment `createWorkspace` makes a new workspace
+/// active, before either of the setup modals is up.
+export function armingWaits(gate: ArmGate, workspaceId: string): boolean {
+  if (gate.holds > 0) return true;
+  if (gate.wizardWorkspaceId === workspaceId || gate.pendingSetupId === workspaceId) return true;
+  const workspace = gate.workspaces.find((w) => w.id === workspaceId);
+  return !workspace?.rootPath;
+}
+
+function currentGate(): ArmGate {
+  const state = get(layoutState);
+  return {
+    workspaces: state.workspaces,
+    activeWorkspaceId: state.activeWorkspaceId,
+    wizardWorkspaceId: get(wizardWorkspaceId),
+    pendingSetupId: get(newWorkspaceFlow).pendingSetupId,
+    holds: get(holds),
+  };
+}
+
+/// Built on first use rather than at import: the stores it reads are
+/// another module's, and a test that mocks that module partially should
+/// not fail just for importing this one.
+function armGate(): Readable<ArmGate> {
+  return derived(
+    [layoutState, wizardWorkspaceId, newWorkspaceFlow, holds],
+    ([state, wizardId, flow, held]) => ({
+      workspaces: state.workspaces,
+      activeWorkspaceId: state.activeWorkspaceId,
+      wizardWorkspaceId: wizardId,
+      pendingSetupId: flow.pendingSetupId,
+      holds: held,
+    })
+  );
+}
+
+/// Ignored while arming waits in that workspace (see `armingWaits`). Not
+/// lost: the watcher below asks again the moment the wait lifts, and
+/// `owedArming` still names whatever a launch needed armed.
 export function requestArm(workspaceId: string, profileId: string): void {
   const id = profileId.trim();
   if (!workspaceId || !id) return;
+  if (armingWaits(currentGate(), workspaceId)) return;
   if (dismissed.has(key(workspaceId, id))) return;
   if (declinedIn(workspaceId).has(id)) return;
   const current = get(armRequest);
@@ -138,16 +212,22 @@ export async function armNewlyAdded(
   requestArm(workspaceId, added[0]);
 }
 
-let lastFocus: string | null = null;
+/// The active workspace while arming is open in it, else null.
+let lastOpen: string | null = null;
 
-/// Subscribe to workspace focus. Call once at bootstrap; a second call
-/// is a no-op for the lastFocus tracker (the subscriber stacks).
+/// Subscribe to workspace focus, and to the active workspace's wait
+/// lifting -- its setup wizard closing, or a root arriving -- which is
+/// when a workspace that was just created gets asked. Call once at
+/// bootstrap; a second call is a no-op for the lastOpen tracker (the
+/// subscriber stacks).
 export function startArmOnFocus(): () => void {
-  return layoutState.subscribe((s) => {
-    if (s.activeWorkspaceId === lastFocus) return;
-    lastFocus = s.activeWorkspaceId;
-    if (!lastFocus) return;
-    const next = owedArming(lastFocus)[0];
-    if (next) requestArm(lastFocus, next);
+  return armGate().subscribe((gate) => {
+    const active = gate.activeWorkspaceId;
+    const open = active && !armingWaits(gate, active) ? active : null;
+    if (open === lastOpen) return;
+    lastOpen = open;
+    if (!open) return;
+    const next = owedArming(open)[0];
+    if (next) requestArm(open, next);
   });
 }

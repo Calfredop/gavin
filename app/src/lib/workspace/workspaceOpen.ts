@@ -20,6 +20,7 @@ import {
   createWorkspace,
   layoutState,
   markGitTrackingAsked,
+  openWizard,
   setWorkspaceRoot,
   switchWorkspace,
   type LayoutState,
@@ -27,6 +28,7 @@ import {
 import { folderName } from "$lib/core/paths";
 import { sameRoot } from "$lib/core/workspace";
 import { showAlert } from "$lib/core/dialog";
+import { holdArming } from "$lib/agents/agentFallbackState";
 
 /// A picked folder that holds no `.gavin*` yet, waiting on the three-way
 /// answer (initialize / bind as-is / cancel). Null the rest of the time.
@@ -103,11 +105,25 @@ export async function initAndOpen(pending: PendingOpen, trackInGit: boolean): Pr
     return;
   }
   await applyInitTracking(pending.rootPath, trackInGit);
-  const id = await bindNewWorkspace(pending.rootPath);
-  // The prompt just put the git question, so the wizard's git step must
-  // not put it again. Marked after the bind because that is when the
-  // workspace this is recorded on comes into existence.
-  if (id) await markGitTrackingAsked(id);
+  // Initialize is the human asking for gavin here, so its setup wizard
+  // follows -- as it does after "+ New workspace…". Held across the bind:
+  // the root landing is what lets fallback arming ask, and its wizard
+  // must not get in ahead of this one (`armingWaits`).
+  const release = holdArming();
+  try {
+    const created = await bindNewWorkspace(pending.rootPath);
+    // Looked up by root rather than trusted: a reclaimed tombstone
+    // re-keys the workspace inside setWorkspaceRoot.
+    const id = workspaceForRoot(get(layoutState), pending.rootPath) ?? created;
+    if (!id) return;
+    // The prompt just put the git question, so the wizard's git step must
+    // not put it again. Marked after the bind because that is when the
+    // workspace this is recorded on comes into existence.
+    await markGitTrackingAsked(id);
+    openWizard(id);
+  } finally {
+    release();
+  }
 }
 
 /// Writes the ignore rule when the human declined tracking, and does
